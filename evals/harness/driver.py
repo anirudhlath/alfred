@@ -148,9 +148,10 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
                 await asyncio.sleep(step.wait)
             case _:
                 assert_never(step)
-    # A call is recorded when upstream answers, stamped with when it was sent: one still
-    # upstream now belongs in this window, so wait for it before reading the window.
-    if not await ctx.proxy.wait_idle(ctx.llm_idle_timeout_s):
+    # A call is recorded when upstream answers, stamped with when it arrived: one sent
+    # since ``started`` and still upstream belongs in this window, so wait for it before
+    # reading the window. One from before ``started`` never enters it and is not waited on.
+    if not await ctx.proxy.wait_idle(started, ctx.llm_idle_timeout_s):
         raise HarnessError(
             f"LLM call still in flight {ctx.llm_idle_timeout_s:.0f}s after the last step; "
             "the evidence would miss it"

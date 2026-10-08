@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, NoReturn
 
@@ -149,14 +150,14 @@ async def test_wait_idle_returns_once_the_call_in_flight_is_recorded() -> None:
     p = LlmProxy("http://vllm.test", transport=httpx.MockTransport(gated))
     await p.start()
     try:
-        assert await p.wait_idle(0.01)  # nothing in flight
+        assert await p.wait_idle(0.0, 0.01)  # nothing in flight
         async with httpx.AsyncClient() as client:
             body = {"model": "m", "messages": []}
             sent = asyncio.create_task(client.post(f"{p.url}/v1/chat/completions", json=body))
             while not p.in_flight:
                 await asyncio.sleep(0.005)
-            assert not await p.wait_idle(0.02) and p.calls == []
-            waiting = asyncio.create_task(p.wait_idle(5))
+            assert not await p.wait_idle(0.0, 0.02) and p.calls == []
+            waiting = asyncio.create_task(p.wait_idle(0.0, 5))
             await asyncio.sleep(0.01)
             release.set()
             assert await waiting
@@ -172,7 +173,62 @@ async def test_a_failed_call_is_not_left_in_flight() -> None:
 
     async with serving(boom) as p, httpx.AsyncClient() as client:
         await client.post(f"{p.url}/v1/chat/completions", json={"model": "m", "messages": []})
-        assert p.in_flight == 0 and await p.wait_idle(0.01)
+        assert p.in_flight == 0 and await p.wait_idle(0.0, 0.01)
+
+
+async def test_wait_idle_waits_only_on_calls_sent_since() -> None:
+    release = asyncio.Event()
+
+    async def gated(request: httpx.Request) -> httpx.Response:
+        await release.wait()
+        return httpx.Response(200, json=COMPLETION)
+
+    p = LlmProxy("http://vllm.test", transport=httpx.MockTransport(gated))
+    await p.start()
+    try:
+        async with httpx.AsyncClient() as client:
+            body = {"model": "m", "messages": []}
+            orphan = asyncio.create_task(client.post(f"{p.url}/v1/chat/completions", json=body))
+            while not p.in_flight:
+                await asyncio.sleep(0.005)
+            since = time.monotonic()
+            # Sent before *since*, so it can never enter a window starting there.
+            assert await p.wait_idle(since, 0.01) and p.in_flight_since(since) == []
+            assert not await p.wait_idle(0.0, 0.01)
+            [stamp] = p.in_flight_since(0.0)
+            assert stamp < since
+            release.set()
+            await orphan
+            assert p.in_flight_since(0.0) == []
+    finally:
+        await p.stop()
+
+
+async def test_a_call_is_in_flight_from_its_first_byte_not_its_last() -> None:
+    body_sent = asyncio.Event()
+
+    async def slow_body() -> AsyncIterator[bytes]:
+        yield b'{"model": "m", '
+        await body_sent.wait()
+        yield b'"messages": []}'
+
+    async with serving(lambda r: httpx.Response(200, json=COMPLETION)) as p:
+        async with httpx.AsyncClient() as client:
+            sent = asyncio.create_task(
+                client.post(
+                    f"{p.url}/v1/chat/completions",
+                    content=slow_body(),
+                    headers={"content-type": "application/json"},
+                )
+            )
+            async with asyncio.timeout(5):  # fails, not hangs, when it never shows
+                while not p.in_flight:  # the body is still on its way
+                    await asyncio.sleep(0.005)
+            seen_in_flight = time.monotonic()
+            body_sent.set()
+            assert (await sent).status_code == 200
+        [call] = p.calls
+        assert call.t <= seen_in_flight and p.in_flight == 0
 
 
 def test_the_proxy_and_the_judge_share_one_vllm_budget_of_four() -> None:
@@ -252,6 +308,7 @@ async def test_a_malformed_chat_body_is_a_400(proxy: LlmProxy, content: bytes) -
         )
     assert r.status_code == 400 and r.json()["error"]["message"]
     assert proxy.seen == [] and proxy.calls == []  # type: ignore[attr-defined]
+    assert proxy.in_flight == 0  # a refused request leaves no stamp behind
 
 
 async def test_forwards_the_request_bytes_alfred_sent(proxy: LlmProxy) -> None:

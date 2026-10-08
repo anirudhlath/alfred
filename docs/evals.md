@@ -107,9 +107,11 @@ uses), then waits a 2 s settle window for side effects. A reply from anything bu
 is a harness error. For an `ha_event` step it pushes the state change, then waits for the
 fake HA to receive a `call_service` when the golden's `ha_called` checks could count one
 from that step (up to 30 s, then the 2 s settle), or a 5 s window when they could not. When
-the steps are done it waits for every LLM call still upstream to be recorded (a call is
-recorded when vLLM answers, stamped with when it was sent; up to 120 s, then a harness
-error), and collects the **evidence** (`evals/harness/evidence.py`): the transcript, every
+the steps are done it waits for every LLM call sent since the sample started and still
+upstream to be recorded (a call is recorded when vLLM answers, stamped with when it reached
+the proxy; up to 120 s, then a harness error). A call from before the sample started, such
+as one a restarted container left upstream, never enters its window and is not waited on.
+Then it collects the **evidence** (`evals/harness/evidence.py`): the transcript, every
 reply with its latency, the fake HA's calls and the proxy's LLM calls inside the sample's
 time window, and the fake HA's final states. Evidence is the only input the checks and the
 judge see.

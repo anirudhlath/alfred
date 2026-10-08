@@ -295,6 +295,46 @@ async def test_an_llm_call_that_never_finishes_is_a_harness_error() -> None:
         never.set()
 
 
+@asynccontextmanager
+async def hung_vllm() -> AsyncIterator[tuple[LlmProxy, Callable[[], Awaitable[None]]]]:
+    """A proxy whose upstream never answers, and a coroutine that sends it one call and
+    returns once the call is in flight."""
+    never = asyncio.Event()
+
+    async def hang(request: httpx.Request) -> httpx.Response:
+        await never.wait()  # set only once the test is done with it
+        return httpx.Response(200, json={})
+
+    proxy = LlmProxy("http://vllm.test", transport=httpx.MockTransport(hang))
+    await proxy.start()
+    calls: list[asyncio.Task[httpx.Response]] = []
+    async with httpx.AsyncClient() as client:
+
+        async def call() -> None:
+            before = len(proxy.in_flight_since(0.0))
+            url = f"{proxy.url}/v1/chat/completions"
+            calls.append(asyncio.create_task(client.post(url, json=SYSTEM1_CALL)))
+            while len(proxy.in_flight_since(0.0)) == before:
+                await asyncio.sleep(0.005)
+
+        try:
+            yield proxy, call
+        finally:
+            never.set()
+            await asyncio.gather(*calls, return_exceptions=True)
+            await proxy.stop()
+
+
+async def test_an_orphan_llm_call_from_before_the_sample_neither_delays_nor_errors_it() -> None:
+    # A call a killed container left upstream belongs to no sample: the window never sees it.
+    async with hung_vllm() as (proxy, orphan):
+        await orphan()
+        play_ctx = ctx(Recorder(), proxy=proxy)
+        play_ctx.llm_idle_timeout_s = 10.0
+        elapsed, ev = await timed_play(play_ctx, scenario(steps=[{"user": "Lamp on."}]))
+    assert elapsed < 5 and ev.llm_calls == []
+
+
 async def test_world_is_restored_and_only_in_window_calls_are_kept() -> None:
     ha = FakeHA(load_world("apartment"))
     proxy = LlmProxy("http://x")
