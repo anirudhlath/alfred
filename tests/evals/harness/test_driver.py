@@ -620,6 +620,25 @@ async def test_reflex_settle_is_not_held_by_a_system2_call_in_flight() -> None:
         await proxy.stop()
 
 
+async def test_a_system1_upstream_failure_during_the_settle_dirties_the_stack() -> None:
+    """Reflex replays a restore's event its model call failed on into a later sample, as it
+    does a step's: the stack must restart. A failure from before the sample is not its."""
+    ha, proxy = FakeHA(load_world("apartment")), LlmProxy("http://x")
+    await ha.set_state("light.bedroom_lamp", "on")  # drifted: the restore pushes it back
+
+    async def system1_fails_on_the_restore() -> None:
+        await asyncio.sleep(0.1)
+        proxy.record(system1("Bedroom Lamp (Bedroom): on → off", status=502))
+
+    failing = asyncio.create_task(system1_fails_on_the_restore())
+    play_ctx = ctx(Recorder(), ha, proxy, reflex_cooldown_s=0.2, reflex_timeout_s=0)
+    with pytest.raises(HarnessError, match=f"the restore.*upstream returned 502 {TIMES}1"):
+        await first_step_at(play_ctx, scenario(**WATCHES))
+    await failing
+    # The next sample's settle sees no failure of its own.
+    assert await first_step_at(play_ctx, scenario(**WATCHES)) >= 0.2
+
+
 async def test_reflex_that_never_settles_after_the_restore_is_a_harness_error() -> None:
     proxy = LlmProxy("http://x")
 

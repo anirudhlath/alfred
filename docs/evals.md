@@ -147,8 +147,9 @@ stack is **dirty**: a request that timed out is still running inside Conscious, 
 whose LLM call failed waits in Conscious's pending list to be replayed a minute or more
 later, so either would land in a later sample's evidence and be scored against Alfred.
 Reflex does the same with a state change its System 1 call failed on, so a golden that
-watches Reflex fails mid-play when vLLM answers any of its System 1 calls with a 5xx. A
-restart is the only reset that clears them. Each suite gets one such recovery; once it is
+watches Reflex fails mid-play when vLLM answers a System 1 call with a 5xx, whether on the
+restore's events before its first step or on its own steps. A restart is the only reset
+that clears them. Each suite gets one such recovery; once it is
 spent, every later sample that needs one errors at once, saying why. A restart that fails
 (say, System 2 never answers the restarted stack's readiness request) leaves the stack
 **broken**: the container may still be running, but every later sample in the suite errors
@@ -245,6 +246,7 @@ restore's push, and Reflex judges one event at a time. So:
 | Touched nothing Reflex attends to | 6 s from the restore |
 | Queued System 1 calls | Until every System 1 call in flight is back, then 6 s from the last answer |
 | Kept System 1 busy past 60 s | A harness error (`E`): "Reflex did not settle after the restore" |
+| Drew a 5xx from vLLM on a System 1 call | A harness error (`E`) once the calls are back; the stack restarts (see **Recovery**) |
 
 The drain waits only on System 1's calls. Another role's call still upstream, such as
 Conscious answering a turn, does not hold it. A call whose body the proxy is still reading

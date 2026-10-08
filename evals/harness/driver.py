@@ -194,6 +194,9 @@ async def _settle_reflex(ctx: PlayContext, since: float, restored_at: float) -> 
     is not Reflex's and does not hold the wait. A restore Reflex does not attend to makes
     no call: the quiet then runs from *restored_at*, which also covers the cooldown the
     previous sample's last event started.
+
+    A System 1 call that failed upstream in the meantime raises, as one during the steps
+    does: Reflex replays its event into a later sample, and only a restart clears that.
     """
     quiet_s = max(ctx.restore_settle_s, ctx.reflex_cooldown_s)
     deadline = restored_at + ctx.reflex_settle_cap_s
@@ -204,6 +207,11 @@ async def _settle_reflex(ctx: PlayContext, since: float, restored_at: float) -> 
         answers = [_answered(c) for c in ctx.proxy.calls if _is_system1(c) and c.t >= since]
         until = max([restored_at, *answers]) + quiet_s
         if until <= now:
+            if failures := _system1_upstream_failures(ctx.proxy.calls_between(since, now)):
+                raise HarnessError(
+                    "System 1's LLM upstream failed on the restore, so Reflex judged nothing "
+                    "and will replay its event into a later sample" + failures
+                )
             return
         if until > deadline:
             break
