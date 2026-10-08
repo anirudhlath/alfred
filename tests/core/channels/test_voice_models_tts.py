@@ -8,7 +8,7 @@ import core.channels.voice_models as vm
 
 
 def _reset() -> None:
-    vm._lazy_cache.clear()
+    vm._tts.reset()
 
 
 def test_get_tts_selects_configured_backend(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -50,8 +50,9 @@ def test_get_tts_all_fail_returns_none(monkeypatch) -> None:  # type: ignore[no-
     with patch("importlib.import_module", side_effect=ImportError("nope")):
         assert vm.get_tts() is None
     # Every backend failed with ImportError (deps won't appear mid-process) —
-    # the failure is cached permanently.
-    assert vm._lazy_cache["tts"] is vm._FAILED
+    # the failure is cached permanently: a later call never imports again.
+    with patch("importlib.import_module", side_effect=AssertionError("not cached")):
+        assert vm.get_tts() is None
     _reset()
 
 
@@ -78,8 +79,9 @@ def test_get_tts_runtime_failure_of_selected_falls_back_with_warning(
 
     with patch("importlib.import_module", side_effect=fake_import):
         assert vm.get_tts() is piper
+    with patch("importlib.import_module", side_effect=AssertionError("not cached")):
+        assert vm.get_tts() is piper  # the fallback is cached
 
-    assert vm._lazy_cache["tts"] is piper
     warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
     assert any("kokoro" in c and "piper" in c and "onnx init failed" in c for c in warning_calls)
     _reset()
@@ -101,11 +103,9 @@ def test_get_tts_all_runtime_fail_returns_none_and_not_cached(
     monkeypatch.setattr(vm, "_construct_backend", fake_construct)
 
     assert vm.get_tts() is None
-    assert "tts" not in vm._lazy_cache
     first_call_count = calls["count"]
     assert first_call_count > 0
 
     assert vm.get_tts() is None  # second call retries construction, not short-circuited
     assert calls["count"] > first_call_count
-    assert "tts" not in vm._lazy_cache
     _reset()

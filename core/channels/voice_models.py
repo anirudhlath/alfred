@@ -9,39 +9,34 @@ from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from loguru import logger
 
+from core.lazy import Lazy
+
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from core.voice.tts_backend import TTSBackend
-
-_lazy_cache: dict[str, Any] = {}
-_FAILED: object = object()  # sentinel for imports that already failed
 
 
 def _lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
-    """Lazy-load a class from an optional module. Returns instance or None on failure."""
-    cached = _lazy_cache.get(key)
-    if cached is _FAILED:
-        return None
-    if cached is not None:
-        return cached
+    """Import a class from an optional module and construct it; None on failure.
+
+    Blocks. The caller's ``Lazy`` caches the None, so a failure is never retried.
+    """
     try:
         mod = importlib.import_module(module)
-        instance = getattr(mod, cls_name)()
-        _lazy_cache[key] = instance
-        return instance
+        return getattr(mod, cls_name)()
     except ImportError:
         logger.warning("{} — {} disabled", missing_msg, key)
-        _lazy_cache[key] = _FAILED
     except Exception as exc:
         logger.error("Failed to initialise {}: {}", cls_name, exc)
-        _lazy_cache[key] = _FAILED
     return None
 
 
-def get_stt() -> Any:
-    """Lazy-load WhisperSTT (requires voice extra)."""
+def _build_stt() -> Any:
     return _lazy_load("stt", "core.voice.stt", "WhisperSTT", "faster-whisper not installed")
+
+
+def get_stt() -> Any:
+    """Lazy-load WhisperSTT (requires voice extra). Blocks while it loads."""
+    return _stt.get()
 
 
 class _ConstructResult(NamedTuple):
@@ -58,12 +53,20 @@ class _ConstructResult(NamedTuple):
     error: str | None = None
 
 
+class _TransientTTSError(Exception):
+    """No TTS backend constructed, and at least one failed at runtime.
+
+    Raised out of the TTS build so its ``Lazy`` caches nothing and the next call
+    retries; ``get_tts``/``aget_tts`` turn it into None.
+    """
+
+
 def get_tts() -> TTSBackend | None:
     """Lazy-load the configured TTS backend (Kokoro default; Piper fallback).
 
     Reads ``config.tts_backend``, tries that adapter first, then falls back to any
     other registered backend whose optional deps are installed. Returns a
-    ``TTSBackend`` instance, cached under "tts".
+    ``TTSBackend`` instance, cached once constructed. Blocks while it loads.
 
     Fallback semantics: a backend whose optional dependency is simply not
     installed (ImportError) falls back silently — that's the intended
@@ -75,12 +78,18 @@ def get_tts() -> TTSBackend | None:
     later call retries construction, since deps-missing failures never
     change mid-process but runtime failures might be transient.
     """
-    cached = _lazy_cache.get("tts")
-    if cached is _FAILED:
+    try:
+        return _tts.get()
+    except _TransientTTSError:
         return None
-    if cached is not None:
-        return cast("TTSBackend", cached)
 
+
+def _build_tts() -> TTSBackend | None:
+    """Construct the first TTS backend that loads, in fallback order. Blocks.
+
+    None (cached for good) when every backend's dependency is missing; raises
+    ``_TransientTTSError`` (never cached) when any of them failed at runtime.
+    """
     from core.voice.tts_registry import TTS_BACKENDS, resolve_backend_order
     from shared.config import AlfredConfig
 
@@ -101,7 +110,6 @@ def get_tts() -> TTSBackend | None:
                     configured_error,
                     name,
                 )
-            _lazy_cache["tts"] = result.instance
             return result.instance
         if not result.import_missing:
             any_runtime_failure = True
@@ -111,8 +119,7 @@ def get_tts() -> TTSBackend | None:
     if any_runtime_failure:
         # At least one backend failed with a runtime error rather than a
         # missing dependency — don't cache the failure permanently.
-        return None
-    _lazy_cache["tts"] = _FAILED
+        raise _TransientTTSError
     return None
 
 
@@ -130,51 +137,26 @@ def _construct_backend(module: str, cls_name: str, missing_msg: str) -> _Constru
         return _ConstructResult(None, import_missing=False, error=str(exc))
 
 
-# Model construction takes 10-40s and must run off the event loop; the lock keeps
-# a warmup task and a first request from loading the same model twice. It is a
-# threading.Lock taken inside the worker thread, around the blocking construct
-# itself, not an asyncio.Lock around the await (issue #97):
-#   - an asyncio.Lock binds to the first event loop that contends on it and raises
-#     "bound to a different event loop" from any other, so a module-level one breaks
-#     every loop after the first (each test's loop, each real-lifespan TestClient);
-#   - a cancelled caller releases an asyncio.Lock at once, while its worker thread
-#     (asyncio.to_thread cannot be cancelled) goes on loading, so the next caller
-#     would start a second load beside it. Held in the thread, the lock is held for
-#     exactly as long as the load runs.
-# One lock for both models, as before: STT and TTS still load one at a time. A caller
-# that queues behind a load waits in a worker thread rather than on the loop; once a
-# model is cached, _aget_voice answers without leaving the loop.
+# Model construction takes 10-40s and must run off the event loop, and a warmup task
+# racing a first request must not load the same model twice: core.lazy.Lazy does both
+# (see its module docstring for why its lock is never an asyncio.Lock, issue #97).
+# STT and TTS share one lock, so they load one at a time.
 _voice_load_lock = threading.Lock()
-
-
-def _load_voice(key: str, getter: Callable[[], Any]) -> Any:
-    """Run ``getter`` under the load lock. Blocks: call it in a worker thread only."""
-    with _voice_load_lock:
-        # Double-check: the load this thread queued behind may already have cached
-        # the model. The getters happen to check the cache as well; this check is the
-        # one _aget_voice relies on, so a getter only has to write the cache.
-        cached = _lazy_cache.get(key)
-        if cached is not None:
-            return None if cached is _FAILED else cached
-        return getter()
-
-
-async def _aget_voice(key: str, getter: Callable[[], Any]) -> Any:
-    cached = _lazy_cache.get(key)
-    if cached is not None:
-        return None if cached is _FAILED else cached
-    return await asyncio.to_thread(_load_voice, key, getter)
+_stt: Lazy[Any] = Lazy(_build_stt, lock=_voice_load_lock)
+_tts: Lazy[TTSBackend | None] = Lazy(_build_tts, lock=_voice_load_lock)
 
 
 async def aget_stt() -> Any:
     """WhisperSTT instance (or None), constructed off the event loop."""
-    return await _aget_voice("stt", get_stt)
+    return await _stt.aget()
 
 
 async def aget_tts() -> TTSBackend | None:
     """Configured TTS backend instance (or None), constructed off the event loop."""
-    result = await _aget_voice("tts", get_tts)
-    return cast("TTSBackend | None", result)
+    try:
+        return await _tts.aget()
+    except _TransientTTSError:
+        return None
 
 
 async def transcribe_async(stt: Any, audio_bytes: bytes, audio_fmt: str) -> str:
@@ -195,6 +177,11 @@ def _get_speaker_id_cls() -> Any:
     return SpeakerID
 
 
+_FAILED: object = object()  # sentinel for an import that already failed
+# The shared SpeakerID, or _FAILED once its import has failed; None until first asked.
+_speaker_id: Any = None
+
+
 async def aget_speaker_id(redis: Any) -> Any | None:
     """Shared SpeakerID singleton, or None if the voice extra is unavailable.
 
@@ -203,17 +190,14 @@ async def aget_speaker_id(redis: Any) -> Any | None:
     awaits, so the cache check, the construction and the cache write run as one step
     no other task on the loop can interleave. (Construction is cheap; the model loads
     later, off the loop, inside SpeakerID.) Keep it await-free. A construction that
-    ever has to leave the loop must be guarded the way ``_aget_voice`` is, never with
-    a module-level asyncio.Lock (issue #97).
+    ever has to leave the loop must go through ``core.lazy.Lazy``, never a
+    module-level asyncio.Lock (issue #97).
     """
-    cached = _lazy_cache.get("speaker_id")
-    if cached is not None:
-        return None if cached is _FAILED else cached
-    try:
-        instance = _get_speaker_id_cls()(redis)
-    except ImportError:
-        logger.warning("speechbrain not installed — speaker ID disabled")
-        _lazy_cache["speaker_id"] = _FAILED
-        return None
-    _lazy_cache["speaker_id"] = instance
-    return instance
+    global _speaker_id
+    if _speaker_id is None:
+        try:
+            _speaker_id = _get_speaker_id_cls()(redis)
+        except ImportError:
+            logger.warning("speechbrain not installed — speaker ID disabled")
+            _speaker_id = _FAILED
+    return None if _speaker_id is _FAILED else _speaker_id
