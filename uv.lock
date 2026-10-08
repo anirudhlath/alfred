@@ -244,7 +244,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'evals'", specifier = ">=3.14" },
     { name = "aiomqtt", specifier = ">=2.0" },
     { name = "aiosqlite", specifier = ">=0.20" },
-    { name = "caldav", marker = "extra == 'integrations'", specifier = ">=1.3" },
+    { name = "caldav", marker = "extra == 'integrations'", specifier = ">=3.3.1" },
     { name = "croniter", specifier = ">=3.0" },
     { name = "espeakng-loader", marker = "extra == 'voice'", specifier = ">=0.2.4,<0.3" },
     { name = "fakeredis", marker = "extra == 'dev'", specifier = ">=2.39.0" },
@@ -517,7 +517,7 @@ wheels = [
 
 [[package]]
 name = "caldav"
-version = "3.1.0"
+version = "3.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dnspython" },
@@ -529,9 +529,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "recurring-ical-events" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2f/13/d1a9f0b97ea6e674bdd003d0d1500ef5b9d5a28f5f5c38fac088a9808dc0/caldav-3.1.0.tar.gz", hash = "sha256:0b6dc76a462c0c32a6dbdc537eda832226bd4d9dacf3906247626b68db5b10b6", size = 10316756, upload-time = "2026-03-19T18:09:33.839Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2d/bb/c8d18866749d5947342af869f0f5f4b616290a19d408806da3062f1bb810/caldav-3.3.1.tar.gz", hash = "sha256:945948cd3eca7eb5866e674e8c51c8ce30db66446762ed72d5755cb37fd87bf1", size = 715707, upload-time = "2026-09-16T06:29:36.271Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cc/fd/e2e9f12d7b86296894dfc211d7120a4a740288761e5f5349b54ebb490461/caldav-3.1.0-py3-none-any.whl", hash = "sha256:9d6713f75273bc82f58e2fb7684ecb8196f09ee309609d36577c1c5eec22152b", size = 232470, upload-time = "2026-03-19T18:09:24.212Z" },
+    { url = "https://files.pythonhosted.org/packages/59/7b/1a80286115026c556a750f93bbb9c8a79ac84e9702687623075d596c8f35/caldav-3.3.1-py3-none-any.whl", hash = "sha256:f469371d30a5902a71ba383d4b1b030ef72053b882a351b285cb3e430babdcda", size = 265547, upload-time = "2026-09-16T06:29:34.415Z" },
 ]
 
 [[package]]
