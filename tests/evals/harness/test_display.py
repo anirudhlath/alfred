@@ -4,9 +4,10 @@ import logging
 import os
 
 import pytest
-from evals.harness.display import use_display
 from inspect_ai.util import _display as inspect_display
 from inspect_ai.util import display_type
+
+from evals.harness.display import use_display
 
 
 @pytest.fixture(autouse=True)
