@@ -14,6 +14,7 @@ from uuid import uuid4
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.identity import IDENTITY_GUEST, IDENTITY_SIR
 from evals.harness.checks.home import satisfies
+from evals.harness.errors import HarnessError as HarnessError  # re-exported for tasks.py
 from evals.harness.evidence import Evidence, Reply, TranscriptTurn
 from evals.harness.scenario import Actor, HaEventStep, ScenarioVariant, UserStep, WaitStep
 from evals.harness.stack import (
@@ -32,10 +33,6 @@ if TYPE_CHECKING:
 
 SendFn = Callable[[UserRequest, float], Awaitable[AlfredResponse]]
 TIMES = "\N{MULTIPLICATION SIGN}"
-
-
-class HarnessError(RuntimeError):
-    """The harness, not Alfred, failed. The sample scores E and is retried once."""
 
 
 @dataclass

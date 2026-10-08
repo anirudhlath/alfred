@@ -38,6 +38,32 @@ def test_states_carry_friendly_names() -> None:
     assert states["light.bedroom_lamp"].state == "off"
 
 
+def test_a_friendly_name_attribute_is_the_name_ha_shows() -> None:
+    """One rule for the fake HA's states and for resolving a target by name."""
+    world = World.model_validate(
+        {
+            "name": "den",
+            "areas": [],
+            "entities": [
+                {"entity_id": "light.a", "name": "A", "state": "off"},
+                {
+                    "entity_id": "light.b",
+                    "name": "B",
+                    "state": "off",
+                    "attributes": {"friendly_name": "Reading Light"},
+                },
+            ],
+            "services": {},
+        }
+    )
+    assert [e.friendly_name for e in world.entities] == ["A", "Reading Light"]
+    states = world.initial_states()
+    assert [states[e].attributes["friendly_name"] for e in ("light.a", "light.b")] == [
+        "A",
+        "Reading Light",
+    ]
+
+
 def test_an_unknown_world_names_the_known_ones() -> None:
     with pytest.raises(FileNotFoundError, match="apartment"):
         load_world("castle")

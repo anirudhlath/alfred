@@ -45,6 +45,13 @@ class WorldEntity(BaseModel):
     def domain(self) -> str:
         return self.entity_id.split(".", 1)[0]
 
+    @property
+    def friendly_name(self) -> str:
+        """The name HA shows, and home-service resolves a target by: a ``friendly_name``
+        attribute, else the entity's name (home-service falls back to the registry's
+        ``original_name``, which is the name too)."""
+        return str(self.attributes.get("friendly_name") or self.name)
+
 
 def _number_selectors_are_numbers(services: dict[str, dict[str, dict[str, Any]]]) -> None:
     """The service fields' number selectors are what the fake HA range-checks calls
@@ -111,7 +118,7 @@ class World(BaseModel):
     def initial_states(self) -> dict[str, HaState]:
         return {
             e.entity_id: HaState(
-                state=e.state, attributes={"friendly_name": e.name, **e.attributes}
+                state=e.state, attributes={**e.attributes, "friendly_name": e.friendly_name}
             )
             for e in self.entities
             if not e.disabled

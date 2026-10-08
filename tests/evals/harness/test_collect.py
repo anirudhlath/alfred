@@ -3,14 +3,17 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+import pytest
+
 from bus.schemas.events import TriggerCreated, TriggerFired
 from core.notifications.schema import Notification, Urgency
 from core.reflex.tool_registry import ToolInfo
 from evals.harness.bus import Entry
 from evals.harness.collect import deferred_records, notification_records, trigger_records
+from evals.harness.errors import HarnessError
 from evals.harness.evidence import LlmCall
 from evals.harness.reflex import local_hour, reflex_calls, targets, tool_domain
-from evals.harness.world import load_world
+from evals.harness.world import World, load_world
 
 WALL0 = 1_760_000_000.0  # time.time() when the sample started
 STARTED = 50.0  # time.monotonic() at the same instant
@@ -73,6 +76,55 @@ def test_trigger_records_are_this_samples_earliest_first() -> None:
     assert [f.t for f in fires] == [STARTED + 3, STARTED + 9]
 
 
+def test_the_window_keeps_the_starts_own_millisecond() -> None:
+    """Stream ids are whole milliseconds, and the bus reads from the start's own one, so
+    the collectors keep it too: one rule on both sides."""
+    started_wall = WALL0 + 0.0004  # inside the millisecond that begins at WALL0
+    entries = [
+        event_entry(made(trigger_id="same ms"), WALL0),
+        event_entry(made(trigger_id="ms before"), WALL0 - 0.001),
+    ]
+    created, _ = trigger_records(entries, STARTED, started_wall)
+    assert [r.trigger_id for r in created] == ["same ms"]
+
+
+def test_entries_the_harness_does_not_recognise_are_ignored() -> None:
+    entries = [
+        Entry(wall=WALL0 + 1, data={"event": "[1, 2]"}),  # JSON, but not an object
+        Entry(wall=WALL0 + 2, data={"event": '"trigger_created"'}),
+        Entry(wall=WALL0 + 3, data={"event": "{not json"}),
+        Entry(wall=WALL0 + 4, data={"event": json.dumps({"event_type": "service_registered"})}),
+        Entry(wall=WALL0 + 5, data={"other": "x"}),
+    ]
+    assert trigger_records(entries, STARTED, WALL0) == ([], [])
+    assert notification_records(entries, STARTED, WALL0) == []
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"event_type": "trigger_created", "trigger_type": "time", "created_by": "tool-call"},
+        {"event_type": "trigger_fired", "trigger_id": "t1", "trigger_type": "time"},
+        {**json.loads(made().model_dump_json()), "urgency": "whenever"},
+    ],
+    ids=["created without a name", "fired without a name", "created with a bad urgency"],
+)
+def test_an_unreadable_trigger_event_is_a_harness_failure(event: dict[str, object]) -> None:
+    """Dropped, it would turn a check's "none created" into a fail; the sample scores E."""
+    entries = [Entry(wall=WALL0 + 1, data={"event": json.dumps(event)})]
+    with pytest.raises(HarnessError, match=f"unreadable {event['event_type']}"):
+        trigger_records(entries, STARTED, WALL0)
+
+
+def test_an_unreadable_notification_is_a_harness_failure() -> None:
+    with pytest.raises(HarnessError, match="unreadable notification"):
+        notification_records(
+            [Entry(wall=WALL0 + 1, data={"notification": "{broken"})], STARTED, WALL0
+        )
+    with pytest.raises(HarnessError, match="unreadable notification"):
+        deferred_records([json.dumps({"title": "no urgency", "body": "", "source": "x"})])
+
+
 def test_notifications_sent_and_held() -> None:
     note = Notification(title="Trigger: Vet", body="At 5", urgency=Urgency.URGENT, source="x")
     sent = notification_records(
@@ -83,7 +135,7 @@ def test_notifications_sent_and_held() -> None:
     assert [(n.t, n.title, n.body, n.urgency) for n in sent] == [
         (STARTED + 1.5, "Trigger: Vet", "At 5", "urgent")
     ]
-    held = deferred_records([note.model_dump_json(), "{broken"])
+    held = deferred_records([note.model_dump_json()])
     assert [(n.t, n.title) for n in held] == [(None, "Trigger: Vet")]
 
 
@@ -138,6 +190,52 @@ def test_targets_resolve_like_home_service_and_add_the_room() -> None:
     ]
     assert targets(world, "home.light_turn_on", {"target": "Garage"}) == []  # no lights there
     assert targets(world, None, {}) == []
+
+
+def den(*entities: dict[str, object]) -> World:
+    return World.model_validate(
+        {
+            "name": "den",
+            "areas": [{"area_id": "den", "name": "Den"}],
+            "entities": list(entities),
+            "services": {"light": {"turn_on": {}}},
+        }
+    )
+
+
+def test_targets_prefer_a_room_to_a_same_named_entity_and_skip_disabled_ones() -> None:
+    world = den(
+        {"entity_id": "light.den_lamp", "name": "Den Lamp", "area_id": "den", "state": "on"},
+        {
+            "entity_id": "light.den_old",
+            "name": "Old",
+            "area_id": "den",
+            "state": "off",
+            "disabled": True,
+        },
+        {"entity_id": "light.reading", "name": "Den", "state": "off"},
+        {"entity_id": "light.spare", "name": "Spare", "state": "off", "disabled": True},
+    )
+    assert targets(world, "home.light_turn_on", {"target": "Den"}) == ["light.den_lamp", "den"]
+    assert targets(world, "home.light_turn_on", {"target": "Spare"}) == []
+    assert targets(world, "home.light_turn_on", {"target": "light.spare"}) == []
+
+
+def test_targets_match_the_friendly_name_home_service_sees() -> None:
+    """home-service reads the state's ``friendly_name``, which a world entity's attributes
+    may set over its name."""
+    world = den(
+        {
+            "entity_id": "light.reading",
+            "name": "Reading",
+            "state": "off",
+            "attributes": {"friendly_name": "Den Reading Light"},
+        },
+    )
+    assert targets(world, "home.light_turn_on", {"target": "Den Reading Light"}) == [
+        "light.reading"
+    ]
+    assert targets(world, "home.light_turn_on", {"target": "Reading"}) == []
 
 
 REFLEX_TOOL = ToolInfo(

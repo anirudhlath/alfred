@@ -66,7 +66,7 @@ def targets(world: World, tool: str | None, parameters: dict[str, Any]) -> list[
     hits = (
         [e.entity_id for e in candidates if e.entity_id.casefold() == wanted]
         or [entity for room in rooms for entity in world.entities_in(room, domain)]
-        or [e.entity_id for e in candidates if e.name.casefold() == wanted]
+        or [e.entity_id for e in candidates if e.friendly_name.casefold() == wanted]
     )
     out: list[str] = []
     for entity_id in hits:

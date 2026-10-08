@@ -80,6 +80,15 @@ class Bus(Protocol):
     async def clear_dnd(self) -> None: ...
 
 
+def window_start_ms(since_wall: float) -> int:
+    """The first stream-id millisecond of a window that starts at *since_wall*.
+
+    Ids are whole milliseconds, so the start's own millisecond is in: an entry there may
+    have come just after the start. The bus reads from it and the collectors keep from it.
+    """
+    return int(since_wall * 1000)
+
+
 def zone_for_hour(hour: int, now: datetime) -> str:
     """The ``Etc/GMT`` zone whose local hour is *hour* at *now*.
 
@@ -108,7 +117,7 @@ class ContainerBus:
         self._timeout_s = timeout_s
 
     async def _range(self, stream: str, since_wall: float) -> list[Entry]:
-        raw = await forward_range(self._redis(), stream, min_id=str(int(since_wall * 1000)))
+        raw = await forward_range(self._redis(), stream, min_id=str(window_start_ms(since_wall)))
         entries: list[Entry] = []
         for entry_id, fields in raw:
             ms = int(decode_stream_value(entry_id).split("-", 1)[0])

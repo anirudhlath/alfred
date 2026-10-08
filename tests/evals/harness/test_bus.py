@@ -92,6 +92,13 @@ async def test_streams_are_read_from_a_wall_time(redis: fakeredis.FakeAsyncRedis
     assert await b.deferred() == ["a", "b"]
 
 
+async def test_a_window_keeps_the_starts_own_millisecond(redis: fakeredis.FakeAsyncRedis) -> None:
+    """Stream ids are whole milliseconds; the collectors keep the same one (one rule)."""
+    await redis.xadd(EVENTS_STREAM, {"event": "ms before"}, id="4999-0")
+    await redis.xadd(EVENTS_STREAM, {"event": "same ms"}, id="5000-0")
+    assert [e.data["event"] for e in await bus(redis).events(5.0004)] == ["same ms"]
+
+
 async def test_advance_pulls_run_at_to_now_and_tells_the_engine(
     redis: fakeredis.FakeAsyncRedis,
 ) -> None:
