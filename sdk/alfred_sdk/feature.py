@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import inspect
 import re
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
 
-from pydantic import BaseModel
+from pydantic import (
+    BaseModel,
+    Field,
+    PydanticInvalidForJsonSchema,
+    PydanticSchemaGenerationError,
+    create_model,
+)
+from pydantic.json_schema import PydanticJsonSchemaWarning
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -208,6 +216,83 @@ def _parse_google_docstring_args(docstring: str) -> dict[str, str]:
     return args
 
 
+# ── input_schema generation (@tool methods) ──
+
+# Keywords whose values are data, not schemas: a "title" inside them is left alone.
+_LITERAL_KEYWORDS = frozenset({"default", "enum", "const", "examples"})
+# Keywords whose values map names to schemas: the names are never keywords.
+_SCHEMA_MAPS = frozenset({"properties", "$defs", "patternProperties"})
+
+# Parameter kinds a dispatcher cannot pass by keyword (`AlfredClient.dispatch` calls fn(**params)).
+_NOT_BY_KEYWORD_KINDS = (
+    inspect.Parameter.VAR_POSITIONAL,
+    inspect.Parameter.VAR_KEYWORD,
+    inspect.Parameter.POSITIONAL_ONLY,
+)
+
+
+def _strip_titles(node: Any) -> Any:
+    """Drop Pydantic's generated ``title`` keywords: tokens for the model, no meaning.
+
+    A property or model *named* ``title`` is kept (names under ``properties``/``$defs``
+    are walked as names), and data under ``default``/``enum``/``const``/``examples``
+    is never touched.
+    """
+    if isinstance(node, list):
+        return [_strip_titles(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key == "title" and isinstance(value, str):
+            continue
+        if key in _SCHEMA_MAPS and isinstance(value, dict):
+            out[key] = {name: _strip_titles(schema) for name, schema in value.items()}
+        elif key in _LITERAL_KEYWORDS:
+            out[key] = value
+        else:
+            out[key] = _strip_titles(value)
+    return out
+
+
+def _signature_input_schema(
+    qualified_name: str,
+    params: list[inspect.Parameter],
+    hints: dict[str, Any],
+    doc_args: dict[str, str],
+) -> dict[str, Any]:
+    """Generate one JSON Schema for a tool's arguments from its signature.
+
+    Fields are positional names with the parameter name as alias, so a parameter may
+    be called anything (``model_config``, ``_private``) without colliding with BaseModel.
+
+    Raises:
+        TypeError: A parameter's type cannot be described as JSON Schema.
+    """
+    fields: dict[str, Any] = {}
+    for index, param in enumerate(params):
+        default = ... if param.default is inspect.Parameter.empty else param.default
+        fields[f"p{index}"] = (
+            hints.get(param.name, Any),
+            Field(default, alias=param.name, description=doc_args.get(param.name) or None),
+        )
+    try:
+        model = create_model("ToolArgs", **fields)
+        with warnings.catch_warnings():
+            # A default JSON cannot carry (a sentinel object) is left out of the schema;
+            # the parameter stays optional, which is all a model needs to know.
+            warnings.simplefilter("ignore", PydanticJsonSchemaWarning)
+            schema: dict[str, Any] = model.model_json_schema(by_alias=True)
+    except (PydanticSchemaGenerationError, PydanticInvalidForJsonSchema) as exc:
+        raise TypeError(
+            f"Tool '{qualified_name}': cannot describe its parameters as JSON Schema: {exc}"
+        ) from exc
+    schema = _strip_titles(schema)
+    schema.setdefault("properties", {})
+    schema.setdefault("required", [])
+    return schema
+
+
 def _extract_tool_meta(
     fn: Any,
     feature_name: str,
@@ -238,21 +323,26 @@ def _extract_tool_meta(
     # Extract type hints (skip self, cls, return)
     try:
         hints = get_type_hints(fn)
-    except Exception:
-        hints = {}
+    except Exception as exc:  # NameError for an unresolvable forward reference, among others
+        raise TypeError(f"Tool '{qualified_name}': cannot resolve its type hints: {exc}") from exc
 
     sig = inspect.signature(fn)
+    params = [p for name, p in sig.parameters.items() if name not in ("self", "cls")]
+    for param in params:
+        if param.kind in _NOT_BY_KEYWORD_KINDS:
+            raise TypeError(
+                f"Tool '{qualified_name}': parameter '{param.name}' must be passable by "
+                "keyword (no *args, **kwargs or positional-only parameters)"
+            )
+
     parameters: dict[str, ToolParameter] = {}
-    for param_name, param in sig.parameters.items():
-        if param_name in ("self", "cls"):
-            continue
-        type_str = getattr(hints.get(param_name), "__name__", str(hints.get(param_name, "Any")))
-        param_desc = doc_args.get(param_name, "")
-        default = param.default if param.default is not inspect.Parameter.empty else None
-        parameters[param_name] = ToolParameter(
-            type=type_str,
-            description=param_desc,
-            default=default,
+    for param in params:
+        has_default = param.default is not inspect.Parameter.empty
+        parameters[param.name] = ToolParameter(
+            type=getattr(hints.get(param.name), "__name__", str(hints.get(param.name, "Any"))),
+            description=doc_args.get(param.name, ""),
+            default=param.default if has_default else None,
+            required=not has_default,
         )
 
     return ToolMeta(
@@ -261,6 +351,7 @@ def _extract_tool_meta(
         parameters=parameters,
         audience=audience,
         risk=risk,
+        input_schema=_signature_input_schema(qualified_name, params, hints, doc_args),
     )
 
 

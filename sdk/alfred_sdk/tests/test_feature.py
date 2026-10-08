@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import dataclasses
+import datetime as _dt  # noqa: TC003 — get_type_hints and the pydantic model need it at runtime
+import enum
 import json
-from typing import Any
+import warnings
+from typing import Any, Literal
+
+import pytest
+from pydantic import BaseModel
 
 from sdk.alfred_sdk.feature import (
     BaseFeature,
@@ -496,3 +502,209 @@ def test_manifest_carries_input_schema_through_json() -> None:
     }
     # The legacy map stays on the wire, now saying which parameters are required.
     assert tool_json["parameters"]["to"]["required"] is True
+
+
+# ── input_schema: generated from @tool signatures ──
+
+
+class _Speed(enum.Enum):
+    SLOW = "slow"
+    FAST = "fast"
+
+
+class _Window(BaseModel):
+    start: _dt.datetime
+    title: str = ""
+
+
+class _ShapesFeature(BaseFeature):
+    feature_name = "shapes"
+
+    @tool
+    def plan(
+        self,
+        title: str,
+        tags: list[str],
+        mode: Literal["a", "b"],
+        speed: _Speed,
+        at: _dt.datetime,
+        window: _Window | None = None,
+        limit: int = 5,
+        default: str = "x",
+        meta: dict[str, Any] | None = None,
+        style: dict[str, str] = {"title": "bold"},  # noqa: B006 — data containing "title"
+    ) -> dict[str, Any]:
+        """Plan something.
+
+        Args:
+            title: What to call it.
+            tags: Labels to attach.
+        """
+        return {}
+
+
+def _schema(feature: BaseFeature, name: str) -> dict[str, Any]:
+    return {t.name: t for t in feature.get_tools()}[name].input_schema
+
+
+def test_signature_schema_carries_rich_types() -> None:
+    schema = _schema(_ShapesFeature(), "shapes.plan")
+    props = schema["properties"]
+    assert schema["type"] == "object"
+    assert props["tags"] == {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Labels to attach.",
+    }
+    assert props["mode"] == {"type": "string", "enum": ["a", "b"]}
+    assert props["speed"] == {"$ref": "#/$defs/_Speed"}
+    assert schema["$defs"]["_Speed"] == {"type": "string", "enum": ["slow", "fast"]}
+    assert props["at"] == {"type": "string", "format": "date-time"}
+    assert props["window"] == {
+        "anyOf": [{"$ref": "#/$defs/_Window"}, {"type": "null"}],
+        "default": None,
+    }
+    assert schema["$defs"]["_Window"]["required"] == ["start"]
+    assert props["limit"] == {"type": "integer", "default": 5}
+    assert props["meta"]["anyOf"][0] == {"type": "object", "additionalProperties": True}
+
+
+def test_required_is_exactly_the_parameters_without_defaults() -> None:
+    meta = {t.name: t for t in _ShapesFeature().get_tools()}["shapes.plan"]
+    assert meta.input_schema["required"] == ["title", "tags", "mode", "speed", "at"]
+    assert [n for n, p in meta.parameters.items() if p.required] == [
+        "title",
+        "tags",
+        "mode",
+        "speed",
+        "at",
+    ]
+
+
+def test_title_stripping_keeps_names_and_data() -> None:
+    schema = _schema(_ShapesFeature(), "shapes.plan")
+    assert "title" not in schema
+    assert "title" not in schema["$defs"]["_Speed"]
+    assert "title" not in schema["$defs"]["_Window"]
+    # A parameter named `title`, a model field named `title`, a parameter named
+    # `default`, and data containing a "title" key all survive.
+    assert schema["properties"]["title"] == {"type": "string", "description": "What to call it."}
+    assert schema["$defs"]["_Window"]["properties"]["title"] == {"type": "string", "default": ""}
+    assert schema["properties"]["default"] == {"type": "string", "default": "x"}
+    assert schema["properties"]["style"]["default"] == {"title": "bold"}
+
+
+_UNSET = object()
+
+
+class _SentinelFeature(BaseFeature):
+    feature_name = "sentinel"
+
+    @tool
+    def find(self, query: str, cursor: Any = _UNSET) -> dict[str, Any]:
+        """Find things."""
+        return {}
+
+
+def test_unserializable_default_stays_optional_without_warning() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        schema = _schema(_SentinelFeature(), "sentinel.find")
+    assert schema["required"] == ["query"]
+    assert "default" not in schema["properties"]["cursor"]
+
+
+class _OddNamesFeature(BaseFeature):
+    feature_name = "odd"
+
+    @tool
+    def odd(self, model_config: int, _private: str = "", schema: str = "") -> dict[str, Any]:
+        """Parameter names that collide with BaseModel internals."""
+        return {}
+
+
+def test_parameter_names_never_collide_with_pydantic() -> None:
+    schema = _schema(_OddNamesFeature(), "odd.odd")
+    assert set(schema["properties"]) == {"model_config", "_private", "schema"}
+    assert schema["required"] == ["model_config"]
+
+
+class _NoParamsFeature(BaseFeature):
+    feature_name = "none"
+
+    @tool
+    def ping(self) -> dict[str, Any]:
+        """Ping."""
+        return {}
+
+
+def test_no_parameter_tool_schema() -> None:
+    assert _schema(_NoParamsFeature(), "none.ping") == {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    }
+
+
+class _VarArgsFeature(BaseFeature):
+    feature_name = "varargs"
+
+    @tool
+    def bad(self, *names: str) -> dict[str, Any]:
+        """Varargs."""
+        return {}
+
+
+class _KwArgsFeature(BaseFeature):
+    feature_name = "kwargs"
+
+    @tool
+    def bad(self, **options: str) -> dict[str, Any]:
+        """Kwargs."""
+        return {}
+
+
+class _PositionalOnlyFeature(BaseFeature):
+    feature_name = "posonly"
+
+    @tool
+    def bad(self, x: int, /) -> dict[str, Any]:
+        """Positional-only."""
+        return {}
+
+
+class _UnresolvableFeature(BaseFeature):
+    feature_name = "unresolvable"
+
+    @tool
+    def bad(self, thing: NotDefinedAnywhere) -> dict[str, Any]:  # type: ignore[name-defined]  # noqa: F821
+        """A hint that cannot be resolved."""
+        return {}
+
+
+class _Opaque:
+    """A type Pydantic cannot describe."""
+
+
+class _OpaqueFeature(BaseFeature):
+    feature_name = "opaque"
+
+    @tool
+    def bad(self, thing: _Opaque) -> dict[str, Any]:
+        """A type Pydantic cannot describe."""
+        return {}
+
+
+@pytest.mark.parametrize(
+    ("feature", "name"),
+    [
+        (_VarArgsFeature, "varargs.bad"),
+        (_KwArgsFeature, "kwargs.bad"),
+        (_PositionalOnlyFeature, "posonly.bad"),
+        (_UnresolvableFeature, "unresolvable.bad"),
+        (_OpaqueFeature, "opaque.bad"),
+    ],
+)
+def test_undescribable_signatures_fail_at_discovery(feature: type[BaseFeature], name: str) -> None:
+    with pytest.raises(TypeError, match=name.replace(".", r"\.")):
+        feature().get_tools()
