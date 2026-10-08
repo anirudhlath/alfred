@@ -1,0 +1,12 @@
+id: notifications.dnd.released_when_off
+prd: [principle.1, 4.2.notification-delivery]
+status: shipped
+tags: [dnd]
+steps:
+  - dnd: on
+  - user: "Remind me in 10 minutes to call the vet."
+  - advance_trigger: {}
+  - dnd: off
+    settle: 5  # the drain runs in the conscious process, over the actions stream
+expect:
+  - notification: {source: trigger-engine, after_step: 3}

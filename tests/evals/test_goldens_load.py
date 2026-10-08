@@ -16,7 +16,7 @@ from evals.harness.evidence import Evidence, Reply, TriggerRecord
 from evals.harness.scenario import CheckSpec, HaEventStep, Scenario, UserStep, load_suites
 from evals.harness.world import World, load_world
 
-SUITES = ["conversation", "home_control", "reflex", "triggers"]
+SUITES = ["conversation", "home_control", "reflex", "triggers", "notifications"]
 
 
 @cache
@@ -32,6 +32,7 @@ def test_every_golden_loads_and_names_real_entities() -> None:
         and len(suites["home_control"]) >= 13
         and len(suites["reflex"]) >= 13
         and len(suites["triggers"]) >= 9
+        and len(suites["notifications"]) >= 5
     )
     for scenarios in suites.values():
         for s in scenarios:

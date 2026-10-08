@@ -1,0 +1,10 @@
+id: notifications.dnd.defers_informational
+prd: [principle.1, 4.2.proactive-notifications]
+status: shipped
+tags: [dnd]
+steps:
+  - dnd: on
+  - user: "Remind me in 10 minutes to water the plants."
+  - advance_trigger: {}
+expect:
+  - notification: {source: trigger-engine, deferred: true}

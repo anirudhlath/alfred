@@ -4,7 +4,7 @@
 # left unmapped (docs/evals.md).
 rows:
   # §3 Product principles
-  - {id: principle.1, section: "3", prd: "Proactive, not intrusive.", pending_suites: [notifications, memory]}
+  - {id: principle.1, section: "3", prd: "Proactive, not intrusive.", suites: [notifications], pending_suites: [memory]}
   - {id: principle.2, section: "3", prd: "Local-first and private.", pending_suites: [privacy]}
   - {id: principle.3, section: "3", prd: "Everything describes itself.", suites: [home_control]}
   - {id: principle.4, section: "3", prd: "Deterministic and auditable.", not_llm: "typed bus schemas", tests: [tests/bus]}
@@ -26,8 +26,8 @@ rows:
   - {id: 4.2.fast-reminders, section: "4.2", prd: "Sub-5-second reminder firing", suites: [triggers]}
   - {id: 4.2.client-timezone, section: "4.2", prd: "Client-timezone awareness", suites: [triggers]}
   - {id: 4.2.relative-reminders, section: "4.2", prd: "Relative reminders", suites: [triggers]}
-  - {id: 4.2.proactive-notifications, section: "4.2", prd: "Proactive notifications with urgency levels", pending_suites: [notifications]}
-  - {id: 4.2.notification-delivery, section: "4.2", prd: "Delivery to Signal, web", pending_suites: [notifications]}
+  - {id: 4.2.proactive-notifications, section: "4.2", prd: "Proactive notifications with urgency levels", suites: [notifications]}
+  - {id: 4.2.notification-delivery, section: "4.2", prd: "Delivery to Signal, web", suites: [notifications], tests: [tests/core/notifications]}
   - {id: 4.2.attention-set, section: "4.2", prd: "Reflex \"attention set\"", pending_suites: [attention]}
   # §4.3 Memory
   - {id: 4.3.episodic, section: "4.3", prd: "Episodic memory", pending_suites: [memory]}
@@ -73,7 +73,7 @@ rows:
   - {id: 7.reflex-latency, section: "7", prd: "Reflex latency", suites: [reflex]}
   - {id: 7.reminder-latency, section: "7", prd: "Reminder latency", suites: [triggers]}
   - {id: 7.onboarding, section: "7", prd: "Onboarding", not_llm: "credential flow", tests: [tests/core/channels/test_service_credentials.py]}
-  - {id: 7.proactivity-quality, section: "7", prd: "Proactivity quality", pending_suites: [memory, notifications]}
+  - {id: 7.proactivity-quality, section: "7", prd: "Proactivity quality", pending_suites: [memory]}
   - {id: 7.cost, section: "7", prd: "Cost", not_llm: "budget accounting", tests: [tests/core/conscious/test_cost.py]}
   - {id: 7.memory-quality, section: "7", prd: "Memory quality", pending_suites: [memory], tests: [tests/evals/test_memory_runner.py]}
   - {id: 7.sovereignty, section: "7", prd: "Sovereignty", not_llm: "process isolation via the SDK", tests: [sdk/tests]}
