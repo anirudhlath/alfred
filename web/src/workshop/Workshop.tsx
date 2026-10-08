@@ -60,7 +60,7 @@ export const Workshop = memo(function Workshop({ open, onClose, onWhy, onHeld }:
           next open starts clean. One bad body from one of System's five reads
           used to take Activity, Memory and Triggers down with it, because all
           four hooks live in the one panel below (`lib/system.ts`,
-          `fetchIntegrations`). */}
+          `fetchIntegrationListing`). */}
       <ErrorBoundary fallback={<BenchFailed onClose={onClose} />}>
         <WorkshopPanel onClose={onClose} onWhy={onWhy} onHeld={onHeld} />
       </ErrorBoundary>

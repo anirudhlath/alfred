@@ -18,7 +18,13 @@ import {
   overviewFixture,
 } from "@/test/fixtures";
 import { OVERVIEW_POLL_MS } from "@/room/useOverview";
-import { SAVE_TIMED_OUT, SAVE_TIMEOUT_MS } from "@/lib/system";
+import {
+  REGISTRY_DOWN_NOTE,
+  SAVE_TIMED_OUT,
+  SAVE_TIMEOUT_MS,
+  TOOL_REGISTRY_HEADER,
+  TOOL_REGISTRY_UNAVAILABLE,
+} from "@/lib/system";
 import { SystemBench } from "./SystemBench";
 import { STALE_AFTER_MS, useSystem } from "./useSystem";
 
@@ -86,6 +92,7 @@ const OPENING_READS = [
 interface Answer {
   status: number;
   body: unknown;
+  headers?: Record<string, string>;
 }
 
 const OK: Answer = { status: 200, body: { status: "ok" } };
@@ -171,7 +178,10 @@ function stubFetch(): void {
             parked.set(key, [...(parked.get(key) ?? []), resolve]);
           })
         : staged;
-      return new Response(JSON.stringify(reply.body), { status: reply.status });
+      return new Response(JSON.stringify(reply.body), {
+        status: reply.status,
+        headers: reply.headers,
+      });
     }),
   );
 }
@@ -335,6 +345,23 @@ describe("useSystem", () => {
     // A registry with no home service in it is a fact about the house — and a
     // different sentence from one whose registry has not been read.
     expect(result.current.health.home.note).toBe("home assistant · not registered");
+  });
+
+  it("reads a listing without the registry as unavailable, not as unregistered", async () => {
+    // The server could not read the registry, so it answered with the adapters
+    // alone and said so in a header. The body is the same one a house with no
+    // registered services sends.
+    answer("GET", INTEGRATIONS, {
+      status: 200,
+      body: [WEATHER],
+      headers: { [TOOL_REGISTRY_HEADER]: TOOL_REGISTRY_UNAVAILABLE },
+    });
+    const { result } = renderSystem();
+
+    await waitFor(() => expect(result.current.integrations.read).toBe(true));
+    expect(result.current.integrations.list.map((row) => row.name)).toEqual(["weather"]);
+    expect(result.current.health.home.note).toBe("home assistant · registry unavailable");
+    expect(result.current.integrations.error).toBe(REGISTRY_DOWN_NOTE);
   });
 
   it("probes each integration once and reports its round trip", async () => {
@@ -1717,6 +1744,23 @@ describe("SystemBench over useSystem", () => {
 
     await releaseNext("GET", OVERVIEW, { status: 200, body: overviewFixture });
     await waitFor(() => expect(screen.getByText(/\d+ held$/)).toBeInTheDocument());
+  });
+
+  it("says the registry is unavailable over a listing that came back without it", async () => {
+    answer("GET", INTEGRATIONS, {
+      status: 200,
+      body: [WEATHER],
+      headers: { [TOOL_REGISTRY_HEADER]: TOOL_REGISTRY_UNAVAILABLE },
+    });
+    renderBench();
+
+    await waitFor(() =>
+      expect(screen.getByText("home assistant · registry unavailable")).toBeInTheDocument(),
+    );
+    // The adapters it could list stay listed, under a note saying what is missing.
+    expect(screen.getByText(REGISTRY_DOWN_NOTE)).toBeInTheDocument();
+    expect(screen.getByText("weather")).toBeInTheDocument();
+    expect(screen.queryByText("home assistant · not registered")).toBeNull();
   });
 
   it("keeps the registry read after a later read of it fails", async () => {
