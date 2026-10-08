@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from evals.harness.checks import home, latency, llm, reply
+from evals.harness.checks import home, latency, llm, reflex, reply
 from evals.harness.checks.judge_spec import JudgeSpec
 from evals.harness.checks.result import CheckResult
 from evals.harness.evidence import Evidence
@@ -26,6 +26,9 @@ DETERMINISTIC: dict[str, tuple[type[BaseModel], DeterministicCheck]] = {
     "reply_contains": (reply.ReplyTextParams, reply.reply_contains),
     "reply_not_contains": (reply.ReplyTextParams, reply.reply_not_contains),
     "latency": (latency.LatencyParams, latency.latency),
+    "reflex_decision": (reflex.ReflexDecisionParams, reflex.reflex_decision),
+    "reflex_not_proposed": (reflex.ReflexNotProposedParams, reflex.reflex_not_proposed),
+    "prompt_not_contains": (llm.PromptParams, llm.prompt_not_contains),
 }
 
 CHECK_PARAMS: dict[str, type[BaseModel]] = {n: p for n, (p, _) in DETERMINISTIC.items()} | {

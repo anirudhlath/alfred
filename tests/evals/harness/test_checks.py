@@ -6,9 +6,9 @@ import pytest
 from pydantic import ValidationError
 
 from evals.harness.checks import CHECK_PARAMS, DETERMINISTIC, run_check
-from evals.harness.checks.llm import ToolArgsParams
+from evals.harness.checks.llm import PromptParams, ToolArgsParams
 from evals.harness.checks.matching import validate_expected, value_matches
-from evals.harness.evidence import HaState
+from evals.harness.evidence import HaState, LlmCall
 from tests.evals.harness.factories import call, evidence, llm
 
 if TYPE_CHECKING:
@@ -321,3 +321,29 @@ def test_a_top_level_key_named_regex_is_a_field_not_a_pattern() -> None:
     assert (
         check("ha_state", {"entity_id": "light.a", "attributes": {"regex": 5}}, ev).status == "pass"
     )
+
+
+def prompted(role: str, *contents: object) -> LlmCall:
+    return LlmCall(
+        t=1.0,
+        role=role,  # type: ignore[arg-type]
+        latency_ms=1.0,
+        status=200,
+        messages=[{"role": "user", "content": c} for c in contents],
+    )
+
+
+def test_prompt_not_contains_reads_every_prompt_of_the_role() -> None:
+    clean = prompted("system1", "House: living room lamp on")
+    noisy = prompted("system1", [{"type": "text", "text": "entity_picture: /api/x"}])
+    other = prompted("system2", "button.restart")
+    p = PromptParams.model_validate({"role": "system1", "any": ["entity_picture", "button."]})
+    assert run_check("prompt_not_contains", p, evidence(llm_calls=[clean, other])).status == "pass"
+    failed = run_check("prompt_not_contains", p, evidence(llm_calls=[clean, noisy]))
+    assert failed.status == "fail" and "entity_picture" in failed.reason
+
+
+def test_prompt_not_contains_fails_when_the_role_was_never_called() -> None:
+    p = PromptParams.model_validate({"role": "system1", "text": "notify."})
+    result = run_check("prompt_not_contains", p, evidence(llm_calls=[]))
+    assert result.status == "fail" and "no system1 call" in result.reason
