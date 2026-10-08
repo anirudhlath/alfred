@@ -14,6 +14,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _embedding_dimension(model: SentenceTransformer) -> int | None:
+    """The model's output width, by whichever name this sentence-transformers release uses.
+
+    The library renamed ``get_sentence_embedding_dimension`` to ``get_embedding_dimension``
+    and warns (``FutureWarning``) on the old name; releases before the rename lack the new.
+    """
+    get_dimension = getattr(model, "get_embedding_dimension", None)
+    if get_dimension is None:
+        get_dimension = model.get_sentence_embedding_dimension
+    dim: int | None = get_dimension()
+    return dim
+
+
 class EmbeddingProvider(ABC):
     """Abstract embedding model interface."""
 
@@ -77,7 +90,7 @@ class SentenceTransformerProvider(EmbeddingProvider):
                     logger.info(
                         "Loaded embedding model: %s (dim=%s)",
                         self._model_name,
-                        self._model.get_sentence_embedding_dimension(),
+                        _embedding_dimension(self._model),
                     )
                 except Exception as exc:
                     # Expected when a gated model (e.g. google/embeddinggemma-300m) is
@@ -115,7 +128,7 @@ class SentenceTransformerProvider(EmbeddingProvider):
 
     def dimension(self) -> int:
         model = self._load()
-        dim: int | None = model.get_sentence_embedding_dimension()
+        dim = _embedding_dimension(model)
         if dim is None:
             raise RuntimeError(
                 f"Embedding model {self._model_name!r} did not report an embedding dimension"

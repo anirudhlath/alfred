@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 from core.memory.embedding_provider import EmbeddingProvider, SentenceTransformerProvider
@@ -74,3 +76,51 @@ async def test_aclose_defaults_to_a_noop() -> None:
     provider = RecordingProvider()
     await provider.aclose()
     assert provider.embedded == []
+
+
+class RenamedModel:
+    """A sentence-transformers release after the rename: the old name still works, but warns."""
+
+    def __init__(self, model_name: str) -> None:
+        self.model_name = model_name
+
+    def get_embedding_dimension(self) -> int:
+        return 384
+
+    def get_sentence_embedding_dimension(self) -> int:
+        warnings.warn(
+            "The `get_sentence_embedding_dimension` method has been renamed to "
+            "`get_embedding_dimension`.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return 384
+
+
+class PreRenameModel:
+    """A sentence-transformers release before the rename: only the old name exists."""
+
+    def __init__(self, model_name: str) -> None:
+        self.model_name = model_name
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return 768
+
+
+def test_dimension_uses_get_embedding_dimension(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both the load-time log line and dimension() read the width by its new name."""
+    monkeypatch.setattr("sentence_transformers.SentenceTransformer", RenamedModel)
+    provider = SentenceTransformerProvider("renamed-model")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert provider.dimension() == 384
+
+    assert [w for w in caught if issubclass(w.category, FutureWarning)] == []
+
+
+def test_dimension_falls_back_to_the_old_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sentence_transformers.SentenceTransformer", PreRenameModel)
+    provider = SentenceTransformerProvider("pre-rename-model")
+
+    assert provider.dimension() == 768
