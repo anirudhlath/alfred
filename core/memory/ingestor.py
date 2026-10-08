@@ -203,6 +203,12 @@ async def ingest_observation(
     # in practice (publish_observation always sets both) — treating it as
     # passive degrades gracefully rather than crashing the ingest loop.
     action, result = obs.action, obs.result
+    if obs.origin == "trigger_fired" and action is None:
+        # A Reflex proposal about a fired trigger (#285): nothing happened, and a
+        # trigger dump has no entity or states to remember as "seen" — stored, it
+        # would read "unknown → unknown" and embed identically every time.
+        logger.debug("Skipped trigger proposal {}", obs.observation_id)
+        return
     at = _event_time(obs)
     stamp = local_stamp(at, tz)
     if action is None or result is None:

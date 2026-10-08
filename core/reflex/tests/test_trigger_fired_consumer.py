@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
 
-from bus.schemas.events import TriggerFired
+from bus.schemas.events import ReflexProposal, TriggerFired
 from core.notifications.schema import Urgency
 
 
@@ -21,7 +22,7 @@ def mock_publisher() -> AsyncMock:
 @pytest.fixture
 def mock_engine() -> AsyncMock:
     engine = AsyncMock()
-    engine.process_trigger_fired = AsyncMock(return_value=None)
+    engine.process_trigger_fired = AsyncMock(return_value=ReflexProposal(decision="none"))
     return engine
 
 
@@ -282,102 +283,112 @@ async def test_handle_trigger_fired_dnd_delivers_urgent(
 
 
 @pytest.mark.asyncio
-async def test_handle_trigger_fired_with_slm_action(
+async def test_a_trigger_proposal_is_recorded_not_executed(
     mock_agent: AsyncMock,
     mock_publisher: AsyncMock,
 ) -> None:
-    from bus.schemas.events import ActionRequest, ActionResult
+    from bus.schemas.events import ActionRequest, ReflexObservation, ReflexProposal
     from core.reflex.__main__ import _handle_trigger_fired
-
-    action_result = ActionResult(
-        source="home-service",
-        request_id="r-1",
-        tool_name="lighting.dim_lights",
-        status="success",
-    )
-    mock_agent.execute_action = AsyncMock(return_value=action_result)
 
     engine = AsyncMock()
     engine.process_trigger_fired = AsyncMock(
-        return_value=ActionRequest(
-            source="reflex-engine",
-            target_service="home-service",
-            tool_name="lighting.dim_lights",
-            parameters={"room": "bedroom", "level": 10},
+        return_value=ReflexProposal(
+            decision="act",
+            reason="Bedtime",
+            action=ActionRequest(
+                source="reflex-engine",
+                target_service="home-service",
+                tool_name="home.light_turn_off",
+                parameters={"target": "Living Room"},
+                reason="Bedtime",
+            ),
         )
     )
-
-    event = TriggerFired(
-        trigger_id="t-1",
-        trigger_name="bedtime",
-        trigger_type="time",
-    )
+    event = TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time")
     redis = AsyncMock()
-    redis.xadd = AsyncMock()
 
-    await _handle_trigger_fired(
-        _make_entry_data(event),
-        engine,
-        mock_agent,
-        redis,
-        mock_publisher,
-    )
+    await _handle_trigger_fired(_make_entry_data(event), engine, mock_agent, redis, mock_publisher)
 
-    mock_publisher.publish.assert_called_once()
-    mock_agent.execute_action.assert_called_once()
-    # Two xadd calls: result stream + observation stream
-    assert redis.xadd.call_count == 2
+    mock_publisher.publish.assert_called_once()  # Path A is unchanged
+    mock_agent.execute_action.assert_not_called()
+    (call,) = redis.xadd.await_args_list
+    stream, fields = call.args
+    assert stream == "alfred:reflex:observations"
+    obs = ReflexObservation.model_validate_json(fields["event"])
+    assert obs.origin == "trigger_fired"
+    assert obs.proposal is not None
+    assert obs.proposal.decision == "act"
+    assert obs.action is None
+    assert obs.result is None
+    assert redis.hincrby.await_args_list[0].args[1:] == ("act", 1)
 
 
 @pytest.mark.asyncio
-async def test_handle_trigger_fired_publishes_observation(
+async def test_a_trigger_none_records_only_the_count(
+    mock_engine: AsyncMock,
     mock_agent: AsyncMock,
     mock_publisher: AsyncMock,
 ) -> None:
-    """TriggerFired path publishes structured ReflexObservation."""
-    from bus.schemas.events import ActionRequest, ActionResult, ReflexObservation
     from core.reflex.__main__ import _handle_trigger_fired
 
-    action_result = ActionResult(
-        source="home-service",
-        request_id="r-1",
-        tool_name="lighting.dim_lights",
-        status="success",
+    event = TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time")
+    redis = AsyncMock()
+
+    await _handle_trigger_fired(
+        _make_entry_data(event), mock_engine, mock_agent, redis, mock_publisher
     )
-    mock_agent.execute_action = AsyncMock(return_value=action_result)
+
+    redis.xadd.assert_not_awaited()
+    assert redis.hincrby.await_args_list[0].args[1:] == ("none", 1)
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_trigger_proposal_is_logged_as_a_warning(
+    mock_agent: AsyncMock,
+    mock_publisher: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from bus.schemas.events import ReflexProposal
+    from core.reflex.__main__ import _handle_trigger_fired
 
     engine = AsyncMock()
     engine.process_trigger_fired = AsyncMock(
-        return_value=ActionRequest(
-            source="reflex-engine",
-            target_service="home-service",
-            tool_name="lighting.dim_lights",
-            parameters={"room": "bedroom", "level": 10},
+        return_value=ReflexProposal(decision="invalid", raw="Sure!", problem="not JSON")
+    )
+    event = TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time")
+
+    with caplog.at_level(logging.WARNING, logger="core.reflex.__main__"):
+        await _handle_trigger_fired(
+            _make_entry_data(event), engine, mock_agent, AsyncMock(), mock_publisher
         )
+
+    assert any(
+        r.levelno == logging.WARNING and "not JSON" in r.getMessage() for r in caplog.records
     )
 
-    event = TriggerFired(
-        trigger_id="t-1",
-        trigger_name="bedtime dim",
-        trigger_type="time",
+
+@pytest.mark.asyncio
+async def test_a_failed_proposal_write_is_not_blamed_on_the_model(
+    mock_agent: AsyncMock,
+    mock_publisher: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from bus.schemas.events import ReflexProposal
+    from core.reflex.__main__ import _handle_trigger_fired
+
+    engine = AsyncMock()
+    engine.process_trigger_fired = AsyncMock(
+        return_value=ReflexProposal(decision="ask", reason="Lights off for the night?")
     )
+    event = TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time")
     redis = AsyncMock()
-    redis.xadd = AsyncMock()
+    redis.xadd = AsyncMock(side_effect=Exception("OOM command not allowed"))
 
-    await _handle_trigger_fired(
-        _make_entry_data(event),
-        engine,
-        mock_agent,
-        redis,
-        mock_publisher,
-    )
+    with caplog.at_level(logging.WARNING, logger="core.reflex.__main__"):
+        await _handle_trigger_fired(
+            _make_entry_data(event), engine, mock_agent, redis, mock_publisher
+        )
 
-    # Second xadd is the observation
-    obs_call = redis.xadd.call_args_list[1]
-    obs_json = obs_call.args[1]["event"]
-    obs = ReflexObservation.model_validate_json(obs_json)
-    assert obs.origin == "trigger_fired"
-    assert obs.action is not None
-    assert obs.action.tool_name == "lighting.dim_lights"
-    assert obs.result is not None
-    assert obs.result.status == "success"
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("SLM reasoning failed" in m for m in messages)
+    assert any("Proposal observation failed" in m and "OOM" in m for m in messages)

@@ -284,7 +284,7 @@ leading text of its capability cell, and maps it to `suites`, to `tests`, or to
 |---|---|---|
 | `conversation` | 4.1.sessions, 4.1.signal, 4.7.warmup, butler persona | — |
 | `home_control` | 4.4.lights-scenes, 4.4.live-state, principle 3 (generated tools) | 4.4.device-discovery, 4.4.control-surface |
-| `reflex` | 4.4.lights-scenes (System 1), 4.3.s2-observes-s1, success criterion reflex latency | 4.4.tiered-autonomy |
+| `reflex` | 4.4.lights-scenes (System 1), 4.3.s2-observes-s1, success criterion reflex latency | 4.4.tiered-autonomy, 4.4.reflex-judgment (added to the PRD by #288; shadow mode first) |
 | `triggers` | 4.2.dynamic-triggers, 4.2.sensor-triggers, 4.2.fast-reminders, 4.2.client-timezone, 4.2.relative-reminders, success criterion reminder latency, principle 5 | — |
 | `notifications` | 4.2.proactive-notifications, 4.2.notification-delivery, principle 1 | — |
 | `attention` | 4.2.attention-set | — |

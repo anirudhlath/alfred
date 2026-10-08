@@ -45,6 +45,7 @@ rows:
   - {id: 4.4.device-discovery, section: "4.4", prd: "Full-home device discovery", suites: [home_control]}
   - {id: 4.4.control-surface, section: "4.4", prd: "Generated control surface", suites: [home_control]}
   - {id: 4.4.live-state, section: "4.4", prd: "Live state streaming", suites: [home_control]}
+  - {id: 4.4.reflex-judgment, section: "4.4", prd: "Reflex judgment calls", pending_suites: [reflex]}
   - {id: 4.4.tiered-autonomy, section: "4.4", prd: "Tiered autonomy", pending_suites: [reflex]}
   - {id: 4.4.critical-confirmation, section: "4.4", prd: "Confirmation required for critical actions", pending_suites: [critical_actions]}
   # §4.5 Integrations & credentials

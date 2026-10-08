@@ -20,6 +20,8 @@ TOOL_REGISTRY_KEY = "alfred:tool_registry"
 HOME_STATE_STREAM = "alfred:home:state_changed"
 HOME_ACTION_RESULTS_STREAM = "alfred:home:action_results"
 REFLEX_OBSERVATIONS_STREAM = "alfred:reflex:observations"
+# Daily Reflex decision counts (#285): one hash per UTC day, one field per decision.
+REFLEX_DECISIONS_PREFIX = "alfred:reflex:decisions:"
 
 # Phase 3: Conscious Engine
 USER_REQUESTS_STREAM = "alfred:user:requests"

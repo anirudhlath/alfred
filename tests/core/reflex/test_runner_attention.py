@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from bus.schemas.events import ReflexProposal
+
 if TYPE_CHECKING:
     from bus.schemas.events import StateChangedEvent
 
@@ -48,7 +50,9 @@ async def test_attended_event_reaches_engine(tv_on_event: StateChangedEvent) -> 
     from core.reflex.runner import process_stream_entry
 
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=None)  # SLM decides "no action"
+    engine.process_event = AsyncMock(
+        return_value=ReflexProposal(decision="none")
+    )  # SLM decides "no action"
     attention = AsyncMock()
     attention.should_fire = AsyncMock(return_value=True)
 
@@ -73,7 +77,7 @@ async def test_no_attention_set_means_no_gating(tv_on_event: StateChangedEvent) 
     from core.reflex.runner import process_stream_entry
 
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=None)
+    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
 
     await process_stream_entry(
         entry_id=b"1-0",
