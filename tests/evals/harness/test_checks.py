@@ -255,6 +255,8 @@ CRON = r"0 7 \* \* (1-5|mon-fri)"
         ({"regex": CRON}, "30 7 * * 1-5", False),  # the whole string must match
         ({"regex": "on"}, 1, False),
         ({"cron": {"regex": CRON}}, {"cron": "0 7 * * 1-5"}, True),
+        ([{"regex": "a.*"}], ["x", "ABC"], True),
+        ([{"regex": "a.*"}], ["x", "bad"], False),
     ],
 )
 def test_value_matches_mappings_and_regex(expected: object, actual: object, ok: bool) -> None:
@@ -274,3 +276,48 @@ def test_tool_args_with_a_bad_regex_fail_at_load() -> None:
         ToolArgsParams(
             tool="triggers.create_trigger", args={"conditions": {"cron": {"regex": "("}}}
         )
+
+
+@pytest.mark.parametrize(
+    ("name", "params", "error"),
+    [
+        (
+            "ha_called",
+            {"domain": "light", "service": "turn_on", "data": {"brightness": {"regex": "("}}},
+            "does not compile",
+        ),
+        (
+            "ha_state",
+            {"entity_id": "light.a", "attributes": {"effect": {"regex": "("}}},
+            "does not compile",
+        ),
+        (
+            "ha_state",
+            {"entity_id": "light.a", "attributes": {"effect": {"regex": 7}}},
+            "must be a string",
+        ),
+    ],
+)
+def test_home_checks_with_a_bad_regex_fail_at_load(
+    name: str, params: dict[str, Any], error: str
+) -> None:
+    with pytest.raises(ValidationError, match=error):
+        CHECK_PARAMS[name].model_validate(params)
+
+
+def test_a_top_level_key_named_regex_is_a_field_not_a_pattern() -> None:
+    ev = evidence(
+        llm_calls=[llm("system2", ("t", {"regex": 5}))],
+        ha_calls=[call("light", "turn_on", ["light.a"], {"regex": 5})],
+        ha_states={"light.a": HaState(state="on", attributes={"regex": 5})},
+    )
+    assert check("llm_tool_args", {"tool": "t", "args": {"regex": 5}}, ev).status == "pass"
+    assert (
+        check(
+            "ha_called", {"domain": "light", "service": "turn_on", "data": {"regex": 5}}, ev
+        ).status
+        == "pass"
+    )
+    assert (
+        check("ha_state", {"entity_id": "light.a", "attributes": {"regex": 5}}, ev).status == "pass"
+    )

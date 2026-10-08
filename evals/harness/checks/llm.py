@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from evals.harness.checks.matching import describe, validate_expected, value_matches
+from evals.harness.checks.matching import describe, validate_fields, value_matches
 from evals.harness.checks.result import CheckResult, failed, passed
 from evals.harness.evidence import Role  # noqa: TC001 — Pydantic resolves ToolParams.role
 
@@ -31,8 +31,7 @@ class ToolArgsParams(ToolParams):
     @field_validator("args")
     @classmethod
     def _patterns_compile(cls, value: dict[str, Any]) -> dict[str, Any]:
-        validate_expected(value)
-        return value
+        return validate_fields(value)
 
 
 class ToolArgAbsentParams(ToolParams):

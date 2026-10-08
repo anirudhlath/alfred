@@ -59,6 +59,15 @@ def validate_expected(expected: object) -> None:
             validate_expected(value)
 
 
+def validate_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    """Validate each expected value in a ``{field name: expected}`` mapping and return it.
+
+    The keys name fields, so a field called ``regex`` is not read as a pattern."""
+    for value in fields.values():
+        validate_expected(value)
+    return fields
+
+
 def value_matches(expected: object, actual: object) -> bool:
     if is_approx(expected):
         assert isinstance(expected, dict)
