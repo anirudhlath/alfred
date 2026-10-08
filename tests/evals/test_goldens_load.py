@@ -14,8 +14,24 @@ from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
 from evals.harness.checks import JudgeSpec, run_check
 from evals.harness.checks.llm import normalize_tool
-from evals.harness.evidence import Evidence, Reply, TriggerRecord
-from evals.harness.scenario import CheckSpec, HaEventStep, Scenario, UserStep, load_suites
+from evals.harness.driver import PlayContext
+from evals.harness.evidence import (
+    ClockSet,
+    Evidence,
+    ReflexCall,
+    ReflexEvent,
+    Reply,
+    StatePush,
+    TriggerRecord,
+)
+from evals.harness.scenario import (
+    CheckSpec,
+    HaEventStep,
+    Scenario,
+    UserStep,
+    load_suites,
+    step_kind,
+)
 from evals.harness.world import World, load_world
 
 SUITES = ["conversation", "home_control", "reflex", "triggers", "notifications"]
@@ -181,20 +197,25 @@ def _unknown_services(s: Scenario, world: World) -> list[str]:
     features = _offered_tools(world)
     bad: list[str] = []
     for check in s.expect:
-        domain, service, tool = (
-            getattr(check.params, f, None) for f in ("domain", "service", "tool")
-        )
+        domain, service = (getattr(check.params, f, None) for f in ("domain", "service"))
         if (domain or service) and not any(
             domain in (None, d) and service in (None, svc) for d, svc in offered
         ):
             bad.append(f"{check.name}: {domain or '*'}.{service or '*'}")
-        name = None if tool is None else normalize_tool(tool)
         # Home and trigger tools are checked here; memory etc. tools when their suites arrive.
-        if name is not None and any(
-            name.startswith(prefix) and name not in tools for prefix, tools in features.items()
-        ):
-            bad.append(f"{check.name}: tool {tool}")
+        for tool in _tools(check):
+            name = normalize_tool(tool)
+            if any(
+                name.startswith(prefix) and name not in tools for prefix, tools in features.items()
+            ):
+                bad.append(f"{check.name}: tool {tool}")
     return bad
+
+
+def _tools(check: CheckSpec) -> list[str]:
+    """The tools a check names: one, or any of a list (``reflex_decision``)."""
+    tool = getattr(check.params, "tool", None)
+    return [tool] if isinstance(tool, str) else list(tool or [])
 
 
 def _condition_entities(s: Scenario) -> list[str]:
@@ -222,7 +243,7 @@ def test_every_golden_names_real_services_and_tools() -> None:
     for s in _goldens().values():
         assert not _unknown_services(s, world), f"{s.path}: {_unknown_services(s, world)}"
         seen |= {f for c in s.expect for f in ("service", "tool") if getattr(c.params, f, None)}
-        tools = [t for c in s.expect if isinstance(t := getattr(c.params, "tool", None), str)]
+        tools = [t for c in s.expect for t in _tools(c)]
         for prefix in checked:
             checked[prefix] += sum(normalize_tool(t).startswith(prefix) for t in tools)
     # The lookup matched something, and each feature's guard checked at least one tool:
@@ -248,6 +269,12 @@ def test_unknown_services_flags_a_misspelt_service_or_tool() -> None:
         ],
     )
     assert _unknown_services(real, world) == []
+    either = ["home.light_turn_on", "home.light_turn_of"]
+    listed = _scenario(
+        [{"ha_event": {"entity_id": "light.bedroom_lamp", "state": "on"}}],
+        [{"reflex_decision": {"decision": "act", "tool": either}}],
+    )
+    assert _unknown_services(listed, world) == ["reflex_decision: tool home.light_turn_of"]
     typos = _scenario(
         [{"user": "a"}],
         [
@@ -409,6 +436,56 @@ def test_only_an_entity_reflex_does_not_attend_to_may_go_uncalled() -> None:
     assert found > 0  # the sensor-noise golden sets it
 
 
+def test_the_dnd_drain_guard_is_tighter_than_the_fire_wait() -> None:
+    """A fire at the driver's wait's very end passes a guard as long as the wait, yet can
+    reach the dispatcher after ``dnd: off``: sent straight through, not drained."""
+    s = _goldens()["notifications.dnd.released_when_off"]
+    [within] = [c.params.within_s for c in s.expect if c.name == "trigger_fired"]
+    assert within is not None and within < PlayContext.fire_timeout_s
+
+
+def _judged(s: Scenario, call: ReflexCall) -> list[str]:
+    """Each reflex_decision's status when System 1 makes *call* on the golden's last
+    ha_event, at the hour its clock step sets."""
+    kinds = [step_kind(step) for step in s.steps]
+    last = max(i for i, k in enumerate(kinds) if k == "ha_event")
+    step = s.steps[last]
+    assert isinstance(step, HaEventStep)
+    push = StatePush(step=last, entity_id=step.ha_event.entity_id, state=step.ha_event.state)
+    about = ReflexEvent(name=push.entity_id, state=push.state, entity_id=push.entity_id)
+    evidence = Evidence(
+        scenario_id=s.id,
+        variant=0,
+        epoch=0,
+        session_id="t",
+        started_at=0,
+        ended_at=100,
+        step_started=[float(i) for i in range(len(kinds))],
+        step_kinds=kinds,
+        state_pushes=[push],
+        clocks=[ClockSet(step=0, hour=22, tz="Etc/GMT-7")],
+        reflex=[call.model_copy(update={"t": last + 0.5, "local_hour": 22, "event": about})],
+    )
+    return [
+        run_check(c.name, c.params, evidence).status
+        for c in s.expect
+        if c.name == "reflex_decision"
+    ]
+
+
+def test_tv_night_dims_wants_a_light_not_any_living_room_proposal() -> None:
+    s = _goldens()["reflex.judgment.tv_night_dims"]
+    room = ["living_room"]
+
+    def proposes(tool: str, target: str) -> ReflexCall:
+        return ReflexCall(t=0, latency_ms=1, decision="act", tool=tool, targets=[target, *room])
+
+    assert _judged(s, proposes("home.light_turn_off", "light.living_room_lamp")) == ["pass"]
+    assert _judged(s, proposes("home.light_turn_on", "light.living_room_lamp")) == ["pass"]
+    pause = proposes("home.media_player_media_pause", "media_player.living_room_tv")
+    assert _judged(s, pause) == ["fail"]
+
+
 def test_trigger_conditions_name_real_entities() -> None:
     world_ids = {e.entity_id for e in load_world("apartment").entities}
     checked = 0
@@ -452,6 +529,8 @@ def test_condition_entities_reads_created_triggers_and_the_tools_args() -> None:
         ("0 7 * * 1,2,3,4,5", True),
         ("0 7 * * mon,tue,wed,thu,fri", True),
         ("0 07 * * 1-5", True),
+        ("00 07 * * 1-5", True),
+        ("00 7 * * mon-fri", True),
         ("0 7 * * *", False),
         ("0 7 * * 0-6", False),
         ("0 7 * * 1-6", False),

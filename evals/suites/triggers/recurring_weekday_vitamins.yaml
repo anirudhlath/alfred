@@ -7,4 +7,4 @@ steps:
 expect:
   - trigger_created:
       type: time
-      conditions: {cron: {regex: '0 0?7 \* \* (1-5|mon-fri|1,2,3,4,5|mon,tue,wed,thu,fri)'}}
+      conditions: {cron: {regex: '0?0 0?7 \* \* (1-5|mon-fri|1,2,3,4,5|mon,tue,wed,thu,fri)'}}

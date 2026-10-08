@@ -157,6 +157,18 @@ def test_not_proposed_fails_on_the_named_tool_and_target_only() -> None:
     assert not_proposed(asked, tool="home.light_turn_on", decision="act")[0] == "pass"
 
 
+def test_a_list_of_tools_takes_any_of_them() -> None:
+    lights = ["home.light_turn_on", "home_light_turn_off"]
+    dims = ev(rc("act", "home.light_turn_off", ("light.living_room_lamp", "living_room")))
+    assert decide(dims, decision=["act", "ask"], tool=lights)[0] == "pass"
+    pause = ev(rc("act", "home.media_player_media_pause", ("living_room",)))
+    status, reason = decide(pause, decision=["act", "ask"], tool=lights)
+    assert status == "fail"
+    assert "wanted act/ask home.light_turn_on or home_light_turn_off" in reason
+    with pytest.raises(ValidationError):
+        ReflexDecisionParams.model_validate({"decision": "act", "tool": []})
+
+
 def test_decision_params_take_one_string_and_reject_unknown_decisions() -> None:
     assert ReflexDecisionParams.model_validate({"decision": "none"}).decision == ["none"]
     with pytest.raises(ValidationError):

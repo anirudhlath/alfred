@@ -11,7 +11,9 @@ steps:
     settle: 5  # the drain runs in the conscious process, over the actions stream
 expect:
   - trigger_created: {type: time}
-  # Fired within the advance's wait (the driver's 15 s), so before `dnd: off`: the
-  # notification below is the drain's, not a late fire's sent straight through.
-  - trigger_fired: {after_step: 2, within_s: 15}
+  # Fired well within the advance's wait (the driver's fire_timeout_s, 15 s), so before
+  # `dnd: off`: the notification below is the drain's, not a late fire's sent straight
+  # through. A fire at 15 s could reach the dispatcher after `dnd: off`, so the guard is
+  # tighter than the wait.
+  - trigger_fired: {after_step: 2, within_s: 12}
   - notification: {source: trigger-engine, after_step: 3}

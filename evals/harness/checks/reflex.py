@@ -25,6 +25,7 @@ def _as_list(value: Any) -> Any:
 
 
 Decisions = Annotated[list[Decision], BeforeValidator(_as_list), Field(min_length=1)]
+Tools = Annotated[list[str], BeforeValidator(_as_list), Field(min_length=1)]  # any of them
 
 
 PROPOSALS: tuple[Decision, ...] = ("act", "ask")  # the decisions that propose a tool call
@@ -44,7 +45,7 @@ class _AtStep(BaseModel):
 
 class ReflexDecisionParams(_AtStep):
     decision: Decisions
-    tool: str | None = None
+    tool: Tools | None = None
     target: str | None = None  # an entity id or an area id
 
 
@@ -144,7 +145,7 @@ def _fits(c: ReflexCall, p: ReflexDecisionParams) -> bool:
     if c.decision not in p.decision:
         return False
     if c.decision in PROPOSALS:
-        if p.tool is not None and not _tool_is(c, p.tool):
+        if p.tool is not None and not any(_tool_is(c, tool) for tool in p.tool):
             return False
         if p.target is not None and p.target not in c.targets:
             return False
@@ -154,7 +155,7 @@ def _fits(c: ReflexCall, p: ReflexDecisionParams) -> bool:
 def _want(p: ReflexDecisionParams) -> str:
     want = "/".join(p.decision)
     if p.tool is not None:
-        want += f" {p.tool}"
+        want += f" {' or '.join(p.tool)}"
     if p.target is not None:
         want += f" on {p.target}"
     return want
