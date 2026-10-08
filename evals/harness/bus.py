@@ -18,16 +18,22 @@ Acts:
 
 Entries come back raw; ``collect.py`` parses them. The Redis client is read through a
 callable, so a stack restart's new client needs nothing re-wired.
+
+Every call is bounded: a container frozen with its socket still open answers nothing, and
+the harness raises ``BusError`` rather than hang the sample (``ContainerBus.timeout_s``).
 """
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import math
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Concatenate, Protocol
 from uuid import uuid4
 
 import httpx
@@ -53,7 +59,7 @@ from shared.streams import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Callable, Coroutine
 
     from core.reflex.tool_registry import ToolInfo
     from shared.types import AioRedis
@@ -118,7 +124,27 @@ def zone_for_hour(hour: int, now: datetime) -> str:
     return "Etc/GMT" if offset == 0 else f"Etc/GMT{-offset:+d}"
 
 
+def _bounded[**P, R](
+    method: Callable[Concatenate[ContainerBus, P], Coroutine[Any, Any, R]],
+) -> Callable[Concatenate[ContainerBus, P], Coroutine[Any, Any, R]]:
+    """Bound a bus call by the bus's ``timeout_s``: past it, a ``BusError``."""
+
+    @functools.wraps(method)
+    async def bounded(bus: ContainerBus, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        async with bus.answered(method.__name__):
+            return await method(bus, *args, **kwargs)
+
+    return bounded
+
+
 class ContainerBus:
+    """The bus on one eval container.
+
+    *timeout_s* bounds every call that does not block by design (and the admin API's HTTP
+    request): Redis answers those in milliseconds, so one that takes this long is a frozen
+    container. ``wait_for_event`` gets its own wait plus the same margin.
+    """
+
     def __init__(
         self,
         redis: Callable[[], AioRedis],
@@ -132,13 +158,27 @@ class ContainerBus:
         self._http = http
         self._timeout_s = timeout_s
 
+    @asynccontextmanager
+    async def answered(self, what: str, *, wait_s: float = 0.0) -> AsyncIterator[None]:
+        """Raise ``BusError`` if the block takes longer than *wait_s* plus ``timeout_s``."""
+        limit_s = wait_s + self._timeout_s
+        try:
+            async with asyncio.timeout(limit_s):
+                yield
+        except TimeoutError as exc:
+            raise BusError(
+                f"the container's Redis did not answer {what} within {limit_s:g} s"
+            ) from exc
+
     async def _range(self, stream: str, since_wall: float) -> list[Entry]:
         raw = await forward_range(self._redis(), stream, min_id=str(window_start_ms(since_wall)))
         return [_entry(entry_id, fields) for entry_id, fields in raw]
 
+    @_bounded
     async def events(self, since_wall: float) -> list[Entry]:
         return await self._range(EVENTS_STREAM, since_wall)
 
+    @_bounded
     async def actions(self, since_wall: float) -> list[Entry]:
         return await self._range(ACTIONS_STREAM, since_wall)
 
@@ -150,8 +190,15 @@ class ContainerBus:
 
         Each read blocks until an entry lands on either stream after the last one seen
         there, so the wait wakes as the entry lands, and an entry already in the window is
-        seen at once.
+        seen at once. A container that answers no read within *timeout_s* plus the bus's
+        ``timeout_s`` is a ``BusError``.
         """
+        async with self.answered("wait_for_event", wait_s=timeout_s):
+            return await self._wait_for_event(since_wall, timeout_s, wanted)
+
+    async def _wait_for_event(
+        self, since_wall: float, timeout_s: float, wanted: Callable[[Entry], bool]
+    ) -> bool:
         r = self._redis()
         # XREAD returns the entries after the id it is given: start just before the window.
         start = f"{window_start_ms(since_wall) - 1}-{_MAX_SEQ}"
@@ -169,13 +216,16 @@ class ContainerBus:
             if block is None:
                 return False
 
+    @_bounded
     async def notifications(self, since_wall: float) -> list[Entry]:
         return await self._range(NOTIFICATION_DISPATCH_STREAM, since_wall)
 
+    @_bounded
     async def deferred(self) -> list[str]:
         raw: list[Any] = await self._redis().lrange(DEFERRED_NOTIFICATIONS_KEY, 0, -1)
         return [decode_stream_value(r) for r in raw]
 
+    @_bounded
     async def reflex_tools(self) -> list[ToolInfo]:
         tools = await ToolRegistry(self._redis()).get_tools()
         return [t for t in tools if t.audience == REFLEX_AUDIENCE]
@@ -183,6 +233,7 @@ class ContainerBus:
     async def _publish(self, payload: dict[str, str]) -> None:
         await self._redis().publish(TRIGGERS_CHANGED_CHANNEL, json.dumps(payload))
 
+    @_bounded
     async def advance_trigger(self, trigger_id: str, now: datetime) -> bool:
         """Make a stored time trigger due at *now*, and tell the engine the way
         ``TriggerStore.save`` does. Its scheduler wakes on the message and fires the
@@ -201,6 +252,7 @@ class ContainerBus:
         await self._publish({"op": TRIGGER_SYNC_OP_SAVED, "trigger_id": trigger_id})
         return True
 
+    @_bounded
     async def delete_triggers(self, trigger_ids: list[str]) -> None:
         """Remove triggers as ``TriggerStore.delete`` does, except that each one's YAML
         snapshot stays in the data dir. Only a ``TriggerStore`` deletes a snapshot, and the
@@ -223,11 +275,13 @@ class ContainerBus:
             if await r.hdel(TRIGGERS_KEY, trigger_id):
                 await self._publish({"op": TRIGGER_SYNC_OP_DELETED, "trigger_id": trigger_id})
 
+    @_bounded
     async def user_timezone(self) -> str | None:
         """The stored zone. None when nothing is stored: Alfred then falls back to its env."""
         raw = await self._redis().get(USER_TIMEZONE_KEY)
         return None if raw is None else decode_stream_value(raw)
 
+    @_bounded
     async def set_user_timezone(self, tz: str | None) -> None:
         r = self._redis()
         if tz is None:
@@ -243,14 +297,18 @@ class ContainerBus:
     async def set_dnd(self, active: bool) -> None:
         """Turn do-not-disturb on or off through the admin API, as the PWA does. Turning it
         off queues the drain of held notifications, which deleting the key would not. The
-        admin session is minted for this one call and deleted after it."""
+        admin session is minted for this one call and deleted after it. Each Redis step is
+        bounded by ``timeout_s``, and so is the request."""
         r = self._redis()
         session_id = uuid4().hex
         key = f"{AUTH_SESSION_PREFIX}{session_id}"
         try:
             # One transaction, so the session never exists without its TTL; inside the
             # try, so a write whose reply is lost is still deleted.
-            async with r.pipeline(transaction=True) as pipe:
+            async with (
+                self.answered("set_dnd's session write"),
+                r.pipeline(transaction=True) as pipe,
+            ):
                 pipe.hset(
                     key,
                     mapping={
@@ -272,12 +330,15 @@ class ContainerBus:
         except httpx.HTTPError as exc:
             raise BusError(f"POST /api/admin/dnd failed: {exc}") from exc
         finally:
-            await r.delete(key)
+            # Bounded too, or a frozen container hangs the cleanup of the error above.
+            async with self.answered("set_dnd's session delete"):
+                await r.delete(key)
         if not response.is_success:
             raise BusError(
                 f"POST /api/admin/dnd answered {response.status_code}: {response.text[:200]}"
             )
 
+    @_bounded
     async def clear_dnd(self) -> None:
         """Drop do-not-disturb and what it held, without a drain: a drain now would deliver
         this sample's held notifications in the next sample's window."""

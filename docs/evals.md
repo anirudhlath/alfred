@@ -178,6 +178,15 @@ Neither wait for an event polls: a fire is waited for with a blocking `XREAD` on
 `alfred:events` and `alfred:actions`, and System 1's answer wakes the wait as the proxy
 records each call.
 
+Every bus call is bounded, so a container frozen with its socket open fails the sample
+(`E`, "did not answer") instead of hanging it:
+
+| Call | Bound |
+|---|---|
+| A read or an act (and each Redis step of `set_dnd`) | `timeout_s`, 10 s |
+| `set_dnd`'s HTTP request | `timeout_s` |
+| The blocking wait for a fire | its own wait plus `timeout_s` |
+
 `collect.py` turns bus entries into evidence. `reflex.py` turns System 1's recorded replies
 into Reflex's decisions, with Reflex's own `parse_decision` and the same tools its prompt
 showed. An entry `collect.py` recognises (a TriggerCreated, a TriggerFired, an

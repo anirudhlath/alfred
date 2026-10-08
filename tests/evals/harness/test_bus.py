@@ -323,3 +323,49 @@ async def test_reflex_tools_are_the_registrys_reflex_audience(
     }
     await redis.hset(ToolRegistry.REGISTRY_KEY, "home-service", json.dumps(manifest))
     assert [t.name for t in await bus(redis).reflex_tools()] == ["home.light_turn_on"]
+
+
+class Frozen(fakeredis.FakeAsyncRedis):
+    """A container frozen with its socket still open: every command waits for ever."""
+
+    async def execute_command(self, *args: Any, **options: Any) -> Any:
+        await asyncio.Event().wait()
+
+    def pipeline(self, transaction: bool = True, shard_hint: Any = None) -> Any:
+        pipe = super().pipeline(transaction=transaction, shard_hint=shard_hint)
+        pipe.execute = self.execute_command  # type: ignore[method-assign]
+        return pipe
+
+
+FROZEN_CALLS: dict[str, Callable[[ContainerBus], Awaitable[object]]] = {
+    "events": lambda b: b.events(0),
+    "actions": lambda b: b.actions(0),
+    "notifications": lambda b: b.notifications(0),
+    "deferred": lambda b: b.deferred(),
+    "reflex_tools": lambda b: b.reflex_tools(),
+    "advance_trigger": lambda b: b.advance_trigger("t1", at(12)),
+    "delete_triggers": lambda b: b.delete_triggers(["t1"]),
+    "user_timezone": lambda b: b.user_timezone(),
+    "set_user_timezone": lambda b: b.set_user_timezone("UTC"),
+    "clear_user_timezone": lambda b: b.set_user_timezone(None),
+    "set_dnd": lambda b: b.set_dnd(True),
+    "clear_dnd": lambda b: b.clear_dnd(),
+    "wait_for_event": lambda b: b.wait_for_event(time.time(), 0.2, lambda e: True),
+}
+
+
+@pytest.mark.parametrize("call", list(FROZEN_CALLS))
+async def test_a_frozen_redis_is_a_bus_error_not_a_hang(call: str) -> None:
+    frozen = ContainerBus(
+        lambda: Frozen(),
+        lambda: "http://alfred.test",
+        http=lambda: httpx.AsyncClient(transport=httpx.MockTransport(ok)),
+        timeout_s=0.1,
+    )
+    started = time.monotonic()
+    with pytest.raises(BusError, match="did not answer"):
+        await asyncio.wait_for(FROZEN_CALLS[call](frozen), timeout=5)
+    elapsed = time.monotonic() - started
+    assert elapsed < 1
+    if call == "wait_for_event":  # its own wait (0.2 s) comes first, then the call's bound
+        assert elapsed >= 0.3
