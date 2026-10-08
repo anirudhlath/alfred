@@ -84,6 +84,16 @@ def upstream_failures(calls: list[LlmCall]) -> str:
     return f"; the LLM upstream returned {counts}"
 
 
+def still_upstream(stamps: list[float], now: float) -> str:
+    """``"; 2 LLM calls still upstream after 95s"`` for the calls in flight (*stamps*, the
+    oldest first), or ``""``: a hung vLLM answers nothing, so only its in-flight calls say
+    a reply timeout was the LLM's."""
+    if not stamps:
+        return ""
+    calls = "call" if len(stamps) == 1 else "calls"
+    return f"; {len(stamps)} LLM {calls} still upstream after {now - stamps[0]:.0f}s"
+
+
 def session_id_for(sample_id: str, epoch: int) -> str:
     return f"eval-{sample_id}-e{epoch}-{uuid4().hex[:6]}"
 
@@ -112,11 +122,12 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
                 request = build_request(actor, step.user, session_id, ctx.signal_number)
                 response = await ctx.send(request, ctx.reply_timeout_s)
                 if response.source != CONSCIOUS_SOURCE:
-                    window = ctx.proxy.calls_between(sent, time.monotonic())
+                    now = time.monotonic()
                     raise HarnessError(
                         f"step {index}: no reply from System 2 within {ctx.reply_timeout_s:.0f}s "
                         f"(got {response.source!r}: {response.text[:120]!r})"
-                        + upstream_failures(window)
+                        + upstream_failures(ctx.proxy.calls_between(sent, now))
+                        + still_upstream(ctx.proxy.in_flight_since(sent), now)
                     )
                 ev.replies.append(
                     Reply(

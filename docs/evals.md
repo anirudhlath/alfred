@@ -378,7 +378,7 @@ Each sample epoch scores one value:
 | `C` | Every counted check passed | — |
 | `I` | A counted check failed | Yes |
 | `N` | Inconclusive: no counted check failed, but one errored (a judge with no verdict, a check that raised), or nothing counted at all (only untrusted judge checks) | No |
-| `E` | The harness failed: no reply from System 2 in time (the reason adds the LLM upstream's non-2xx answers in that window, such as `502 ×2`, when the proxy saw any), a dead, dirty or broken stack, unreadable data. Inspect retries the sample once first | No |
+| `E` | The harness failed: no reply from System 2 in time (the reason adds the LLM upstream's non-2xx answers in that window, such as `502 ×2`, when the proxy saw any, and the calls a hung vLLM still holds, such as `2 LLM calls still upstream after 95s`), a dead, dirty or broken stack, unreadable data. Inspect retries the sample once first | No |
 
 A check is **counted** unless it is a judge check in an untrusted category.
 

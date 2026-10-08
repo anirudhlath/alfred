@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
@@ -333,6 +334,24 @@ async def test_an_orphan_llm_call_from_before_the_sample_neither_delays_nor_erro
         play_ctx.llm_idle_timeout_s = 10.0
         elapsed, ev = await timed_play(play_ctx, scenario(steps=[{"user": "Lamp on."}]))
     assert elapsed < 5 and ev.llm_calls == []
+
+
+async def test_a_reply_timeout_names_the_llm_calls_still_upstream() -> None:
+    # vLLM hangs: nothing comes back to record, but the calls sit in the proxy.
+    async with hung_vllm() as (proxy, call):
+        await call()  # from before the step: not this step's
+
+        async def times_out(request: UserRequest, timeout: float) -> AlfredResponse:
+            await call()
+            await call()
+            return AlfredResponse(
+                source="channels", channel=request.channel, session_id=request.session_id, text=""
+            )
+
+        [variant] = expand_variants(scenario())
+        with pytest.raises(HarnessError, match="no reply from System 2") as err:
+            await play(ctx(times_out, proxy=proxy), variant, epoch=1)
+    assert re.search(r"\); 2 LLM calls still upstream after \d+s$", str(err.value))
 
 
 async def test_world_is_restored_and_only_in_window_calls_are_kept() -> None:
