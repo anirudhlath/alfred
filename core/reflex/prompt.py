@@ -67,7 +67,7 @@ its name.
 
 Respond with JSON only. Either {"decision": "none"} or
 {"decision": "act" | "ask", "reason": "<one short sentence>", "tool_name": "...",
- "target_service": "...", "parameters": {...}}"""
+ "parameters": {...}}"""
 
 
 @dataclass(frozen=True)

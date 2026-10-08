@@ -148,8 +148,12 @@ its name.
 
 Respond with JSON only. Either {"decision": "none"} or
 {"decision": "act" | "ask", "reason": "<one short sentence>", "tool_name": "...",
- "target_service": "...", "parameters": {...}}
+ "parameters": {...}}
 ```
+
+The format leaves out `target_service`. In the first hours of shadow mode, both invalid
+replies were acts that put the tool's HA service (`light.turn_on`) in that field, and the
+parser rejected them. The service now comes from the tool's registry entry.
 
 Tools render as one line each, `- home.light_turn_on(target, brightness_pct)
 [home-service]: light.turn_on`. Parameter descriptions are dropped, because home-service
@@ -230,14 +234,15 @@ class ReflexProposal(BaseModel):
 Parsing turns the model's output into a proposal:
 
 - `{"decision": "none"}`, or the legacy `{"action": "none"}`, becomes **none**.
-- act or ask with a registered `tool_name` and a valid `target_service` becomes a
-  proposal with an `ActionRequest` whose `reason` is the model's reason, so slice 2's
-  confirmation prompt can show it.
+- act or ask with a registered `tool_name` becomes a proposal with an `ActionRequest`
+  whose `reason` is the model's reason, so slice 2's confirmation prompt can show it. The
+  `ActionRequest`'s `target_service` is the tool's own; a `target_service` in the reply is
+  ignored.
 - Anything else becomes **invalid**, with `raw` and a `problem`:
   - text that is not JSON;
   - an unknown decision;
   - act or ask without a tool;
-  - an unregistered service, or a tool outside Reflex's audience.
+  - an unregistered tool, or a tool outside Reflex's audience.
 
 ### 4. Shadow recording
 
