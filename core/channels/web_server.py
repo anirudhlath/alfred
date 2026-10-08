@@ -9,7 +9,7 @@ import json
 import os
 import re
 import time
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -17,12 +17,23 @@ from uuid import uuid4
 
 import httpx
 import redis.asyncio as aioredis  # noqa: TC002 — patched at runtime by tests (e.g. test_device_registration.py)
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from loguru import logger
 from pydantic import BaseModel, Field
 from redis.exceptions import RedisError
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from core.channels.service_credentials import ServiceCredentialManifest
     from core.integrations.base import CredentialSchema
 
 from bus.schemas.events import UserRequest
@@ -154,6 +165,15 @@ _REQUEST_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 # One vocabulary for an unreachable action store, as with the auth router's
 # "Session store unavailable" and the admin router's "Attention store unavailable".
 _ACTION_STORE_DOWN = "Action store unavailable"
+# The same vocabulary for an unreadable tool registry (`alfred:tool_registry`): the 503
+# the per-name integration routes answer with when they cannot look a service up.
+_TOOL_REGISTRY_DOWN = "Tool registry unavailable"
+# The listing's way of saying the same thing. It still answers 200 with the adapters,
+# which need no Redis (issue #118), and sets this header, which a complete listing never
+# carries, so a client can tell the omission from a house with no services. The PWA
+# restates the name and value in web/src/lib/system.ts.
+_TOOL_REGISTRY_HEADER = "X-Tool-Registry"
+_TOOL_REGISTRY_UNAVAILABLE = "unavailable"
 
 
 class DeviceRegistration(BaseModel):
@@ -434,6 +454,33 @@ async def _validate_and_store(name: str, schema: CredentialSchema, body: dict[st
     )
 
 
+class _ToolRegistryUnavailable(HTTPException):
+    """A tool-registry read failed in Redis itself: an outage, never an unknown service.
+
+    An ``HTTPException``, so a per-name route answers 503 by letting it rise; the
+    listing catches it by type and answers with the adapters instead.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(status_code=503, detail=_TOOL_REGISTRY_DOWN)
+
+
+@contextmanager
+def _tool_registry_read(costs: str) -> Iterator[None]:
+    """Wrap every tool-registry read the integrations routes make.
+
+    Whatever stops the read (refused, timed out, or an error reply such as WRONGTYPE
+    or an ACL denial) is a ``RedisError``. It is logged here, once, at WARNING with
+    what it ``costs`` the caller, and re-raised as ``_ToolRegistryUnavailable``.
+    Nothing else is caught: a bug in the service half must still surface as a 500.
+    """
+    try:
+        yield
+    except RedisError as exc:
+        logger.warning("Tool registry unreadable ({}: {}) — {}", type(exc).__name__, exc, costs)
+        raise _ToolRegistryUnavailable from exc
+
+
 # The credential-equivalent routes (credential writes, device-token writes, voice
 # enrolment) carry BOTH gates. Order is load-bearing: the network gate runs FIRST so an
 # anonymous caller is refused on network grounds without the session ever being
@@ -602,13 +649,13 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             _active_websockets.pop(websocket, None)
 
     @app.get("/api/integrations", dependencies=[Depends(require_authenticated)])
-    async def list_integrations() -> list[dict[str, Any]]:
+    async def list_integrations(response: Response) -> list[dict[str, Any]]:
         """List integration adapters + registry-declared sovereign services (C5).
 
-        Adapters alone when Redis cannot be read — the services come from it.
+        Adapters alone when the registry cannot be read — the services come from it —
+        with ``_TOOL_REGISTRY_HEADER`` set to say the list is missing them.
         """
         from core.channels.service_credentials import (
-            ServiceCredentialManifest,
             build_integration_entry,
             list_service_manifests,
         )
@@ -621,18 +668,13 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             )
 
         async def _service_manifests() -> dict[str, ServiceCredentialManifest]:
-            # The adapter half needs no Redis, so whatever stops the registry read
-            # (refused, timed out, or an error reply) costs the services alone, never
-            # the adapters' credential entry (issue #118). RedisError and not
-            # Exception: a bug in the service half must still surface as a 500.
+            # The adapter half needs no Redis, so an unreadable registry costs the
+            # services alone, never the adapters' credential entry (issue #118).
             try:
-                return await list_service_manifests(app.state.redis)
-            except RedisError as exc:
-                logger.warning(
-                    "Tool registry unreadable ({}: {}) — listing integration adapters only",
-                    type(exc).__name__,
-                    exc,
-                )
+                with _tool_registry_read("listing integration adapters only"):
+                    return await list_service_manifests(app.state.redis)
+            except _ToolRegistryUnavailable:
+                response.headers[_TOOL_REGISTRY_HEADER] = _TOOL_REGISTRY_UNAVAILABLE
                 return {}
 
         # Adapters and registry-declared services live in independent stores
@@ -649,13 +691,25 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         )
         return list(adapters) + list(services)
 
-    async def _save_service_credentials(name: str, body: dict[str, str]) -> dict[str, Any]:
-        """Service branch of PUT: validate → keyring → push to credentials_endpoint."""
-        from core.channels.service_credentials import get_service_manifest, push_credentials
+    async def _service_manifest(name: str) -> ServiceCredentialManifest:
+        """The service branch's registry read, shared by PUT, DELETE and status.
 
-        manifest = await get_service_manifest(app.state.redis, name)
+        404 when the registry holds no such service, and 503 (``_TOOL_REGISTRY_DOWN``)
+        when it cannot be read: an outage must not read as an unknown name.
+        """
+        from core.channels.service_credentials import get_service_manifest
+
+        with _tool_registry_read("answering 503"):
+            manifest = await get_service_manifest(app.state.redis, name)
         if manifest is None:
             raise HTTPException(status_code=404, detail=f"Unknown integration: {name}")
+        return manifest
+
+    async def _save_service_credentials(name: str, body: dict[str, str]) -> dict[str, Any]:
+        """Service branch of PUT: validate → keyring → push to credentials_endpoint."""
+        from core.channels.service_credentials import push_credentials
+
+        manifest = await _service_manifest(name)
 
         await _validate_and_store(name, manifest.schema, body)
 
@@ -703,7 +757,6 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     )
     async def delete_credentials(name: str) -> dict[str, str]:
         """Clear all credentials for an adapter or service from the OS keyring."""
-        from core.channels.service_credentials import get_service_manifest
         from core.integrations.registry import IntegrationRegistry
         from shared.secrets import adelete_secret
 
@@ -712,12 +765,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             fields = list(integration_cls.credentials_schema.fields)
             is_adapter = True
         except KeyError:
-            manifest = await get_service_manifest(app.state.redis, name)
-            if manifest is None:
-                raise HTTPException(
-                    status_code=404, detail=f"Unknown integration: {name}"
-                ) from None
-            fields = list(manifest.schema.fields)
+            fields = list((await _service_manifest(name)).schema.fields)
             is_adapter = False
 
         await asyncio.gather(*[adelete_secret(name, f) for f in fields])
@@ -730,11 +778,9 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         """Service branch of status: proxy the service's /health (C5)."""
         from urllib.parse import urljoin
 
-        from core.channels.service_credentials import get_service_manifest, service_payload_healthy
+        from core.channels.service_credentials import service_payload_healthy
 
-        manifest = await get_service_manifest(app.state.redis, name)
-        if manifest is None:
-            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}")
+        manifest = await _service_manifest(name)
 
         endpoint = (
             manifest.manifest.get("credentials_endpoint")

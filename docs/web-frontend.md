@@ -51,7 +51,8 @@ web/
                    # one theme-color meta (applyTheme rewrites it), Apple standalone metas
   src/
     lib/           # No React: transport, formatters, physics, pure reducers
-      api.ts             # api/post/put, ApiError{status,detail}; 401→expired, 403→denied
+      api.ts             # api/post/put, apiWithHeaders, ApiError{status,detail};
+                         # 401→expired, 403→denied
       auth-events.ts     # authEvents.on/emit — the emitter api() announces gates on
       auth.ts            # fetchAuthStatus, DEVICE_KEY, rememberDevice, deviceFootLine
       webauthn.ts        # registerPasskey(), loginPasskey(), sessionChannel()
@@ -605,6 +606,13 @@ rather than left for the next reviewer to find.
   one that asked and was told the house is empty. All three benches carry the same `read`
   flag for it (`useMemory.ts:241-246`, `useSystem.ts:881-905`, `useTriggers.ts`), and a
   bench that has not read says **nothing** rather than guessing which of the three it is.
+  Connected services has a fourth: a read that half answered. `GET /api/integrations`
+  lists the adapters even when the server cannot read the tool registry, and marks that
+  answer with `X-Tool-Registry: unavailable` rather than changing the array's shape
+  (`docs/secrets.md`). `fetchIntegrationListing` reads the header, the section prints
+  `REGISTRY_DOWN_NOTE` over the adapters it does have, and the health grid's home card
+  says `home assistant · registry unavailable` where it would otherwise have claimed
+  `not registered` about a service the server never looked for.
 - **Never let a client-set mark outlive its evidence.** A `Pending` lives exactly
   `REREAD_MS` (60 s), after which the list itself is the evidence; `useSystem` prunes
   its `ended` and `saves` marks against the records still in the last read, so a mark

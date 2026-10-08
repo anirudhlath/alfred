@@ -9,13 +9,14 @@ import {
   fetchAttention,
   fetchAuthSessions,
   fetchCredentials,
-  fetchIntegrations,
+  fetchIntegrationListing,
   fetchIntegrationStatus,
   healthGrid,
   HOME_SERVICE,
   logoutSession,
   mintPairingCode,
   putAttention,
+  REGISTRY_DOWN_NOTE,
   runLibrarian,
   saveCredentials,
   serviceRows,
@@ -184,6 +185,11 @@ export interface Integrations {
   /** One entry per name this client has tried to save credentials for. */
   saves: Record<string, CredentialSave>;
   save: (name: string, values: Record<string, string>) => void;
+  /**
+   * The section's note: why the list could not be read, or `REGISTRY_DOWN_NOTE`
+   * when it came back without the registry's services. A save's refusal is the
+   * row's own (`saves`).
+   */
   error: string | null;
 }
 
@@ -458,7 +464,7 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
 
   const integrationsQuery = useQuery({
     queryKey: INTEGRATIONS_KEY,
-    queryFn: fetchIntegrations,
+    queryFn: fetchIntegrationListing,
     enabled,
     staleTime: STALE_MS,
   });
@@ -474,7 +480,9 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
     retry: false,
   });
 
-  const list = useMemo(() => integrationsQuery.data ?? [], [integrationsQuery.data]);
+  const list = useMemo(() => integrationsQuery.data?.entries ?? [], [integrationsQuery.data]);
+  // The last answer was the adapters alone: the server could not read the registry.
+  const registryDown = integrationsQuery.data?.registryDown === true;
 
   // One probe per integration, each on its own key so a service that cannot be
   // reached costs its own row rather than the section. Retries are left at the
@@ -515,6 +523,7 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
     // `isSuccess` a proxy reload left Connected services listing every service
     // while the home card above it read `not read yet`.
     registryRead: integrationsQuery.dataUpdatedAt !== 0,
+    registryDown,
     home: probes[list.findIndex((entry) => entry.name === HOME_SERVICE)],
   });
 
@@ -933,7 +942,9 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
       rows,
       saves,
       save,
-      error: complaint(integrationsQuery.error, null),
+      // A listing without the registry is a read that half failed, and the
+      // section says so where it says a read that failed outright.
+      error: complaint(integrationsQuery.error, registryDown ? REGISTRY_DOWN_NOTE : null),
     },
     attention: {
       domains: attentionQuery.data ?? [],

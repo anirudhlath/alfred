@@ -10,6 +10,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   credentialMeta,
+  fetchIntegrationListing,
+  fetchIntegrations,
   healthGrid,
   missingLabels,
   missingNote,
@@ -888,6 +890,28 @@ describe("healthGrid", () => {
     ).toBe("home assistant · not read yet");
   });
 
+  it("says the registry is unavailable rather than that nothing is registered", () => {
+    // The listing came back without the registry's services, so the home
+    // service's absence is no evidence about the house.
+    expect(
+      healthGrid({
+        overview: overviewFixture,
+        registryRead: true,
+        registryDown: true,
+        home: undefined,
+      }).home,
+    ).toEqual({ value: "—", note: "home assistant · registry unavailable", alive: false });
+    // Before any read at all, still the unread sentence.
+    expect(
+      healthGrid({
+        overview: overviewFixture,
+        registryRead: false,
+        registryDown: true,
+        home: undefined,
+      }).home.note,
+    ).toBe("home assistant · not read yet");
+  });
+
   it("says testing while the home probe is in flight", () => {
     const health = healthGrid({
       overview: overviewFixture,
@@ -939,5 +963,45 @@ describe("healthGrid", () => {
         home: probe({ data: { name: "home-service", healthy: true, latency_ms: null } }),
       }).home,
     ).toEqual({ value: "ok", note: "home assistant · no round trip measured", alive: true });
+  });
+});
+
+describe("fetchIntegrationListing", () => {
+  const ADAPTER = integration({ name: "weather", kind: "adapter", category: "weather" });
+
+  function respond(body: unknown, headers?: Record<string, string>): void {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(body), { status: 200, headers })),
+    );
+  }
+
+  it("reads the registry header as a listing without the registry's services", async () => {
+    // Spelled out rather than imported: the name and value are the wire contract
+    // `core/channels/web_server.py` sets, and a rename on this side must fail here.
+    respond([ADAPTER], { "X-Tool-Registry": "unavailable" });
+    await expect(fetchIntegrationListing()).resolves.toEqual({
+      entries: [ADAPTER],
+      registryDown: true,
+    });
+  });
+
+  it("reads a listing without the header as complete, however short", async () => {
+    // The same body, from a registry that was read and holds no services.
+    respond([ADAPTER]);
+    await expect(fetchIntegrationListing()).resolves.toEqual({
+      entries: [ADAPTER],
+      registryDown: false,
+    });
+  });
+
+  it("still reads a body that is not an array as no integrations", async () => {
+    respond({ detail: "upstream unavailable" }, { "X-Tool-Registry": "unavailable" });
+    await expect(fetchIntegrationListing()).resolves.toEqual({ entries: [], registryDown: true });
+  });
+
+  it("hands the setup gate the entries alone", async () => {
+    respond([ADAPTER], { "X-Tool-Registry": "unavailable" });
+    await expect(fetchIntegrations()).resolves.toEqual([ADAPTER]);
   });
 });

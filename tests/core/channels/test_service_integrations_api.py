@@ -703,15 +703,85 @@ def captured_warnings() -> Iterator[list[str]]:
     logger.remove(sink_id)
 
 
+def _registry_warnings(messages: list[str]) -> list[str]:
+    return [m for m in messages if "Tool registry unreadable" in m]
+
+
+# The wire contract the PWA reads (web/src/lib/system.ts), spelled out rather than
+# imported so a rename on either side fails here instead of passing quietly.
+_REGISTRY_HEADER = "X-Tool-Registry"
+_REGISTRY_DOWN = "Tool registry unavailable"
+
+# The per-name routes on a service name: the branch that has to read the registry.
+_SERVICE_ROUTES = [
+    pytest.param(
+        "PUT",
+        "/api/integrations/home-service/credentials",
+        {"url": "http://192.168.1.10:8123", "token": "abc123"},
+        id="put",
+    ),
+    pytest.param("DELETE", "/api/integrations/home-service/credentials", None, id="delete"),
+    pytest.param("GET", "/api/integrations/home-service/status", None, id="status"),
+]
+
+
 def test_get_lists_adapters_when_registry_unreadable(
     registry_down_client: TestClient, captured_warnings: list[str]
 ) -> None:
     """Adapters live in the process and only the service half reads Redis, so a
-    failed registry read costs the services and leaves the adapters, not a 500."""
+    failed registry read costs the services and leaves the adapters, not a 500 —
+    and says so in a header, since the body alone looks like a house with none."""
     resp = registry_down_client.get("/api/integrations")
     assert resp.status_code == 200
     assert [(e["name"], e["kind"]) for e in resp.json()] == [("kind_adapter", "adapter")]
-    assert any("adapters only" in m for m in captured_warnings)
+    assert resp.headers[_REGISTRY_HEADER] == "unavailable"
+    [warning] = _registry_warnings(captured_warnings)
+    assert "adapters only" in warning
+
+
+def test_complete_listing_carries_no_registry_header(service_client: TestClient) -> None:
+    resp = service_client.get("/api/integrations")
+    assert resp.status_code == 200
+    assert _REGISTRY_HEADER not in resp.headers
+
+
+def test_listing_with_no_services_carries_no_registry_header(
+    service_handler: _ServiceHttpHandler, home_service_manifest: dict[str, Any]
+) -> None:
+    """The case the header exists to tell apart: a registry that was read and holds
+    no service with a credentials schema answers the same adapters-only body, and
+    that one is the truth about the house."""
+    manifest = {**home_service_manifest, "credentials_schema": None}
+    with _service_client_for(manifest, service_handler) as client:
+        resp = client.get("/api/integrations")
+    assert [e["kind"] for e in resp.json()] == ["adapter"]
+    assert _REGISTRY_HEADER not in resp.headers
+
+
+@pytest.mark.parametrize(("method", "path", "body"), _SERVICE_ROUTES)
+def test_service_routes_answer_503_when_registry_unreadable(
+    registry_down_client: TestClient,
+    captured_warnings: list[str],
+    service_handler: _ServiceHttpHandler,
+    method: str,
+    path: str,
+    body: dict[str, str] | None,
+) -> None:
+    """A service name can only be looked up in the registry, so an outage is an
+    outage: not a 404 for a name that may well exist, not a 500, and one detail and
+    one WARNING whichever of the three asked."""
+    from shared.secrets import get_secret, set_secret
+
+    set_secret("home-service", "token", "kept")
+
+    resp = registry_down_client.request(method, path, json=body)
+
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": _REGISTRY_DOWN}
+    assert len(_registry_warnings(captured_warnings)) == 1
+    # Nothing was validated against a schema nobody could read, so nothing moved.
+    assert get_secret("home-service", "token") == "kept"
+    assert service_handler.pushes == []
 
 
 def test_adapter_routes_need_no_registry(registry_down_client: TestClient) -> None:
@@ -731,15 +801,23 @@ def test_adapter_routes_need_no_registry(registry_down_client: TestClient) -> No
     assert delete.status_code == 200
 
 
-def test_get_does_not_swallow_non_redis_errors(
-    service_handler: _ServiceHttpHandler, home_service_manifest: dict[str, Any]
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [pytest.param("GET", "/api/integrations", None, id="list"), *_SERVICE_ROUTES],
+)
+def test_registry_reads_do_not_swallow_non_redis_errors(
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest: dict[str, Any],
+    method: str,
+    path: str,
+    body: dict[str, str] | None,
 ) -> None:
-    """Only Redis's own failures degrade the listing. Anything else in the service
-    half is a bug, and an adapter-only 200 would hide it."""
+    """Only Redis's own failures degrade the listing or answer 503. Anything else in
+    the service half is a bug, and an adapter-only 200 or a 503 would hide it."""
     with (
         _service_client_for(
             home_service_manifest, service_handler, registry_error=RuntimeError("bug")
         ) as client,
         pytest.raises(RuntimeError, match="bug"),
     ):
-        client.get("/api/integrations")
+        client.request(method, path, json=body)
