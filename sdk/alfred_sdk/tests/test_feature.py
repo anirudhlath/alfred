@@ -7,10 +7,12 @@ import datetime as _dt  # noqa: TC003 — get_type_hints and the pydantic model 
 import enum
 import json
 import warnings
-from typing import Any, Literal
+from collections.abc import Callable  # noqa: TC003 — get_type_hints resolves it at runtime
+from typing import Annotated, Any, Literal
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 from sdk.alfred_sdk.feature import (
     BaseFeature,
@@ -594,6 +596,62 @@ def test_title_stripping_keeps_names_and_data() -> None:
     assert schema["properties"]["style"]["default"] == {"title": "bold"}
 
 
+class _TitlePart(BaseModel):
+    kind: Literal["title"]
+
+
+class _BodyPart(BaseModel):
+    kind: Literal["body"]
+
+
+class _PartsFeature(BaseFeature):
+    feature_name = "parts"
+
+    @tool
+    def add(
+        self, part: Annotated[_TitlePart | _BodyPart, Field(discriminator="kind")]
+    ) -> dict[str, Any]:
+        """Add a part."""
+        return {}
+
+
+def test_title_stripping_keeps_a_discriminator_tag_named_title() -> None:
+    discriminator = _schema(_PartsFeature(), "parts.add")["properties"]["part"]["discriminator"]
+    assert discriminator == {
+        "propertyName": "kind",
+        "mapping": {"title": "#/$defs/_TitlePart", "body": "#/$defs/_BodyPart"},
+    }
+
+
+class _AnnotatedFeature(BaseFeature):
+    feature_name = "annotated"
+
+    @tool
+    def dim(
+        self,
+        level: Annotated[int, Field(ge=0, le=100, description="Brightness")],
+        hidden: Annotated[int, SkipJsonSchema()] = 3,
+    ) -> dict[str, Any]:
+        """Dim."""
+        return {}
+
+
+def test_annotated_constraints_reach_the_schema() -> None:
+    meta = {t.name: t for t in _AnnotatedFeature().get_tools()}["annotated.dim"]
+    assert meta.input_schema["properties"]["level"] == {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100,
+        "description": "Brightness",
+    }
+    # The legacy type name is the bare type's, as before Annotated was kept.
+    assert meta.parameters["level"].type == "int"
+    # A parameter the schema skips has no JSON default to carry.
+    assert "hidden" not in meta.input_schema["properties"]
+    assert meta.parameters["hidden"].default is None
+    assert meta.parameters["hidden"].type == "int"
+
+
 _UNSET = object()
 
 
@@ -637,7 +695,8 @@ def test_enum_default_is_carried_as_its_json_value() -> None:
     meta = {t.name: t for t in _EnumDefaultFeature().get_tools()}["enumdefault.go"]
     assert meta.parameters["speed"].default == "slow"
     assert meta.input_schema["properties"]["speed"]["default"] == "slow"
-    json.dumps(_EnumDefaultFeature().to_manifest().model_dump())
+    dumped = json.loads(json.dumps(_EnumDefaultFeature().to_manifest().model_dump()))
+    assert dumped["tools"][0]["parameters"]["speed"]["default"] == "slow"
 
 
 class _OddNamesFeature(BaseFeature):
@@ -721,6 +780,28 @@ class _OpaqueFeature(BaseFeature):
         return {}
 
 
+class _SkippedChoiceFeature(BaseFeature):
+    feature_name = "skipped"
+
+    @tool
+    def bad(self, count: int | Callable[[], int]) -> dict[str, Any]:
+        """A union Pydantic would quietly narrow to `int`."""
+        return {}
+
+
+class _Dangling(BaseModel):
+    thing: NotDefinedEither  # type: ignore[name-defined]  # noqa: F821
+
+
+class _DanglingModelFeature(BaseFeature):
+    feature_name = "dangling"
+
+    @tool
+    def bad(self, model: _Dangling) -> dict[str, Any]:
+        """A model whose own forward reference never resolves."""
+        return {}
+
+
 @pytest.mark.parametrize(
     ("feature", "name"),
     [
@@ -729,6 +810,8 @@ class _OpaqueFeature(BaseFeature):
         (_PositionalOnlyFeature, "posonly.bad"),
         (_UnresolvableFeature, "unresolvable.bad"),
         (_OpaqueFeature, "opaque.bad"),
+        (_SkippedChoiceFeature, "skipped.bad"),
+        (_DanglingModelFeature, "dangling.bad"),
     ],
 )
 def test_undescribable_signatures_fail_at_discovery(feature: type[BaseFeature], name: str) -> None:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import inspect
 import re
-import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
@@ -12,14 +11,16 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
 from pydantic import (
     BaseModel,
     Field,
-    PydanticInvalidForJsonSchema,
-    PydanticSchemaGenerationError,
+    PydanticUndefinedAnnotation,
+    PydanticUserError,
     create_model,
 )
-from pydantic.json_schema import PydanticJsonSchemaWarning
+from pydantic.json_schema import GenerateJsonSchema
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from pydantic.json_schema import JsonSchemaWarningKind
 
 # ── Pydantic Manifest Models (write-side, for Redis registration) ──
 
@@ -219,7 +220,8 @@ def _parse_google_docstring_args(docstring: str) -> dict[str, str]:
 # ── input_schema generation (@tool methods) ──
 
 # Keywords whose values are data, not schemas: a "title" inside them is left alone.
-_LITERAL_KEYWORDS = frozenset({"default", "enum", "const", "examples"})
+# A `discriminator`'s `mapping` is keyed by tag values, which may be "title".
+_LITERAL_KEYWORDS = frozenset({"default", "enum", "const", "examples", "discriminator"})
 # Keywords whose values map names to schemas: the names are never keywords.
 _SCHEMA_MAPS = frozenset({"properties", "$defs", "patternProperties"})
 
@@ -231,12 +233,48 @@ _NOT_BY_KEYWORD_KINDS = (
 )
 
 
+class _UndescribableSchemaError(Exception):
+    """A schema Pydantic could only generate by quietly dropping part of a type."""
+
+
+class _ToolSchemaGenerator(GenerateJsonSchema):
+    """Pydantic's JSON Schema generator, with its warnings turned into errors.
+
+    Pydantic narrows what it cannot describe in silence: an ``int | Callable[[], int]``
+    parameter becomes ``{"type": "integer"}`` (a ``skipped-choice``, which it does not
+    even warn about by default). A model shown that schema would be shown a different
+    tool, so every warning kind fails the tool instead. The exception is a default JSON
+    cannot carry (a sentinel object), which is only left out: the parameter stays
+    optional, which is all a model needs to know.
+    """
+
+    def emit_warning(self, kind: JsonSchemaWarningKind, detail: str) -> None:
+        """Drop ``non-serializable-default``; raise for every other kind.
+
+        Args:
+            kind: Pydantic's warning kind.
+            detail: Pydantic's description of what it skipped.
+
+        Raises:
+            _UndescribableSchemaError: For any kind but ``non-serializable-default``.
+        """
+        if kind == "non-serializable-default":
+            return
+        raise _UndescribableSchemaError(f"{kind}: {detail}")
+
+
 def _strip_titles(node: Any) -> Any:
     """Drop Pydantic's generated ``title`` keywords: tokens for the model, no meaning.
 
     A property or model *named* ``title`` is kept (names under ``properties``/``$defs``
-    are walked as names), and data under ``default``/``enum``/``const``/``examples``
-    is never touched.
+    are walked as names), and data under ``default``/``enum``/``const``/``examples``/
+    ``discriminator`` is never touched.
+
+    Args:
+        node: A JSON Schema, or any value inside one.
+
+    Returns:
+        A copy of ``node`` without its ``title`` keywords.
     """
     if isinstance(node, list):
         return [_strip_titles(item) for item in node]
@@ -266,24 +304,39 @@ def _signature_input_schema(
     Fields are positional names with the parameter name as alias, so a parameter may
     be called anything (``model_config``, ``_private``) without colliding with BaseModel.
 
+    Args:
+        qualified_name: The tool's name, for error messages.
+        params: The tool's parameters, ``self``/``cls`` excluded.
+        hints: Resolved type hints by parameter name, ``Annotated`` metadata kept.
+        doc_args: Descriptions from the docstring's ``Args:`` section by parameter name.
+
+    Returns:
+        An object schema, ``title`` keywords stripped, always with ``type``,
+        ``properties`` and ``required``.
+
     Raises:
-        TypeError: A parameter's type cannot be described as JSON Schema.
+        TypeError: A parameter's type cannot be described as JSON Schema, in full.
     """
     fields: dict[str, Any] = {}
     for index, param in enumerate(params):
         default = ... if param.default is inspect.Parameter.empty else param.default
-        fields[f"p{index}"] = (
-            hints.get(param.name, Any),
-            Field(default, alias=param.name, description=doc_args.get(param.name) or None),
+        doc = doc_args.get(param.name)
+        # Pass a description only when the docstring has one: `description=None` would
+        # override one given by `Annotated[..., Field(description=...)]`.
+        field_info = (
+            Field(default, alias=param.name, description=doc)
+            if doc
+            else Field(default, alias=param.name)
         )
+        fields[f"p{index}"] = (hints.get(param.name, Any), field_info)
     try:
         model = create_model("ToolArgs", **fields)
-        with warnings.catch_warnings():
-            # A default JSON cannot carry (a sentinel object) is left out of the schema;
-            # the parameter stays optional, which is all a model needs to know.
-            warnings.simplefilter("ignore", PydanticJsonSchemaWarning)
-            schema: dict[str, Any] = model.model_json_schema(by_alias=True)
-    except (PydanticSchemaGenerationError, PydanticInvalidForJsonSchema) as exc:
+        schema: dict[str, Any] = model.model_json_schema(
+            by_alias=True, schema_generator=_ToolSchemaGenerator
+        )
+    # PydanticUserError covers schema-generation and invalid-for-JSON-Schema errors and a
+    # model left not fully defined; PydanticUndefinedAnnotation is a NameError, not one.
+    except (PydanticUserError, PydanticUndefinedAnnotation, _UndescribableSchemaError) as exc:
         raise TypeError(
             f"Tool '{qualified_name}': cannot describe its parameters as JSON Schema: {exc}"
         ) from exc
@@ -310,6 +363,15 @@ def _extract_tool_meta(
         description_override: Optional explicit description.
         audience: Which engine sees the tool ("reflex" or "conscious").
         risk: Dispatch risk gate ("benign", "elevated", "critical").
+
+    Returns:
+        The tool's metadata, with ``input_schema`` generated from its signature.
+
+    Raises:
+        TypeError: A parameter cannot be passed by keyword (``*args``, ``**kwargs``,
+            positional-only), a type hint cannot be resolved (usually a type imported
+            under ``if TYPE_CHECKING:`` in a module with ``from __future__ import
+            annotations``), or a type cannot be described as JSON Schema.
     """
     from typing import get_type_hints
 
@@ -320,9 +382,12 @@ def _extract_tool_meta(
     # Parse parameter descriptions from Google-style docstring
     doc_args = _parse_google_docstring_args(docstring) if docstring else {}
 
-    # Extract type hints (skip self, cls, return)
+    # Extract type hints (skip self, cls, return). The schema reads them with their
+    # `Annotated` metadata (constraints, descriptions); the legacy type names without it,
+    # so those names stay what they always were.
     try:
-        hints = get_type_hints(fn)
+        hints = get_type_hints(fn, include_extras=True)
+        legacy_hints = get_type_hints(fn)
     except Exception as exc:  # NameError for an unresolvable forward reference, among others
         raise TypeError(f"Tool '{qualified_name}': cannot resolve its type hints: {exc}") from exc
 
@@ -339,13 +404,15 @@ def _extract_tool_meta(
 
     parameters: dict[str, ToolParameter] = {}
     for param in params:
+        legacy_hint = legacy_hints.get(param.name)
         parameters[param.name] = ToolParameter(
-            type=getattr(hints.get(param.name), "__name__", str(hints.get(param.name, "Any"))),
+            type=getattr(legacy_hint, "__name__", str(legacy_hints.get(param.name, "Any"))),
             description=doc_args.get(param.name, ""),
             # The schema's JSON default, never the raw Python one: an Enum becomes its
             # value, and a default JSON cannot carry (a sentinel) becomes None, so the
-            # manifest always serialises.
-            default=input_schema["properties"][param.name].get("default"),
+            # manifest always serialises. A parameter the schema skips (`SkipJsonSchema`)
+            # has no property at all, and so no default.
+            default=input_schema["properties"].get(param.name, {}).get("default"),
             required=param.default is inspect.Parameter.empty,
         )
 
