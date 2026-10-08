@@ -614,6 +614,32 @@ def test_unserializable_default_stays_optional_without_warning() -> None:
     assert "default" not in schema["properties"]["cursor"]
 
 
+def test_sentinel_default_still_registers() -> None:
+    manifest = ServiceManifest(
+        service_name="svc",
+        service_endpoint="http://svc/mcp",
+        features=[_SentinelFeature().to_manifest()],
+    )
+    dumped = json.loads(json.dumps(manifest.model_dump()))
+    assert dumped["features"][0]["tools"][0]["parameters"]["cursor"]["default"] is None
+
+
+class _EnumDefaultFeature(BaseFeature):
+    feature_name = "enumdefault"
+
+    @tool
+    def go(self, speed: _Speed = _Speed.SLOW) -> dict[str, Any]:
+        """Go."""
+        return {}
+
+
+def test_enum_default_is_carried_as_its_json_value() -> None:
+    meta = {t.name: t for t in _EnumDefaultFeature().get_tools()}["enumdefault.go"]
+    assert meta.parameters["speed"].default == "slow"
+    assert meta.input_schema["properties"]["speed"]["default"] == "slow"
+    json.dumps(_EnumDefaultFeature().to_manifest().model_dump())
+
+
 class _OddNamesFeature(BaseFeature):
     feature_name = "odd"
 

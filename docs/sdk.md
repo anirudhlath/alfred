@@ -281,13 +281,9 @@ graph TD
     B --> D["ServiceManifest JSON"]
     D --> E["features[]"]
     E --> F["FeatureManifest: lighting"]
-    E --> G["FeatureManifest: scenes"]
     F --> H["tools[]"]
     H --> I["ToolManifest: lighting.dim_lights"]
-    H --> J["ToolManifest: lighting.turn_off_lights"]
     I --> K["input_schema: room, level (required)"]
-    G --> L["tools[]"]
-    L --> M["ToolManifest: scenes.set_scene"]
 ```
 
 The Pydantic models behind this are defined in `sdk/alfred_sdk/feature.py`: `ServiceManifest`, `FeatureManifest`, `ToolManifest`, `ToolParameter`.
