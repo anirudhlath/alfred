@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import threading
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from loguru import logger
@@ -129,17 +130,40 @@ def _construct_backend(module: str, cls_name: str, missing_msg: str) -> _Constru
         return _ConstructResult(None, import_missing=False, error=str(exc))
 
 
-# Model construction takes 10-40s and must run off the event loop; the lock
-# keeps a warmup task and a first request from loading the same model twice.
-_voice_load_lock = asyncio.Lock()
+# Model construction takes 10-40s and must run off the event loop; the lock keeps
+# a warmup task and a first request from loading the same model twice. It is a
+# threading.Lock taken inside the worker thread, around the blocking construct
+# itself, not an asyncio.Lock around the await (issue #97):
+#   - an asyncio.Lock binds to the first event loop that contends on it and raises
+#     "bound to a different event loop" from any other, so a module-level one breaks
+#     every loop after the first (each test's loop, each real-lifespan TestClient);
+#   - a cancelled caller releases an asyncio.Lock at once, while its worker thread
+#     (asyncio.to_thread cannot be cancelled) goes on loading, so the next caller
+#     would start a second load beside it. Held in the thread, the lock is held for
+#     exactly as long as the load runs.
+# One lock for both models, as before: STT and TTS still load one at a time. A caller
+# that queues behind a load waits in a worker thread rather than on the loop; once a
+# model is cached, _aget_voice answers without leaving the loop.
+_voice_load_lock = threading.Lock()
+
+
+def _load_voice(key: str, getter: Callable[[], Any]) -> Any:
+    """Run ``getter`` under the load lock. Blocks: call it in a worker thread only."""
+    with _voice_load_lock:
+        # Double-check: the load this thread queued behind may already have cached
+        # the model. The getters happen to check the cache as well; this check is the
+        # one _aget_voice relies on, so a getter only has to write the cache.
+        cached = _lazy_cache.get(key)
+        if cached is not None:
+            return None if cached is _FAILED else cached
+        return getter()
 
 
 async def _aget_voice(key: str, getter: Callable[[], Any]) -> Any:
     cached = _lazy_cache.get(key)
     if cached is not None:
         return None if cached is _FAILED else cached
-    async with _voice_load_lock:
-        return await asyncio.to_thread(getter)
+    return await asyncio.to_thread(_load_voice, key, getter)
 
 
 async def aget_stt() -> Any:
@@ -171,30 +195,25 @@ def _get_speaker_id_cls() -> Any:
     return SpeakerID
 
 
-# Guards construct-and-cache the same way _voice_load_lock guards get_stt/get_tts:
-# without it, two concurrent first callers could each build their own SpeakerID
-# (each would later load its own ECAPA model). A dedicated lock (not
-# _voice_load_lock) so speaker-ID construction never queues behind a slow
-# STT/TTS model load.
-_speaker_id_lock = asyncio.Lock()
-
-
 async def aget_speaker_id(redis: Any) -> Any | None:
-    """Shared SpeakerID singleton, or None if the voice extra is unavailable."""
+    """Shared SpeakerID singleton, or None if the voice extra is unavailable.
+
+    Two concurrent first callers must not each build their own SpeakerID (each would
+    later load its own ECAPA model), and no lock is needed to stop them: nothing here
+    awaits, so the cache check, the construction and the cache write run as one step
+    no other task on the loop can interleave. (Construction is cheap; the model loads
+    later, off the loop, inside SpeakerID.) Keep it await-free. A construction that
+    ever has to leave the loop must be guarded the way ``_aget_voice`` is, never with
+    a module-level asyncio.Lock (issue #97).
+    """
     cached = _lazy_cache.get("speaker_id")
     if cached is not None:
         return None if cached is _FAILED else cached
-    async with _speaker_id_lock:
-        # Double-check: another caller may have constructed it while we
-        # waited for the lock.
-        cached = _lazy_cache.get("speaker_id")
-        if cached is not None:
-            return None if cached is _FAILED else cached
-        try:
-            instance = _get_speaker_id_cls()(redis)
-        except ImportError:
-            logger.warning("speechbrain not installed — speaker ID disabled")
-            _lazy_cache["speaker_id"] = _FAILED
-            return None
-        _lazy_cache["speaker_id"] = instance
-        return instance
+    try:
+        instance = _get_speaker_id_cls()(redis)
+    except ImportError:
+        logger.warning("speechbrain not installed — speaker ID disabled")
+        _lazy_cache["speaker_id"] = _FAILED
+        return None
+    _lazy_cache["speaker_id"] = instance
+    return instance

@@ -107,6 +107,98 @@ async def test_aget_stt_concurrent_calls_construct_once(
     assert constructions == 1
 
 
+class _CountingLoader:
+    """Fake ``_lazy_load``: a slow, unlocked, cache-checking construct.
+
+    It holds no lock of its own, as the real getters hold none, so a single
+    construction under concurrency is the load lock's doing alone.
+    """
+
+    def __init__(self, delay: float = 0.05) -> None:
+        self.instance = object()
+        self.constructions = 0
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self._delay = delay
+
+    def __call__(self, key: str, module: str, cls_name: str, missing_msg: str) -> Any:
+        cached = voice_models._lazy_cache.get(key)
+        if cached is not None:
+            return cached
+        self.constructions += 1
+        self.started.set()
+        time.sleep(self._delay)  # a model load, long enough for callers to overlap
+        self.release.wait(timeout=5)
+        voice_models._lazy_cache[key] = self.instance
+        return self.instance
+
+
+@pytest.mark.asyncio
+async def test_aget_voice_constructs_once_when_the_getter_skips_the_cache() -> None:
+    """A getter only has to write the cache: callers queued behind its load re-check
+    the cache under the lock, so they never run it a second time."""
+    constructions = 0
+    instance = object()
+
+    def getter() -> object:
+        nonlocal constructions
+        constructions += 1
+        time.sleep(0.05)  # a model load, long enough for callers to overlap
+        voice_models._lazy_cache["probe"] = instance
+        return instance
+
+    results = await asyncio.gather(*(voice_models._aget_voice("probe", getter) for _ in range(4)))
+
+    assert results == [instance] * 4
+    assert constructions == 1
+
+
+def test_aget_stt_works_on_every_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue #97: the load lock must not bind to the first loop that contends on it.
+
+    Each ``asyncio.run`` is a fresh loop, as each real-lifespan ``TestClient`` is.
+    Two first calls contend the lock on the first loop; clearing the cache makes them
+    contend it again on a second one. While the lock was a module-level
+    ``asyncio.Lock``, the second loop raised "is bound to a different event loop".
+    """
+    loader = _CountingLoader()
+    loader.release.set()
+    monkeypatch.setattr(voice_models, "_lazy_load", loader)
+
+    async def _two_first_calls() -> list[Any]:
+        return list(await asyncio.gather(voice_models.aget_stt(), voice_models.aget_stt()))
+
+    for _ in range(2):
+        voice_models._lazy_cache.clear()
+        assert asyncio.run(_two_first_calls()) == [loader.instance, loader.instance]
+
+    assert loader.constructions == 2  # one per loop: each round started from a cold cache
+
+
+@pytest.mark.asyncio
+async def test_cancelled_caller_does_not_start_a_second_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling a caller cannot cancel its worker thread (``asyncio.to_thread``
+    never can), so the load it started runs on. The lock must stay held for as long
+    as that load does, or the next caller starts a second load beside it."""
+    loader = _CountingLoader(delay=0)
+    monkeypatch.setattr(voice_models, "_lazy_load", loader)
+
+    first = asyncio.create_task(voice_models.aget_stt())
+    assert await asyncio.to_thread(loader.started.wait, 5)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    second = asyncio.create_task(voice_models.aget_stt())
+    await asyncio.sleep(0.1)  # time enough for a second load to begin, were it free to
+    loader.release.set()
+
+    assert await second is loader.instance
+    assert loader.constructions == 1
+
+
 @pytest.mark.asyncio
 async def test_aget_tts_returns_none_when_unavailable(
     monkeypatch: pytest.MonkeyPatch,
@@ -135,13 +227,14 @@ async def test_aget_tts_returns_none_when_unavailable(
 
 
 @pytest.mark.asyncio
-async def test_aget_speaker_id_double_checks_cache_after_lock(
+async def test_aget_speaker_id_concurrent_first_calls_construct_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Two concurrent first calls must not each build their own SpeakerID
-    (each would later load its own ECAPA model). A caller that loses the race
-    for the module-level lock must re-check the cache once it acquires it,
-    rather than constructing a second instance."""
+    """Concurrent first calls must not each build their own SpeakerID (each would
+    later load its own ECAPA model). aget_speaker_id takes no lock: it never awaits,
+    so its check-construct-cache runs as one step no other task can interleave. An
+    await added between the check and the cache write would let every caller here
+    through to construct its own."""
     constructions = 0
 
     class _FakeSpeakerID:
@@ -151,14 +244,8 @@ async def test_aget_speaker_id_double_checks_cache_after_lock(
 
     monkeypatch.setattr(voice_models, "_get_speaker_id_cls", lambda: _FakeSpeakerID)
 
-    sentinel = object()
-    async with voice_models._speaker_id_lock:
-        task = asyncio.create_task(voice_models.aget_speaker_id(redis=None))
-        await asyncio.sleep(0)  # let the task start and block waiting for the lock
-        # Simulate a winner (holding the lock) already having cached an instance.
-        voice_models._lazy_cache["speaker_id"] = sentinel
+    results = await asyncio.gather(*(voice_models.aget_speaker_id(redis=None) for _ in range(4)))
 
-    result = await task
-
-    assert result is sentinel
-    assert constructions == 0  # double-check found the cache — didn't build a second one
+    assert constructions == 1
+    assert isinstance(results[0], _FakeSpeakerID)
+    assert all(result is results[0] for result in results)
