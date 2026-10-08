@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from sdk.alfred_sdk.feature import ToolParameter, input_schema_from_parameters
 from shared.streams import TOOL_REGISTRY_KEY
 
 if TYPE_CHECKING:
@@ -20,6 +21,23 @@ logger = logging.getLogger(__name__)
 
 # The audience tag that puts a tool in Reflex's prompt; untagged tools are "conscious".
 REFLEX_AUDIENCE = "reflex"
+
+
+def legacy_input_schema(parameters: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Build a tool's input schema from a manifest written before ``input_schema``.
+
+    Such a manifest gives every parameter ``"default": null`` (#300), so this
+    reproduces exactly what the model was offered before: a parameter is required
+    when it says so, or, lacking a ``required`` key, when it has no ``default`` key.
+    """
+    return input_schema_from_parameters(
+        {
+            name: ToolParameter.model_validate(
+                {"type": "str", **spec, "required": spec.get("required", "default" not in spec)}
+            )
+            for name, spec in parameters.items()
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -34,6 +52,12 @@ class ToolInfo:
     target_service: str
     audience: str = "conscious"
     risk: str = "benign"
+    # The tool's arguments as one JSON Schema object. Empty → derived from `parameters`.
+    input_schema: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.input_schema:
+            object.__setattr__(self, "input_schema", legacy_input_schema(self.parameters))
 
 
 class ToolRegistry:
@@ -77,18 +101,30 @@ class ToolRegistry:
                 feature_name = feature.get("name", "")
                 feature_desc = feature.get("description", "")
                 for t in feature.get("tools", []):
-                    tools.append(
-                        ToolInfo(
-                            name=t["name"],
-                            description=t.get("description", ""),
-                            parameters=t.get("parameters", {}),
-                            feature_name=feature_name,
-                            feature_description=feature_desc,
-                            target_service=service_name,
-                            audience=t.get("audience", "conscious"),
-                            risk=t.get("risk", "benign"),
+                    try:
+                        schema = t.get("input_schema")
+                        tools.append(
+                            ToolInfo(
+                                name=t["name"],
+                                description=t.get("description", ""),
+                                parameters=t.get("parameters", {}),
+                                feature_name=feature_name,
+                                feature_description=feature_desc,
+                                target_service=service_name,
+                                audience=t.get("audience", "conscious"),
+                                risk=t.get("risk", "benign"),
+                                input_schema=schema if isinstance(schema, dict) else {},
+                            )
                         )
-                    )
+                    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                        # One bad tool must not take down every other tool (pydantic's
+                        # ValidationError is a ValueError).
+                        logger.warning(
+                            "Skipping malformed tool %r from service '%s': %s",
+                            t.get("name") if isinstance(t, dict) else t,
+                            service_name,
+                            exc,
+                        )
 
         return tools
 
