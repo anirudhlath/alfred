@@ -7,8 +7,11 @@ from inspect_ai import eval_async
 from inspect_ai.model import ModelOutput, get_model
 from inspect_ai.util import display_type
 from inspect_ai.util._display import display_type_initialized
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import RedisError
 
 from bus.schemas.events import AlfredResponse, UserRequest
+from evals.harness.bus import BusError
 from evals.harness.checks.result import CheckResult
 from evals.harness.driver import PlayContext
 from evals.harness.fake_ha import FakeHA
@@ -24,6 +27,7 @@ from tests.evals.harness.factories import FakeBus
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from evals.harness.bus import Entry
     from evals.harness.driver import SendFn
     from evals.harness.report import SampleRun
 
@@ -81,6 +85,7 @@ def context(
     stack: FakeStack,
     judge_says: str = "Formal.\nVERDICT: yes",
     send: SendFn = polite,
+    bus: FakeBus | None = None,
     **scenario_fields: Any,
 ) -> RunContext:
     variants = expand_variants(scenario(**scenario_fields))
@@ -90,7 +95,7 @@ def context(
         send=send,
         fake_ha=FakeHA(load_world("apartment")),
         proxy=LlmProxy("http://x"),
-        bus=FakeBus(),
+        bus=bus or FakeBus(),
         settle_s=0,
         restore_settle_s=0,
     )
@@ -262,6 +267,69 @@ async def test_a_failed_restart_breaks_the_stack_and_later_samples_error_at_once
         assert "failed to restart" in (r.error or "")
         assert "System 2 never answered the readiness request" in (r.error or "")
         assert "docker logs" not in (r.error or "")  # the first line only; the rest is logged
+
+
+class BrokenBus(FakeBus):
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+
+    async def user_timezone(self) -> str | None:
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [RedisError("Connection closed by server."), BusError("POST /api/admin/dnd answered 401")],
+    ids=["redis", "bus"],
+)
+async def test_a_bus_failure_errors_the_sample_and_dirties_the_stack(
+    tmp_path: Path, error: Exception
+) -> None:
+    stack = FakeStack([True])
+    ctx = context(stack, bus=BrokenBus(error))
+    ctx.restarts_left = 0
+    runs = await evaluate(ctx, tmp_path)
+    assert [r.value for r in runs] == ["E", "E"] and stack.restarts == 0
+    first = next(r for r in runs if not r.sample_id.endswith("~1"))
+    assert str(error) in (first.error or "")
+    # Only a dirty stack makes the next sample ask for the restart it cannot have.
+    later = next(r for r in runs if r.sample_id.endswith("~1"))
+    assert "needs a restart" in (later.error or "")
+
+
+class BusLostAt(FakeBus):
+    """Loses redis late in play(): while it collects the bus's evidence, or while it
+    cleans up. A failure there still raises out of play() and must dirty the stack."""
+
+    def __init__(self, stage: str) -> None:
+        super().__init__()
+        self.stage = stage
+        self.tz_reads = 0
+
+    async def notifications(self, since_wall: float) -> list[Entry]:
+        if self.stage == "collection":
+            raise RedisConnectionError("Connection closed by server.")
+        return await super().notifications(since_wall)
+
+    async def user_timezone(self) -> str | None:
+        self.tz_reads += 1
+        # play() reads the zone first as it starts, then again as it cleans up.
+        if self.stage == "cleanup" and self.tz_reads == 2:
+            raise RedisConnectionError("Connection closed by server.")
+        return await super().user_timezone()
+
+
+@pytest.mark.parametrize("stage", ["collection", "cleanup"])
+async def test_a_bus_failure_late_in_play_dirties_the_stack(tmp_path: Path, stage: str) -> None:
+    stack = FakeStack([True])
+    ctx = context(stack, bus=BusLostAt(stage))
+    ctx.restarts_left = 0
+    runs = await evaluate(ctx, tmp_path)
+    assert [r.value for r in runs] == ["E", "E"] and stack.restarts == 0
+    assert ctx.dirty == "Connection closed by server."
+    later = next(r for r in runs if r.sample_id.endswith("~1"))
+    assert "needs a restart" in (later.error or "")
 
 
 def test_the_test_package_pins_inspect_display_none() -> None:

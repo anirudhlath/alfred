@@ -10,7 +10,9 @@ from inspect_ai.dataset import Sample
 from inspect_ai.model import ChatMessageAssistant, ChatMessageUser, ModelOutput
 from inspect_ai.scorer import CORRECT, INCORRECT, NOANSWER, Score, mean, scorer
 from inspect_ai.solver import solver
+from redis.exceptions import RedisError
 
+from evals.harness.bus import BusError
 from evals.harness.checks import run_check
 from evals.harness.checks.judge_spec import JudgeSpec
 from evals.harness.driver import HarnessError, play
@@ -151,7 +153,7 @@ def play_scenario(ctx: RunContext) -> Solver:
         variant = ctx.variants[str(state.sample_id)]
         try:
             evidence = await play(ctx.play_ctx, variant, state.epoch)
-        except (HarnessError, StackError) as exc:
+        except (HarnessError, StackError, BusError, RedisError) as exc:
             ctx.dirty = _first_line(exc)
             raise
         state.store.set("evidence", evidence.model_dump(mode="json"))
