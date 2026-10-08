@@ -63,6 +63,40 @@ jobs:
       - run: uv sync --all-extras
       - run: uv run pytest tests/core/channels/test_spa_ci.py -q
 
+  # The SDK installs into other services' environments, which resolve their own pydantic,
+  # so its unit tests also run against the oldest release sdk/pyproject.toml allows (#327).
+  # The floor is read from that file, the one place it is stated. `--noconftest`: the root
+  # conftest imports Alfred core, which this venv does not have, and the SDK's unit tests
+  # use none of its fixtures.
+  sdk-floor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: SDK unit tests at the pydantic floor
+        run: |
+          floor=$(uv run --no-project python - <<'EOF'
+          import re
+          import tomllib
+
+          with open("sdk/pyproject.toml", "rb") as f:
+              deps = tomllib.load(f)["project"]["dependencies"]
+          floors = [m[1] for d in deps if (m := re.fullmatch(r"pydantic\s*>=\s*([0-9.]+)", d))]
+          if len(floors) != 1:
+              raise SystemExit(f"sdk/pyproject.toml: expected one `pydantic>=X`, got {deps}")
+          print(floors[0])
+          EOF
+          )
+          echo "pydantic floor: $floor"
+          venv="$RUNNER_TEMP/sdk-floor"
+          uv venv --python 3.13 "$venv"
+          uv pip install --python "$venv/bin/python" -e sdk/ "pydantic==$floor" pytest pytest-asyncio
+          "$venv/bin/python" -m pytest --noconftest -p no:cacheprovider sdk/alfred_sdk/tests -q
+
   pr-title:
     runs-on: ubuntu-latest
     steps:
@@ -110,7 +144,7 @@ jobs:
   gate:
     name: ci-ok
     if: always()
-    needs: [python, web, spa, pr-title, artifact-guard]
+    needs: [python, web, spa, sdk-floor, pr-title, artifact-guard]
     runs-on: ubuntu-latest
     steps:
       - name: All gates green?
