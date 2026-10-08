@@ -56,7 +56,6 @@ from core.routing.pending import (
 from core.shutdown import teardown
 from core.warmup import start_warmup
 from shared.env import is_truthy_flag
-from shared.otel import FASTAPI_TELEMETRY
 from shared.redis_streams import create_redis
 from shared.usertime import is_valid_timezone
 
@@ -446,7 +445,7 @@ _CREDENTIAL_GATES = [Depends(require_trusted_network), Depends(require_authentic
 def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     """Create the FastAPI application for the web channel."""
     _ensure_integrations_registered()
-    app = FastAPI(title="Alfred Web Channel", lifespan=_lifespan, telemetry=FASTAPI_TELEMETRY)
+    app = FastAPI(title="Alfred Web Channel", lifespan=_lifespan)
     app.state.redis_url = redis_url
 
     @app.get("/health")

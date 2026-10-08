@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import Body, FastAPI
 
-from shared.otel import FASTAPI_TELEMETRY
-
 if TYPE_CHECKING:
     from core.triggers.feature import TriggerFeature
     from sdk.alfred_sdk.client import AlfredClient
@@ -18,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def create_app(client: AlfredClient, feature: TriggerFeature) -> FastAPI:
     """Build the FastAPI app with REST routes and JSON-RPC shim."""
-    app = FastAPI(title="Trigger Engine", docs_url="/docs", telemetry=FASTAPI_TELEMETRY)
+    app = FastAPI(title="Trigger Engine", docs_url="/docs")
 
     @app.get("/health")
     async def health_check() -> dict[str, str]:
