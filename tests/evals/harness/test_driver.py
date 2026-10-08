@@ -10,12 +10,13 @@ import httpx
 import pytest
 
 from bus.schemas.events import AlfredResponse, UserRequest
-from evals.harness.driver import HarnessError, PlayContext, build_request, play
+from evals.harness.driver import HarnessError, PlayContext, build_request, outstanding_calls, play
 from evals.harness.evidence import Evidence, HaCall, LlmCall
 from evals.harness.fake_ha import FakeHA
 from evals.harness.proxy import LlmProxy
 from evals.harness.scenario import Actor, Scenario, expand_variants
 from evals.harness.world import load_world
+from tests.evals.harness.factories import evidence
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -405,3 +406,11 @@ async def test_world_is_restored_and_only_in_window_calls_are_kept() -> None:
     assert len(ev.ha_calls) == 2 and all(c.t > 0.0 for c in ev.ha_calls)
     assert [c.entity_ids for c in ev.ha_calls] == [["light.bedroom_lamp"]] * 2
     assert len(ev.llm_calls) == 2 and all(c.t > 0.0 for c in ev.llm_calls)
+
+
+def test_a_check_counting_from_a_step_not_yet_started_names_the_step() -> None:
+    called = {"domain": "light", "service": "turn_on", "after_step": 1}
+    s = scenario(steps=[{"user": "Hello."}, LAMP_ON], expect=[{"ha_called": called}])
+    ev = evidence(step_started=[0.0])  # the driver has not started step 1
+    with pytest.raises(IndexError, match="step 1 is outside the sample's 1 steps"):
+        outstanding_calls(s, 1, ev, FakeHA(load_world("apartment")))

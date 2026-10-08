@@ -73,6 +73,11 @@ def test_step_start_and_reflex_during_read_one_step() -> None:
         ev.step_start(3)
 
 
+def test_calls_after_step_names_a_step_outside_the_sample() -> None:
+    with pytest.raises(IndexError, match="step 3 is outside the sample's 3 steps"):
+        three_steps().calls_after_step(3)
+
+
 def test_reflex_call_done_is_arrival_plus_latency() -> None:
     assert ReflexCall(t=2.0, latency_ms=500, decision="none").done == 2.5
 

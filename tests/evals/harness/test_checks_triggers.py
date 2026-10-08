@@ -292,6 +292,13 @@ def test_latency_params_tie_the_index_to_the_metric() -> None:
         LatencyParams.model_validate({"metric": "reply_ms", "max": 1, "at_step": 0})
 
 
+def test_a_bad_metric_is_one_error_naming_every_metric() -> None:
+    with pytest.raises(ValidationError) as err:
+        LatencyParams.model_validate({"metric": "reflx_ms", "max": 1})
+    [error] = err.value.errors()
+    assert all(m in error["msg"] for m in ("reply_ms", "reflex_ms", "reminder_fire_ms"))
+
+
 def test_which_checks_need_a_reply_a_step_kind_or_system1() -> None:
     reply = LatencyParams.model_validate({"metric": "reply_ms", "max": 1})
     reflex = LatencyParams.model_validate({"metric": "reflex_ms", "max": 1})

@@ -178,7 +178,7 @@ class Evidence(BaseModel):
     def calls_after_step(self, step: int | None) -> list[HaCall]:
         if step is None:
             return list(self.ha_calls)
-        start = self.step_started[step]
+        start = self.step_start(step)
         return [c for c in self.ha_calls if c.t >= start]
 
     def step_index(self, step: int) -> int:

@@ -106,7 +106,7 @@ def outstanding_calls(
     now = time.monotonic()
     outstanding = []
     for p in scenario.ha_called_counting(index):
-        start = ev.started_at if p.after_step is None else ev.step_started[p.after_step]
+        start = ev.started_at if p.after_step is None else ev.step_start(p.after_step)
         if not any(satisfies(p, c) for c in fake_ha.calls_between(start, now)):
             outstanding.append(p)
     return outstanding

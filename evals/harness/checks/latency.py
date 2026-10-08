@@ -20,7 +20,7 @@ StepMetric = Literal["reflex_ms", "reminder_fire_ms"]  # timed from a step of on
 
 class LatencyParams(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
-    metric: Literal["reply_ms"] | StepMetric
+    metric: Literal["reply_ms", StepMetric]
     max_ms: float = Field(gt=0, alias="max")
     # reply_ms: a reply index, one reply per user step (default -1, the last reply).
     step: int | None = None
