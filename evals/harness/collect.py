@@ -7,7 +7,7 @@ the host's kernel clock, so the two agree.
 An entry the harness recognises (a TriggerCreated, a TriggerFired, an ActionRequest, a
 notification) but cannot read raises ``HarnessError``: dropped, it would turn a check's
 "none created" into a fail, when the harness, not Alfred, failed. Anything else is not
-evidence and is ignored.
+evidence and is ignored, except the triggers process registering (``trigger_records``).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from pydantic import BaseModel, ValidationError
 
 from bus.schemas.events import ActionRequest, TriggerCreated, TriggerFired
 from core.notifications.schema import Notification
-from core.triggers.models import TRIGGER_ENGINE_SOURCE, ActionPayload
+from core.triggers.models import TRIGGER_ENGINE_SOURCE, TRIGGER_TITLE_PREFIX, ActionPayload
 from evals.harness.bus import window_start_ms
 from evals.harness.errors import HarnessError
 from evals.harness.evidence import NotificationRecord, TriggerFire, TriggerRecord
@@ -140,6 +140,15 @@ def trigger_records(
                         action=None if action is None else action.model_dump(),
                     )
                 )
+        elif kind == "service_registered":
+            # The triggers process registers once, at start, after rehydrating every
+            # snapshot: the triggers earlier samples deleted are back (bus.delete_triggers).
+            # Only its name is read: another service's registration is not evidence.
+            if event.get("service_name") == TRIGGER_ENGINE_SOURCE:
+                raise HarnessError(
+                    "the triggers process restarted mid-sample: it brought back the "
+                    "triggers earlier samples deleted"
+                )
         elif kind == "trigger_fired":
             fire = _read(TriggerFired, event, what)
             fired.append(
@@ -195,8 +204,14 @@ def _notification(raw: str, where: str) -> Notification:
 
 
 def _record(n: Notification, t: float | None) -> NotificationRecord:
+    by_trigger = n.source == TRIGGER_ENGINE_SOURCE and n.title.startswith(TRIGGER_TITLE_PREFIX)
     return NotificationRecord(
-        t=t, title=n.title, body=n.body, urgency=str(n.urgency), source=n.source
+        t=t,
+        title=n.title,
+        body=n.body,
+        urgency=str(n.urgency),
+        source=n.source,
+        trigger=n.title.removeprefix(TRIGGER_TITLE_PREFIX) if by_trigger else None,
     )
 
 

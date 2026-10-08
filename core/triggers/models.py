@@ -14,6 +14,8 @@ from core.notifications.schema import Urgency
 # Who a trigger's fire is from: the source of the ActionRequest the engine sends for a
 # trigger with an action, and of the notification Reflex sends for one without.
 TRIGGER_ENGINE_SOURCE = "trigger-engine"
+# The title of that notification: this prefix, then the trigger's name.
+TRIGGER_TITLE_PREFIX = "Trigger: "
 
 
 class ActionPayload(BaseModel):

@@ -5,9 +5,10 @@ from datetime import UTC, datetime
 
 import pytest
 
-from bus.schemas.events import ActionRequest, TriggerCreated, TriggerFired
+from bus.schemas.events import ActionRequest, ServiceRegistered, TriggerCreated, TriggerFired
 from core.notifications.schema import Notification, Urgency
 from core.reflex.tool_registry import ToolInfo
+from core.triggers.models import TRIGGER_ENGINE_SOURCE, TRIGGER_TITLE_PREFIX
 from evals.harness.bus import Entry
 from evals.harness.checks import run_check
 from evals.harness.checks.triggers import TriggerFiredParams
@@ -28,7 +29,9 @@ STARTED = 50.0  # time.monotonic() at the same instant
 CREATED = datetime(2026, 10, 8, 18, 0, tzinfo=UTC)
 
 
-def event_entry(event: TriggerCreated | TriggerFired | ActionRequest, wall: float) -> Entry:
+def event_entry(
+    event: TriggerCreated | TriggerFired | ActionRequest | ServiceRegistered, wall: float
+) -> Entry:
     return Entry(wall=wall, data={"event": event.model_dump_json()})
 
 
@@ -254,6 +257,38 @@ def test_notifications_sent_and_held() -> None:
     ]
     held = deferred_records([note.model_dump_json()])
     assert [(n.t, n.title) for n in held] == [(None, "Trigger: Vet")]
+
+
+def test_a_trigger_engine_notification_names_its_trigger() -> None:
+    def sent(title: str, source: str) -> str:
+        return Notification(
+            title=title, body="", urgency=Urgency.URGENT, source=source
+        ).model_dump_json()
+
+    raws = [
+        sent(f"{TRIGGER_TITLE_PREFIX}Vet", TRIGGER_ENGINE_SOURCE),
+        sent(f"{TRIGGER_TITLE_PREFIX}Vet", "conscious-engine"),  # not a trigger's fire
+        sent("Vet", TRIGGER_ENGINE_SOURCE),  # no prefix: no trigger to name
+    ]
+    entries = [Entry(wall=WALL0 + 1 + i, data={"notification": r}) for i, r in enumerate(raws)]
+    assert [n.trigger for n in notification_records(entries, STARTED, WALL0)] == [
+        "Vet",
+        None,
+        None,
+    ]
+    assert [n.trigger for n in deferred_records(raws)] == ["Vet", None, None]
+
+
+def test_the_triggers_process_registering_mid_sample_is_a_harness_failure() -> None:
+    """It registers once, at start, after rehydrating every trigger snapshot: earlier
+    samples' deleted triggers are back, and their notifications would read as this one's."""
+    other = ServiceRegistered(source="home-service", service_name="home-service")
+    assert trigger_records([event_entry(other, WALL0 + 1)], STARTED, WALL0) == ([], [])
+    restarted = ServiceRegistered(source=TRIGGER_ENGINE_SOURCE, service_name=TRIGGER_ENGINE_SOURCE)
+    with pytest.raises(HarnessError, match="triggers process restarted"):
+        trigger_records([event_entry(restarted, WALL0 + 1)], STARTED, WALL0)
+    before = trigger_records([event_entry(restarted, WALL0 - 1)], STARTED, WALL0)
+    assert before == ([], [])  # the stack's own boot, before the sample
 
 
 def test_notification_records_are_this_samples_earliest_first() -> None:

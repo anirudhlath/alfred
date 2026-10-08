@@ -179,7 +179,9 @@ records each call.
 into Reflex's decisions, with Reflex's own `parse_decision` and the same tools its prompt
 showed. An entry `collect.py` recognises (a TriggerCreated, a TriggerFired, an
 `ActionRequest`, a notification) but cannot read is a harness error, so the sample scores
-`E`, not a check's "none created". Anything else on the streams is ignored.
+`E`, not a check's "none created". So is the triggers process registering in the sample's
+window: it registers only when it starts, after reloading every trigger snapshot, which
+brings back the triggers earlier samples deleted. Anything else on the streams is ignored.
 
 After each sample the driver deletes the triggers that sample created. If the sample touched
 do-not-disturb, it clears it and drops what it held. It also puts the user timezone back. A
@@ -666,14 +668,14 @@ scored separately. Params are validated at load and unknown keys are rejected.
 | `llm_tool_args_absent` | `tool`, `key` (required); `role` (default `system2`) | No call to the tool carries `key` |
 | `reply_contains` | exactly one of `text`, `any` (list), `regex`; `step` (int or `any`, default `-1`) | The reply at `step` (any reply, for `any`) contains `text` or one of `any` (case-insensitive), or `regex` matches it (`re.search`, case-insensitive). No reply at that step fails |
 | `reply_not_contains` | as `reply_contains` | No needle hits the chosen replies. No reply at that step fails |
-| `latency` | `metric` (required: `reply_ms`, `reflex_ms` or `reminder_fire_ms`), `max` (required; ms, > 0); `step` (int, default `-1`) for `reply_ms`; `at_step` for the other two | `reply_ms`: the reply at `step` arrived within `max` ms of its request. `reflex_ms`: the earliest System 1 call during the `ha_event` step was answered within `max` ms of the step's start. `reminder_fire_ms`: a `trigger-engine` notification naming the trigger was dispatched within `max` ms of the `advance_trigger` making it due |
+| `latency` | `metric` (required: `reply_ms`, `reflex_ms` or `reminder_fire_ms`), `max` (required; ms, > 0); `step` (int, default `-1`) for `reply_ms`; `at_step` for the other two | `reply_ms`: the reply at `step` arrived within `max` ms of its request. `reflex_ms`: the earliest System 1 call during the `ha_event` step was answered within `max` ms of the step's start. `reminder_fire_ms`: the notification of that trigger's fire was dispatched within `max` ms of the `advance_trigger` making it due |
 | `reflex_decision` | `decision` (required: `act`, `ask`, `none`, `invalid`, or a list of them); `tool`; `target`; `at_step` | Every System 1 call in the step's window has a decision in the set, and, for act/ask, the `tool` and `target` (entity or area id) given. `none` also passes when System 1 was not called |
 | `reflex_not_proposed` | `tool` (required); `target`; `decision` (default `[act, ask]`); `at_step` | No call in the window proposes that tool (on that target) |
 | `prompt_not_contains` | exactly one of `text`, `any`, `regex`; `role` (default `system2`) | No prompt of the role contains the text; fails when the role was never called |
 | `trigger_created` | `type` (`time`, `sensor`, `composite`), `name`, `conditions` (mapping), `run_in_seconds` (number or `{approx, tol}`), `at_local` (`{time: "HH:MM", tz}`), `urgency`, `one_shot`; all optional | A trigger System 2 created matches `type`, `name`, `conditions`, `run_in_seconds` (from creation to `run_at`), `at_local` (the `run_at`'s wall-clock time in a zone), `urgency` and `one_shot`. `name` is a case-insensitive part of the trigger's name |
 | `trigger_not_created` | `type` (optional) | No trigger (of that type) was created |
 | `trigger_fired` | `name`, `after_step`, `within_s` (needs `after_step`); all optional | A trigger created in this sample fired, within `within_s` of `after_step`'s start. A fire is a TriggerFired or, for a trigger with an action, the engine's `ActionRequest`. `name` is a case-insensitive part of the trigger's name |
-| `notification` | `urgency`, `source`, `text`, `deferred` (default `false`), `after_step`; all optional | A notification was dispatched (after `after_step`), or with `deferred: true` is still held by do-not-disturb, matching `urgency`, `source` and `text` (a case-insensitive part of the title or body). `deferred: true` reads the deferred list, so it cannot be combined with `after_step` |
+| `notification` | `urgency`, `source`, `text`, `deferred` (default `false`), `after_step`; all optional | A notification was dispatched (after `after_step`), or with `deferred: true` is still held by do-not-disturb, matching `urgency`, `source` and `text` (a case-insensitive part of the title or body). `deferred: true` reads the deferred list, so it cannot be combined with `after_step`. A `trigger-engine` notification counts only for the sample's own trigger: see below |
 | `judge` | `category` (required); `rubric` (required, at least 10 characters); `reference` (optional) | The judge answers yes to the rubric about Alfred's last reply. See below |
 
 **Reflex checks** read the System 1 calls that reached the proxy during their `at_step`
@@ -686,6 +688,16 @@ it, and each entity's area is added, so a check can name the entity or the room.
 trigger from another creator, such as the notification dispatcher's drain trigger, is not
 System 2's behaviour. Their `conditions` are as the engine normalised them: a relative delay
 is already a `run_at`.
+
+**A trigger's notification** (source `trigger-engine`, title `Trigger: <name>`) counts in
+`notification` and `reminder_fire_ms` only when it is for the sample's own trigger. That
+means a trigger the sample created, with that name, that fired before the notification was
+sent. An earlier sample's trigger can still fire into this one, under the same name:
+
+| How | What the harness does |
+|---|---|
+| It fired after its sample's 15 s wait | Its notification is not counted |
+| A restarted process reloaded it from its snapshot | The triggers process registering mid-sample is a harness error (`E`); a restarted conscious process is caught only by the rule above |
 
 **Matching values** (`evals/harness/checks/matching.py`), for `data`, `args`, `state`,
 `attributes` and `conditions`. Matching goes one way: the **expected** value's type decides

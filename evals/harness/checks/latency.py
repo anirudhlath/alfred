@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal, Self, assert_never, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from core.triggers.models import TRIGGER_ENGINE_SOURCE
+from evals.harness.checks.notifications import sample_trigger
 from evals.harness.checks.result import CheckResult, failed, passed
 
 if TYPE_CHECKING:
@@ -63,8 +63,7 @@ def _reminder_fire_ms(evidence: Evidence, step: int) -> Measured:
         for n in evidence.notifications
         if n.t is not None
         and n.t >= advance.t
-        and n.source == TRIGGER_ENGINE_SOURCE
-        and advance.name.lower() in n.title.lower()
+        and sample_trigger(evidence, n) == advance.trigger_id
     ]
     if not sent:
         return f"no notification for {advance.name!r} after it was due"

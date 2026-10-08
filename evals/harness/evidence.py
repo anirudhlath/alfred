@@ -132,6 +132,9 @@ class NotificationRecord(BaseModel):
     body: str = ""
     urgency: str
     source: str
+    # The trigger a trigger engine's notification is for, by name (its title says it).
+    # None for any other notification.
+    trigger: str | None = None
 
 
 class Advance(BaseModel):

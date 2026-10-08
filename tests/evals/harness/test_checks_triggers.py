@@ -185,13 +185,36 @@ def test_trigger_fired_name_picks_the_trigger() -> None:
 def note(
     t: float | None, title: str = "Trigger: Laundry reminder", **kw: Any
 ) -> NotificationRecord:
+    """A notification as ``collect`` records it: a trigger engine's names its trigger."""
+    source = kw.get("source", "trigger-engine")
+    trigger = title.removeprefix("Trigger: ") if source == "trigger-engine" else None
     return NotificationRecord(
         t=t,
         title=title,
         urgency=kw.get("urgency", "informational"),
-        source=kw.get("source", "trigger-engine"),
+        source=source,
         body=kw.get("body", ""),
+        trigger=trigger,
     )
+
+
+def fired(name: str, t: float, tid: str = "t1") -> TriggerFire:
+    return TriggerFire(
+        t=t,
+        trigger_id=tid,
+        name=name,
+        trigger_type="time",
+        urgency="informational",
+        fired_by="engine",
+    )
+
+
+def ours(*fires: TriggerFire) -> dict[str, Any]:
+    """Evidence fields for the sample's own triggers, created and fired as *fires* say."""
+    return {
+        "triggers_created": [rec({"run_at": "x"}, name=f.name, tid=f.trigger_id) for f in fires],
+        "triggers_fired": list(fires),
+    }
 
 
 def test_notification_sent_deferred_and_after_step() -> None:
@@ -199,6 +222,9 @@ def test_notification_sent_deferred_and_after_step() -> None:
         step_started=[0.0, 10.0],
         notifications=[note(4.0, urgency="urgent"), note(12.0, title="Trigger: Vet")],
         deferred=[note(None, title="Trigger: Plants")],
+        **ours(
+            fired("Laundry reminder", 3.0), fired("Vet", 11.0, "t2"), fired("Plants", 5.0, "t3")
+        ),
     )
 
     def check(**params: Any) -> str:
@@ -213,8 +239,36 @@ def test_notification_sent_deferred_and_after_step() -> None:
         NotificationParams(deferred=True, after_step=0)
 
 
+def test_a_trigger_engine_notification_counts_only_for_the_samples_own_fire() -> None:
+    """An earlier sample's trigger can fire late into this one, or a restarted process can
+    rehydrate it: its notification is not this sample's, even under the same name."""
+
+    def sent(**fields: Any) -> str:
+        e = evidence(notifications=[note(12.0, title="Trigger: Vet", urgency="urgent")], **fields)
+        return run_check("notification", NotificationParams(urgency="urgent"), e).status
+
+    assert sent(**ours(fired("Vet", 11.0))) == "pass"
+    assert sent() == "fail"  # a trigger the sample never created
+    assert sent(**ours(fired("Vet", 13.0))) == "fail"  # its own fire came after the note
+    created_only = {"triggers_created": [rec({"run_at": "x"}, name="Vet")]}
+    assert sent(**created_only) == "fail"  # the sample's trigger never fired
+    foreign = {**created_only, "triggers_fired": [fired("Vet", 11.0, "t-earlier")]}
+    assert sent(**foreign) == "fail"  # an earlier sample's trigger of the same name fired
+    result = run_check(
+        "notification",
+        NotificationParams(urgency="urgent"),
+        evidence(notifications=[note(12.0, title="Trigger: Vet", urgency="urgent")]),
+    )
+    assert "not this sample's trigger" in result.reason
+    # Any other source is the sample's: only a trigger's fire can come from an earlier one.
+    other = note(12.0, title="Heads up", urgency="urgent", source="conscious-engine")
+    e = evidence(notifications=[other])
+    assert run_check("notification", NotificationParams(urgency="urgent"), e).status == "pass"
+
+
 def test_notification_text_can_be_in_the_body() -> None:
-    e = evidence(notifications=[note(1.0, title="Reminder", body="Move the laundry.")])
+    sent = note(1.0, title="Reminder", body="Move the laundry.", source="conscious-engine")
+    e = evidence(notifications=[sent])
     assert run_check("notification", NotificationParams(text="laundry"), e).status == "pass"
     assert run_check("notification", NotificationParams(text="dryer"), e).status == "fail"
 
@@ -261,9 +315,14 @@ def test_reminder_fire_ms_runs_from_the_advance_to_its_notification() -> None:
         step_kinds=["user", "advance_trigger"],
         advances=[Advance(step=1, trigger_id="t1", name="Laundry reminder", t=10.0)],
         notifications=[note(9.0), note(12.5)],
+        **ours(fired("Laundry reminder", 12.0)),
     )
     result = run_check("latency", p, e)
     assert result.status == "pass" and "2500 ms" in result.reason
+    # The same name from an earlier sample's trigger, with this one's never fired.
+    foreign = e.model_copy(update={"triggers_fired": [fired("Laundry reminder", 12.0, "t0")]})
+    late = run_check("latency", p, foreign)
+    assert late.status == "fail" and "after it was due" in late.reason
     no_advance = run_check("latency", p, e.model_copy(update={"advances": []}))
     assert no_advance.status == "fail" and "brought forward" in no_advance.reason
     unsent = run_check("latency", p, e.model_copy(update={"notifications": [note(9.0)]}))

@@ -215,7 +215,9 @@ class ContainerBus:
         crashed service) after this call has emptied the hash, the deleted triggers come
         back. The window closes with the container: each suite boots its own, on a fresh
         data dir, and a sample the harness fails leaves the stack dirty, so the next
-        sample restarts it on a fresh one too."""
+        sample restarts it on a fresh one too. Inside the window, the triggers process
+        registering is a harness failure (``collect.trigger_records``), and a resurrected
+        trigger's notification is not counted (``checks.notifications.sample_trigger``)."""
         r = self._redis()
         for trigger_id in trigger_ids:
             if await r.hdel(TRIGGERS_KEY, trigger_id):

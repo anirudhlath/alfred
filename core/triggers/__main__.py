@@ -27,7 +27,7 @@ from core.memory.paths import triggers_snapshot_dir
 from core.reflex.runner import ensure_consumer_group
 from core.triggers.engine import TriggerEngine
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
-from core.triggers.models import BaseTrigger, TriggerContext
+from core.triggers.models import TRIGGER_ENGINE_SOURCE, BaseTrigger, TriggerContext
 from core.triggers.server import create_app
 from core.triggers.store import TriggerStore
 from sdk.alfred_sdk.client import AlfredClient
@@ -307,7 +307,7 @@ async def run(config: AlfredConfig) -> None:
 
     # Register CRUD tools via public AlfredClient API
     client = AlfredClient(
-        service_name="trigger-engine",
+        service_name=TRIGGER_ENGINE_SOURCE,
         service_endpoint="http://localhost:8001",
         redis_url=config.redis_url,
     )
