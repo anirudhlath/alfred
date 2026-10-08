@@ -8,7 +8,7 @@ rows:
   - {id: principle.2, section: "3", prd: "Local-first and private.", pending_suites: [privacy]}
   - {id: principle.3, section: "3", prd: "Everything describes itself.", suites: [home_control]}
   - {id: principle.4, section: "3", prd: "Deterministic and auditable.", not_llm: "typed bus schemas", tests: [tests/bus]}
-  - {id: principle.5, section: "3", prd: "Learns routines; doesn't demand programming.", pending_suites: [memory, triggers]}
+  - {id: principle.5, section: "3", prd: "Learns routines; doesn't demand programming.", suites: [triggers], pending_suites: [memory]}
   - {id: principle.6, section: "3", prd: "Sovereign services.", not_llm: "process isolation via the SDK", tests: [sdk/tests]}
   # §4.1 Conversation & channels
   - {id: 4.1.pwa-room, section: "4.1", prd: "Web app — a phone-first PWA", not_llm: "phone UI, gates and the Door", tests: [web/src/room, web/src/door, web/src/gates]}
@@ -21,11 +21,11 @@ rows:
   - {id: 4.1.speaker-id, section: "4.1", prd: "Speaker identification", pending_suites: [voice]}
   - {id: 4.1.sessions, section: "4.1", prd: "Multi-step conversations with session continuity", suites: [conversation]}
   # §4.2 Proactivity & triggers
-  - {id: 4.2.dynamic-triggers, section: "4.2", prd: "Dynamic triggers created by conversation", pending_suites: [triggers]}
-  - {id: 4.2.sensor-triggers, section: "4.2", prd: "Sensor-driven triggers on live home state", pending_suites: [triggers]}
-  - {id: 4.2.fast-reminders, section: "4.2", prd: "Sub-5-second reminder firing", pending_suites: [triggers]}
-  - {id: 4.2.client-timezone, section: "4.2", prd: "Client-timezone awareness", pending_suites: [triggers]}
-  - {id: 4.2.relative-reminders, section: "4.2", prd: "Relative reminders", pending_suites: [triggers]}
+  - {id: 4.2.dynamic-triggers, section: "4.2", prd: "Dynamic triggers created by conversation", suites: [triggers]}
+  - {id: 4.2.sensor-triggers, section: "4.2", prd: "Sensor-driven triggers on live home state", suites: [triggers]}
+  - {id: 4.2.fast-reminders, section: "4.2", prd: "Sub-5-second reminder firing", suites: [triggers]}
+  - {id: 4.2.client-timezone, section: "4.2", prd: "Client-timezone awareness", suites: [triggers]}
+  - {id: 4.2.relative-reminders, section: "4.2", prd: "Relative reminders", suites: [triggers]}
   - {id: 4.2.proactive-notifications, section: "4.2", prd: "Proactive notifications with urgency levels", pending_suites: [notifications]}
   - {id: 4.2.notification-delivery, section: "4.2", prd: "Delivery to Signal, web", pending_suites: [notifications]}
   - {id: 4.2.attention-set, section: "4.2", prd: "Reflex \"attention set\"", pending_suites: [attention]}
@@ -71,7 +71,7 @@ rows:
   - {id: 4.7.alfredctl, section: "4.7", prd: "One-command containerized deployment", not_llm: "launcher", tests: [tests/alfredctl]}
   # §7 Success criteria
   - {id: 7.reflex-latency, section: "7", prd: "Reflex latency", suites: [reflex]}
-  - {id: 7.reminder-latency, section: "7", prd: "Reminder latency", pending_suites: [triggers]}
+  - {id: 7.reminder-latency, section: "7", prd: "Reminder latency", suites: [triggers]}
   - {id: 7.onboarding, section: "7", prd: "Onboarding", not_llm: "credential flow", tests: [tests/core/channels/test_service_credentials.py]}
   - {id: 7.proactivity-quality, section: "7", prd: "Proactivity quality", pending_suites: [memory, notifications]}
   - {id: 7.cost, section: "7", prd: "Cost", not_llm: "budget accounting", tests: [tests/core/conscious/test_cost.py]}
@@ -80,5 +80,5 @@ rows:
 headings:
   - {id: 1.butler, heading: "1. What is Alfred", suites: [conversation]}
   - {id: 2.audience, heading: "2. Who it's for", pending_suites: [guest_boundary]}
-  - {id: 5.not-rules-engine, heading: "5. What Alfred is not", pending_suites: [triggers, memory]}
+  - {id: 5.not-rules-engine, heading: "5. What Alfred is not", suites: [triggers], pending_suites: [memory]}
   - {id: 6.cross-domain, heading: "6. Why Alfred is different", pending_suites: [cross_domain]}

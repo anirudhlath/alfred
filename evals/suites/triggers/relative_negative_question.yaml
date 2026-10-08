@@ -1,0 +1,8 @@
+id: triggers.relative.negative_question
+prd: [4.2.relative-reminders]
+status: shipped
+tags: [relative, negative]
+steps:
+  - user: "How long should I steep green tea?"
+expect:
+  - trigger_not_created: {}

@@ -1,0 +1,9 @@
+id: triggers.timezone.new_york_seven_pm
+prd: [4.2.client-timezone, 4.2.dynamic-triggers]
+status: shipped
+tags: [timezone]
+as: {tz: America/New_York}
+steps:
+  - user: "Remind me at 7pm to call my sister."
+expect:
+  - trigger_created: {type: time, at_local: {time: "19:00", tz: America/New_York}}

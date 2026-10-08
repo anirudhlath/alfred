@@ -12,7 +12,7 @@ from evals.harness.evidence import Evidence, Reply
 from evals.harness.scenario import CheckSpec, HaEventStep, Scenario, UserStep, load_suites
 from evals.harness.world import World, load_world
 
-SUITES = ["conversation", "home_control", "reflex"]
+SUITES = ["conversation", "home_control", "reflex", "triggers"]
 
 
 @cache
@@ -27,6 +27,7 @@ def test_every_golden_loads_and_names_real_entities() -> None:
         len(suites["conversation"]) >= 8
         and len(suites["home_control"]) >= 13
         and len(suites["reflex"]) >= 13
+        and len(suites["triggers"]) >= 9
     )
     for scenarios in suites.values():
         for s in scenarios:
@@ -329,3 +330,12 @@ def test_reflex_targets_name_a_real_entity_or_room() -> None:
         for check in s.expect:
             target = getattr(check.params, "target", None)
             assert target is None or target in names, f"{s.path}: {target}"
+
+
+def test_trigger_conditions_name_real_entities() -> None:
+    world_ids = {e.entity_id for e in load_world("apartment").entities}
+    for s in _goldens().values():
+        for check in s.expect:
+            conditions = getattr(check.params, "conditions", None) or {}
+            entity = conditions.get("entity_id")
+            assert not isinstance(entity, str) or entity in world_ids, f"{s.path}: {entity}"
