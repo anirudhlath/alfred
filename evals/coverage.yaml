@@ -42,11 +42,11 @@ rows:
   # §4.4 Smart home
   - {id: 4.4.lights-scenes, section: "4.4", prd: "Lights and scenes control", suites: [home_control, reflex]}
   - {id: 4.4.ha-onboarding, section: "4.4", prd: "Token-to-live Home Assistant onboarding", not_llm: "credential flow", tests: [tests/core/channels/test_service_credentials.py]}
-  - {id: 4.4.device-discovery, section: "4.4", prd: "Full-home device discovery", suites: [home_control]}
-  - {id: 4.4.control-surface, section: "4.4", prd: "Generated control surface", suites: [home_control]}
+  - {id: 4.4.device-discovery, section: "4.4", prd: "Full-home device discovery", pending_suites: [home_control]}
+  - {id: 4.4.control-surface, section: "4.4", prd: "Generated control surface", pending_suites: [home_control]}
   - {id: 4.4.live-state, section: "4.4", prd: "Live state streaming", suites: [home_control]}
   - {id: 4.4.reflex-judgment, section: "4.4", prd: "Reflex judgment calls", suites: [reflex]}
-  - {id: 4.4.tiered-autonomy, section: "4.4", prd: "Tiered autonomy", suites: [reflex]}
+  - {id: 4.4.tiered-autonomy, section: "4.4", prd: "Tiered autonomy", pending_suites: [reflex]}
   - {id: 4.4.critical-confirmation, section: "4.4", prd: "Confirmation required for critical actions", pending_suites: [critical_actions]}
   # §4.5 Integrations & credentials
   - {id: 4.5.adapters, section: "4.5", prd: "Weather, Apple Calendar", pending_suites: [integrations]}

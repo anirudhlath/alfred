@@ -146,13 +146,21 @@ def coverage_problems(
                     problems.append(
                         f"{e.id}: suite {suite!r} is not built; list it under pending_suites"
                     )
-            elif not any(e.id in s.prd for s in suites[suite]):
+                continue
+            citing = [s for s in suites[suite] if e.id in s.prd]
+            if not citing:
                 problems.append(f"{e.id}: no golden in {suite!r} cites it")
-        for suite in e.pending_suites:
-            if suite in suites:
+            elif all(s.status == "pending" for s in citing):
                 problems.append(
-                    f"{e.id}: suite {suite!r} is built; move it to suites and cite the row "
-                    "from a golden"
+                    f"{e.id}: only pending goldens in {suite!r} cite it; list it under "
+                    "pending_suites"
+                )
+        # A pending suite is one not built yet, or a built one whose goldens for the row
+        # are all pending: a default run evaluates the row only once a shipped one cites it.
+        for suite in e.pending_suites:
+            if any(e.id in s.prd and s.status == "shipped" for s in suites.get(suite, [])):
+                problems.append(
+                    f"{e.id}: a shipped golden in {suite!r} cites it; move it to suites"
                 )
         for test in e.tests:
             if not (repo_root / test).exists():

@@ -838,18 +838,22 @@ headings:
   success criteria table in §7. `section` and `prd` (the leading text of the row's first
   cell) find the row.
 - **`headings`** cover the sections with no table: §1, §2, §5 and §6.
-- Each entry names `suites` (built suites whose goldens cite it), `pending_suites` (suites
-  not built yet), or `not_llm` with a reason and the `tests` (or, for another repo,
-  `elsewhere`) that cover it. `tests` may also sit beside suites.
+- Each entry names one of these, and `tests` may also sit beside the first two:
+
+  | Key | Holds |
+  |---|---|
+  | `suites` | built suites in which a `shipped` golden cites it |
+  | `pending_suites` | suites not built yet, or built suites whose goldens for it are all `pending` |
+  | `not_llm` | a reason, with the `tests` (or, for another repo, `elsewhere`) that cover it |
 
 `tests/evals/test_prd_coverage.py` runs in normal CI and fails when:
 
 - a PRD row matches no entry, or more than one;
 - an entry matches no PRD row, or a heading entry names a heading the PRD lacks;
 - two entries share an id;
-- an entry names an unknown suite, lists a suite under `suites` that is not built yet, or
-  lists one under `pending_suites` that is now built;
-- a built suite in `suites` has no golden citing the entry;
+- an entry names an unknown suite, or lists a suite under `suites` that is not built yet;
+- a built suite in `suites` has no golden citing the entry, or only `pending` ones;
+- a suite in `pending_suites` has a `shipped` golden citing the entry;
 - a `tests` path does not exist;
 - a golden cites an id that `coverage.yaml` does not define.
 
@@ -861,8 +865,8 @@ headings:
    `pending_suites`, or `not_llm` with its tests.
 3. Run `.venv/bin/python -m pytest tests/evals/test_prd_coverage.py`.
 
-When a planned suite is built, move it from `pending_suites` to `suites` in every entry that
-names it, and cite those ids from its goldens.
+When a golden citing an entry ships, move its suite from `pending_suites` to `suites` in that
+entry. A `pending` golden alone never moves it: a default run skips it.
 
 ---
 
