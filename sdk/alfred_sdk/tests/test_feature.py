@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import dataclasses
+import json
 from typing import Any
 
-from sdk.alfred_sdk.feature import BaseFeature, _parse_google_docstring_args, tool
+from sdk.alfred_sdk.feature import (
+    BaseFeature,
+    ServiceManifest,
+    ToolMeta,
+    ToolParameter,
+    _parse_google_docstring_args,
+    input_schema_from_parameters,
+    tool,
+)
 
 
 def test_tool_decorator_marks_method() -> None:
@@ -370,3 +380,119 @@ def test_to_manifest_carries_audience_and_risk() -> None:
     assert by_name["tagged.turn_on"]["risk"] == "benign"
     assert by_name["tagged.unlock"]["audience"] == "conscious"
     assert by_name["tagged.unlock"]["risk"] == "critical"
+
+
+# ── input_schema: assembled from ToolParameters (hand-built tools) ──
+
+
+def test_hand_built_tool_meta_derives_input_schema() -> None:
+    meta = ToolMeta(
+        name="home.light_turn_on",
+        description="Turn on a light.",
+        parameters={
+            "target": ToolParameter(type="str", description="Area or entity.", required=True),
+            "brightness": ToolParameter(type="float", description="0-255."),
+            "data": ToolParameter(type="dict"),
+        },
+    )
+    assert meta.input_schema == {
+        "type": "object",
+        "properties": {
+            "target": {"type": "string", "description": "Area or entity."},
+            "brightness": {"type": "number", "description": "0-255."},
+            "data": {"type": "object"},
+        },
+        "required": ["target"],
+    }
+
+
+def test_parameter_json_schema_overrides_the_type_name() -> None:
+    schema = input_schema_from_parameters(
+        {
+            "mode": ToolParameter(
+                type="str",
+                description="Fan mode.",
+                json_schema={"type": "string", "enum": ["low", "high"]},
+            )
+        }
+    )
+    assert schema["properties"]["mode"] == {
+        "type": "string",
+        "enum": ["low", "high"],
+        "description": "Fan mode.",
+    }
+
+
+def test_legacy_type_names_map_like_before() -> None:
+    schema = input_schema_from_parameters(
+        {
+            "when": ToolParameter(type="datetime.datetime | None"),
+            "items": ToolParameter(type="list[str]"),
+            "n": ToolParameter(type="int"),
+            "flag": ToolParameter(type="bool"),
+            "odd": ToolParameter(type="SomethingElse"),
+        }
+    )
+    assert {name: prop["type"] for name, prop in schema["properties"].items()} == {
+        "when": "string",
+        "items": "array",
+        "n": "integer",
+        "flag": "boolean",
+        "odd": "string",
+    }
+
+
+def test_zero_parameter_tool_has_an_empty_object_schema() -> None:
+    meta = ToolMeta(name="x.ping", description="Ping.", parameters={})
+    assert meta.input_schema == {"type": "object", "properties": {}, "required": []}
+
+
+def test_explicit_input_schema_is_kept() -> None:
+    explicit = {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}
+    meta = ToolMeta(name="x.q", description="Q.", parameters={}, input_schema=explicit)
+    assert meta.input_schema == explicit
+
+
+def test_replace_keeps_input_schema_audience_and_risk() -> None:
+    meta = ToolMeta(
+        name="x.q",
+        description="Q.",
+        parameters={"q": ToolParameter(type="str", required=True)},
+        audience="reflex",
+        risk="critical",
+    )
+    copy = dataclasses.replace(meta, description="Q, enriched.")
+    assert copy.input_schema == meta.input_schema
+    assert (copy.audience, copy.risk) == ("reflex", "critical")
+
+
+class _HandBuiltFeature(BaseFeature):
+    """Tools built without a signature, like home-service's."""
+
+    feature_name = "hand"
+
+    def get_tools(self) -> list[ToolMeta]:
+        return [
+            ToolMeta(
+                name="hand.go",
+                description="Go somewhere.",
+                parameters={"to": ToolParameter(type="str", description="Where.", required=True)},
+            )
+        ]
+
+
+def test_manifest_carries_input_schema_through_json() -> None:
+    manifest = ServiceManifest(
+        service_name="svc",
+        service_endpoint="http://svc/mcp",
+        features=[_HandBuiltFeature().to_manifest()],
+    )
+    wire = json.loads(json.dumps(manifest.model_dump()))
+    tool_json = wire["features"][0]["tools"][0]
+    assert tool_json["input_schema"] == {
+        "type": "object",
+        "properties": {"to": {"type": "string", "description": "Where."}},
+        "required": ["to"],
+    }
+    # The legacy map stays on the wire, now saying which parameters are required.
+    assert tool_json["parameters"]["to"]["required"] is True

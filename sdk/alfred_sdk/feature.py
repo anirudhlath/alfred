@@ -5,20 +5,41 @@ from __future__ import annotations
 import inspect
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any, Literal, TypeVar, overload
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # ── Pydantic Manifest Models (write-side, for Redis registration) ──
 
 
+# Python type names, as `ToolParameter.type` carries them → JSON Schema types.
+JSON_TYPE_BY_PYTHON_NAME: dict[str, str] = {
+    "str": "string",
+    "int": "integer",
+    "float": "number",
+    "bool": "boolean",
+    "dict": "object",
+    "list": "array",
+}
+
+
 class ToolParameter(BaseModel):
-    """Schema for a single tool parameter in the manifest."""
+    """Schema for a single tool parameter in the manifest.
+
+    ``type`` is the legacy type name, kept on the wire for readers of ``parameters``
+    (Reflex renders the names). A hand-built tool sets ``required`` and, for an exact
+    schema, ``json_schema``; without it the schema is derived from ``type``.
+    """
 
     type: str
     description: str = ""
     default: Any = None
+    required: bool = False
+    json_schema: dict[str, Any] | None = None
 
 
 ToolAudience = Literal["reflex", "conscious"]
@@ -54,6 +75,8 @@ class ToolManifest(BaseModel):
     name: str
     description: str = ""
     parameters: dict[str, ToolParameter] = {}
+    # The tool's arguments as one JSON Schema object: what a model is offered.
+    input_schema: dict[str, Any] = {}
     audience: ToolAudience = "conscious"
     risk: ToolRisk = "benign"
 
@@ -76,18 +99,64 @@ class ServiceManifest(BaseModel):
     credentials_endpoint: str | None = None
 
 
+# ── input_schema assembly (hand-built tools) ──
+
+
+def _base_type_name(type_name: str) -> str:
+    """``"list[str]"`` → ``"list"``, ``"datetime.datetime | None"`` → ``"datetime.datetime"``."""
+    return type_name.split("|")[0].strip().split("[")[0].strip()
+
+
+def input_schema_from_parameters(parameters: Mapping[str, ToolParameter]) -> dict[str, Any]:
+    """Assemble a tool's JSON Schema from per-parameter metadata.
+
+    For tools built by hand (no signature to read) and for manifests written before
+    ``input_schema`` existed. A parameter's ``json_schema`` wins over its ``type`` name.
+
+    Args:
+        parameters: Parameter name → its metadata.
+
+    Returns:
+        An object schema with ``properties`` and ``required``.
+    """
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for name, param in parameters.items():
+        prop: dict[str, Any] = (
+            dict(param.json_schema)
+            if param.json_schema is not None
+            else {"type": JSON_TYPE_BY_PYTHON_NAME.get(_base_type_name(param.type), "string")}
+        )
+        if param.description and "description" not in prop:
+            prop["description"] = param.description
+        properties[name] = prop
+        if param.required:
+            required.append(name)
+    return {"type": "object", "properties": properties, "required": required}
+
+
 # ── ToolMeta dataclass ──
 
 
 @dataclass(frozen=True)
 class ToolMeta:
-    """Extracted metadata for a single tool method."""
+    """Extracted metadata for a single tool method.
+
+    ``input_schema`` is the tool's arguments as one JSON Schema object. Left empty, it
+    is assembled from ``parameters``.
+    """
 
     name: str
     description: str
     parameters: dict[str, ToolParameter]
     audience: ToolAudience = "conscious"
     risk: ToolRisk = "benign"
+    input_schema: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.input_schema:
+            # Frozen dataclass: object.__setattr__ is the sanctioned way to fill a derived field.
+            object.__setattr__(self, "input_schema", input_schema_from_parameters(self.parameters))
 
 
 # ── Docstring parser ──
@@ -240,6 +309,7 @@ class BaseFeature:
                 parameters=dict(t.parameters),
                 audience=t.audience,
                 risk=t.risk,
+                input_schema=t.input_schema,
             )
             for t in self.get_tools()
         ]
