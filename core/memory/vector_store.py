@@ -68,7 +68,8 @@ class VectorStore(ABC):
         """The best ``limit`` entries scoring at least ``min_similarity``, best first.
 
         Fewer than ``limit`` come back only when no other entry qualifies: that is how
-        ``ContextIndexManager.recall`` knows a store it is reading deeper has run out.
+        ``recall_hot_and_cold`` (``core/memory/recall.py``) knows a store it is reading
+        deeper has run out.
         """
 
     async def select(self, where: Mapping[str, Range]) -> list[SearchResult]:

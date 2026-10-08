@@ -4,22 +4,23 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.memory.embedding_provider import EmbeddingProvider
-    from core.memory.vector_store import VectorStore
+    from core.memory.vector_store import SearchResult, VectorStore
 
+from core.memory.recall import recall_hot_and_cold
 from core.memory.schemas import EpisodicEntry, EpisodicResult, SignificanceScore
-from core.memory.vector_store import ContextMetadata, SearchResult, record_retrievals
+from core.memory.vector_store import ContextMetadata
 
 
 class EpisodicMemory:
     """Unified episodic memory with hot (Redis) + cold (SQLite) stores.
 
     Write path: embed content + semantic_key in parallel, write to hot store.
-    Read path: search hot + cold in parallel, deduplicate by id (keep highest
-    score), apply time filter, sort descending, return top-limit results.
+    Read path: ``recall_hot_and_cold`` (``core/memory/recall.py``), the hot + cold merge
+    deliberate recall shares — filtered before the limit, each id once at its best score.
     Migration: hot → cold is a two-step caller responsibility; this class only
     deletes the hot entry once called via migrate_to_cold().
     """
@@ -68,50 +69,32 @@ class EpisodicMemory:
         *,
         update_stats: bool = True,
     ) -> list[EpisodicResult]:
-        """Search hot + cold in parallel, deduplicate, rank by score descending.
+        """The best ``limit`` memories across hot and cold, by score descending.
 
         Args:
             query: Natural-language search string to embed and match.
-            limit: Maximum number of results to return after merging both stores.
-            since: Exclude entries older than this datetime.
+            limit: Maximum number of results to return after merging both stores; it
+                counts only what ``types`` and ``since`` keep (issue #311).
+            since: Exclude entries older than this datetime (timestamp-0 entries —
+                semantic sections and routines — are timeless and kept).
             types: Optional list of memory type strings to filter by (e.g. ["episodic"]).
             update_stats: When True (default), persist retrieval_count/last_retrieved
                 to the hot store for every hot result returned.  Pass False from
                 read-only admin callers to avoid perturbing decay-relevant stats.
+
+        The merge is ``recall_hot_and_cold``'s, shared with ``ContextIndexManager.recall``
+        — including that a cold-store failure fails the recall.
         """
-        query_emb = await self._embedder.embed(query)
-
-        filters: dict[str, str | float | int] | None = None
-        if types:
-            filters = {"type": "|".join(types)}
-
-        hot_results, cold_results = await asyncio.gather(
-            self._hot.search(query_emb, limit=limit, filters=filters),
-            self._cold.search(query_emb, limit=limit, filters=filters),
+        merged = await recall_hot_and_cold(
+            query,
+            self._embedder,
+            self._hot,
+            self._cold,
+            limit,
+            types=types,
+            since=since,
+            update_stats=update_stats,
         )
-
-        # Deduplicate by id, keeping highest score
-        best: dict[str, tuple[SearchResult, Literal["hot", "cold"]]] = {}
-        for r in hot_results:
-            best[r.id] = (r, "hot")
-        for r in cold_results:
-            if r.id not in best or r.score > best[r.id][0].score:
-                best[r.id] = (r, "cold")
-
-        # Filter by time if requested
-        merged: list[tuple[SearchResult, Literal["hot", "cold"]]] = list(best.values())
-        if since:
-            since_ts = since.timestamp()
-            merged = [(r, s) for r, s in merged if r.metadata.timestamp >= since_ts]
-
-        # Sort by score descending, take top limit
-        merged.sort(key=lambda x: x[0].score, reverse=True)
-        merged = merged[:limit]
-
-        # Persist retrieval stats for hot-store results (cold results have no hash
-        # to update). Shares one implementation with ContextIndexManager.
-        if update_stats:
-            await record_retrievals(self._hot, [sr for sr, store in merged if store == "hot"])
 
         # Convert to EpisodicResult, increment retrieval_count
         episodic_results: list[EpisodicResult] = []
