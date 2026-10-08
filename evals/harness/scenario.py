@@ -139,6 +139,13 @@ def step_kind(value: Any) -> StepKind | None:
     return kinds[0] if len(kinds) == 1 else None
 
 
+def _a_step(kind: StepKind | None) -> str:
+    """The kind with its article, for an error: "a user step", "an advance_trigger step".
+    By sound, not spelling: a kind starting with a, e, i or o takes "an"; "user" does not."""
+    article = "an" if kind and kind[0] in "aeio" else "a"
+    return f"{article} {kind} step"
+
+
 # Tagged so a field error names its step: ``steps.1.ha_event.ha_event.state``.
 Step = Annotated[
     Annotated[UserStep, Tag("user")]
@@ -252,9 +259,9 @@ class Scenario(BaseModel):
                 continue
             at = getattr(check.params, "at_step", None)
             if at is None and wanted not in kinds:
-                raise ValueError(f"expect.{i} ({check.name}) needs a {wanted} step")
+                raise ValueError(f"expect.{i} ({check.name}) needs {_a_step(wanted)}")
             if at is not None and kinds[at] != wanted:
-                raise ValueError(f"expect.{i}.at_step {at} is a {kinds[at]} step, not {wanted}")
+                raise ValueError(f"expect.{i}.at_step {at} is {_a_step(kinds[at])}, not {wanted}")
         return self
 
 
