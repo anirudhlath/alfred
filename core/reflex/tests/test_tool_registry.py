@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.reflex.tool_registry import ToolRegistry, legacy_input_schema
+from core.reflex.tool_registry import ToolInfo, ToolRegistry, legacy_input_schema
 
 
 def _make_manifest(service_name: str, features: list[dict[str, Any]]) -> str:
@@ -289,6 +289,8 @@ _VALID_SCHEMA = {"type": "object", "properties": {}, "required": []}
         pytest.param({"name": None}, id="null-name"),
         pytest.param({"name": ""}, id="empty-name"),
         pytest.param({"name": "f.x", "description": 5}, id="non-string-description"),
+        pytest.param({"name": "f.x", "audience": "everyone"}, id="unknown-audience"),
+        pytest.param({"name": "f.x", "risk": 5}, id="non-string-risk"),
         pytest.param(
             {"name": "f.bad", "input_schema": _VALID_SCHEMA, "parameters": {"p": "x"}},
             id="schema-with-malformed-parameters",
@@ -305,6 +307,20 @@ async def test_malformed_tool_is_skipped_alone(
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
     assert len(warnings) == 1
     assert warnings[0].startswith("Skipping malformed tool")
+
+
+@pytest.mark.parametrize("field_name", ["feature_name", "feature_description", "target_service"])
+def test_tool_info_refuses_a_non_string_feature_or_service(field_name: str) -> None:
+    fields: dict[str, Any] = {
+        "name": "f.x",
+        "description": "",
+        "parameters": {},
+        "feature_name": "f",
+        "feature_description": "",
+        "target_service": "svc",
+    }
+    with pytest.raises(ValueError, match=field_name):
+        ToolInfo(**{**fields, field_name: 5})
 
 
 @pytest.mark.asyncio

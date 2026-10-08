@@ -422,8 +422,10 @@ says so, or, without a `required` key, when it has no `default` key. Old SDKs wr
 ([#300](https://github.com/anirudhlath/alfred/issues/300)).
 
 One malformed entry never takes the others down. A tool whose name is missing or empty,
-whose description is not a string, whose `parameters` are malformed, or whose
-`input_schema` fails the SDK's `check_object_schema()` is skipped with a
+whose description (or its feature's name or description) is not a string, whose
+`audience` or `risk` is not one the SDK's `ToolAudience`/`ToolRisk` allow, whose
+`parameters` are malformed, or whose `input_schema` fails the SDK's
+`check_object_schema()` is skipped with a
 `Skipping malformed tool` WARNING. A feature that is not an object, or whose `tools` are
 not a list, is skipped with a `Skipping malformed feature` WARNING. A service whose
 manifest is not a JSON object, or whose `features` are not a list, is skipped with a
