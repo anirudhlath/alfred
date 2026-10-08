@@ -6,7 +6,7 @@ import inspect
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar, get_origin, overload
 
 from pydantic import (
     BaseModel,
@@ -15,6 +15,7 @@ from pydantic import (
     PydanticUserError,
     create_model,
 )
+from pydantic.fields import FieldInfo
 from pydantic.json_schema import GenerateJsonSchema
 
 if TYPE_CHECKING:
@@ -293,6 +294,29 @@ def _strip_titles(node: Any) -> Any:
     return out
 
 
+def _sets_a_field_default(param: inspect.Parameter, hint: Any) -> bool:
+    """Whether a pydantic ``Field`` sets the parameter's default, where a call never sees it.
+
+    ``x: int = Field(5)`` makes the ``FieldInfo`` itself the Python default, and a
+    ``Field(default=...)`` or ``Field(default_factory=...)`` inside ``Annotated`` is
+    a default only the schema knows: either way, the schema and the call disagree.
+
+    Args:
+        param: The tool's parameter.
+        hint: Its resolved type hint, ``Annotated`` metadata kept.
+
+    Returns:
+        True when a ``Field`` holds the default instead of the signature.
+    """
+    if isinstance(param.default, FieldInfo):
+        return True
+    if get_origin(hint) is Annotated:
+        return any(
+            isinstance(meta, FieldInfo) and not meta.is_required() for meta in hint.__metadata__
+        )
+    return False
+
+
 def _signature_input_schema(
     qualified_name: str,
     params: list[inspect.Parameter],
@@ -378,10 +402,11 @@ def _extract_tool_meta(
 
     Raises:
         TypeError: A parameter cannot be passed by keyword (``*args``, ``**kwargs``,
-            positional-only), a type hint cannot be resolved (usually a type imported
-            under ``if TYPE_CHECKING:`` in a module with ``from __future__ import
-            annotations``), a type cannot be described as JSON Schema, or a parameter
-            without a default is hidden from the schema.
+            positional-only), a pydantic ``Field`` sets a parameter's default (``= Field(5)``,
+            or ``default``/``default_factory`` in ``Annotated``), a type hint cannot be
+            resolved (usually a type imported under ``if TYPE_CHECKING:`` in a module with
+            ``from __future__ import annotations``), a type cannot be described as JSON
+            Schema, or a parameter without a default is hidden from the schema.
     """
     from typing import get_type_hints
 
@@ -408,6 +433,12 @@ def _extract_tool_meta(
             raise TypeError(
                 f"Tool '{qualified_name}': parameter '{param.name}' must be passable by "
                 "keyword (no *args, **kwargs or positional-only parameters)"
+            )
+        if _sets_a_field_default(param, hints.get(param.name)):
+            raise TypeError(
+                f"Tool '{qualified_name}': parameter '{param.name}' takes its default from a "
+                "pydantic Field, which a call to the method never applies; put the default on "
+                "the parameter itself (`x: Annotated[int, Field(ge=0)] = 5`)"
             )
 
     input_schema = _signature_input_schema(qualified_name, params, hints, doc_args)
