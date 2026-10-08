@@ -6,11 +6,16 @@ one process, so their clocks agree.
 
 from __future__ import annotations
 
+from datetime import datetime  # noqa: TC003 — Pydantic resolves TriggerRecord.created_at
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 Role = Literal["system1", "system2", "librarian", "unknown"]
+Decision = Literal["act", "ask", "none", "invalid"]
+Urgency = Literal["informational", "important", "urgent"]
+StepKind = Literal["user", "ha_event", "wait", "clock", "advance_trigger", "dnd"]
+STEP_KINDS: tuple[StepKind, ...] = ("user", "ha_event", "wait", "clock", "advance_trigger", "dnd")
 
 
 class TranscriptTurn(BaseModel):
@@ -60,6 +65,77 @@ class LlmCall(BaseModel):
     completion_tokens: int | None = None
 
 
+class ReflexCall(BaseModel):
+    """One System 1 call, parsed the way Reflex parses it (``core.reflex.decision``)."""
+
+    t: float  # when the request reached the proxy
+    latency_ms: float
+    decision: Decision
+    reason: str = ""
+    tool: str | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    # Entity and area ids the proposal names, plus each named entity's area and each named
+    # area's entities in the tool's domain, so a check can name either.
+    targets: list[str] = Field(default_factory=list)
+    problem: str | None = None
+    local_hour: int | None = None  # the hour the prompt's clock line showed
+
+    @property
+    def done(self) -> float:
+        """When System 1's reply came back: Reflex has decided."""
+        return self.t + self.latency_ms / 1000
+
+
+class TriggerRecord(BaseModel):
+    """A trigger System 2 created through its tool (``TriggerCreated`` on alfred:events)."""
+
+    t: float
+    trigger_id: str
+    trigger_type: str
+    name: str
+    created_by: str
+    conditions: dict[str, Any] = Field(default_factory=dict)  # normalised: run_at, never a delay
+    urgency: str = "informational"
+    one_shot: bool = False
+    created_at: datetime  # the event's own timestamp, the base a relative delay ran from
+
+
+class TriggerFire(BaseModel):
+    """``TriggerFired`` on alfred:events: a trigger with no action fired."""
+
+    t: float
+    trigger_id: str
+    name: str
+    trigger_type: str
+    urgency: str
+    fired_by: str
+
+
+class NotificationRecord(BaseModel):
+    t: float | None = None  # None for one read off the deferred list
+    title: str
+    body: str = ""
+    urgency: str
+    source: str
+
+
+class Advance(BaseModel):
+    """An ``advance_trigger`` step pulled this trigger's run_at to now at ``t``."""
+
+    step: int
+    trigger_id: str
+    name: str
+    t: float
+
+
+class ClockSet(BaseModel):
+    """A ``clock`` step set the user's zone to ``tz`` so the local hour was ``hour``."""
+
+    step: int
+    hour: int
+    tz: str
+
+
 class Evidence(BaseModel):
     scenario_id: str
     variant: int
@@ -73,9 +149,41 @@ class Evidence(BaseModel):
     ha_calls: list[HaCall] = Field(default_factory=list)
     ha_states: dict[str, HaState] = Field(default_factory=dict)
     llm_calls: list[LlmCall] = Field(default_factory=list)
+    step_kinds: list[StepKind] = Field(default_factory=list)
+    reflex: list[ReflexCall] = Field(default_factory=list)
+    triggers_created: list[TriggerRecord] = Field(default_factory=list)
+    triggers_fired: list[TriggerFire] = Field(default_factory=list)
+    notifications: list[NotificationRecord] = Field(default_factory=list)  # dispatched
+    deferred: list[NotificationRecord] = Field(default_factory=list)  # still held at the end
+    advances: list[Advance] = Field(default_factory=list)
+    clocks: list[ClockSet] = Field(default_factory=list)
 
     def calls_after_step(self, step: int | None) -> list[HaCall]:
         if step is None:
             return list(self.ha_calls)
         start = self.step_started[step]
         return [c for c in self.ha_calls if c.t >= start]
+
+    def step_index(self, step: int) -> int:
+        """*step* (which counts every step, -1 the last) as a non-negative index."""
+        n = len(self.step_started)
+        if not -n <= step < n:
+            raise IndexError(f"step {step} is outside the sample's {n} steps")
+        return step % n
+
+    def step_window(self, step: int) -> tuple[float, float]:
+        """From the step's start to the next step's, or to the sample's end."""
+        i = self.step_index(step)
+        end = self.step_started[i + 1] if i + 1 < len(self.step_started) else self.ended_at
+        return self.step_started[i], end
+
+    def last_step(self, kind: StepKind) -> int | None:
+        return next(
+            (i for i in range(len(self.step_kinds) - 1, -1, -1) if self.step_kinds[i] == kind),
+            None,
+        )
+
+    def clock_at(self, step: int) -> ClockSet | None:
+        """The clock a step ran under: the last clock step at or before it."""
+        i = self.step_index(step)
+        return next((c for c in reversed(self.clocks) if c.step <= i), None)

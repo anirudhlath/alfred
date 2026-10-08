@@ -17,6 +17,7 @@ def evidence(
     llm_calls: list[LlmCall] | None = None,
     step_started: list[float] | None = None,
     latencies: list[float] | None = None,
+    **extra: Any,
 ) -> Evidence:
     texts = replies or []
     lat = latencies or [1000.0] * len(texts)
@@ -36,6 +37,7 @@ def evidence(
         ha_calls=ha_calls or [],
         ha_states=ha_states or {},
         llm_calls=llm_calls or [],
+        **extra,
     )
 
 
