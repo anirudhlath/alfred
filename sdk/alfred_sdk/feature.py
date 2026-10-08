@@ -204,6 +204,7 @@ class ToolMeta:
     is assembled from ``parameters``. Passed in, it must pass ``check_object_schema``
     (construction raises ``TypeError`` naming the tool otherwise), and a deep copy of
     it is kept, so the caller changing its dict later cannot change this frozen meta.
+    ``parameters`` is copied into a new dict for the same reason.
 
     ``dataclasses.replace(meta, parameters=new)`` keeps the old ``input_schema``, which
     then no longer matches ``new``; pass ``input_schema={}`` as well to re-derive it.
@@ -217,6 +218,8 @@ class ToolMeta:
     input_schema: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # A new dict: keys the caller adds or removes later cannot drift from the schema.
+        object.__setattr__(self, "parameters", dict(self.parameters))
         if not self.input_schema:
             # Frozen dataclass: object.__setattr__ is the sanctioned way to fill a derived field.
             object.__setattr__(self, "input_schema", input_schema_from_parameters(self.parameters))

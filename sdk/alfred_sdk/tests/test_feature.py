@@ -535,6 +535,15 @@ def test_mutating_the_callers_json_schema_leaves_the_parameter_alone() -> None:
     assert meta.input_schema["properties"]["mode"] == {"type": "string", "enum": ["low", "high"]}
 
 
+def test_changing_the_callers_parameters_dict_leaves_the_meta_alone() -> None:
+    parameters = {"q": ToolParameter(type="str", required=True)}
+    meta = ToolMeta(name="x.q", description="Q.", parameters=parameters)
+    parameters["extra"] = ToolParameter(type="int")
+    del parameters["q"]
+    assert list(meta.parameters) == ["q"]
+    assert list(meta.input_schema["properties"]) == ["q"]
+
+
 def test_a_derived_schema_shares_nothing_with_the_parameters() -> None:
     meta = ToolMeta(
         name="x.m",
