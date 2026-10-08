@@ -33,9 +33,9 @@ changes it for every role at once.
 The harness is built on [Inspect AI](https://inspect.aisi.org.uk): one Inspect task per
 suite, epochs for model noise, and Inspect's local log viewer for every failure.
 
-Slice 1 (this document) ships two suites, `home_control` and `conversation`, against one
-world, `apartment`. The design and the later slices are in
-`docs/superpowers/specs/2026-10-06-prd-eval-suite-design.md`.
+Slices 1 and 2 (this document) ship five suites against one world, `apartment`:
+`home_control` and `conversation`, then `reflex`, `triggers` and `notifications`. The design
+and the later slices are in `docs/superpowers/specs/2026-10-06-prd-eval-suite-design.md`.
 
 The memory-decay eval is separate and unchanged: `python -m evals memory` (or
 `alfred evals memory`, which passes its arguments through), documented in
@@ -50,7 +50,9 @@ flowchart LR
     CLI["alfred evals run"] --> Inspect["Inspect task per suite"]
     Inspect --> Driver["driver (solver)"]
     Driver -->|"XADD UserRequest / read AlfredResponse"| Redis
-    Driver -.->|"admin API: triggers, memory, librarian, DND (slices 2-4)"| Channels
+    Driver -->|"bus.py: triggers, notifications, timezone"| Redis
+    Driver -->|"bus.py: POST /api/admin/dnd"| Channels
+    Driver -.->|"admin API: memory, librarian (slice 4)"| Channels
     subgraph Container["throwaway Alfred container (alfredctl up --eval)"]
         Redis[(Redis)]
         Channels[channels + admin API]
@@ -108,15 +110,16 @@ is a harness error. For an `ha_event` step it pushes the state change, then wait
 fake HA to receive a `call_service` that an outstanding `ha_called` check wants — one that
 could count a call from that step and that no call so far in its range satisfies — up to
 30 s, then the 2 s settle; any other call does not end the wait. With no check outstanding
-it waits a 5 s window. When
-the steps are done it waits for every LLM call sent since the sample started and still
-upstream to be recorded (a call is recorded when vLLM answers, stamped with when it reached
+it waits a 5 s window. A golden that watches Reflex (see [One sample](#one-sample)) waits
+instead for System 1's answer to the event, up to 15 s. When the steps are done it waits
+for every LLM call sent since the sample started and still upstream to be recorded (a call
+is recorded when vLLM answers, stamped with when it reached
 the proxy; up to 120 s, then a harness error). A call from before the sample started, such
 as one a restarted container left upstream, never enters its window and is not waited on.
 Then it collects the **evidence** (`evals/harness/evidence.py`): the transcript, every
 reply with its latency, the fake HA's calls and the proxy's LLM calls inside the sample's
-time window, and the fake HA's final states. Evidence is the only input the checks and the
-judge see.
+time window, the fake HA's final states, and what the bus holds (see [The bus](#the-bus)).
+Evidence is the only input the checks and the judge see.
 
 **The stack** (`evals/harness/stack.py`) boots one throwaway container per suite with
 `alfredctl up --eval` (see "Eval mode" in `docs/containerization.md`) on a fresh data dir.
@@ -148,6 +151,37 @@ spent, every later sample that needs one errors at once, saying why. A restart t
 **broken**: the container may still be running, but every later sample in the suite errors
 at once instead of waiting out its reply timeout.
 
+### The bus
+
+The driver reads and acts on the eval container through `evals/harness/bus.py`.
+
+- **Reads:**
+  - triggers created and fired, from `alfred:events`;
+  - fires of triggers that have an action, from `alfred:actions`: such a trigger fires as
+    an `ActionRequest` (source `trigger-engine`) there instead of a TriggerFired. A
+    confirmed `ActionRequest` is ignored: it is a critical action the routing layer
+    re-publishes under its original source once the user confirms it, not a fire;
+  - notifications, from the dispatch stream and the deferred list;
+  - Reflex's tools, the registry's reflex-audience ones.
+- **Acts:**
+  - pulls a trigger's `run_at` to now (`advance_trigger`);
+  - sets do-not-disturb through `POST /api/admin/dnd`, with an admin session minted for
+    that one call;
+  - sets the stored user timezone (`clock`).
+
+Every wait is event-driven: waiting for a fire is a blocking `XREAD` on `alfred:events` and
+`alfred:actions`, and waiting for System 1 wakes as the proxy records each call.
+
+`collect.py` turns bus entries into evidence. `reflex.py` turns System 1's recorded replies
+into Reflex's decisions, with Reflex's own `parse_decision` and the same tools its prompt
+showed. An entry `collect.py` recognises (a TriggerCreated, a TriggerFired, an
+`ActionRequest`, a notification) but cannot read is a harness error, so the sample scores
+`E`, not a check's "none created". Anything else on the streams is ignored.
+
+After each sample the driver deletes the triggers that sample created. If the sample touched
+do-not-disturb, it clears it and drops what it held. It also puts the user timezone back. A
+sample that failed is not cleaned up: its stack is dirty and restarts.
+
 ### One sample
 
 ```mermaid
@@ -163,6 +197,7 @@ sequenceDiagram
     T->>T: setup: restart if isolated, recover if dead or dirty
     T->>D: play(variant, epoch)
     D->>H: restore_world() (push drifted entities back)
+    D->>D: a golden that watches Reflex waits 6 s
     D->>R: XADD alfred:user:requests UserRequest
     R->>A: conscious reads the request
     A->>P: POST /v1/chat/completions (tools offered)
@@ -173,10 +208,15 @@ sequenceDiagram
     H-->>A: state_changed, then the result
     A->>R: XADD alfred:user:responses AlfredResponse
     R-->>D: the reply for this session id
-    D->>D: settle 2 s, wait for in-flight LLM calls, collect Evidence
+    D->>D: settle 2 s, wait for in-flight LLM calls, collect Evidence, clean up
     D-->>T: Evidence in the sample store
     T->>T: scorer: deterministic checks, then judge rubrics
 ```
+
+A golden with a reflex check (`reflex_decision`, `reflex_not_proposed`, or a `reflex_ms`
+latency), or a `prompt_not_contains` on `system1`, waits 6 s first. Reflex ignores an entity
+for 5 s after it fires, and the restore may just have made it fire. Such a golden *watches
+Reflex*: after each `ha_event` the driver waits for System 1's answer, not for an HA call.
 
 ---
 
@@ -380,7 +420,7 @@ Each sample epoch scores one value:
 | `C` | Every counted check passed | — |
 | `I` | A counted check failed | Yes |
 | `N` | Inconclusive: no counted check failed, but one errored (a judge with no verdict, a check that raised), or nothing counted at all (only untrusted judge checks) | No |
-| `E` | The harness failed: no reply from System 2 in time (the reason adds the LLM upstream's non-2xx answers in that window, such as `502 ×2`, when the proxy saw any, and the calls a hung vLLM still holds, such as `2 LLM calls still upstream after 95s`), a dead, dirty or broken stack, unreadable data. Inspect retries the sample once first | No |
+| `E` | The harness failed: no reply from System 2 in time (the reason adds the LLM upstream's non-2xx answers in that window, such as `502 ×2`, when the proxy saw any, and the calls a hung vLLM still holds, such as `2 LLM calls still upstream after 95s`), a dead, dirty or broken stack, unreadable data (a bus entry the harness recognises but cannot read, among them). Inspect retries the sample once first | No |
 
 A check is **counted** unless it is a judge check in an untrusted category.
 
@@ -441,14 +481,16 @@ uv run inspect view --log-dir evals/logs/<run>
 Each sample shows:
 
 - **Messages:** the transcript — user turns, Alfred's replies, and `[home event]` turns for
-  `ha_event` steps.
+  `ha_event`, `clock`, `advance_trigger` and `dnd` steps.
 - **Score explanation:** one line per check, `PASS`, `FAIL` or `ERROR`, then the check's
   name and reason. A `*` after the status (`FAIL*`) marks a check that did not count: a
   judge check in an untrusted category, whose reason also reads `[<category>, untrusted]`.
   Judge lines carry the rubric, the answer and the judge's rationale.
 - **Store → `evidence`:** everything the checks saw. Each LLM call has its role, the full
   messages, the tools offered, the tool calls and arguments, tokens and latency; each HA
-  call its domain, service, data and targets; and the fake HA's final states.
+  call its domain, service, data and targets; the fake HA's final states; Reflex's
+  decisions; and the triggers created and fired, the notifications sent and those still
+  deferred.
 
 ---
 
@@ -495,8 +537,16 @@ expect:
 | Step | Fields | What the driver does |
 |---|---|---|
 | `user: <text>` | `variants: [<text>, …]`, `as: {…}` | Sends the utterance and waits for System 2's reply, then 2 s for side effects. `as` overrides the golden's actor for this step, which is how a conversation moves between channels |
-| `ha_event: {entity_id, state, attributes}` | `settle: <seconds>` | Pushes a state change through the fake HA, merging `attributes` into the entity's current ones. While an `ha_called` check that could count a call from this step (it has no `after_step`, or one at or before this step) is still unmet, it then waits for a `call_service` that check wants, up to 30 s, and 2 s more for side effects once one arrives; any other call does not end the wait. With no such check outstanding it waits a 5 s window. `settle` replaces the 30 s or the 5 s |
+| `ha_event: {entity_id, state, attributes}` | `settle: <seconds>` | Pushes a state change through the fake HA, merging `attributes` into the entity's current ones. While an `ha_called` check that could count a call from this step (it has no `after_step`, or one at or before this step) is still unmet, it then waits for a `call_service` that check wants, up to 30 s, and 2 s more for side effects once one arrives; any other call does not end the wait. With no such check outstanding it waits a 5 s window. In a golden that watches Reflex (see [One sample](#one-sample)) it waits instead for System 1's answer, up to 15 s. `settle` replaces the 30 s, the 5 s or the 15 s |
 | `wait: <seconds>` | — | Lets time pass (more than 0, at most 600) |
+| `clock: {hour: H}` | — | Sets the user's zone to the `Etc/GMT±N` zone whose local hour is H now. Reflex's clock is UTC shown in that zone. Never runs in an hour's last two minutes: there it first waits for the next hour. The reflex checks error if the prompt showed another hour |
+| `advance_trigger: {name: …}` | `settle: <seconds>` | Makes the newest one-time trigger (one with a `run_at`) the sample created due now, optionally narrowed by `name`, a case-insensitive part of its name. Then waits up to 15 s (`settle`) for it to fire, as a TriggerFired or, for a trigger with an action, its `ActionRequest`, and 2 s more once it has. With no such trigger, the transcript says so and the checks score it. `advance_trigger: {}` takes the newest |
+| `dnd: on` / `dnd: off` | `settle: <seconds>` | Sets do-not-disturb through the admin API, then settles 3 s (`settle` replaces it). Turning it off drains what it held; the drain runs in the conscious process, so give `settle` time for it |
+
+**`clock` and `user` steps.** Conscious stores the zone every request carries (the actor's
+`tz`) before it answers (`process_request` in `core/conscious/engine.py`), so a `user` step
+after a `clock` step undoes it, and the reflex checks then error on the hour. Put `clock`
+after the last `user` step. The driver puts the stored zone back after the sample either way.
 
 **Variants.** One `user` step may carry `variants`. The step's own `user` text runs as
 sample `<id>` (variant 0), and each variant adds a sample on top, `<id>~1`, `<id>~2` and so
@@ -516,7 +566,9 @@ depends on a fresh stack.
 
 YAML reads a bare `on`, `off`, `yes` or `no` as a boolean. HA states are strings, so quote
 them: `state: "on"`. The schema rejects a boolean where a string belongs, so the mistake
-fails at load instead of matching nothing. The same holds in the world file.
+fails at load instead of matching nothing. The same holds in the world file. The `dnd` step
+is the exception: it takes the boolean, so write it bare (`dnd: on`); a quoted `"on"` fails
+at load.
 
 ### Step indexes
 
@@ -525,11 +577,16 @@ indexes, so `-1` is the last.
 
 | Field | Used by | Counts | Default |
 |---|---|---|---|
-| `step` | `reply_contains`, `reply_not_contains`, `latency` | **User steps** (each produces one reply). `step: 0` is the first reply. Reply checks also take `step: any`: any reply | `-1`, the last reply |
-| `after_step` | `ha_called` | **All steps**, whatever their kind. Only HA calls made from that step's start onward count | none: every call in the sample |
+| `step` | `reply_contains`, `reply_not_contains`, `latency` (`reply_ms`) | **User steps** (each produces one reply). `step: 0` is the first reply. Reply checks also take `step: any`: any reply | `-1`, the last reply |
+| `after_step` | `ha_called`, `trigger_fired`, `notification` | **All steps**, whatever their kind. Only HA calls, fires and notifications from that step's start onward count | none: everything in the sample |
 
 In a golden with steps `[ha_event, user, user]`, the second reply is `step: 1` (or `-1`),
 and the calls made from the first `user` step on are `after_step: 1`.
+
+`at_step` (reflex checks and the `reflex_ms`/`reminder_fire_ms` latencies) counts every
+step, like `after_step`. It defaults to the golden's last `ha_event` (reflex) or
+`advance_trigger` (reminders). The loader rejects an `at_step` that names a step of the
+wrong kind.
 
 ### Identity
 
@@ -552,14 +609,20 @@ unauthenticated session.
 At load (`evals/harness/scenario.py`), so a mistake fails before a container boots: the id's
 shape and suite prefix, unique ids, known check names and valid params, exactly one step kind
 per step, at most one step with variants, at least one `user` step when a check reads a
-reply (`reply_*`, `latency`, `judge`), and every `after_step` names a real step (it counts
-every step, so a golden with 3 steps takes `-3` to `2`).
+reply (`reply_*`, a `reply_ms` latency, `judge`), a step of the kind a check reads (an
+`ha_event` for a reflex check or a `reflex_ms` latency, an `advance_trigger` for
+`reminder_fire_ms`), and every `after_step` and `at_step` names a real step (both count
+every step, so a golden with 3 steps takes `-3` to `2`), with `at_step` on a step of that
+kind.
 
 `tests/evals/test_goldens_load.py` adds what needs the world: every `entity_id` in an
 `ha_event` or a check exists in it; every reply `step` names a real user step; every
-`domain`/`service` a check names is a service the world offers; and every home tool a check
-names is one home-service would generate, `home.{domain}_{service}`. It also pins the reply
-patterns of a few goldens to phrasings they must accept and near misses they must reject.
+`domain`/`service` a check names is a service the world offers; every home tool a check
+names is one home-service would generate, `home.{domain}_{service}`; every reflex `target`
+is an entity or an area in the world; and every `entity_id` in a trigger's `conditions` (a
+`trigger_created`'s, or those System 2 is expected to send `create_trigger`) exists in it.
+It also pins the reply patterns of a few goldens to phrasings they must accept and near
+misses they must reject.
 
 ### Good goldens
 
@@ -595,11 +658,29 @@ scored separately. Params are validated at load and unknown keys are rejected.
 | `llm_tool_args_absent` | `tool`, `key` (required); `role` (default `system2`) | No call to the tool carries `key` |
 | `reply_contains` | exactly one of `text`, `any` (list), `regex`; `step` (int or `any`, default `-1`) | The reply at `step` (any reply, for `any`) contains `text` or one of `any` (case-insensitive), or `regex` matches it (`re.search`, case-insensitive). No reply at that step fails |
 | `reply_not_contains` | as `reply_contains` | No needle hits the chosen replies. No reply at that step fails |
-| `latency` | `metric` (required; `reply_ms`, the only metric in slice 1), `max` (required; ms, > 0); `step` (int, default `-1`) | The reply at `step` arrived within `max` ms of its request |
+| `latency` | `metric` (required: `reply_ms`, `reflex_ms` or `reminder_fire_ms`), `max` (required; ms, > 0); `step` (int, default `-1`) for `reply_ms`; `at_step` for the other two | `reply_ms`: the reply at `step` arrived within `max` ms of its request. `reflex_ms`: the earliest System 1 call during the `ha_event` step was answered within `max` ms of the step's start. `reminder_fire_ms`: a `trigger-engine` notification naming the trigger was dispatched within `max` ms of the `advance_trigger` making it due |
+| `reflex_decision` | `decision` (required: `act`, `ask`, `none`, `invalid`, or a list of them); `tool`; `target`; `at_step` | Every System 1 call in the step's window has a decision in the set, and, for act/ask, the `tool` and `target` (entity or area id) given. `none` also passes when System 1 was not called |
+| `reflex_not_proposed` | `tool` (required); `target`; `decision` (default `[act, ask]`); `at_step` | No call in the window proposes that tool (on that target) |
+| `prompt_not_contains` | exactly one of `text`, `any`, `regex`; `role` (default `system2`) | No prompt of the role contains the text; fails when the role was never called |
+| `trigger_created` | `type` (`time`, `sensor`, `composite`), `name`, `conditions` (mapping), `run_in_seconds` (number or `{approx, tol}`), `at_local` (`{time: "HH:MM", tz}`), `urgency`, `one_shot`; all optional | A trigger System 2 created matches `type`, `name`, `conditions`, `run_in_seconds` (from creation to `run_at`), `at_local` (the `run_at`'s wall-clock time in a zone), `urgency` and `one_shot`. `name` is a case-insensitive part of the trigger's name |
+| `trigger_not_created` | `type` (optional) | No trigger (of that type) was created |
+| `trigger_fired` | `name`, `after_step`, `within_s` (needs `after_step`); all optional | A trigger created in this sample fired, within `within_s` of `after_step`'s start. A fire is a TriggerFired or, for a trigger with an action, the engine's `ActionRequest` |
+| `notification` | `urgency`, `source`, `text`, `deferred` (default `false`), `after_step`; all optional | A notification was dispatched (after `after_step`), or with `deferred: true` is still held by do-not-disturb, matching `urgency`, `source` and `text` (a case-insensitive part of the title or body). `deferred: true` reads the deferred list, so it cannot be combined with `after_step` |
 | `judge` | `category` (required); `rubric` (required, at least 10 characters); `reference` (optional) | The judge answers yes to the rubric about Alfred's last reply. See below |
 
-**Matching values** (`evals/harness/checks/matching.py`), for `data`, `args`, `state` and
-`attributes`. Matching goes one way: the **expected** value's type decides how it compares.
+**Reflex checks** read the System 1 calls that reached the proxy during their `at_step`
+step, from its start to the next step's, each parsed into the decision Reflex took from it
+(see [The bus](#the-bus)). A proposal's target is resolved the way home-service resolves
+it, and each entity's area is added, so a check can name the entity or the room.
+
+**Trigger checks** read only the triggers System 2 created with its tool in this sample: a
+trigger from another creator, such as the notification dispatcher's drain trigger, is not
+System 2's behaviour. Their `conditions` are as the engine normalised them: a relative delay
+is already a `run_at`.
+
+**Matching values** (`evals/harness/checks/matching.py`), for `data`, `args`, `state`,
+`attributes` and `conditions`. Matching goes one way: the **expected** value's type decides
+how it compares.
 
 - An expected string matches only a string: whole, trimmed and case-insensitive. A quoted
   `"50"` never matches an actual `50`.
@@ -610,6 +691,10 @@ scored separately. Params are validated at load and unknown keys are rejected.
   (trimmed, case-insensitive): `true` matches `true` and `"True"`, never `false` or
   `"false"`.
 - An expected list matches an actual list that has a match for each expected element.
+- A mapping matches when each key is present with a matching value, and other keys are
+  ignored.
+- `{regex: p}` must match the whole trimmed string, case-insensitively. A regex that does
+  not compile fails at load.
 
 **Tool names.** System 2 sees home-service's `home.light_turn_on` as `home_light_turn_on`;
 the checks treat dots and underscores alike, so either spelling works. `role` is `system1`,
@@ -734,7 +819,7 @@ To add an item, append it to its category's file with a unique `id` and re-run
 ```yaml
 rows:
   - {id: 4.4.live-state, section: "4.4", prd: "Live state streaming", suites: [home_control]}
-  - {id: 4.2.relative-reminders, section: "4.2", prd: "Relative reminders", pending_suites: [triggers]}
+  - {id: 4.4.critical-confirmation, section: "4.4", prd: "Confirmation required for critical actions", pending_suites: [critical_actions]}
   - {id: 4.6.passkeys, section: "4.6", prd: "Passkey (WebAuthn) login", not_llm: "authentication", tests: [tests/integration/test_webauthn_flow.py]}
 headings:
   - {id: 1.butler, heading: "1. What is Alfred", suites: [conversation]}
@@ -820,8 +905,11 @@ goldens are public. Everything about it is fake or fenced.
 | `evals/harness/proxy.py` | `LlmProxy`: the recording pass-through to vLLM; `ROLE_FINGERPRINTS` |
 | `evals/harness/scenario.py` | The golden schema, the loader, variants and selection |
 | `evals/harness/driver.py` | `play()`: one variant against a running stack; `build_request()` |
+| `evals/harness/bus.py` | `ContainerBus`: what the driver reads from the container and does through it (see [The bus](#the-bus)) |
+| `evals/harness/collect.py` | Bus entries into evidence: triggers created and fired, notifications sent and deferred |
+| `evals/harness/reflex.py` | System 1's recorded calls into Reflex's decisions, with Reflex's `parse_decision` |
 | `evals/harness/evidence.py` | `Evidence` and its parts: the checks' only input |
-| `evals/harness/checks/` | `home.py`, `llm.py`, `reply.py`, `latency.py`, `matching.py`, `judge_spec.py`, `result.py`; the registry in `__init__.py` |
+| `evals/harness/checks/` | `home.py`, `llm.py`, `reply.py`, `latency.py`, `reflex.py`, `triggers.py`, `notifications.py`, `matching.py`, `judge_spec.py`, `result.py`; the registry in `__init__.py` |
 | `evals/harness/judge.py` | `Judge`, `judge_check()`, calibration sets and report, `TRUST_THRESHOLD` |
 | `evals/harness/vllm_model.py` | The `alfred-vllm` Inspect model provider |
 | `evals/harness/tasks.py` | Inspect wiring: setup (restart/recover), solver, scorer, verdict |
@@ -829,24 +917,37 @@ goldens are public. Everything about it is fake or fenced.
 | `evals/harness/display.py` | `--display` choices and how Inspect's display is pinned |
 | `evals/harness/coverage.py` | PRD parsing and `coverage_problems()` |
 | `evals/suites/<suite>/` | Goldens |
+| `evals/suites/reflex/` | System 1's judgment on house events, its prompt and its latency |
+| `evals/suites/triggers/` | Reminders and rules System 2 sets: relative, timezone, recurring, sensor and fast |
+| `evals/suites/notifications/` | Reminder urgency, do-not-disturb and its release |
 | `evals/judge_calibration/` | Hand-labelled judge items, one file per category |
 | `evals/coverage.yaml` | The PRD map |
 | `evals/logs/` | Run output (gitignored) |
 | `tests/evals/harness/` | Unit tests for the harness modules |
-| `tests/evals/test_goldens_load.py` | Goldens against the world: entities, step indexes, services and tools |
+| `tests/evals/test_goldens_load.py` | Goldens against the world: entities, step indexes, services and tools, reflex targets, trigger conditions |
 | `tests/evals/test_prd_coverage.py` | The coverage check |
 | `~/.local/share/alfred-evals/calibration.json` | The judge calibration report |
 
 ---
 
+## Known gaps
+
+- **Timed do-not-disturb windows are not exercised.** The `dnd` step is on/off only, so
+  neither a window's `until` nor the drain trigger the dispatcher creates for it is tested.
+- **A trigger record can go stale.** `trigger_created` reads TriggerCreated, which carries
+  the raw `action` the tool was given. An `update_trigger` publishes no event, so if System 2
+  updates a trigger, the sample's record of it no longer matches the stored trigger.
+- **Delivery is not evaluated.** Delivery to Signal and the web is covered by
+  `tests/core/notifications`, not by evals. Eval evidence stops at the dispatch stream.
+
+---
+
 ## Slices still to come
 
-Slice 1, the walking skeleton, is what this document describes. Each later slice gets its
-own plan once the previous slice's real numbers are in.
+Slices 1 (the walking skeleton) and 2 are what this document describes. Each later slice
+gets its own plan once the previous slice's real numbers are in.
 
-2. `reflex` (end-to-end latency), `triggers` (`advance_trigger`, fire latency) and
-   `notifications` (DND).
-3. `guest_boundary`, `critical_actions` and `privacy` (`prompt_not_contains`).
+3. `guest_boundary`, `critical_actions` and `privacy`.
 4. `memory` (seeds, `librarian_run`, memory checks) and `attention`.
 5. `integrations` (Radicale, the weather fix) and `cross_domain`.
 6. `voice` (audio over `/ws`, word error rate and the TTS→STT round trip).
