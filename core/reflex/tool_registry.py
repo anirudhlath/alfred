@@ -11,7 +11,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from sdk.alfred_sdk.feature import ToolParameter, input_schema_from_parameters
+from sdk.alfred_sdk.feature import (
+    ToolParameter,
+    check_object_schema,
+    input_schema_from_parameters,
+)
 from shared.streams import TOOL_REGISTRY_KEY
 
 if TYPE_CHECKING:
@@ -79,17 +83,12 @@ def _shipped_input_schema(schema: object) -> dict[str, Any]:
         The schema, or ``{}`` when it is absent, null or empty (derive it instead).
 
     Raises:
-        ValueError: The schema is present but not an object schema.
+        ValueError: The schema is present but not an object schema, by the SDK's
+            ``check_object_schema``.
     """
     if schema is None or schema == {}:
         return {}
-    if (
-        not isinstance(schema, dict)
-        or schema.get("type") != "object"
-        or not isinstance(schema.get("properties", {}), dict)
-    ):
-        raise ValueError("input_schema is not an object schema")
-    return schema
+    return check_object_schema(schema)
 
 
 class ToolRegistry:

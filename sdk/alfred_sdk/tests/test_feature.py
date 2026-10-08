@@ -21,6 +21,7 @@ from sdk.alfred_sdk.feature import (
     ToolMeta,
     ToolParameter,
     _parse_google_docstring_args,
+    check_object_schema,
     input_schema_from_parameters,
     tool,
 )
@@ -460,6 +461,39 @@ def test_explicit_input_schema_is_kept() -> None:
     explicit = {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}
     meta = ToolMeta(name="x.q", description="Q.", parameters={}, input_schema=explicit)
     assert meta.input_schema == explicit
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        pytest.param("oops", id="not-a-dict"),
+        pytest.param({"properties": {}}, id="no-type"),
+        pytest.param({"type": "array"}, id="not-object-type"),
+        pytest.param({"type": "object", "properties": ["p"]}, id="non-dict-properties"),
+        pytest.param({"type": "object", "properties": {"p": "x"}}, id="non-dict-property"),
+        pytest.param({"type": "object", "required": "p"}, id="non-list-required"),
+        pytest.param({"type": "object", "required": [1]}, id="non-string-required"),
+    ],
+)
+def test_check_object_schema_rejects_what_is_not_an_object_schema(schema: Any) -> None:
+    with pytest.raises(ValueError, match="input_schema"):
+        check_object_schema(schema)
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "object"},
+        {"type": "object", "properties": {"p": {}}, "required": ["p"]},
+    ],
+)
+def test_check_object_schema_hands_back_an_object_schema(schema: dict[str, Any]) -> None:
+    assert check_object_schema(schema) is schema
+
+
+def test_explicit_input_schema_that_is_not_an_object_schema_fails() -> None:
+    with pytest.raises(TypeError, match=r"^Tool 'x\.q': input_schema"):
+        ToolMeta(name="x.q", description="Q.", parameters={}, input_schema={"type": "array"})
 
 
 def test_replace_keeps_input_schema_audience_and_risk() -> None:

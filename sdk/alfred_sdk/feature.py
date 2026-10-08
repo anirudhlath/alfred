@@ -145,6 +145,38 @@ def input_schema_from_parameters(parameters: Mapping[str, ToolParameter]) -> dic
     return {"type": "object", "properties": properties, "required": required}
 
 
+def check_object_schema(schema: object) -> dict[str, Any]:
+    """Check that a tool's ``input_schema`` is an object schema a model can be offered.
+
+    The one copy of the check: ``ToolMeta`` runs it on a schema passed in explicitly,
+    and Alfred's tool registry on every schema a manifest ships.
+
+    Args:
+        schema: The candidate schema.
+
+    Returns:
+        ``schema`` itself, unchanged, once it has passed.
+
+    Raises:
+        ValueError: ``schema`` is not a dict, its ``type`` is not ``"object"``, its
+            ``properties`` are present but not a dict of schemas (dicts), or its
+            ``required`` is present but not a list of strings.
+    """
+    if not isinstance(schema, dict):
+        raise ValueError(f"input_schema is a {type(schema).__name__}, not a JSON object")
+    if schema.get("type") != "object":
+        raise ValueError(f"input_schema's type is {schema.get('type')!r}, not 'object'")
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict) or not all(
+        isinstance(prop, dict) for prop in properties.values()
+    ):
+        raise ValueError("input_schema's properties are not a dict of schemas")
+    required = schema.get("required", [])
+    if not isinstance(required, list) or not all(isinstance(name, str) for name in required):
+        raise ValueError("input_schema's required is not a list of parameter names")
+    return schema
+
+
 # ── ToolMeta dataclass ──
 
 
@@ -153,7 +185,8 @@ class ToolMeta:
     """Extracted metadata for a single tool method.
 
     ``input_schema`` is the tool's arguments as one JSON Schema object. Left empty, it
-    is assembled from ``parameters``.
+    is assembled from ``parameters``; passed in, it must pass ``check_object_schema``,
+    or construction raises ``TypeError`` naming the tool.
     """
 
     name: str
@@ -167,6 +200,11 @@ class ToolMeta:
         if not self.input_schema:
             # Frozen dataclass: object.__setattr__ is the sanctioned way to fill a derived field.
             object.__setattr__(self, "input_schema", input_schema_from_parameters(self.parameters))
+            return
+        try:
+            check_object_schema(self.input_schema)
+        except ValueError as exc:
+            raise TypeError(f"Tool '{self.name}': {exc}") from exc
 
 
 # ── Docstring parser ──

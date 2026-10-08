@@ -273,6 +273,14 @@ _VALID_SCHEMA = {"type": "object", "properties": {}, "required": []}
             {"name": "f.bad", "input_schema": {"type": "object", "properties": ["p"]}},
             id="non-dict-properties",
         ),
+        pytest.param(
+            {"name": "f.bad", "input_schema": {"type": "object", "properties": {"p": "x"}}},
+            id="non-dict-property",
+        ),
+        pytest.param(
+            {"name": "f.bad", "input_schema": {"type": "object", "required": "p"}},
+            id="non-list-required",
+        ),
         pytest.param("oops", id="non-dict-tool"),
         pytest.param(
             {"name": "f.bad", "input_schema": _VALID_SCHEMA, "parameters": {"p": "x"}},
