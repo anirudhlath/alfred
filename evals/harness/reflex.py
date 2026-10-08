@@ -1,0 +1,120 @@
+"""System 1's recorded calls become Reflex's decisions, parsed the way Reflex parses them.
+
+Reflex sends the model's reply straight to ``core.reflex.decision.parse_decision``, along
+with the reflex-audience tools its prompt showed (``core/reflex/engine.py``). The harness
+does the same with the same tools. So an act naming a tool Reflex could not use is
+``invalid`` here too.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import TYPE_CHECKING, Any
+
+from core.reflex.decision import parse_decision
+from evals.harness.checks.llm import message_text
+from evals.harness.evidence import ReflexCall
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
+    from core.reflex.tool_registry import ToolInfo
+    from evals.harness.evidence import LlmCall
+    from evals.harness.world import World
+
+# core/reflex/prompt.render_now's clock line: "Thu 8 Oct, 22:05 (night)".
+_CLOCK = re.compile(
+    r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) \d{1,2} [A-Z][a-z]{2}, (\d{2}):\d{2} "
+    r"\((?:morning|afternoon|evening|night)\)"
+)
+
+
+def local_hour(messages: list[dict[str, Any]]) -> int | None:
+    """The hour Reflex's prompt showed, or None if it had no clock line."""
+    for message in messages:
+        if (m := _CLOCK.search(message_text(message))) is not None:
+            return int(m.group(1))
+    return None
+
+
+def tool_domain(tool: str, domains: Iterable[str]) -> str | None:
+    """The HA domain a generated home tool acts on: ``home.light_turn_off`` is ``light``.
+    The longest prefix wins, so ``media_player_media_pause`` is ``media_player``."""
+    name = tool.removeprefix("home.")
+    return max((d for d in domains if name.startswith(f"{d}_")), key=len, default=None)
+
+
+def targets(world: World, tool: str | None, parameters: dict[str, Any]) -> list[str]:
+    """What a proposal would act on, as entity and area ids.
+
+    The ``target`` parameter is resolved the way home-service resolves it
+    (``EntityIndex.resolve``), within the tool's domain:
+    1. an entity_id;
+    2. else an area name;
+    3. else an entity's friendly name.
+
+    Each entity's area is added, so a golden can name either the room or the entity. The
+    list is in world order (home-service sorts by entity_id); checks test membership.
+    """
+    raw = parameters.get("target")
+    domain = None if tool is None else tool_domain(tool, world.services)
+    if domain is None or not isinstance(raw, str) or not raw.strip():
+        return []
+    wanted = raw.strip().casefold()
+    candidates = [e for e in world.entities if not e.disabled and e.domain == domain]
+    rooms = [a.area_id for a in world.areas if a.name.casefold() == wanted]
+    hits = (
+        [e.entity_id for e in candidates if e.entity_id.casefold() == wanted]
+        or [entity for room in rooms for entity in world.entities_in(room, domain)]
+        or [e.entity_id for e in candidates if e.name.casefold() == wanted]
+    )
+    out: list[str] = []
+    for entity_id in hits:
+        for item in (entity_id, world.area_of(entity_id)):
+            if item is not None and item not in out:
+                out.append(item)
+    return out
+
+
+def reflex_calls(
+    llm_calls: list[LlmCall], tools: Sequence[ToolInfo], world: World
+) -> list[ReflexCall]:
+    """Every System 1 call, as the decision Reflex took from it, earliest request first.
+
+    The proxy records a call when its reply returns, so a slow call can be recorded after a
+    quicker one sent later; checks take ``[0]`` as the earliest request.
+    """
+    out: list[ReflexCall] = []
+    for call in sorted(llm_calls, key=lambda c: c.t):
+        if call.role != "system1":
+            continue
+        hour = local_hour(call.messages)
+        if not 200 <= call.status < 300:
+            out.append(
+                ReflexCall(
+                    t=call.t,
+                    latency_ms=call.latency_ms,
+                    decision="invalid",
+                    problem=f"no reply (HTTP {call.status})",
+                    local_hour=hour,
+                )
+            )
+            continue
+        proposal = parse_decision(call.response_text or "", tools)
+        action = proposal.action
+        tool = None if action is None else action.tool_name
+        parameters = {} if action is None else dict(action.parameters)
+        out.append(
+            ReflexCall(
+                t=call.t,
+                latency_ms=call.latency_ms,
+                decision=proposal.decision,
+                reason=proposal.reason or "",
+                tool=tool,
+                parameters=parameters,
+                targets=targets(world, tool, parameters),
+                problem=proposal.problem,
+                local_hour=hour,
+            )
+        )
+    return out
