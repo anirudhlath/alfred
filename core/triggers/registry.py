@@ -17,6 +17,13 @@ def friendly_type(annotation: Any) -> str:
     """Convert a Python type annotation to an LLM-friendly string.
 
     Handles Optional/Union wrappers and provides datetime formatting hints.
+
+    Args:
+        annotation: A ``Conditions`` field's type annotation.
+
+    Returns:
+        The JSON type name for a mapped base type (``int`` → ``"integer"``), an ISO 8601
+        hint for a datetime, or the raw base name when the type is unmapped.
     """
     raw = getattr(annotation, "__name__", str(annotation))
     # Strip Optional/Union wrappers
