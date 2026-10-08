@@ -2,15 +2,35 @@
 
 from __future__ import annotations
 
+import logging
+import sys
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
-from runner.__main__ import _redis_command, _write_mosquitto_conf, build_services
+import pytest
+from loguru import logger as loguru_logger
+
+from runner.__main__ import (
+    RedisModulesMissingError,
+    _redis_command,
+    _write_mosquitto_conf,
+    build_services,
+    main,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pytest
+
+@pytest.fixture
+def redis_modules(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """An ALFRED_REDIS_MODULES_DIR holding both modules the image ships."""
+    modules = tmp_path / "mods"
+    modules.mkdir()
+    for name in ("redisearch.so", "rejson.so"):
+        (modules / name).touch()
+    monkeypatch.setenv("ALFRED_REDIS_MODULES_DIR", str(modules))
+    return modules
 
 
 def test_core_only_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -20,9 +40,12 @@ def test_core_only_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     assert names == {"bridge", "reflex", "triggers", "conscious", "channels", "memory-ingestor"}
 
 
-def test_infra_added_when_flag_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_infra_added_when_flag_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, redis_modules: Path
+) -> None:
     monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ALFRED_MANAGE_INFRA", "1")
+    monkeypatch.setattr("runner.__main__.shutil.which", lambda _: None)
     names = {s.name for s in build_services()}
     assert {"redis", "mosquitto", "home-service"}.issubset(names)
     # redis/mosquitto are native-command services with readiness checks:
@@ -31,24 +54,71 @@ def test_infra_added_when_flag_set(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert by_name["redis"].ready_check is not None
 
 
-def test_redis_command_container_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_redis_command_container_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, redis_modules: Path
+) -> None:
     monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ALFRED_DATA_MODE", "persistent")
     monkeypatch.delenv("ALFRED_EVAL", raising=False)
-    modules = tmp_path / "mods"
-    modules.mkdir()
-    (modules / "redisearch.so").touch()
-    monkeypatch.setenv("ALFRED_REDIS_MODULES_DIR", str(modules))
     monkeypatch.setattr("runner.__main__.shutil.which", lambda _: None)
     cmd = _redis_command(tmp_path / "redis")
     assert cmd[0] == "redis-server"
     assert "--appendonly" in cmd and cmd[cmd.index("--appendonly") + 1] == "yes"
-    assert str(modules / "redisearch.so") in cmd
+    loaded = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--loadmodule"]
+    assert loaded == [str(redis_modules / "redisearch.so"), str(redis_modules / "rejson.so")]
     assert "--bind" in cmd
 
 
-def test_redis_command_ephemeral_disables_persistence(
+def test_redis_command_starts_with_redisearch_alone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, redis_modules: Path
+) -> None:
+    """RedisJSON is loaded when present, but nothing issues a JSON.* command."""
+    monkeypatch.setattr("runner.__main__.shutil.which", lambda _: None)
+    (redis_modules / "rejson.so").unlink()
+    cmd = _redis_command(tmp_path / "redis")
+    loaded = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--loadmodule"]
+    assert loaded == [str(redis_modules / "redisearch.so")]
+
+
+def test_redis_command_refuses_an_empty_modules_dir(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Issue #212: a misbuilt image must not boot a Redis that answers FT.* with errors."""
+    modules = tmp_path / "mods"
+    modules.mkdir()
+    monkeypatch.setenv("ALFRED_REDIS_MODULES_DIR", str(modules))
+    monkeypatch.setattr("runner.__main__.shutil.which", lambda _: None)
+    with pytest.raises(RedisModulesMissingError) as refused:
+        _redis_command(tmp_path / "redis")
+    message = str(refused.value)
+    assert str(modules) in message
+    assert "redisearch.so" in message
+    assert "rejson.so" in message
+    assert "ALFRED_REDIS_MODULES_DIR" in message
+
+
+def test_redis_command_refuses_a_missing_modules_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    modules = tmp_path / "absent"
+    monkeypatch.setenv("ALFRED_REDIS_MODULES_DIR", str(modules))
+    monkeypatch.setattr("runner.__main__.shutil.which", lambda _: None)
+    with pytest.raises(RedisModulesMissingError, match="does not exist"):
+        _redis_command(tmp_path / "redis")
+
+
+def test_redis_command_refuses_rejson_without_redisearch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, redis_modules: Path
+) -> None:
+    """The module vector memory needs is the one that must be there."""
+    monkeypatch.setattr("runner.__main__.shutil.which", lambda _: None)
+    (redis_modules / "redisearch.so").unlink()
+    with pytest.raises(RedisModulesMissingError, match=r"found: rejson\.so\)"):
+        _redis_command(tmp_path / "redis")
+
+
+def test_redis_command_ephemeral_disables_persistence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, redis_modules: Path
 ) -> None:
     monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ALFRED_DATA_MODE", "ephemeral")
@@ -60,7 +130,7 @@ def test_redis_command_ephemeral_disables_persistence(
 
 
 def test_redis_command_eval_binds_all_interfaces_without_persistence(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, redis_modules: Path
 ) -> None:
     monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ALFRED_DATA_MODE", "persistent")
@@ -76,8 +146,53 @@ def test_redis_command_eval_binds_all_interfaces_without_persistence(
 def test_redis_command_prefers_stack_server(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Native dev: redis-stack-server loads its own modules, so no modules dir is needed."""
+    monkeypatch.setenv("ALFRED_REDIS_MODULES_DIR", str(tmp_path / "absent"))
     monkeypatch.setattr("runner.__main__.shutil.which", lambda _: "/opt/redis-stack-server")
-    assert _redis_command(tmp_path / "redis")[0] == "redis-stack-server"
+    assert _redis_command(tmp_path / "redis") == [
+        "redis-stack-server",
+        "--dir",
+        str(tmp_path / "redis"),
+    ]
+
+
+def test_runner_exits_nonzero_before_starting_anything_without_redisearch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The runner refuses at startup, naming the dir — no Redis is launched and killed."""
+    modules = tmp_path / "mods"
+    modules.mkdir()
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("ALFRED_MANAGE_INFRA", "1")
+    monkeypatch.setenv("ALFRED_REDIS_MODULES_DIR", str(modules))
+    monkeypatch.setattr(sys, "argv", ["runner", "--no-reload"])
+    monkeypatch.setattr("runner.__main__.shutil.which", lambda _: None)
+    monkeypatch.setattr("runner.__main__._reachable_gateway", lambda: None)
+    # The real configure_logging swaps the process-wide loguru sinks out from under
+    # every later test; tracing and seeding are side effects this test does not need.
+    monkeypatch.setattr("runner.__main__.configure_logging", lambda service: loguru_logger)
+    monkeypatch.setattr("runner.__main__.init_tracing", lambda **_: None)
+    monkeypatch.setattr("core.memory.paths.seed_defaults", lambda: None)
+
+    def no_supervisor(*_: object, **__: object) -> None:
+        raise AssertionError("the supervisor must not start without RediSearch")
+
+    monkeypatch.setattr("runner.__main__.Supervisor", no_supervisor)
+    caplog.set_level(logging.ERROR, logger="runner.__main__")
+
+    with pytest.raises(SystemExit) as exited:
+        main()
+
+    assert exited.value.code == 1
+    errors = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "runner.__main__" and r.levelno == logging.ERROR
+    ]
+    assert len(errors) == 1
+    assert errors[0].startswith("[redis] ")
+    assert str(modules) in errors[0]
+    assert "redisearch.so" in errors[0]
 
 
 def test_mosquitto_conf_generated_under_data_dir(
