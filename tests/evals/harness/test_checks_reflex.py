@@ -24,11 +24,13 @@ def rc(
     reason: str = "because",
     problem: str | None = None,
     event: ReflexEvent | None = None,
+    status: int = 200,
 ) -> ReflexCall:
     """A System 1 call about the step's push (``factories.about``), unless *event* says."""
     return ReflexCall(
         t=t,
         latency_ms=800,
+        status=status,
         decision=decision,
         tool=tool,
         targets=list(targets),
@@ -165,6 +167,20 @@ def test_not_proposed_catches_an_ask_by_default() -> None:
     asked = ev(rc("ask", "home.light_turn_on", ("light.bedroom_lamp", "bedroom")))
     status, reason = not_proposed(asked, tool="home.light_turn_on")
     assert status == "fail" and "ask home.light_turn_on on light.bedroom_lamp" in reason
+
+
+def test_an_llm_upstream_failure_is_an_error_not_reflexs_invalid() -> None:
+    """A 5xx is vLLM failing, never Reflex deciding: the step has no judgment to score."""
+    failed = rc("invalid", problem="no reply (HTTP 502)", status=502)
+    for status, reason in (
+        decide(ev(failed), decision="none"),
+        not_proposed(ev(rc("none"), failed), tool="home.light_turn_on"),
+    ):
+        assert status == "error"
+        assert "System 1's LLM upstream answered HTTP 502: the LLM failed, not Reflex" in reason
+    # A 4xx is Reflex's own request (say, a prompt too long): Alfred's invalid.
+    refused = rc("invalid", problem="no reply (HTTP 400)", status=400)
+    assert decide(ev(refused), decision="none")[0] == "fail"
 
 
 def test_an_invalid_call_names_its_problem_in_the_failure() -> None:

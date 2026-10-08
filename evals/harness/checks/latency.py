@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Literal, Self, assert_never, get_args
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from evals.harness.checks.notifications import sample_trigger
-from evals.harness.checks.reflex import describe_unattributed
+from evals.harness.checks.reflex import describe_unattributed, upstream_problem
 from evals.harness.checks.result import CheckResult, failed, passed
 
 if TYPE_CHECKING:
@@ -37,7 +37,9 @@ class LatencyParams(BaseModel):
         return self
 
 
-Measured = tuple[float, str] | str  # (milliseconds, what was measured), or why nothing was
+# (milliseconds, what was measured), why nothing was (a fail), or the error that says why
+# nothing could be.
+Measured = tuple[float, str] | str | CheckResult
 
 
 def _reply_ms(evidence: Evidence, step: int) -> Measured:
@@ -55,6 +57,8 @@ def _reflex_ms(evidence: Evidence, step: int) -> Measured:
         return f"System 1 was not called for step {step}" + (
             f"; unattributed: {others}" if others else ""
         )
+    if (problem := upstream_problem(calls)) is not None:
+        return CheckResult(name="latency", status="error", reason=problem)
     return (calls[0].done - evidence.step_start(step)) * 1000, f"Reflex decided on step {step}"
 
 
@@ -103,6 +107,8 @@ def latency(evidence: Evidence, p: LatencyParams) -> CheckResult:
                     reason=f"the sample has no {kind} step: the harness recorded none to time",
                 )
             measured = measure(evidence, step)
+    if isinstance(measured, CheckResult):
+        return measured
     if isinstance(measured, str):
         return failed("latency", measured)
     took, what = measured

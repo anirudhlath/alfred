@@ -171,6 +171,11 @@ def _is_system1(call: LlmCall) -> bool:
     return call.role == "system1"
 
 
+def _system1_upstream_failures(calls: list[LlmCall]) -> str:
+    """``upstream_failures`` for System 1's 5xx answers; a 4xx is Reflex's request refused."""
+    return upstream_failures([c for c in calls if _is_system1(c) and c.upstream_failed])
+
+
 async def _set_clock(ctx: PlayContext, ev: Evidence, index: int, hour: int) -> None:
     if (wait := clock_wait_s(ctx.now())) > 0:
         await asyncio.sleep(wait)
@@ -353,6 +358,13 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
     ev.ended_at = ended
     ev.ha_calls = ctx.fake_ha.calls_between(started, ended)
     ev.llm_calls = ctx.proxy.calls_between(started, ended)
+    if scenario.watches_reflex and (failures := _system1_upstream_failures(ev.llm_calls)):
+        # Reflex does not ACK an event its model call failed on, and replays it about a
+        # minute later, into a later sample. The restart this raise brings clears that.
+        raise HarnessError(
+            "System 1's LLM upstream failed, so Reflex judged nothing and will replay the "
+            "event into a later sample" + failures
+        )
     ev.ha_states = ctx.fake_ha.states()
     # Cleanup runs only on this path: a sample that raised leaves a dirty stack, and the
     # next sample restarts it (tasks.reset_or_recover).

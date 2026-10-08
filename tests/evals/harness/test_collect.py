@@ -459,6 +459,7 @@ def test_reflex_calls_parse_system1_replies_the_way_reflex_does() -> None:
         world,
     )
     assert [c.decision for c in calls] == ["act", "none", "invalid", "invalid"]
+    assert [c.status for c in calls] == [200, 200, 200, 502]
     first = calls[0]
     assert first.tool == "home.light_turn_off" and "living_room" in first.targets
     assert first.local_hour == 22 and first.reason == "the TV started at night"

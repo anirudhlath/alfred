@@ -14,6 +14,7 @@ from bus.schemas.events import ActionRequest, AlfredResponse, UserRequest
 from evals.harness.checks import run_check
 from evals.harness.checks.triggers import TriggerFiredParams
 from evals.harness.driver import (
+    TIMES,
     HarnessError,
     PlayContext,
     build_request,
@@ -572,6 +573,32 @@ async def test_an_ha_event_waits_for_system1_when_a_reflex_check_watches() -> No
     assert 0.2 <= elapsed < 2
     assert [(c.decision, c.reason) for c in ev.reflex] == [("none", "quiet")]
     assert ev.state_pushes == [StatePush(step=0, entity_id="light.living_room_ceiling", state="on")]
+
+
+@pytest.mark.parametrize("watches", [True, False])
+async def test_a_system1_upstream_failure_fails_a_reflex_golden_and_dirties_the_stack(
+    watches: bool,
+) -> None:
+    """Reflex does not ACK an event its model call failed on and replays it about a minute
+    later, into a later sample: the stack must restart."""
+    proxy = LlmProxy("http://x")
+
+    async def system1_fails() -> None:
+        await asyncio.sleep(0.05)
+        proxy.record(system1(CEILING_ON, status=502))
+
+    failing = asyncio.create_task(system1_fails())
+    expect = [{"reflex_decision": {"decision": "none"}}] if watches else [{"ha_not_called": {}}]
+    play_ctx = ctx(
+        Recorder(), proxy=proxy, reflex_cooldown_s=0, reflex_timeout_s=1, ha_event_window_s=0.2
+    )
+    s = scenario(steps=[LAMP_ON], expect=expect)
+    if watches:
+        with pytest.raises(HarnessError, match=f"System 1.*upstream returned 502 {TIMES}1"):
+            await play(play_ctx, expand_variants(s)[0], epoch=1)
+    else:  # it does not judge Reflex, and the replay is never judged as another step's
+        await play(play_ctx, expand_variants(s)[0], epoch=1)
+    await failing
 
 
 async def test_the_reflex_wait_ends_on_the_call_about_the_steps_own_change() -> None:

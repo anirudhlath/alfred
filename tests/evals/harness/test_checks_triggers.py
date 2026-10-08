@@ -297,6 +297,10 @@ def test_reflex_ms_runs_from_the_event_to_system1s_reply() -> None:
     alone = run_check("latency", fast, ev(stray))
     assert alone.status == "fail" and "not called" in alone.reason
     assert "unattributed" in alone.reason
+    # A quick 502 is vLLM failing, not a fast Reflex.
+    failed = ReflexCall(t=10.1, latency_ms=30, status=502, decision="invalid", event=about())
+    errored = run_check("latency", fast, ev(failed))
+    assert errored.status == "error" and "HTTP 502" in errored.reason
 
 
 def test_reflex_ms_at_step_times_the_named_event() -> None:

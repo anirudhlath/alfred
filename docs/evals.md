@@ -145,8 +145,10 @@ and wipes the data dir (the container writes it as root).
 or when an earlier sample failed mid-play (no reply in time, a lost connection). Such a
 stack is **dirty**: a request that timed out is still running inside Conscious, and one
 whose LLM call failed waits in Conscious's pending list to be replayed a minute or more
-later, so either would land in a later sample's evidence and be scored against Alfred. A
-restart is the only reset that clears both. Each suite gets one such recovery; once it is
+later, so either would land in a later sample's evidence and be scored against Alfred.
+Reflex does the same with a state change its System 1 call failed on, so a golden that
+watches Reflex fails mid-play when vLLM answers any of its System 1 calls with a 5xx. A
+restart is the only reset that clears them. Each suite gets one such recovery; once it is
 spent, every later sample that needs one errors at once, saying why. A restart that fails
 (say, System 2 never answers the restarted stack's readiness request) leaves the stack
 **broken**: the container may still be running, but every later sample in the suite errors
@@ -428,7 +430,7 @@ Each sample epoch scores one value:
 | `C` | Every counted check passed | — |
 | `I` | A counted check failed | Yes |
 | `N` | Inconclusive: no counted check failed, but one errored (a judge with no verdict, a check that raised), or nothing counted at all (only untrusted judge checks) | No |
-| `E` | The harness failed: no reply from System 2 in time (the reason adds the LLM upstream's non-2xx answers in that window, such as `502 ×2`, when the proxy saw any, and the calls a hung vLLM still holds, such as `2 LLM calls still upstream after 95s`), a dead, dirty or broken stack, unreadable data (a bus entry the harness recognises but cannot read, among them). Inspect retries the sample once first | No |
+| `E` | The harness failed: no reply from System 2 in time (the reason adds the LLM upstream's non-2xx answers in that window, such as `502 ×2`, when the proxy saw any, and the calls a hung vLLM still holds, such as `2 LLM calls still upstream after 95s`), a System 1 call vLLM failed in a golden that watches Reflex (with the same count), a dead, dirty or broken stack, unreadable data (a bus entry the harness recognises but cannot read, among them). Inspect retries the sample once first | No |
 
 A check is **counted** unless it is a judge check in an untrusted category.
 
@@ -684,6 +686,10 @@ reached the proxy during that step, from its start to the next step's or, for th
 step, to the sample's end. Each is parsed into the decision Reflex took from it
 (see [The bus](#the-bus)). A proposal's target is resolved the way home-service resolves
 it, and each entity's area is added, so a check can name the entity or the room.
+
+A System 1 call vLLM answered with a 5xx holds no judgment, so a reflex check or
+`reflex_ms` on its step reports `error`, naming the status. A 4xx stays Reflex's `invalid`: it
+is Reflex's own request refused, such as a prompt too long.
 
 A call's change is read off its prompt's What changed line, by the parser that sits beside
 Reflex's renderer (`core/reflex/prompt.parse_event`). The name on it is resolved to the

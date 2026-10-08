@@ -54,6 +54,12 @@ class ToolCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+def upstream_failed(status: int) -> bool:
+    """Whether the proxy's answer means the LLM upstream failed (it answers 502 when it
+    could not reach it). A 4xx is the caller's request refused."""
+    return status >= 500
+
+
 class LlmCall(BaseModel):
     t: float  # when the request reached the proxy
     role: Role
@@ -68,6 +74,10 @@ class LlmCall(BaseModel):
     tool_calls: list[ToolCall] = Field(default_factory=list)
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+
+    @property
+    def upstream_failed(self) -> bool:
+        return upstream_failed(self.status)
 
 
 class ReflexEvent(BaseModel):
@@ -97,6 +107,7 @@ class ReflexCall(BaseModel):
     t: float  # when the request reached the proxy
     latency_ms: float
     answered_at: float | None = None  # LlmCall.answered_at
+    status: int = 200  # the proxy's answer to Reflex
     decision: Decision
     reason: str = ""
     tool: str | None = None
@@ -107,6 +118,11 @@ class ReflexCall(BaseModel):
     problem: str | None = None
     local_hour: int | None = None  # the hour the prompt's clock line showed
     event: ReflexEvent | None = None  # None: a prompt about no state change (a trigger's)
+
+    @property
+    def upstream_failed(self) -> bool:
+        """The model, not Reflex, gave no answer. A 4xx is Reflex's own request refused."""
+        return upstream_failed(self.status)
 
     def is_about(self, push: StatePush) -> bool:
         """Whether this call judged the change *push* made."""

@@ -66,6 +66,14 @@ def _clock_problem(evidence: Evidence, step: int, calls: list[ReflexCall]) -> st
     return None
 
 
+def upstream_problem(calls: list[ReflexCall]) -> str | None:
+    """Why these calls hold no judgment: System 1's LLM upstream failed. None if it did not."""
+    failed = next((c for c in calls if c.upstream_failed), None)
+    if failed is None:
+        return None
+    return f"System 1's LLM upstream answered HTTP {failed.status}: the LLM failed, not Reflex"
+
+
 class _Window(NamedTuple):
     """The ``ha_event`` step a reflex check judges, the System 1 calls about its change, and
     the calls in its window about anything else."""
@@ -91,7 +99,8 @@ def _window(evidence: Evidence, name: str, at_step: int | None) -> _Window | Che
             reason="the sample has no ha_event step: the harness recorded no event to judge",
         )
     calls = evidence.reflex_during(step)
-    if (problem := _clock_problem(evidence, step, calls)) is not None:
+    problem = upstream_problem(calls) or _clock_problem(evidence, step, calls)
+    if problem is not None:
         return CheckResult(name=name, status="error", reason=problem)
     return _Window(step, calls, evidence.reflex_unattributed(step))
 
