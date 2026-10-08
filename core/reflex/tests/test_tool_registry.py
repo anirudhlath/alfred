@@ -282,20 +282,55 @@ _VALID_SCHEMA = {"type": "object", "properties": {}, "required": []}
             id="non-list-required",
         ),
         pytest.param("oops", id="non-dict-tool"),
+        pytest.param({"name": None}, id="null-name"),
+        pytest.param({"name": ""}, id="empty-name"),
+        pytest.param({"name": "f.x", "description": 5}, id="non-string-description"),
         pytest.param(
             {"name": "f.bad", "input_schema": _VALID_SCHEMA, "parameters": {"p": "x"}},
             id="schema-with-malformed-parameters",
         ),
     ],
 )
-async def test_tool_with_malformed_schema_or_parameters_is_skipped(
+async def test_malformed_tool_is_skipped_alone(
     bad_tool: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
     feature = {"name": "f", "tools": [bad_tool, {"name": "f.good", "parameters": {}}]}
     with caplog.at_level(logging.WARNING, logger="core.reflex.tool_registry"):
         tools = await _registry_with(feature).get_tools()
     assert [t.name for t in tools] == ["f.good"]
-    assert caplog.text.count("Skipping malformed tool") == 1
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Skipping malformed tool")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_feature",
+    [
+        pytest.param("oops", id="non-dict-feature"),
+        pytest.param({"name": "f", "tools": "oops"}, id="non-list-tools"),
+    ],
+)
+async def test_malformed_feature_is_skipped_and_the_rest_still_load(
+    bad_feature: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    good = {"name": "g", "tools": [{"name": "g.good", "parameters": {}}]}
+    mock_redis = AsyncMock()
+    mock_redis.hgetall.return_value = {
+        b"svc": _make_manifest("svc", [bad_feature, good]).encode(),
+        b"other-service": _make_manifest("other-service", [LIGHTING_FEATURE]).encode(),
+    }
+    with caplog.at_level(logging.WARNING, logger="core.reflex.tool_registry"):
+        tools = await ToolRegistry(mock_redis).get_tools()
+    assert [t.name for t in tools] == [
+        "g.good",
+        "lighting.dim_lights",
+        "lighting.turn_off_lights",
+    ]
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Skipping malformed feature")
+    assert "'svc'" in warnings[0]
 
 
 @pytest.mark.asyncio
