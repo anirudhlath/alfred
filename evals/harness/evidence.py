@@ -117,7 +117,10 @@ class ReflexCall(BaseModel):
     targets: list[str] = Field(default_factory=list)
     problem: str | None = None
     local_hour: int | None = None  # the hour the prompt's clock line showed
-    event: ReflexEvent | None = None  # None: a prompt about no state change (a trigger's)
+    event: ReflexEvent | None = None  # None: a prompt about no state change, or unread
+    # The What changed line when it did not read back (``event`` is then None); None for a
+    # prompt with no such line, such as a trigger's.
+    unread_change: str | None = None
 
     @property
     def upstream_failed(self) -> bool:

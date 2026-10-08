@@ -9,7 +9,9 @@ import pytest
 import yaml
 from pydantic import BaseModel, ValidationError
 
+from bus.schemas.events import StateChangedEvent
 from core.reflex.attention import DEFAULT_SEED_PATH, AttentionSeedRules
+from core.reflex.prompt import LiveEntity, render_event
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
 from evals.harness.checks import JudgeSpec, run_check
@@ -24,6 +26,7 @@ from evals.harness.evidence import (
     StatePush,
     TriggerRecord,
 )
+from evals.harness.reflex import reflex_event
 from evals.harness.scenario import (
     CheckSpec,
     HaEventStep,
@@ -32,7 +35,8 @@ from evals.harness.scenario import (
     load_suites,
     step_kind,
 )
-from evals.harness.world import World, load_world
+from evals.harness.world import WORLDS_DIR, World, WorldEntity, load_world
+from tests.evals.harness.factories import reflex_prompt
 
 SUITES = ["conversation", "home_control", "reflex", "triggers", "notifications"]
 
@@ -250,6 +254,71 @@ def test_every_golden_names_real_services_and_tools() -> None:
     # otherwise every tool could be skipped as another feature's and the test would pass
     # vacuously.
     assert seen == {"service", "tool"} and all(checked.values()), checked
+
+
+def _served(world: World, entity: WorldEntity) -> dict[str, LiveEntity]:
+    """The live state Reflex reads for *entity*: the name and room the fake HA serves."""
+    rooms = {a.area_id: a.name for a in world.areas}
+    room = rooms.get(world.area_of(entity.entity_id) or "")
+    attributes = {"friendly_name": entity.friendly_name} | ({"area": room} if room else {})
+    live = LiveEntity(
+        entity_id=entity.entity_id,
+        domain=entity.domain,
+        controllable=True,
+        state=entity.state,
+        attributes=attributes,
+    )
+    return {entity.entity_id: live}
+
+
+def _unreadable(world: World, world_name: str) -> list[str]:
+    """Each served entity and state whose What changed line does not read back to it: its
+    world state, and every state a golden on this world pushes it to."""
+    pushed = {
+        (step.ha_event.entity_id, step.ha_event.state)
+        for s in _goldens().values()
+        if s.world == world_name
+        for step in s.steps
+        if isinstance(step, HaEventStep)
+    }
+    served = world.initial_states()
+    bad = []
+    for entity in world.entities:
+        if entity.disabled:  # the fake HA serves no state for it, so it has no events
+            continue
+        states = {entity.state} | {state for e, state in pushed if e == entity.entity_id}
+        for state in sorted(states):
+            event = StateChangedEvent(
+                source="home-service",
+                domain="home",
+                entity_id=entity.entity_id,
+                old_state="before",
+                new_state=state,
+                attributes=served[entity.entity_id].attributes,
+            )
+            line = render_event(event, _served(world, entity))
+            seen = reflex_event(reflex_prompt(line), world)
+            if seen is None or not seen.is_of(entity.entity_id, state):
+                bad.append(f"{entity.entity_id} -> {state}: {line!r} reads as {seen}")
+    return bad
+
+
+@pytest.mark.parametrize("world_name", sorted(p.stem for p in WORLDS_DIR.glob("*.yaml")))
+def test_every_world_entity_reads_back_from_reflexs_what_changed_line(world_name: str) -> None:
+    """The harness ties each System 1 call to its step by the What changed line (#298): an
+    entity whose line does not read back would time out every step on it."""
+    assert _unreadable(load_world(world_name), world_name) == []
+
+
+def test_the_round_trip_guard_flags_a_name_the_line_cannot_carry() -> None:
+    world = load_world("apartment")
+    lamp = next(e for e in world.entities if e.entity_id == "light.bedroom_lamp")
+    arrow = lamp.model_copy(update={"attributes": {**lamp.attributes, "friendly_name": "A → B"}})
+    others = [e for e in world.entities if e.entity_id != lamp.entity_id]
+    broken = world.model_copy(update={"entities": [*others, arrow]})
+    assert [b.split(":")[0] for b in _unreadable(broken, "apartment")] == [
+        f"light.bedroom_lamp -> {state}" for state in sorted({"off", "on"})
+    ]
 
 
 def test_unknown_services_flags_a_misspelt_service_or_tool() -> None:

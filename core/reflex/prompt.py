@@ -290,11 +290,19 @@ def parse_event(line: str) -> RenderedEvent | None:
     )
 
 
+def state_change_line(prompt: str) -> str | None:
+    """The What changed line of a ``build_state_change_prompt`` prompt, as written; None for
+    any other prompt. The section comes last but one, so the last heading of its name is
+    the one."""
+    _, heading, section = prompt.rpartition(f"## {STATE_CHANGE_HEADING}\n")
+    return section.split("\n", 1)[0] if heading else None
+
+
 def read_state_change(prompt: str) -> RenderedEvent | None:
     """The state change a ``build_state_change_prompt`` prompt is about; None for any other
-    prompt. The section comes last but one, so the last heading of its name is the one."""
-    _, heading, section = prompt.rpartition(f"## {STATE_CHANGE_HEADING}\n")
-    return parse_event(section.split("\n", 1)[0]) if heading else None
+    prompt, or for a line ``parse_event`` cannot read."""
+    line = state_change_line(prompt)
+    return None if line is None else parse_event(line)
 
 
 def render_trigger(event: TriggerFired) -> str:

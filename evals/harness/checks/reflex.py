@@ -143,6 +143,9 @@ def _describe(c: ReflexCall) -> str:
 def describe_unattributed(c: ReflexCall) -> str:
     """A call about another change, and what that change was."""
     if c.event is None:
+        if c.unread_change is not None:
+            line = c.unread_change
+            return f"{_describe(c)} about a change line the harness could not read: {line!r}"
         return f"{_describe(c)} about no state change"
     return f"{_describe(c)} about {c.event.name} → {c.event.state}"
 

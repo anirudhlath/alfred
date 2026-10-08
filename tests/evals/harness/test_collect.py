@@ -431,6 +431,21 @@ def test_a_reflex_call_says_which_state_change_it_was_about() -> None:
     assert seen.event == alex
 
 
+def test_a_reflex_call_keeps_a_change_line_it_could_not_read() -> None:
+    """A state-change prompt whose line does not read back is not a trigger's prompt: the
+    call keeps the line, so a check can say which it was."""
+    world = load_world("apartment")
+    unread = s1(json.dumps({"decision": "none"})).model_copy(
+        update={"messages": reflex_prompt("Alex left the house")}
+    )
+    trigger = s1(json.dumps({"decision": "none"})).model_copy(
+        update={"messages": prompt("## Trigger fired\nLaundry (time)")}
+    )
+    [odd, fired] = reflex_calls([unread, trigger], [REFLEX_TOOL], world)
+    assert odd.event is None and odd.unread_change == "Alex left the house"
+    assert fired.event is None and fired.unread_change is None
+
+
 def test_a_reflex_calls_done_is_when_the_proxy_answered() -> None:
     queued = s1(json.dumps({"decision": "none"})).model_copy(update={"answered_at": 4.2})
     [call] = reflex_calls([queued], [REFLEX_TOOL], load_world("apartment"))

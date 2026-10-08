@@ -130,6 +130,16 @@ def test_a_call_about_another_change_is_not_the_steps_and_is_named() -> None:
     assert decide(ev(rc("none"), other), decision="none")[0] == "pass"
 
 
+def test_an_unreadable_change_line_is_not_called_no_state_change() -> None:
+    unread = rc("act", "home.light_turn_on", t=3.0).model_copy(
+        update={"event": None, "unread_change": "Alex left the house"}
+    )
+    status, reason = decide(ev(rc("none"), unread), decision="none")
+    assert status == "pass"
+    assert "about a change line the harness could not read: 'Alex left the house'" in reason
+    assert "no state change" not in reason
+
+
 def test_every_call_in_the_window_must_fit() -> None:
     e = ev(rc("none", t=1.0), rc("act", "home.light_turn_on", t=2.0))
     assert decide(e, decision="none")[0] == "fail"

@@ -658,7 +658,10 @@ names is one home-service would generate, `home.{domain}_{service}`; every refle
 is an entity or an area in the world; and every `entity_id` a trigger's `conditions` name
 directly (a `trigger_created`'s, or those System 2 is expected to send `create_trigger`)
 exists in it; and a reflex check sets `uncalled_ok` only on an entity Reflex does not attend
-to.
+to. Every enabled world entity, at its world state and at every state a golden pushes it to,
+must read back from the What changed line Reflex writes for it (`render_event` with the
+name and room the fake HA serves) as that entity and state: one that does not would time
+out every step on it.
 It also pins the reply patterns of a few goldens to phrasings they must accept and near
 misses they must reject.
 
@@ -731,7 +734,8 @@ as **unattributed**. Such a call can come from:
 - a restore the sample's first steps ran into;
 - an earlier step whose call came back late;
 - Reflex replaying an event it failed on;
-- a trigger's fire, whose prompt is about no state change.
+- a trigger's fire, whose prompt is about no state change;
+- a What changed line the parser cannot read, which the reason quotes.
 
 **Trigger checks** read only the triggers System 2 created with its tool in this sample: a
 trigger from another creator, such as the notification dispatcher's drain trigger, is not

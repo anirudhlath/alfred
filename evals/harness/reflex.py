@@ -12,7 +12,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from core.reflex.decision import parse_decision
-from core.reflex.prompt import read_state_change
+from core.reflex.prompt import parse_event, state_change_line
 from evals.harness.checks.llm import message_text
 from evals.harness.evidence import ReflexCall, ReflexEvent
 
@@ -50,13 +50,22 @@ def _entity_named(world: World, seen: RenderedEvent) -> str | None:
     return hits[0].entity_id if len(hits) == 1 else None
 
 
-def reflex_event(messages: list[dict[str, Any]], world: World) -> ReflexEvent | None:
-    """The state change System 1's prompt was about, or None for a prompt about none (a
+def change_line(messages: list[dict[str, Any]]) -> str | None:
+    """System 1's What changed line as written, or None for a prompt with none (a
     trigger's fire)."""
     for message in messages:
-        if (seen := read_state_change(message_text(message))) is not None:
-            return ReflexEvent(name=seen.name, state=seen.new, entity_id=_entity_named(world, seen))
+        if (line := state_change_line(message_text(message))) is not None:
+            return line
     return None
+
+
+def reflex_event(messages: list[dict[str, Any]], world: World) -> ReflexEvent | None:
+    """The state change System 1's prompt was about, or None for a prompt about none (a
+    trigger's fire) or a line that does not read back (``change_line`` tells them apart)."""
+    line = change_line(messages)
+    if line is None or (seen := parse_event(line)) is None:
+        return None
+    return ReflexEvent(name=seen.name, state=seen.new, entity_id=_entity_named(world, seen))
 
 
 def judges(call: LlmCall, world: World, entity_id: str, state: str) -> bool:
@@ -121,6 +130,7 @@ def reflex_calls(
             continue
         hour = local_hour(call.messages)
         event = reflex_event(call.messages, world)
+        unread = None if event is not None else change_line(call.messages)
         if not 200 <= call.status < 300:
             out.append(
                 ReflexCall(
@@ -132,6 +142,7 @@ def reflex_calls(
                     problem=f"no reply (HTTP {call.status})",
                     local_hour=hour,
                     event=event,
+                    unread_change=unread,
                 )
             )
             continue
@@ -153,6 +164,7 @@ def reflex_calls(
                 problem=proposal.problem,
                 local_hour=hour,
                 event=event,
+                unread_change=unread,
             )
         )
     return out
