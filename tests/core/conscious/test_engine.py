@@ -394,6 +394,28 @@ def test_reason_injection_leaves_the_registry_schema_untouched(
     assert "reason" not in tool_info.input_schema["properties"]
 
 
+def test_reason_is_offered_on_a_schema_without_properties(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """A critical tool whose schema has no `properties` still gets `reason`, on a copy."""
+    engine = ConsciousEngine(**mock_deps)
+    tool_info = ToolInfo(
+        name="home.sound_alarm",
+        description="Sound the alarm",
+        parameters={},
+        feature_name="home",
+        feature_description="Home control",
+        target_service="home-service",
+        risk="critical",
+        input_schema={"type": "object"},
+    )
+
+    schema = engine._tools_to_openai_format([tool_info])[0]["function"]["parameters"]
+
+    assert schema["properties"]["reason"]["type"] == "string"
+    assert tool_info.input_schema == {"type": "object"}
+
+
 # ---------------------------------------------------------------------------
 # Routine suggestion tests
 # ---------------------------------------------------------------------------
@@ -747,6 +769,42 @@ async def test_dispatch_preserves_a_tools_own_reason_parameter(
     await engine._dispatch_tool_call(
         {"id": "tc-1", "name": "home.log_incident", "input": {"reason": "Smoke alarm tripped."}},
         tools=[_critical_tool_with_own_reason()],
+    )
+
+    routed = mock_deps["domain_router"].route.call_args[0][0]
+    assert routed.parameters == {"reason": "Smoke alarm tripped."}
+    assert routed.reason is None
+
+
+def _critical_tool_with_reason_in_its_schema_only() -> ToolInfo:
+    """A critical tool whose shipped `input_schema` declares `reason`; its `parameters` do not."""
+    return ToolInfo(
+        name="home.log_incident",
+        description="Log an incident",
+        parameters={},
+        feature_name="home",
+        feature_description="Home control",
+        target_service="home-service",
+        risk="critical",
+        input_schema={
+            "type": "object",
+            "properties": {"reason": {"type": "string", "description": "Incident reason"}},
+            "required": ["reason"],
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reads_an_own_reason_from_the_schema_the_model_sees(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    """A `reason` the shipped schema declares is the tool's own, whatever `parameters` say."""
+    mock_deps["domain_router"].route.return_value = MagicMock(status="success", result={"ok": True})
+    engine = ConsciousEngine(**mock_deps)
+
+    await engine._dispatch_tool_call(
+        {"id": "tc-1", "name": "home.log_incident", "input": {"reason": "Smoke alarm tripped."}},
+        tools=[_critical_tool_with_reason_in_its_schema_only()],
     )
 
     routed = mock_deps["domain_router"].route.call_args[0][0]
