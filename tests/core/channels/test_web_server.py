@@ -356,7 +356,6 @@ def test_lifespan_closes_a_real_redis_pool_without_a_deprecation_warning(tmp_pat
     import core.channels.web_server as ws_mod
 
     mock_store = AsyncMock()
-    mock_store.has_any_credential = AsyncMock(return_value=False)
 
     with (
         patch.object(ws_mod, "_SPA_DIST", _make_spa_dist(tmp_path)),
