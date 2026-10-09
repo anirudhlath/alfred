@@ -34,7 +34,7 @@ def _build_openai(config: AlfredConfig) -> EmbeddingProvider:
     # one way only: this module's sibling imports embedding_provider at module
     # scope for the ABC, so the openai path loads it regardless — and that import
     # is cheap anyway (~27ms, no torch, no numpy; torch arrives inside
-    # SentenceTransformerProvider._load()).
+    # SentenceTransformerProvider._load_model()).
     from core.memory.openai_embedding_provider import OpenAICompatEmbeddingProvider
 
     return OpenAICompatEmbeddingProvider(
