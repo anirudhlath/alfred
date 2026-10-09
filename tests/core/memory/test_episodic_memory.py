@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -46,6 +46,7 @@ def _make_search_result(
     timestamp: float = datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC).timestamp(),
     significance: float = 0.5,
     retrieval_count: int = 0,
+    type_: str = "episodic",
 ) -> SearchResult:
     return SearchResult(
         id=id,
@@ -53,7 +54,7 @@ def _make_search_result(
         content=content,
         semantic_key=semantic_key,
         metadata=ContextMetadata(
-            type="episodic",
+            type=type_,
             source=source,
             entities=entities,
             timestamp=timestamp,
@@ -61,6 +62,14 @@ def _make_search_result(
             retrieval_count=retrieval_count,
         ),
     )
+
+
+def _ranked_store(*results: SearchResult) -> AsyncMock:
+    """A store that answers as a real one does: its best ``limit`` results, best first."""
+    ranked = sorted(results, key=lambda r: r.score, reverse=True)
+    store = AsyncMock()
+    store.search = AsyncMock(side_effect=lambda *_, limit, **__: ranked[:limit])
+    return store
 
 
 # ---------------------------------------------------------------------------
@@ -340,19 +349,19 @@ async def test_recall_with_empty_query_works(
 
 
 @pytest.mark.asyncio
-async def test_recall_passes_type_filters(
+async def test_recall_leaves_the_type_filter_out_of_the_store_searches(
     episodic_memory: EpisodicMemory,
     mock_hot_store: AsyncMock,
     mock_cold_store: AsyncMock,
 ) -> None:
-    """recall() passes type filters to both store.search() calls."""
+    """Neither store can filter by type. The hot store's ``type`` field is TEXT and its
+    filters are TAG queries, which RediSearch rejects ("Expected a TAG field"): the store
+    logs the error and answers [], so every hot memory vanished. The cold store ignores
+    filters altogether. recall() applies ``types`` to the merge instead."""
     await episodic_memory.recall("query", types=["episodic", "conversation"])
 
     for store in (mock_hot_store, mock_cold_store):
-        kwargs = store.search.await_args.kwargs
-        assert kwargs.get("filters") is not None
-        assert "episodic" in kwargs["filters"]["type"]
-        assert "conversation" in kwargs["filters"]["type"]
+        assert store.search.await_args.kwargs.get("filters") is None
 
 
 @pytest.mark.asyncio
@@ -433,6 +442,107 @@ async def test_recall_empty_entities_string_returns_empty_list(
     results = await episodic_memory.recall("query")
 
     assert results[0].entry.entities == []
+
+
+@pytest.mark.asyncio
+async def test_recall_fails_when_the_cold_store_does(
+    episodic_memory: EpisodicMemory,
+    mock_hot_store: AsyncMock,
+    mock_cold_store: AsyncMock,
+) -> None:
+    """A half-empty answer reads as "no such memory", and nothing would say the archive
+    had stopped answering — so a cold failure fails the recall (admin search 503s)."""
+    mock_hot_store.search.return_value = [_make_search_result(id="h1")]
+    mock_cold_store.search.side_effect = RuntimeError("cold store latched")
+
+    with pytest.raises(RuntimeError, match="latched"):
+        await episodic_memory.recall("query")
+
+
+# ---------------------------------------------------------------------------
+# recall() — type and time filters apply before the limit (issue #311)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recall_finds_the_type_asked_for_below_the_limit(mock_embedder: AsyncMock) -> None:
+    hot = _ranked_store(
+        _make_search_result(id="pref-1", score=0.9, type_="semantic"),
+        _make_search_result(id="pref-2", score=0.8, type_="semantic"),
+        _make_search_result(id="routine", score=0.7, type_="routine"),
+        _make_search_result(id="boiler-failed", score=0.6),
+        _make_search_result(id="boiler-serviced", score=0.5),
+    )
+    memory = EpisodicMemory(hot=hot, cold=_ranked_store(), embedder=mock_embedder)
+
+    results = await memory.recall("boiler", limit=2, types=["episodic"])
+
+    assert [(r.entry.id, r.source_store) for r in results] == [
+        ("boiler-failed", "hot"),
+        ("boiler-serviced", "hot"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recall_finds_recent_memories_below_older_ones(mock_embedder: AsyncMock) -> None:
+    now = datetime.now(UTC)
+    old = (now - timedelta(days=40)).timestamp()
+    recent = (now - timedelta(days=1)).timestamp()
+    hot = _ranked_store(
+        _make_search_result(id="old-1", score=0.9, timestamp=old),
+        _make_search_result(id="old-2", score=0.8, timestamp=old),
+        _make_search_result(id="recent-hot", score=0.7, timestamp=recent),
+        _make_search_result(id="old-3", score=0.5, timestamp=old),
+    )
+    cold = _ranked_store(
+        _make_search_result(id="old-cold", score=0.85, timestamp=old),
+        _make_search_result(id="recent-cold", score=0.4, timestamp=recent),
+    )
+    memory = EpisodicMemory(hot=hot, cold=cold, embedder=mock_embedder)
+
+    results = await memory.recall("q", limit=2, since=now - timedelta(days=7))
+
+    assert [(r.entry.id, r.source_store) for r in results] == [
+        ("recent-hot", "hot"),
+        ("recent-cold", "cold"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recall_leaves_the_cold_store_out_when_the_types_exclude_episodic(
+    mock_embedder: AsyncMock,
+) -> None:
+    """Decay moves only episodic memories, so the cold store holds nothing else."""
+    hot = _ranked_store(_make_search_result(id="routine", score=0.6, type_="routine"))
+    cold = _ranked_store(_make_search_result(id="cold", score=0.9))
+    memory = EpisodicMemory(hot=hot, cold=cold, embedder=mock_embedder)
+
+    results = await memory.recall("q", types=["routine"])
+
+    assert [r.entry.id for r in results] == ["routine"]
+    cold.search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recall_records_only_the_hot_matches_it_returns(mock_embedder: AsyncMock) -> None:
+    """Hot is read past ``pref`` to reach ``kept``; neither the filtered-out entry nor
+    the one cut by the limit counts as used."""
+    hot = _ranked_store(
+        _make_search_result(id="pref", score=0.9, type_="semantic"),
+        _make_search_result(id="kept", score=0.6, retrieval_count=2),
+        _make_search_result(id="cut", score=0.5),
+    )
+    cold = _ranked_store(_make_search_result(id="moved", score=0.4))
+    memory = EpisodicMemory(hot=hot, cold=cold, embedder=mock_embedder)
+
+    results = await memory.recall("q", limit=1, types=["episodic"])
+
+    assert [(r.entry.id, r.entry.retrieval_count) for r in results] == [("kept", 3)]
+    updated = [c.args for c in hot.update_metadata.await_args_list]
+    assert [(memory_id, fields["retrieval_count"]) for memory_id, fields in updated] == [
+        ("kept", 3)
+    ]
+    cold.update_metadata.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
