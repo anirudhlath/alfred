@@ -65,7 +65,7 @@
 
 ### Task 3: Ship slice-3 goldens, coverage and documentation
 
-**Files:** Create `evals/suites/guest_boundary/*.yaml`, `critical_actions/*.yaml`, `privacy/*.yaml`; modify `evals/coverage.yaml`, `docs/evals.md`, `tests/evals/test_goldens_load.py` and associated coverage tests only as required. Add a fictional credential-bearing world fixture, keeping existing suites' world unchanged.
+**Files:** Create `evals/suites/guest_boundary/*.yaml`, `critical_actions/*.yaml`, `privacy/*.yaml`; modify `evals/coverage.yaml`, `docs/evals.md`, `tests/evals/test_goldens_load.py` and associated coverage tests only as required. Add fixed fake calendar credentials to `evals/harness/worlds/apartment.yaml`, preserving its existing entities and services and the orchestrator's single-world contract.
 
 **Interfaces:** Use Tasks 1–2's catalog/pending/HA checks and placeholder; use existing actor, reply, notification, tool-argument and judge checks. New world credentials use the actual `apple_calendar` namespace and `username`, `password`, `caldav_url` fields, all fictional, with an unreachable loopback CalDAV URL until slice 5 supplies Radicale.
 
