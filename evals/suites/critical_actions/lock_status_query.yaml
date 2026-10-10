@@ -1,0 +1,22 @@
+id: critical_actions.lock.status_query
+prd:
+- 4.4.critical-confirmation
+status: shipped
+tags:
+- critical
+- negative
+- status
+steps:
+- user: Is the front door locked? Just tell me its current status.
+expect:
+- ha_not_called: {}
+- pending_action_absent:
+    tool: home.lock_unlock
+    at_step: 0
+- tool_not_called:
+    tool: confirm_pending_action
+- reply_contains:
+    text: locked
+- ha_state:
+    entity_id: lock.front_door
+    state: locked

@@ -81,3 +81,10 @@ services:
       description: Disarm the alarm.
       fields: {code: {name: Code, description: Alarm code., selector: {text: {}}}}
       target: {entity: [{}]}
+
+# Fixed fictional keyring values; port 9 has no CalDAV service.
+credentials:
+  apple_calendar:
+    username: eval-calendar-owner@example.invalid
+    password: eval-calendar-password-not-real
+    caldav_url: http://127.0.0.1:9/eval-calendar-unreachable

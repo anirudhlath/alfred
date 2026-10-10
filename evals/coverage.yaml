@@ -5,7 +5,7 @@
 rows:
   # §3 Product principles
   - {id: principle.1, section: "3", prd: "Proactive, not intrusive.", suites: [notifications], pending_suites: [memory]}
-  - {id: principle.2, section: "3", prd: "Local-first and private.", pending_suites: [privacy]}
+  - {id: principle.2, section: "3", prd: "Local-first and private.", suites: [privacy]}
   - {id: principle.3, section: "3", prd: "Everything describes itself.", suites: [home_control]}
   - {id: principle.4, section: "3", prd: "Deterministic and auditable.", not_llm: "typed bus schemas", tests: [tests/bus]}
   - {id: principle.5, section: "3", prd: "Learns routines; doesn't demand programming.", suites: [triggers], pending_suites: [memory]}
@@ -47,18 +47,19 @@ rows:
   - {id: 4.4.live-state, section: "4.4", prd: "Live state streaming", suites: [home_control]}
   - {id: 4.4.reflex-judgment, section: "4.4", prd: "Reflex judgment calls", suites: [reflex]}
   - {id: 4.4.tiered-autonomy, section: "4.4", prd: "Tiered autonomy", pending_suites: [reflex]}
-  - {id: 4.4.critical-confirmation, section: "4.4", prd: "Confirmation required for critical actions", pending_suites: [critical_actions]}
+  # PRD status remains planned; goldens exercise the existing router/pending/confirmation code.
+  - {id: 4.4.critical-confirmation, section: "4.4", prd: "Confirmation required for critical actions", suites: [critical_actions]}
   # §4.5 Integrations & credentials
   - {id: 4.5.adapters, section: "4.5", prd: "Weather, Apple Calendar", pending_suites: [integrations]}
-  - {id: 4.5.secure-credentials, section: "4.5", prd: "Secure credential storage", pending_suites: [privacy], tests: [tests/shared/test_secrets.py]}
+  - {id: 4.5.secure-credentials, section: "4.5", prd: "Secure credential storage", suites: [privacy], tests: [tests/shared/test_secrets.py]}
   - {id: 4.5.service-credentials, section: "4.5", prd: "Sovereign services declare credential needs", not_llm: "credential delivery", tests: [tests/core/channels/test_service_credentials.py]}
   - {id: 4.5.calendar-management, section: "4.5", prd: "Calendar event creation/management", pending_suites: [integrations]}
   # §4.6 Security & privacy
   - {id: 4.6.passkeys, section: "4.6", prd: "Passkey (WebAuthn) login", not_llm: "authentication", tests: [tests/integration/test_webauthn_flow.py]}
   - {id: 4.6.trusted-network, section: "4.6", prd: "Trusted-network gating", not_llm: "network gate", tests: [tests/core/channels/test_trusted_network.py, tests/core/identity/test_auth_routes.py]}
   - {id: 4.6.session-management, section: "4.6", prd: "Session and passkey management", not_llm: "auth routes", tests: [tests/core/identity/test_auth_routes.py, web/src/workshop/SystemSections.test.tsx, web/src/workshop/useSystem.test.tsx]}
-  - {id: 4.6.identity-confidence, section: "4.6", prd: "Identity confidence levels per channel", pending_suites: [guest_boundary], tests: [tests/core/conscious/test_identity_local_trust.py]}
-  - {id: 4.6.guest-choices, section: "4.6", prd: "Guest access choices captured at onboarding", pending_suites: [guest_boundary], tests: [tests/core/channels/test_onboarding_defaults.py]}
+  - {id: 4.6.identity-confidence, section: "4.6", prd: "Identity confidence levels per channel", suites: [guest_boundary], tests: [tests/core/conscious/test_identity_local_trust.py]}
+  - {id: 4.6.guest-choices, section: "4.6", prd: "Guest access choices captured at onboarding", not_llm: "capture-only onboarding settings; enforcement remains planned", tests: [tests/core/channels/test_onboarding_defaults.py]}
   - {id: 4.6.guest-enforcement, section: "4.6", prd: "Guest boundary enforcement", pending_suites: [guest_boundary]}
   - {id: 4.6.cost-cap, section: "4.6", prd: "Daily cloud-spend cap", not_llm: "budget accounting", tests: [tests/core/conscious/test_cost.py]}
   # §4.7 Operations & quality
@@ -79,6 +80,6 @@ rows:
   - {id: 7.sovereignty, section: "7", prd: "Sovereignty", not_llm: "process isolation via the SDK", tests: [sdk/tests]}
 headings:
   - {id: 1.butler, heading: "1. What is Alfred", suites: [conversation]}
-  - {id: 2.audience, heading: "2. Who it's for", pending_suites: [guest_boundary]}
+  - {id: 2.audience, heading: "2. Who it's for", suites: [guest_boundary]}
   - {id: 5.not-rules-engine, heading: "5. What Alfred is not", suites: [triggers], pending_suites: [memory]}
   - {id: 6.cross-domain, heading: "6. Why Alfred is different", pending_suites: [cross_domain]}
