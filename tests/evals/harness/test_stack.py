@@ -258,6 +258,43 @@ async def test_a_restart_keeps_the_suites_first_boot_and_reply_times(
     await stack.stop()
 
 
+async def test_start_seeds_credentials_before_docker_up_and_restart_reseeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.evals.harness.test_credentials import read_credentials
+
+    fake = {
+        "username": "fake@example.invalid",
+        "password": "fake-password",
+        "caldav_url": "http://127.0.0.1:9/eval",
+    }
+    seeded: list[Path] = []
+
+    class CredentialDocker(FakeDocker):
+        async def run_cmd(self, cmd: list[str], *, timeout: float = 600) -> str:
+            data = Path(cmd[cmd.index("--persist") + 1])
+            assert read_credentials(data) == fake
+            seeded.append(data)
+            return await super().run_cmd(cmd, timeout=timeout)
+
+    async def fake_publish(redis, request, session_id, timeout):  # type: ignore[no-untyped-def]
+        return AlfredResponse(
+            source="conscious-engine", channel="web_pwa", session_id=session_id, text="ready"
+        )
+
+    monkeypatch.setattr("evals.harness.stack.publish_and_wait", fake_publish)
+    monkeypatch.setattr("evals.harness.stack.create_redis", lambda url: _NullRedis())
+    stack = make_stack(tmp_path, CredentialDocker())
+    stack.fake_ha.world = stack.fake_ha.world.model_copy(
+        update={"credentials": {"apple_calendar": fake}}
+    )
+    await stack.start()
+    await stack.restart()
+    assert len(seeded) == 2 and seeded[0] != seeded[1]
+    assert not seeded[0].exists()
+    await stack.stop()
+
+
 class _NullRedis:
     async def aclose(self) -> None:
         return None

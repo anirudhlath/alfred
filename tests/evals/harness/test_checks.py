@@ -347,3 +347,108 @@ def test_prompt_not_contains_fails_when_the_role_was_never_called() -> None:
     p = PromptParams.model_validate({"role": "system1", "text": "notify."})
     result = run_check("prompt_not_contains", p, evidence(llm_calls=[]))
     assert result.status == "fail" and "no system1 call" in result.reason
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"tools": [{"function": {"parameters": {"default": "fake-SECRET"}}}]},
+        {"messages": [{"role": "tool", "content": "fake-SECRET"}]},
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"function": {"arguments": '{"password": "fake-SECRET"}'}}],
+                }
+            ]
+        },
+        {"metadata": {"nested": [None, 42, {"fake-SECRET": "safe"}]}},
+        {"user": "fake-SECRET"},
+    ],
+)
+@pytest.mark.parametrize("params", [{"text": "fake-secret"}, {"regex": r"fake-\w+"}])
+def test_prompt_privacy_reads_every_request_string_and_key(
+    body: dict[str, Any], params: dict[str, Any]
+) -> None:
+    recorded = LlmCall(t=1, role="system2", latency_ms=1, status=502, request_body=body)
+    assert check("prompt_not_contains", params, evidence(llm_calls=[recorded])).status == "fail"
+
+
+def test_prompt_privacy_legacy_fallback_scans_nested_message_fields() -> None:
+    old = prompted("system2", "safe")
+    old.messages.append({"role": "assistant", "function_call": {"arguments": "fake-secret"}})
+    assert (
+        check("prompt_not_contains", {"text": "fake-secret"}, evidence(llm_calls=[old])).status
+        == "fail"
+    )
+
+
+def test_prompt_privacy_excludes_other_roles_and_does_not_search_serialized_json() -> None:
+    safe = LlmCall(
+        t=1,
+        role="system2",
+        latency_ms=1,
+        status=200,
+        request_body={"metadata": {"text": 'say "hello"\nnext'}},
+    )
+    noisy = LlmCall(
+        t=2, role="system1", latency_ms=1, status=200, request_body={"password": "secret"}
+    )
+    ev = evidence(llm_calls=[safe, noisy])
+    assert check("prompt_not_contains", {"text": "secret"}, ev).status == "pass"
+    assert check("prompt_not_contains", {"text": '"hello"\nnext'}, ev).status == "fail"
+
+
+@pytest.mark.parametrize("name", ["tool_offered", "tool_not_offered"])
+def test_catalog_checks_need_a_call_of_the_selected_role(name: str) -> None:
+    ev = evidence(llm_calls=[llm("system1")])
+    result = check(name, {"tool": "home.light_turn_on"}, ev)
+    assert result.status == "fail" and "no system2 call" in result.reason
+
+
+def test_catalog_checks_scan_every_selected_call_and_normalize_names() -> None:
+    first = llm("system2")
+    other = llm("system1").model_copy(update={"tools_offered": ["private.reset"]})
+    later = llm("system2").model_copy(update={"tools_offered": ["home_light_turn_on"]})
+    ev = evidence(llm_calls=[first, other, later])
+    assert check("tool_offered", {"tool": "home.light_turn_on"}, ev).status == "pass"
+    assert check("tool_not_offered", {"tool": "home.light_turn_on"}, ev).status == "fail"
+    assert check("tool_not_offered", {"tool": "private.reset"}, ev).status == "pass"
+    assert check("tool_offered", {"tool": "private.reset"}, ev).status == "fail"
+
+
+def test_catalog_checks_scope_actor_changes_to_step_windows() -> None:
+    owner = llm("system2").model_copy(update={"t": 2.0, "tools_offered": ["private_reset"]})
+    guest = llm("system2").model_copy(update={"t": 5.0, "tools_offered": ["home.read"]})
+    later = llm("system2").model_copy(update={"t": 9.0, "tools_offered": ["private.reset"]})
+    ev = evidence(llm_calls=[owner, guest, later], step_started=[0.0, 5.0, 9.0])
+    assert check("tool_not_offered", {"tool": "private.reset", "at_step": -2}, ev).status == "pass"
+    assert check("tool_offered", {"tool": "home_read", "at_step": 1}, ev).status == "pass"
+    assert check("tool_not_offered", {"tool": "private.reset", "at_step": -1}, ev).status == "fail"
+    assert check("tool_offered", {"tool": "private.reset", "at_step": 0}, ev).status == "pass"
+
+
+@pytest.mark.parametrize("name", ["tool_offered", "tool_not_offered"])
+def test_catalog_checks_fail_for_an_empty_selected_step(name: str) -> None:
+    ev = evidence(llm_calls=[llm("system2")], step_started=[0.0, 5.0])
+    assert check(name, {"tool": "home.read", "at_step": -1}, ev).status == "fail"
+
+
+def test_tool_call_checks_scope_calls_and_arguments_to_a_step() -> None:
+    owner = llm("system2", ("home_reset", {"force": True}))
+    guest = llm("system2", ("home_read", {})).model_copy(update={"t": 5.0})
+    ev = evidence(llm_calls=[owner, guest], step_started=[0.0, 5.0])
+    assert check("tool_not_called", {"tool": "home.reset", "at_step": -1}, ev).status == "pass"
+    assert check("tool_called", {"tool": "home.read", "at_step": -1}, ev).status == "pass"
+    assert (
+        check(
+            "llm_tool_args", {"tool": "home.reset", "args": {"force": True}, "at_step": -1}, ev
+        ).status
+        == "fail"
+    )
+    assert (
+        check(
+            "llm_tool_args_absent", {"tool": "home.reset", "key": "force", "at_step": -1}, ev
+        ).status
+        == "pass"
+    )

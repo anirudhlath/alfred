@@ -23,6 +23,8 @@ DETERMINISTIC: dict[str, tuple[type[BaseModel], DeterministicCheck]] = {
     "ha_state": (home.HaStateParams, home.ha_state),
     "tool_called": (llm.ToolParams, llm.tool_called),
     "tool_not_called": (llm.ToolParams, llm.tool_not_called),
+    "tool_offered": (llm.ToolOfferedParams, llm.tool_offered),
+    "tool_not_offered": (llm.ToolOfferedParams, llm.tool_not_offered),
     "llm_tool_args": (llm.ToolArgsParams, llm.llm_tool_args),
     "llm_tool_args_absent": (llm.ToolArgAbsentParams, llm.llm_tool_args_absent),
     "reply_contains": (reply.ReplyTextParams, reply.reply_contains),

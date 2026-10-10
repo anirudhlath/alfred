@@ -68,6 +68,7 @@ class LlmCall(BaseModel):
     # When the proxy recorded the reply: queued behind its upstream slots and the body read
     # included. None in a record from before it was kept.
     answered_at: float | None = None
+    request_body: dict[str, Any] = Field(default_factory=dict)
     messages: list[dict[str, Any]] = Field(default_factory=list)
     tools_offered: list[str] = Field(default_factory=list)
     response_text: str | None = None

@@ -15,6 +15,15 @@ if TYPE_CHECKING:
 ENTITY_FIELDS = {"entity_id", "area_id", "device_id", "name", "original_name", "disabled_by"}
 
 
+def test_world_credentials_are_optional_and_accept_only_string_fields() -> None:
+    base = {"name": "fake", "areas": [], "entities": [], "services": {}}
+    assert World.model_validate(base).credentials == {}
+    seeded = World.model_validate({**base, "credentials": {"calendar": {"password": "fake"}}})
+    assert seeded.credentials == {"calendar": {"password": "fake"}}
+    with pytest.raises(ValidationError):
+        World.model_validate({**base, "credentials": {"calendar": {"password": 123}}})
+
+
 def test_apartment_registries_have_the_fields_home_service_requires() -> None:
     world = load_world("apartment")
     for e in world.entity_registry():

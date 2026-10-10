@@ -82,6 +82,7 @@ async def test_records_a_system2_tool_call(proxy: LlmProxy) -> None:
     assert call.role == "system2" and call.tools_offered == ["home_light_turn_on"]
     assert call.tool_calls[0].arguments == {"target": "Bedroom Lamp"}
     assert call.prompt_tokens == 100 and call.status == 200
+    assert call.request_body == body
     assert json.loads(proxy.seen[0].content) == body  # type: ignore[attr-defined]
 
 
@@ -107,10 +108,10 @@ async def test_upstream_failure_is_recorded_as_502() -> None:
     await p.start()
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.post(
-                f"{p.url}/v1/chat/completions", json={"model": "m", "messages": []}
-            )
+            body = {"model": "m", "messages": [], "metadata": {"private": "fake-secret"}}
+            r = await client.post(f"{p.url}/v1/chat/completions", json=body)
         assert r.status_code == 502 and p.calls[0].status == 502
+        assert p.calls[0].request_body == body
     finally:
         await p.stop()
 
