@@ -73,6 +73,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `core/conscious/memory_tools.py` — Internal memory tools (recall_memories, get_live_state)
 - `core/warmup.py` — `start_warmup()` background model/component warmup at service startup
 - `core/shutdown.py` — `teardown()` orderly service shutdown (drains background tasks, then closes resources); the counterpart to `core/warmup.py`
+- `core/lazy.py` — `Lazy[T]`: builds a value (a model) at most once in a worker thread, from any event loop; the one lazy-load primitive behind Whisper/TTS, ECAPA and `SentenceTransformerProvider`
 - `core/identity/credentials.py` — `CredentialStore` (async SQLite, WebAuthn credential CRUD)
 - `core/identity/auth_routes.py` — WebAuthn registration/login/logout, sessions, passkeys and pairing-code endpoints (11 routes under `/api/auth/`)
 - `core/identity/auth_middleware.py` — `AuthCookieMiddleware` (cookie → Redis session lookup)
@@ -266,7 +267,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - `ContextIndexManager.search_text()` embeds query internally — callers should NOT hold an EmbeddingProvider separately
 - Memory tools are INTERNAL to Conscious Engine — dispatched in-process like integration/trigger tools, NOT via BaseFeature/SDK/ToolRegistry
 - `EpisodicMemory.copy_to_cold_and_remove()` writes to cold with the vectors hot already holds (`VectorStore.embeddings()`), embedding the text again only when hot cannot hand them back, then deletes hot — use for decay, not `migrate_to_cold()`
-- `SentenceTransformerProvider._load()` is thread-safe (lock) and blocks on first call — services warm it automatically via `core/warmup.py` background startup tasks
+- Every lazy model load (`SentenceTransformerProvider`, `SpeakerID`'s ECAPA, the channels' Whisper/TTS) goes through `Lazy` (`core/lazy.py`) — never an `asyncio.Lock` around `asyncio.to_thread`, which binds to the first event loop that contends on it and lets a cancelled caller start a second load. The first call blocks — services warm the models automatically via `core/warmup.py` background startup tasks
 - Trigger engine sensor evaluation consumes `HOME_STATE_STREAM` (not `alfred:events`) — `alfred:events` only carries TriggerFired/TriggerCreated/ServiceRegistered
 - Voice models (Whisper/TTS) load and run via `asyncio.to_thread` in channels — never call `transcribe()`/`synthesize()` directly on the event loop
 - WebSocket `channel` field is validated to `web_pwa`/`voice`/`ios` only — prevents clients from impersonating Signal channel

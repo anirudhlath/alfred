@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+from core.lazy import Lazy
 from shared.config import DEFAULT_EMBEDDING_MODEL
 
 if TYPE_CHECKING:
@@ -53,56 +53,54 @@ class SentenceTransformerProvider(EmbeddingProvider):
 
     def __init__(self, model_name: str = DEFAULT_EMBEDDING_MODEL) -> None:
         self._model_name = model_name
-        self._model: SentenceTransformer | None = None
-        # embed()/embed_batch() run _load() via asyncio.to_thread — a startup
-        # warmup racing the first request must not load the model twice.
-        self._load_lock = threading.Lock()
+        # embed()/embed_batch() load the model via asyncio.to_thread — a startup
+        # warmup racing the first request must not load it twice.
+        self._model: Lazy[SentenceTransformer] = Lazy(self._load_model)
         # Force numpy's full initialization on the constructing (main) thread.
-        # _load() imports sentence-transformers → torch → numpy inside a worker
+        # _load_model() imports sentence-transformers → torch → numpy inside a worker
         # thread (to_thread); if numpy is first imported there while the main
         # thread concurrently touches it (e.g. reindexing routines at startup),
         # numpy 2.x can raise a partial-init circular-import RecursionError.
         # Constructing a provider already implies the memory extra is installed.
         import numpy  # noqa: F401
 
-    def _load(self) -> SentenceTransformer:
-        with self._load_lock:
-            if self._model is None:
-                from sentence_transformers import SentenceTransformer
+    def _load_model(self) -> SentenceTransformer:
+        from sentence_transformers import SentenceTransformer
 
-                try:
-                    self._model = SentenceTransformer(self._model_name)
-                    # Read dim off the model directly — self.dimension() would
-                    # re-enter _load() and deadlock on the (non-reentrant) lock.
-                    logger.info(
-                        "Loaded embedding model: %s (dim=%s)",
-                        self._model_name,
-                        self._model.get_sentence_embedding_dimension(),
-                    )
-                except Exception as exc:
-                    # Expected when a gated model (e.g. google/embeddinggemma-300m) is
-                    # configured without HF_TOKEN + license acceptance. Memory embedding
-                    # is non-fatal (recall degrades, the system still runs), so keep this
-                    # a single actionable line rather than an alarming ERROR + traceback.
-                    logger.warning(
-                        "Embedding model %r unavailable (%s): memory recall disabled. "
-                        "Use an ungated model via EMBEDDING_MODEL (default %r needs no "
-                        "token), or set HF_TOKEN and accept the model's license.",
-                        self._model_name,
-                        type(exc).__name__,
-                        DEFAULT_EMBEDDING_MODEL,
-                    )
-                    raise
-            return self._model
+        try:
+            model: SentenceTransformer = SentenceTransformer(self._model_name)
+            # Read dim off the model directly — self.dimension() would re-enter
+            # self._model while it builds and deadlock on its (non-reentrant) lock.
+            logger.info(
+                "Loaded embedding model: %s (dim=%s)",
+                self._model_name,
+                model.get_sentence_embedding_dimension(),
+            )
+        except Exception as exc:
+            # Expected when a gated model (e.g. google/embeddinggemma-300m) is
+            # configured without HF_TOKEN + license acceptance. Memory embedding
+            # is non-fatal (recall degrades, the system still runs), so keep this
+            # a single actionable line rather than an alarming ERROR + traceback.
+            # Re-raised, so nothing is cached and the next call tries again.
+            logger.warning(
+                "Embedding model %r unavailable (%s): memory recall disabled. "
+                "Use an ungated model via EMBEDDING_MODEL (default %r needs no "
+                "token), or set HF_TOKEN and accept the model's license.",
+                self._model_name,
+                type(exc).__name__,
+                DEFAULT_EMBEDDING_MODEL,
+            )
+            raise
+        return model
 
     def embed_sync(self, text: str) -> list[float]:
-        model = self._load()
+        model = self._model.get()
         arr = model.encode(text, normalize_embeddings=True)
         result: list[float] = arr.tolist()
         return result
 
     def embed_batch_sync(self, texts: list[str]) -> list[list[float]]:
-        model = self._load()
+        model = self._model.get()
         arr = model.encode(texts, normalize_embeddings=True)
         result: list[list[float]] = arr.tolist()
         return result
@@ -114,7 +112,7 @@ class SentenceTransformerProvider(EmbeddingProvider):
         return await asyncio.to_thread(self.embed_batch_sync, texts)
 
     def dimension(self) -> int:
-        model = self._load()
+        model = self._model.get()
         dim: int | None = model.get_sentence_embedding_dimension()
         if dim is None:
             raise RuntimeError(

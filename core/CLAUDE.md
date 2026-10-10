@@ -111,7 +111,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `signal_bridge/` — Signal CLI subprocess, forwards inbound → `USER_REQUESTS_STREAM`, outbound via adapter
 - `satellite/` — Wyoming voice satellite bridge (physical devices, not the web/iOS voice pipeline): `config.py` (fleet loader, `SATELLITES_CONFIG`), `endpointing.py` (streaming VAD via `pysilero-vad`, `UtteranceCollector`), `bridge.py` (`SatelliteConnection`/`SatelliteBridge` — one persistent reconnecting TCP client per device), `pipeline.py` (`SatellitePipeline`: STT → Conscious round-trip → TTS). See `docs/voice-satellites.md`
 - `request_bus.py` — `publish_and_wait()`: shared XADD-then-XREAD request/response helper, used by both the WebSocket handler and `SatellitePipeline`
-- `voice_models.py` — shared lazy Whisper/TTS/SpeakerID loaders for the channels process (`aget_stt`, `aget_tts`, `aget_speaker_id`). STT/TTS loads serialize on a `threading.Lock` taken inside the worker thread, never a module-level `asyncio.Lock`, which binds to the first event loop that contends on it (#97); `aget_speaker_id` needs no lock because it never awaits
+- `voice_models.py` — shared lazy Whisper/TTS/SpeakerID loaders for the channels process (`aget_stt`, `aget_tts`, `aget_speaker_id`). STT/TTS load through `Lazy` (`core/lazy.py`) on one shared lock, so they load one at a time — never a module-level `asyncio.Lock`, which binds to the first event loop that contends on it (#97); `aget_speaker_id` needs no lock because it never awaits
 - `__main__.py` — Port retry (5 attempts on EADDRINUSE with exponential backoff)
 
 ## Notifications (`notifications/`) — Proactive System
@@ -159,7 +159,7 @@ uv run python -m core.channels   # Web + Signal channels
 
 - Memory tools are INTERNAL — dispatched in-process, NOT via BaseFeature/SDK/ToolRegistry
 - `ContextIndexManager.search_text()` embeds query internally — callers don't need separate EmbeddingProvider
-- `SentenceTransformerProvider._load()` is thread-safe and blocks on first call — services warm it via `core/warmup.py` (`start_warmup()`) background tasks at startup, warming through `EmbeddingProvider.warmup()` so the check is the backend's own
+- `SentenceTransformerProvider` loads its model once, from any thread, through `Lazy` (`core/lazy.py`) and blocks on first call — services warm it via `core/warmup.py` (`start_warmup()`) background tasks at startup, warming through `EmbeddingProvider.warmup()` so the check is the backend's own
 - `recall_hot_and_cold()` (`memory/recall.py`, behind `EpisodicMemory.recall()` and `ContextIndexManager.recall()`) gathers the hot and cold searches at the default `return_exceptions=False`, so a cold-store failure discards the hot results that already succeeded and admin search returns 503 — do NOT "fix" that by flipping it: `return_exceptions=True` swallows every cold failure silently and forever, which is the dimension guard's own failure mode in the other direction (`sqlite_vec_store._verify_vec_dim` documents the trade)
 - Both vector stores refuse to run against a store built at a different embedding width and latch it; the recovery is the exception text they print (per-store, and the hot store's `DD` flag is destructive) — never a summary of it
 - Never construct an embedding provider directly in a service — go through `build_embedding_provider()` (`memory/embedding_backend.py`, dispatches on `EMBEDDING_BACKEND`) and release it with `provider.aclose()` inside `core/shutdown.py`'s `teardown()`; the HTTP backend owns a connection pool, the in-process one no-ops
@@ -169,7 +169,7 @@ uv run python -m core.channels   # Web + Signal channels
 - Signal bridge expects `signal-cli` binary in PATH
 - TTS backends (Kokoro default, Piper fallback) auto-download from the HF Hub — see docs/voice.md
 - kokoro-onnx reads the process-global `ONNX_PROVIDER` env var at construction — `KokoroTTS.__init__` sets it from `KOKORO_ONNX_PROVIDER` (`auto` → CUDA when available, else CPU); `onnxruntime` and `onnxruntime-gpu` cannot coexist (4090 swaps packages, see docs/voice.md)
-- TTS fallback semantics (`voice_models.get_tts()`): runtime init failure of the configured backend logs a loud warning and falls back — never cached, so later calls retry; `_FAILED` is cached permanently only when every backend fails with ImportError
+- TTS fallback semantics (`voice_models.get_tts()`): runtime init failure of the configured backend logs a loud warning and falls back — never cached, so later calls retry; the failure (None) is cached permanently only when every backend fails with ImportError
 - TriggerStore coherence is pub/sub (`alfred:triggers:changed`) — never mutate `alfred:triggers` without going through TriggerStore
 - User timezone lives at `alfred:user:timezone` via `shared/usertime.py` — resolution stored → `ALFRED_TIMEZONE` → UTC. Clients send their IANA zone per message; the conscious engine (not the web channel) persists it via `set_user_timezone` (write-on-change)
 

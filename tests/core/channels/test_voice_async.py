@@ -18,10 +18,13 @@ from core.channels import voice_models, web_server
 
 
 @pytest.fixture(autouse=True)
-def _clean_lazy_cache() -> Any:
-    voice_models._lazy_cache.clear()
+def _cold_voice_models(monkeypatch: pytest.MonkeyPatch) -> Any:
+    voice_models._stt.reset()
+    voice_models._tts.reset()
+    monkeypatch.setattr(voice_models, "_speaker_id", None)
     yield
-    voice_models._lazy_cache.clear()
+    voice_models._stt.reset()
+    voice_models._tts.reset()
 
 
 class _ThreadRecorder:
@@ -66,11 +69,7 @@ async def test_aget_stt_constructs_in_worker_thread(monkeypatch: pytest.MonkeyPa
     instance = object()
 
     def fake_lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
-        cached = voice_models._lazy_cache.get(key)
-        if cached is not None:
-            return cached
         construction_threads.append(threading.get_ident())
-        voice_models._lazy_cache[key] = instance
         return instance
 
     monkeypatch.setattr(voice_models, "_lazy_load", fake_lazy_load)
@@ -85,18 +84,15 @@ async def test_aget_stt_constructs_in_worker_thread(monkeypatch: pytest.MonkeyPa
 async def test_aget_stt_concurrent_calls_construct_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Warmup racing a first request must not load the model twice."""
+    """Warmup racing a first request must not load the model twice. The fake loader
+    checks no cache of its own, so one construction is the shared Lazy's doing."""
     constructions = 0
     instance = object()
 
     def fake_lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
         nonlocal constructions
-        cached = voice_models._lazy_cache.get(key)
-        if cached is not None:
-            return cached
         constructions += 1
         time.sleep(0.05)  # simulate slow model load
-        voice_models._lazy_cache[key] = instance
         return instance
 
     monkeypatch.setattr(voice_models, "_lazy_load", fake_lazy_load)
@@ -108,10 +104,8 @@ async def test_aget_stt_concurrent_calls_construct_once(
 
 
 class _CountingLoader:
-    """Fake ``_lazy_load``: a slow, unlocked, cache-checking construct.
-
-    It holds no lock of its own, as the real getters hold none, so a single
-    construction under concurrency is the load lock's doing alone.
+    """Fake ``_lazy_load``: a slow construct with no lock or cache of its own, as the
+    real one has none, so a single construction under concurrency is the Lazy's doing.
     """
 
     def __init__(self, delay: float = 0.05) -> None:
@@ -122,42 +116,18 @@ class _CountingLoader:
         self._delay = delay
 
     def __call__(self, key: str, module: str, cls_name: str, missing_msg: str) -> Any:
-        cached = voice_models._lazy_cache.get(key)
-        if cached is not None:
-            return cached
         self.constructions += 1
         self.started.set()
         time.sleep(self._delay)  # a model load, long enough for callers to overlap
         self.release.wait(timeout=5)
-        voice_models._lazy_cache[key] = self.instance
         return self.instance
-
-
-@pytest.mark.asyncio
-async def test_aget_voice_constructs_once_when_the_getter_skips_the_cache() -> None:
-    """A getter only has to write the cache: callers queued behind its load re-check
-    the cache under the lock, so they never run it a second time."""
-    constructions = 0
-    instance = object()
-
-    def getter() -> object:
-        nonlocal constructions
-        constructions += 1
-        time.sleep(0.05)  # a model load, long enough for callers to overlap
-        voice_models._lazy_cache["probe"] = instance
-        return instance
-
-    results = await asyncio.gather(*(voice_models._aget_voice("probe", getter) for _ in range(4)))
-
-    assert results == [instance] * 4
-    assert constructions == 1
 
 
 def test_aget_stt_works_on_every_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     """Issue #97: the load lock must not bind to the first loop that contends on it.
 
     Each ``asyncio.run`` is a fresh loop, as each real-lifespan ``TestClient`` is.
-    Two first calls contend the lock on the first loop; clearing the cache makes them
+    Two first calls contend the lock on the first loop; resetting the model makes them
     contend it again on a second one. While the lock was a module-level
     ``asyncio.Lock``, the second loop raised "is bound to a different event loop".
     """
@@ -169,7 +139,7 @@ def test_aget_stt_works_on_every_event_loop(monkeypatch: pytest.MonkeyPatch) -> 
         return list(await asyncio.gather(voice_models.aget_stt(), voice_models.aget_stt()))
 
     for _ in range(2):
-        voice_models._lazy_cache.clear()
+        voice_models._stt.reset()
         assert asyncio.run(_two_first_calls()) == [loader.instance, loader.instance]
 
     assert loader.constructions == 2  # one per loop: each round started from a cold cache
@@ -224,6 +194,61 @@ async def test_aget_tts_returns_none_when_unavailable(
     # Cached failure short-circuits without re-entering the loader.
     assert await web_server.aget_tts() is None
     assert construct_calls == calls_after_first
+
+
+@pytest.mark.asyncio
+async def test_aget_tts_runtime_failure_returns_none_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backend that fails at runtime (deps present) may succeed later, so the async
+    path must answer None without caching the failure, exactly as get_tts does."""
+    construct_calls = 0
+
+    def fake_construct_backend(module: str, cls_name: str, missing_msg: str) -> Any:
+        nonlocal construct_calls
+        construct_calls += 1
+        return voice_models._ConstructResult(None, import_missing=False, error="boom")
+
+    monkeypatch.setattr(voice_models, "_construct_backend", fake_construct_backend)
+
+    assert await web_server.aget_tts() is None
+    calls_after_first = construct_calls
+    assert calls_after_first > 0
+
+    assert await web_server.aget_tts() is None
+    assert construct_calls > calls_after_first
+
+
+@pytest.mark.asyncio
+async def test_stt_and_tts_load_one_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """STT and TTS share one load lock, so their loads never run side by side."""
+    active = 0
+    most_active = 0
+    counter_lock = threading.Lock()
+
+    def _load() -> Any:
+        nonlocal active, most_active
+        with counter_lock:
+            active += 1
+            most_active = max(most_active, active)
+        time.sleep(0.05)  # long enough for two unserialised loads to overlap
+        with counter_lock:
+            active -= 1
+        return object()
+
+    def fake_lazy_load(key: str, module: str, cls_name: str, missing_msg: str) -> Any:
+        return _load()
+
+    def fake_construct_backend(module: str, cls_name: str, missing_msg: str) -> Any:
+        return voice_models._ConstructResult(_load(), import_missing=False)
+
+    monkeypatch.setattr(voice_models, "_lazy_load", fake_lazy_load)
+    monkeypatch.setattr(voice_models, "_construct_backend", fake_construct_backend)
+
+    stt, tts = await asyncio.gather(voice_models.aget_stt(), voice_models.aget_tts())
+
+    assert stt is not None and tts is not None
+    assert most_active == 1
 
 
 @pytest.mark.asyncio
