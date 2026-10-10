@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import pkgutil
 from datetime import UTC, datetime
 from functools import cache
@@ -16,6 +17,7 @@ from bus.schemas.events import StateChangedEvent
 from core.conscious.action_tools import ACTION_TOOLS_MANIFEST
 from core.conscious.memory_tools import MEMORY_TOOLS_MANIFEST
 from core.integrations import __path__ as integration_paths
+from core.integrations.base import Integration
 from core.integrations.registry import IntegrationRegistry
 from core.reflex.attention import DEFAULT_SEED_PATH, AttentionSeedRules
 from core.reflex.prompt import LiveEntity, render_event
@@ -350,15 +352,31 @@ def _offered_tools(world: World) -> dict[str, frozenset[str]]:
 
 @cache
 def _integration_tools() -> frozenset[str]:
-    """Read capability names from registered adapters, without performing any fetch."""
-    for module in pkgutil.iter_modules(integration_paths):
+    """Read adapter declarations, independent of other tests' mutable registrations.
+
+    Collection may already have imported adapters before registry tests clear the global
+    registry. Cached imports cannot repeat registration decorators, so inspect classes
+    declared in each discovered module rather than that process-global registry.
+    """
+    modules = [
         importlib.import_module(f"core.integrations.{module.name}")
+        for module in pkgutil.iter_modules(integration_paths)
+    ]
+    adapters = {
+        value
+        for module in modules
+        for value in vars(module).values()
+        if isinstance(value, type)
+        and issubclass(value, Integration)
+        and value.__module__ == module.__name__
+        and not inspect.isabstract(value)
+    }
 
     async def names() -> frozenset[str]:
         tools: set[str] = set()
-        for name in IntegrationRegistry.available():
-            caps = await IntegrationRegistry.get_class(name)().get_capabilities()
-            tools.update(f"integration_{name}_{cap.name}" for cap in caps)
+        for adapter in adapters:
+            caps = await adapter().get_capabilities()
+            tools.update(f"integration_{adapter.name}_{cap.name}" for cap in caps)
         return frozenset(tools)
 
     return asyncio.run(names())
@@ -823,3 +841,24 @@ def test_the_weekday_cron_takes_any_spelling_of_weekdays_at_seven(cron: str, pas
 def test_critical_lock_status_reply_rejects_unlocked(reply: str, passes: bool) -> None:
     golden = _goldens()["critical_actions.lock.status_query"]
     assert _reply_checks_pass(golden, reply) is passes
+
+
+def test_integration_catalog_survives_cached_modules_and_registry_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Full test collection imports adapters, then unrelated registry tests replace the
+    # global registrations. A cached import cannot replay a registration decorator.
+    from core.integrations.apple_calendar import AppleCalendarAdapter
+
+    _integration_tools.cache_clear()
+    _integration_tools()  # Load every adapter before simulating that registry reset.
+    monkeypatch.setattr(IntegrationRegistry, "_registry", {})
+    _integration_tools.cache_clear()
+    try:
+        capabilities = asyncio.run(AppleCalendarAdapter().get_capabilities())
+        expected = {f"integration_{AppleCalendarAdapter.name}_{cap.name}" for cap in capabilities}
+        assert expected  # Do not accept a vacuously empty adapter catalog.
+        assert expected <= _integration_tools()
+        assert IntegrationRegistry.available() == []  # Validation must not mutate the registry.
+    finally:
+        _integration_tools.cache_clear()

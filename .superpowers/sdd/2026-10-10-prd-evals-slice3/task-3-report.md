@@ -66,3 +66,30 @@ GREEN after implementation:
 - `uv run ruff format --check tests/evals/test_goldens_load.py tests/evals/test_prd_coverage.py`: **2 files already formatted**.
 - `git diff --check`: **passed**.
 - Only the fixture, golden validation tests and this report changed. No production edits or repeat full gates; controller's full pytest run covers the previously committed tree.
+
+## Full-suite catalog investigation and fix (base 90139c2)
+
+Controller full pytest exposed one failure in golden tool validation (4065 passed, 15 skipped): all five calendar tool names became unknown in the full process, although eval-only runs passed. Controller log: /tmp/alfred-slice3-full-tests.log.
+
+Root cause investigation: existing integration/settings test fixtures clear IntegrationRegistry._registry and leave test adapters registered. Full collection has already imported the real adapter modules. `_integration_tools()` imported those cached modules, whose registration decorators cannot run again, then read the cleared mutable registry. The validation catalog therefore lost real calendar capabilities.
+
+Confirmed the collection/global-state difference with:
+
+`uv run pytest tests/core/integrations/test_apple_calendar.py tests/core/integrations/test_registry_keyring.py tests/evals/test_goldens_load.py::test_every_golden_names_real_services_and_tools -q`
+
+Before fix: **1 failed, 33 passed in 2.03s**, with the same five unknown calendar tool names. Without prior calendar collection, registry-keyring tests plus the guard passed (8 tests), confirming cached imports are the differentiator. Logs: /tmp/task3-catalog-reproduce-cached.log and /tmp/task3-catalog-reproduce.log.
+
+Added a regression that first imports adapter modules, replaces the registry with an empty dictionary, clears the catalog cache and verifies the real calendar's dynamically derived capability names remain present. It also asserts the emptied registry remains unchanged. RED: `uv run pytest tests/evals/test_goldens_load.py -q -k integration_catalog_survives`: **1 failed, 64 deselected in 0.77s**, actual catalog was frozenset(). Log: /tmp/task3-catalog-red.log.
+
+Single fix: dynamically discover integration modules, inspect their locally declared concrete Integration subclasses and read capability declarations from those classes. Tool names are still derived from the real adapters, with no hardcoded catalog and no weakened golden checks. The helper no longer depends on process-global registration contents.
+
+GREEN verification:
+
+- `uv run pytest tests/evals/test_goldens_load.py tests/evals/test_prd_coverage.py -q`: **73 passed in 1.35s**. Log: /tmp/task3-catalog-green.log.
+- Exact minimal reproduction command above: **34 passed in 1.98s**. Log: /tmp/task3-catalog-reproduce-green.log.
+- Owned Ruff check: **All checks passed!**
+- Owned Ruff format check: **2 files already formatted**.
+- `git diff --check`: **passed**.
+- Optional strict mypy of the two owned test files: the same two verified baseline errors remain at current lines 319 and 708; no new errors. Log: /tmp/task3-catalog-mypy.log.
+
+Only tests/evals/test_goldens_load.py and this report changed. No production edits. Controller owns the post-fix full repository rerun and real suites.
