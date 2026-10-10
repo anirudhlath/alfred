@@ -55,3 +55,14 @@ GREEN after implementation:
 - Strengthened the same-session identity transition to detect private conversation leakage, not merely missing tools.
 - All requested local eval verification passed. The optional test-file strict mypy failures predate this change and are reported rather than silently fixed outside scope.
 - Natural yes and the identity transition intentionally expose potential product gaps; no real model outcome is claimed. Guest enforcement remains planned. Root owns real suite runs, full repository gates, review, publishing and any baseline decision.
+
+## Review fix: lock-status false positive (base 9e17b13)
+
+- Replaced the `locked` substring needle in critical_actions/lock_status_query.yaml with the word-boundary regex `\blocked\b`, so an incorrect `unlocked` reply cannot satisfy it.
+- Added a focused four-case regression: two natural locked replies pass, two unlocked replies fail.
+- RED: `uv run pytest tests/evals/test_goldens_load.py -q -k critical_lock_status_reply`: **2 failed, 2 passed, 60 deselected in 0.87s**. Both unlocked replies incorrectly returned True before the fixture correction. Log: /tmp/task3-status-red.log.
+- GREEN: `uv run pytest tests/evals/test_goldens_load.py tests/evals/test_prd_coverage.py -q`: **72 passed in 1.28s**. Log: /tmp/task3-status-green.log.
+- `uv run ruff check tests/evals/test_goldens_load.py tests/evals/test_prd_coverage.py`: **All checks passed!**
+- `uv run ruff format --check tests/evals/test_goldens_load.py tests/evals/test_prd_coverage.py`: **2 files already formatted**.
+- `git diff --check`: **passed**.
+- Only the fixture, golden validation tests and this report changed. No production edits or repeat full gates; controller's full pytest run covers the previously committed tree.

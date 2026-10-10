@@ -809,3 +809,17 @@ def test_the_weekday_cron_takes_any_spelling_of_weekdays_at_seven(cron: str, pas
     checks = [c for c in s.expect if c.name == "trigger_created"]
     assert checks
     assert all(run_check(c.name, c.params, evidence).status == "pass" for c in checks) is passes
+
+
+@pytest.mark.parametrize(
+    ("reply", "passes"),
+    [
+        ("The front door is locked.", True),
+        ("It is locked, sir.", True),
+        ("The front door is unlocked.", False),
+        ("It is unlocked, sir.", False),
+    ],
+)
+def test_critical_lock_status_reply_rejects_unlocked(reply: str, passes: bool) -> None:
+    golden = _goldens()["critical_actions.lock.status_query"]
+    assert _reply_checks_pass(golden, reply) is passes

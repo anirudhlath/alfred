@@ -16,7 +16,7 @@ expect:
 - tool_not_called:
     tool: confirm_pending_action
 - reply_contains:
-    text: locked
+    regex: '\blocked\b'
 - ha_state:
     entity_id: lock.front_door
     state: locked
