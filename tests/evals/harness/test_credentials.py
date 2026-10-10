@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -27,6 +27,7 @@ def read_credentials(data_dir: Path) -> dict[str, str | None]:
             "ALFRED_DATA_DIR": str(data_dir),
             "ALFRED_SECRETS_BACKEND": "cryptfile",
             "ALFRED_SECRETS_PASSPHRASE": "alfred-eval-not-a-secret",
+            "PYTHON_DOTENV_DISABLED": "1",
         },
         capture_output=True,
         text=True,
@@ -71,3 +72,39 @@ async def test_empty_credentials_do_not_initialize_a_keyring(tmp_path: Path) -> 
 
     await prepare_credentials(tmp_path, {})
     assert list(tmp_path.iterdir()) == []
+
+
+async def test_seed_interpreter_does_not_read_operator_dotenv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from evals.harness.credentials import prepare_credentials
+
+    fixture = tmp_path / ".env"
+    fixture.write_text("EVAL_OPERATOR_SENTINEL=must-never-be-loaded\n")
+    data = tmp_path / "eval-data"
+    data.mkdir()
+    # Redirect shared.config's load_dotenv to a fake fixture. The child still calls
+    # the real dotenv loader and backend, but cannot open the actual checkout .env.
+    instrument = f"""\
+import dotenv, os
+real_load_dotenv = dotenv.load_dotenv
+def fixture_load_dotenv(*args, **kwargs):
+    return real_load_dotenv({str(fixture)!r})
+dotenv.load_dotenv = fixture_load_dotenv
+"""
+    forbid_loaded_fixture = """\
+if 'EVAL_OPERATOR_SENTINEL' in os.environ:
+    raise RuntimeError('operator dotenv fixture was read')
+"""
+    real_run = subprocess.run
+
+    def run_instrumented(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        args = [*command[:2], instrument + command[2] + forbid_loaded_fixture]
+        result: subprocess.CompletedProcess[str] = real_run(args, **kwargs)
+        return result
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr("evals.harness.credentials.subprocess.run", run_instrumented)
+        await prepare_credentials(data, {"apple_calendar": {"password": "fake-fixture-secret"}})
+    assert read_credentials(data)["password"] == "fake-fixture-secret"
+    assert fixture.read_text() == "EVAL_OPERATOR_SENTINEL=must-never-be-loaded\n"

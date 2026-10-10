@@ -39,6 +39,8 @@ async def prepare_credentials(data_dir: Path, credentials: dict[str, dict[str, s
             "ALFRED_DATA_DIR": str(data_dir.resolve()),
             "ALFRED_SECRETS_BACKEND": "cryptfile",
             "ALFRED_SECRETS_PASSPHRASE": EVAL_SECRETS_PASSPHRASE,
+            # shared.config otherwise loads the checkout .env outside pytest.
+            "PYTHON_DOTENV_DISABLED": "1",
         },
         cwd=Path(__file__).resolve().parents[2],
         check=True,
