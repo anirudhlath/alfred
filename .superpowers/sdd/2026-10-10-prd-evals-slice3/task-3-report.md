@@ -93,3 +93,28 @@ GREEN verification:
 - Optional strict mypy of the two owned test files: the same two verified baseline errors remain at current lines 319 and 708; no new errors. Log: /tmp/task3-catalog-mypy.log.
 
 Only tests/evals/test_goldens_load.py and this report changed. No production edits. Controller owns the post-fix full repository rerun and real suites.
+
+## Final review fix: negated status and evidence documentation (base 60af121)
+
+A word-boundary `locked` needle alone still accepted the false answer “The front door is not locked.” Prepared the functional patch and regression under /tmp while the controller's first live run was active; did not mutate in-flight goldens. Applied only after explicit controller clearance at live-run completion.
+
+- Added a narrow negative needle for explicit `not locked` and ASCII/curly `isn't locked` forms. Retained the affirmative word-boundary check.
+- Added the existing faithfulness judge, with the actual locked fixture as reference, to assess accurate status across natural phrasing and contradictory/unknown claims. No production changes or broad natural-language parser.
+- Extended the focused reply regression to seven real check evaluations: locked replies pass; unlocked, not locked and both contraction forms fail. No tautological rubric-string tests.
+- Corrected docs/evals.md: missing/ambiguous pending selection renders the fixed eval-nonexistent-pending-action ID, records transcript diagnostics and continues to product-result checks. Catalog checks inspect recorded names and malformed entries may be omitted by the existing extractor; only unreadable pending records carry the described local evidence-error guarantee. Upstream normally validates malformed request bodies.
+
+RED before applying the fixture change:
+
+`uv run python -m pytest /tmp/task3-status-semantic/test_status_regression.py -q`
+
+**3 failed, 4 passed in 0.90s**: the three explicit negations were incorrectly accepted by the old fixture. Log: /tmp/task3-status-negation-red.log.
+
+GREEN after applying:
+
+- `uv run pytest tests/evals/test_goldens_load.py -q -k critical_lock_status_reply`: **7 passed, 61 deselected in 0.81s**. Log: /tmp/task3-status-negation-green.log.
+- `uv run pytest tests/evals/test_goldens_load.py tests/evals/test_prd_coverage.py -q`: **76 passed in 1.33s** on the final source. Log: /tmp/task3-status-final-goldens.log. Ruff initially flagged a literal curly apostrophe; replaced it with the equivalent Unicode escape and reran the checks.
+- Owned Ruff check: **All checks passed!** after that source-literal correction.
+- Owned Ruff format check: **2 files already formatted**.
+- `git diff --check`: **passed**.
+
+Evidence limit: these unit tests prove deterministic reply checks reject the concrete false statements. They do not evaluate the model-backed semantic judge's accuracy. The controller's final three-epoch live run will exercise the added faithfulness criterion; the first live run used the prior scoring. No new full pytest or production gates were run for this fixture/documentation correction, as directed.

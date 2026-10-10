@@ -836,9 +836,12 @@ def test_the_weekday_cron_takes_any_spelling_of_weekdays_at_seven(cron: str, pas
         ("It is locked, sir.", True),
         ("The front door is unlocked.", False),
         ("It is unlocked, sir.", False),
+        ("The front door is not locked.", False),
+        ("It isn't locked, sir.", False),
+        ("It isn\u2019t locked, sir.", False),
     ],
 )
-def test_critical_lock_status_reply_rejects_unlocked(reply: str, passes: bool) -> None:
+def test_critical_lock_status_reply_rejects_incorrect_status(reply: str, passes: bool) -> None:
     golden = _goldens()["critical_actions.lock.status_query"]
     assert _reply_checks_pass(golden, reply) is passes
 

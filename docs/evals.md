@@ -639,14 +639,19 @@ Exactly one match is required. The driver substitutes its observed ID into the l
 `{pending_action_id}` placeholder in the utterance (and its variants), sends an ordinary
 user turn, and waits for the real confirmation tool and action consumer to execute.
 It never calls the approval endpoint. The selector must reference an earlier step, and
-only that placeholder without formatting or conversion is allowed. Missing or ambiguous
-matches fail the sample with fixture diagnostics instead of inventing an ID. A repeated
-approval can select the earlier snapshot again even after the action was consumed.
+only that placeholder without formatting or conversion is allowed. If the earlier
+snapshot is missing or the selector finds zero or multiple matches, the driver substitutes
+the fixed `eval-nonexistent-pending-action` ID and records a render diagnostic in the
+transcript. It still sends the turn, so pending and execution checks score the product
+result instead of aborting the sample before observation. A repeated approval can select
+the earlier snapshot again even after the action was consumed.
 
 Evidence keeps `tools_offered`, the full validated LLM `request_body`, and `pending`
 snapshots after each settled step. `at_step` tool checks evaluate every recorded call in
-that window. Missing role calls and pending snapshots fail checks; malformed catalogs
-or unreadable pending records raise evidence errors. Privacy scans every System 2 request,
+that window. Missing role calls and pending snapshots fail checks; unreadable pending
+records raise evidence errors. Catalog checks examine the recorded tool names; the
+existing extractor omits malformed catalog entries, while upstream validation normally
+rejects malformed request bodies. Privacy scans every System 2 request,
 including later calls in the agentic loop, and `reply_not_contains` with `step: any`
 scans every reply. These checks do not accept an empty trace as a privacy pass.
 
