@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from evals.harness.checks import home, latency, llm, notifications, reflex, reply, triggers
+from evals.harness.checks import home, latency, llm, notifications, pending, reflex, reply, triggers
 from evals.harness.checks.judge_spec import JudgeSpec
 from evals.harness.checks.result import CheckResult
 from evals.harness.evidence import Evidence
@@ -21,6 +21,8 @@ DETERMINISTIC: dict[str, tuple[type[BaseModel], DeterministicCheck]] = {
     "ha_called": (home.HaCalledParams, home.ha_called),
     "ha_not_called": (home.HaNotCalledParams, home.ha_not_called),
     "ha_state": (home.HaStateParams, home.ha_state),
+    "pending_action": (pending.PendingActionParams, pending.pending_action),
+    "pending_action_absent": (pending.PendingActionAbsentParams, pending.pending_action_absent),
     "tool_called": (llm.ToolParams, llm.tool_called),
     "tool_not_called": (llm.ToolParams, llm.tool_not_called),
     "tool_offered": (llm.ToolOfferedParams, llm.tool_offered),

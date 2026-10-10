@@ -17,6 +17,7 @@ from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.identity import IDENTITY_GUEST, IDENTITY_SIR
 from evals.harness.bus import zone_for_hour
 from evals.harness.checks.home import satisfies
+from evals.harness.checks.llm import normalize_tool
 from evals.harness.collect import (
     deferred_records,
     is_fire_of,
@@ -28,12 +29,14 @@ from evals.harness.evidence import (
     Advance,
     ClockSet,
     Evidence,
+    PendingSnapshot,
     Reply,
     StatePush,
     TranscriptTurn,
 )
 from evals.harness.reflex import judges, reflex_calls
 from evals.harness.scenario import (
+    PENDING_ACTION_PLACEHOLDER,
     Actor,
     AdvanceTriggerStep,
     ClockStep,
@@ -62,6 +65,7 @@ if TYPE_CHECKING:
 SendFn = Callable[[UserRequest, float], Awaitable[AlfredResponse]]
 TIMES = "\N{MULTIPLICATION SIGN}"
 SYSTEM1_ROLE: Role = "system1"  # the proxy's role for Reflex's calls
+MISSING_PENDING_ACTION_ID = "eval-nonexistent-pending-action"
 
 
 def _utc_now() -> datetime:
@@ -155,14 +159,27 @@ def outstanding_calls(
     now = time.monotonic()
     outstanding = []
     for p in scenario.ha_called_counting(index):
-        start = ev.started_at if p.after_step is None else ev.step_start(p.after_step)
-        if not any(satisfies(p, c) for c in fake_ha.calls_between(start, now)):
+        count = _matching_call_count(p, ev, fake_ha, now)
+        if count < (1 if p.count is None else p.count):
             outstanding.append(p)
     return outstanding
 
 
-def _satisfies_any(checks: list[HaCalledParams], call: HaCall) -> bool:
-    return any(satisfies(p, call) for p in checks)
+def _matching_call_count(p: HaCalledParams, ev: Evidence, fake_ha: FakeHA, now: float) -> int:
+    step = p.at_step if p.at_step is not None else p.after_step
+    start = ev.started_at if step is None else ev.step_start(step)
+    return sum(satisfies(p, c) for c in fake_ha.calls_between(start, now))
+
+
+def _satisfies_any(
+    checks: list[HaCalledParams], ev: Evidence, fake_ha: FakeHA, call: HaCall
+) -> bool:
+    return any(
+        satisfies(p, call)
+        and _matching_call_count(p, ev, fake_ha, time.monotonic())
+        >= (1 if p.count is None else p.count)
+        for p in checks
+    )
 
 
 def session_id_for(sample_id: str, epoch: int) -> str:
@@ -304,6 +321,82 @@ async def _clean_up(
 
 
 async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Evidence:
+    """Play with pending ownership scoped to the IDs absent before this sample."""
+    initial = {a.request_id for a in await ctx.bus.pending_actions()}
+    owned: set[str] = set()
+    failure: BaseException | None = None
+    try:
+        return await _play(ctx, variant, epoch, initial, owned)
+    except BaseException as exc:
+        failure = exc
+        raise
+    finally:
+        await _pending_cleanup(ctx, initial, owned, failure)
+
+
+async def _pending_cleanup(
+    ctx: PlayContext, initial: set[str], owned: set[str], failure: BaseException | None
+) -> None:
+    """Finish bounded pending cleanup even if cancellation arrives repeatedly. Keep an
+    original failure, annotating cleanup failures; otherwise let cleanup failures raise."""
+
+    async def clean() -> None:
+        try:
+            owned.update(
+                a.request_id for a in await ctx.bus.pending_actions() if a.request_id not in initial
+            )
+        finally:
+            if owned:
+                await ctx.bus.delete_pending_actions(sorted(owned))
+
+    task = asyncio.create_task(clean(), name="eval-pending-cleanup")
+    cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+        except Exception:
+            break  # retrieve the error below, without replacing an original exception
+    try:
+        task.result()
+    except Exception as exc:
+        original = failure or cancelled
+        if original is None:
+            raise
+        original.add_note(f"pending cleanup raised {type(exc).__name__}: {exc}")
+    if cancelled is not None and failure is None:
+        raise cancelled
+
+
+def _user_text(ev: Evidence, index: int, step: UserStep) -> str:
+    selector = step.pending_action
+    if selector is None:
+        return step.user
+    snapshot = ev.pending_at_step(selector.at_step)
+    actions = (
+        []
+        if snapshot is None
+        else [
+            a
+            for a in snapshot.actions
+            if normalize_tool(a.tool_name) == normalize_tool(selector.tool)
+        ]
+    )
+    request_id = actions[0].request_id if len(actions) == 1 else MISSING_PENDING_ACTION_ID
+    ev.transcript.append(
+        TranscriptTurn(
+            role="event",
+            text=f"step {index}: pending selector at step {selector.at_step} for "
+            f"{selector.tool} matched {len(actions)} actions; selected {request_id}",
+        )
+    )
+    return step.user.replace(PENDING_ACTION_PLACEHOLDER, request_id)
+
+
+async def _play(
+    ctx: PlayContext, variant: ScenarioVariant, epoch: int, initial: set[str], owned: set[str]
+) -> Evidence:
     scenario = variant.scenario
     before_restore = time.monotonic()
     restored = await ctx.fake_ha.restore_world()
@@ -332,9 +425,10 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
         match step:
             case UserStep():
                 actor = step.actor or scenario.actor
-                ev.transcript.append(TranscriptTurn(role="user", text=step.user))
+                text = _user_text(ev, index, step)
+                ev.transcript.append(TranscriptTurn(role="user", text=text))
                 sent = time.monotonic()
-                request = build_request(actor, step.user, session_id, ctx.signal_number)
+                request = build_request(actor, text, session_id, ctx.signal_number)
                 response = await ctx.send(request, ctx.reply_timeout_s)
                 if response.source != CONSCIOUS_SOURCE:
                     now = time.monotonic()
@@ -354,6 +448,14 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
                     )
                 )
                 ev.transcript.append(TranscriptTurn(role="alfred", text=response.text))
+                if step.pending_action is not None and (
+                    outstanding := outstanding_calls(scenario, index, ev, ctx.fake_ha)
+                ):
+                    await ctx.fake_ha.wait_for_call(
+                        sent,
+                        ctx.ha_call_timeout_s,
+                        partial(_satisfies_any, outstanding, ev, ctx.fake_ha),
+                    )
                 await asyncio.sleep(ctx.settle_s)
             case HaEventStep():
                 e = step.ha_event
@@ -375,7 +477,7 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
                 # Spec: wait for a call_service, or a 5 s window when the scenario expects
                 # nothing. It still expects one only while an ha_called check is unmet.
                 elif outstanding := outstanding_calls(scenario, index, ev, ctx.fake_ha):
-                    wanted = partial(_satisfies_any, outstanding)
+                    wanted = partial(_satisfies_any, outstanding, ev, ctx.fake_ha)
                     timeout = ctx.ha_call_timeout_s if step.settle is None else step.settle
                     if await ctx.fake_ha.wait_for_call(pushed, timeout, wanted):
                         await asyncio.sleep(ctx.settle_s)  # for the call's side effects
@@ -397,6 +499,9 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
                 await asyncio.sleep(step.settle)
             case _:
                 assert_never(step)
+        actions = [a for a in await ctx.bus.pending_actions() if a.request_id not in initial]
+        owned.update(a.request_id for a in actions)
+        ev.pending.append(PendingSnapshot(step=index, actions=actions))
     # A call is recorded when upstream answers, stamped with when it arrived: one sent
     # since ``started`` and still upstream belongs in this window, so wait for it before
     # reading the window. One from before ``started`` never enters it and is not waited on.
@@ -417,8 +522,8 @@ async def play(ctx: PlayContext, variant: ScenarioVariant, epoch: int) -> Eviden
             "event into a later sample" + failures
         )
     ev.ha_states = ctx.fake_ha.states()
-    # Cleanup runs only on this path: a sample that raised leaves a dirty stack, and the
-    # next sample restarts it (tasks.reset_or_recover).
+    # Trigger/DND/timezone cleanup remains on success only; an error restarts the dirty
+    # stack (tasks.reset_or_recover). Pending IDs are cleaned on every exit by play().
     created = await _collect(ctx, ev, started_wall)
     await _clean_up(ctx, created, touched_dnd, tz_before)
     return ev

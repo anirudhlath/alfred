@@ -431,3 +431,73 @@ def test_the_wrong_kind_message_names_every_kind_with_its_article(at: int, named
     steps: list[dict[str, Any]] = [{"wait": 1}, {"clock": {"hour": 7}}, {"dnd": True}, EVENT]
     with pytest.raises(ValidationError, match=f"at_step {at} is {named}, not ha_event"):
         golden(steps, [{"reflex_decision": {"decision": "none", "at_step": at}}])
+
+
+def test_pending_id_fixture_loads_and_variants_preserve_it() -> None:
+    steps = [
+        {"user": "Unlock the door."},
+        {
+            "user": "Confirm {pending_action_id}.",
+            "variants": ["Yes, action {pending_action_id}."],
+            "pending_action": {"at_step": 0, "tool": "home_lock_unlock"},
+        },
+    ]
+    s = golden(steps, [{"pending_action": {"at_step": 0, "tool": "home.lock_unlock"}}])
+    for variant in expand_variants(s):
+        assert variant.steps[1].pending_action.at_step == 0
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"user": "Confirm it.", "pending_action": {"at_step": 0, "tool": "home.lock_unlock"}},
+        {
+            "user": "Confirm {pending_action_id}.",
+            "pending_action": {"at_step": 1, "tool": "home.lock_unlock"},
+        },
+        {
+            "user": "Confirm {pending_action_id}.",
+            "pending_action": {"at_step": 2, "tool": "home.lock_unlock"},
+        },
+        {
+            "user": "Confirm {pending_action_id}.",
+            "pending_action": {"at_step": -1, "tool": "home.lock_unlock"},
+        },
+        {
+            "user": "Confirm {pending_action_id}.",
+            "pending_action": {"at_step": 0, "tool": "home.lock_unlock", "parameters": {}},
+        },
+        {
+            "user": "Confirm {pending_action_id}.",
+            "pending_action": {"at_step": 0, "tool": "home.lock_unlock"},
+            "variants": ["Yes."],
+        },
+        {"user": "Confirm {pending_action_id}."},
+        {
+            "user": "Confirm {other_id}.",
+            "pending_action": {"at_step": 0, "tool": "home.lock_unlock"},
+        },
+        {
+            "user": "Confirm {pending_action_id} {other_id}.",
+            "pending_action": {"at_step": 0, "tool": "home.lock_unlock"},
+        },
+        {
+            "user": "Confirm {{pending_action_id}}.",
+            "pending_action": {"at_step": 0, "tool": "home.lock_unlock"},
+        },
+    ],
+)
+def test_invalid_pending_fixtures_fail_before_play(bad: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        golden([{"user": "Unlock it."}, bad], [{"ha_not_called": {}}])
+
+
+@pytest.mark.parametrize("at", [0, 1, -1, -2])
+def test_ha_counting_scopes_to_one_step_and_normalizes_negative_index(at: int) -> None:
+    s = golden(
+        [{"user": "a"}, {"user": "b"}],
+        [{"ha_called": {"domain": "lock", "service": "unlock", "at_step": at}}],
+    )
+    normalized = at % 2
+    assert [bool(s.ha_called_counting(i)) for i in range(2)] == [i == normalized for i in range(2)]
+    assert s.ha_called_counting(normalized)[0].at_step == normalized

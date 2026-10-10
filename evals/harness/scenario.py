@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from string import Formatter
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
 import yaml
@@ -63,6 +64,15 @@ def _not_blank(value: str) -> str:
 
 # An utterance: blank text would send Alfred nothing to answer.
 Utterance = Annotated[str, Field(min_length=1), AfterValidator(_not_blank)]
+PENDING_ACTION_PLACEHOLDER = "{pending_action_id}"
+
+
+class PendingActionSelector(BaseModel):
+    """The sole fixture selector: one normalized tool in an earlier step's snapshot."""
+
+    model_config = ConfigDict(extra="forbid")
+    at_step: int = Field(ge=0, strict=True)
+    tool: Utterance
 
 
 class UserStep(BaseModel):
@@ -70,6 +80,24 @@ class UserStep(BaseModel):
     user: Utterance
     variants: list[Utterance] = Field(default_factory=list)
     actor: Actor | None = Field(default=None, alias="as")
+    pending_action: PendingActionSelector | None = None
+
+    @model_validator(mode="after")
+    def _bounded_placeholder(self) -> Self:
+        for text in [self.user, *self.variants]:
+            if self.pending_action is not None:
+                fields = [
+                    (name, spec, conversion)
+                    for _, name, spec, conversion in Formatter().parse(text)
+                    if name is not None
+                ]
+                if not fields or any(f != ("pending_action_id", "", None) for f in fields):
+                    raise ValueError(
+                        "pending_action requires only {pending_action_id} in every utterance"
+                    )
+            elif PENDING_ACTION_PLACEHOLDER in text:
+                raise ValueError("{pending_action_id} requires a pending_action selector")
+        return self
 
 
 class HaEvent(BaseModel):
@@ -221,17 +249,23 @@ class Scenario(BaseModel):
 
     def ha_called_counting(self, index: int) -> list[HaCalledParams]:
         """The ``ha_called`` checks that could count a call made during step *index*: those
-        with no ``after_step``, or one at or before it. Each comes back with its
-        ``after_step`` made non-negative, so it indexes ``Evidence.step_started`` mid-play
-        as it will once every step has started."""
+        with no window selector, ``after_step`` at or before it, or ``at_step`` equal to
+        it. Indexes come back non-negative, ready to use mid-play. A zero count wants
+        absence, so it never asks the driver to wait for a call."""
         counting: list[HaCalledParams] = []
         for check in self.expect:
             if isinstance(check.params, HaCalledParams):
                 after = check.params.after_step
                 if after is not None and after < 0:
                     after += len(self.steps)
-                if after is None or after <= index:
-                    counting.append(check.params.model_copy(update={"after_step": after}))
+                at = check.params.at_step
+                if at is not None:
+                    at %= len(self.steps)
+                counts_step = at == index if at is not None else after is None or after <= index
+                if counts_step and check.params.count != 0:
+                    counting.append(
+                        check.params.model_copy(update={"after_step": after, "at_step": at})
+                    )
         return counting
 
     @model_validator(mode="after")
@@ -245,6 +279,13 @@ class Scenario(BaseModel):
             raise ValueError("reply and judge checks need at least one user step")
         # after_step and at_step count every step; the driver reads after_step mid-play.
         n = len(self.steps)
+        for i, step in enumerate(self.steps):
+            if (
+                isinstance(step, UserStep)
+                and step.pending_action is not None
+                and step.pending_action.at_step >= i
+            ):
+                raise ValueError(f"steps.{i}.pending_action.at_step must name an earlier step")
         kinds = [step_kind(s) for s in self.steps]
         for i, check in enumerate(self.expect):
             for field in ("after_step", "at_step"):

@@ -115,6 +115,8 @@ class FakeBus:
     ) -> None:
         self.entries: list[Entry] = []  # alfred:events
         self.requests: list[Entry] = []  # alfred:actions
+        self.pending: list[ActionRequest] = []
+        self.pending_deleted: list[str] = []
         self.sent: list[Entry] = []  # the notification dispatch stream
         self.held: list[str] = []  # the deferred list
         self.tools = tools or []
@@ -186,6 +188,13 @@ class FakeBus:
 
     async def actions(self, since_wall: float) -> list[Entry]:
         return [e for e in self.requests if e.wall >= since_wall]
+
+    async def pending_actions(self) -> list[ActionRequest]:
+        return [a.model_copy(deep=True) for a in self.pending]
+
+    async def delete_pending_actions(self, request_ids: list[str]) -> None:
+        self.pending_deleted.extend(request_ids)
+        self.pending = [a for a in self.pending if a.request_id not in request_ids]
 
     async def wait_for_event(
         self, since_wall: float, timeout_s: float, wanted: Callable[[Entry], bool]
