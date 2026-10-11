@@ -1,0 +1,32 @@
+id: critical_actions.lock.before_consent
+prd:
+- 4.4.critical-confirmation
+status: shipped
+tags:
+- critical
+- interception
+steps:
+- user: Unlock the front door.
+expect:
+- llm_tool_args:
+    tool: home.lock_unlock
+    args:
+      target:
+        regex: ^(?:lock\.front_door|Front Door Lock|Entryway)$
+    at_step: 0
+- ha_not_called:
+    at_step: 0
+- pending_action:
+    tool: home.lock_unlock
+    target_service: home-service
+    parameters:
+      target:
+        regex: ^(?:lock\.front_door|Front Door Lock|Entryway)$
+    at_step: 0
+- notification:
+    source: domain-router
+    urgency: urgent
+    after_step: 0
+- ha_state:
+    entity_id: lock.front_door
+    state: locked

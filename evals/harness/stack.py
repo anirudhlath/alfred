@@ -28,6 +28,7 @@ from core.channels.request_bus import publish_and_wait
 from core.conscious.identity import IDENTITY_SIR
 from evals.harness._proc import describe_failure
 from evals.harness.bus import ContainerBus
+from evals.harness.credentials import prepare_credentials
 from evals.harness.fake_ha import EVAL_HA_TOKEN, FakeHA
 from evals.harness.net import (
     HOST_FIREWALL_DOC,
@@ -332,6 +333,10 @@ class Stack:
         self.cfg.work_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir = Path(tempfile.mkdtemp(prefix="alfred-eval-data-", dir=self.cfg.work_dir))
         t0 = time.monotonic()
+        try:
+            await prepare_credentials(self.data_dir, self.fake_ha.world.credentials)
+        except (subprocess.SubprocessError, OSError) as exc:
+            raise StackError("could not prepare the eval stack's fake credentials") from exc
         await self.docker.run_cmd(self.up_command(self.data_dir), timeout=300)
         self.web_port = await self.docker.port(self.name, CONTAINER_WEB_PORT)
         self.redis_port = await self.docker.port(self.name, CONTAINER_REDIS_PORT)

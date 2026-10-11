@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from evals.harness.checks.matching import describe, validate_fields, value_matches
 from evals.harness.checks.result import CheckResult, failed, passed
@@ -21,13 +21,25 @@ def _ids(value: EntityIds | None) -> list[str]:
     return [value] if isinstance(value, str) else list(value)
 
 
-class HaCalledParams(BaseModel):
+class HaWindowParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    after_step: int | None = None
+    at_step: int | None = None
+
+    @model_validator(mode="after")
+    def _one_window(self) -> Self:
+        if self.at_step is not None and self.after_step is not None:
+            raise ValueError("at_step and after_step cannot be combined")
+        return self
+
+
+class HaCalledParams(HaWindowParams):
     model_config = ConfigDict(extra="forbid")
     domain: str
     service: str
     entity_id: EntityIds | None = None
     data: dict[str, Any] = Field(default_factory=dict)
-    after_step: int | None = None
+    count: int | None = Field(default=None, ge=0)
 
     @field_validator("data")
     @classmethod
@@ -35,7 +47,7 @@ class HaCalledParams(BaseModel):
         return validate_fields(value)
 
 
-class HaNotCalledParams(BaseModel):
+class HaNotCalledParams(HaWindowParams):
     model_config = ConfigDict(extra="forbid")
     domain: str | None = None
     service: str | None = None
@@ -84,15 +96,25 @@ def _fmt(calls: list[HaCall]) -> str:
 
 
 def ha_called(evidence: Evidence, p: HaCalledParams) -> CheckResult:
-    calls = evidence.calls_after_step(p.after_step)
+    calls = _calls(evidence, p)
     want = f"{p.domain}.{p.service} {_ids(p.entity_id)} {describe(p.data)}"
-    if any(satisfies(p, c) for c in calls):
+    count = sum(satisfies(p, c) for c in calls)
+    if (p.count is None and count > 0) or count == p.count:
         return passed("ha_called", f"saw {want}")
-    return failed("ha_called", f"wanted {want}; HA calls: {_fmt(calls)}")
+    expected = "at least one" if p.count is None else str(p.count)
+    return failed("ha_called", f"wanted {expected} {want}; saw {count}; HA calls: {_fmt(calls)}")
+
+
+def _calls(evidence: Evidence, p: HaWindowParams) -> list[HaCall]:
+    if p.at_step is not None:
+        return evidence.calls_at_step(p.at_step)
+    return evidence.calls_after_step(p.after_step)
 
 
 def ha_not_called(evidence: Evidence, p: HaNotCalledParams) -> CheckResult:
-    bad = [c for c in evidence.ha_calls if _matches(c, p.domain, p.service, _ids(p.entity_id), {})]
+    bad = [
+        c for c in _calls(evidence, p) if _matches(c, p.domain, p.service, _ids(p.entity_id), {})
+    ]
     if bad:
         return failed("ha_not_called", f"unexpected HA calls: {_fmt(bad)}")
     return passed("ha_not_called", "no matching HA call")

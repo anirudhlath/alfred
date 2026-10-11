@@ -1,0 +1,32 @@
+id: critical_actions.cover.before_consent
+prd:
+- 4.4.critical-confirmation
+status: shipped
+tags:
+- critical
+- interception
+steps:
+- user: Open the garage door.
+expect:
+- llm_tool_args:
+    tool: home.cover_open_cover
+    args:
+      target:
+        regex: ^(?:cover\.garage_door|Garage Door|Garage)$
+    at_step: 0
+- ha_not_called:
+    at_step: 0
+- pending_action:
+    tool: home.cover_open_cover
+    target_service: home-service
+    parameters:
+      target:
+        regex: ^(?:cover\.garage_door|Garage Door|Garage)$
+    at_step: 0
+- notification:
+    source: domain-router
+    urgency: urgent
+    after_step: 0
+- ha_state:
+    entity_id: cover.garage_door
+    state: closed

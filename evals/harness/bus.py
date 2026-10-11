@@ -37,7 +37,9 @@ from typing import TYPE_CHECKING, Any, Concatenate, Protocol
 from uuid import uuid4
 
 import httpx
+from redis.exceptions import RedisError
 
+from bus.schemas.events import ActionRequest
 from core.identity.auth_middleware import COOKIE_NAME
 from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolRegistry
 from shared import usertime
@@ -49,6 +51,7 @@ from shared.streams import (
     DND_STATE_KEY,
     EVENTS_STREAM,
     NOTIFICATION_DISPATCH_STREAM,
+    PENDING_ACTIONS_PREFIX,
     TRIGGER_SYNC_OP_DELETED,
     TRIGGER_SYNC_OP_SAVED,
     TRIGGER_SYNC_OP_TZ_CHANGED,
@@ -82,6 +85,8 @@ class Entry:
 class Bus(Protocol):
     async def events(self, since_wall: float) -> list[Entry]: ...
     async def actions(self, since_wall: float) -> list[Entry]: ...
+    async def pending_actions(self) -> list[ActionRequest]: ...
+    async def delete_pending_actions(self, request_ids: list[str]) -> None: ...
     async def wait_for_event(
         self, since_wall: float, timeout_s: float, wanted: Callable[[Entry], bool]
     ) -> bool: ...
@@ -181,6 +186,31 @@ class ContainerBus:
     @_bounded
     async def actions(self, since_wall: float) -> list[Entry]:
         return await self._range(ACTIONS_STREAM, since_wall)
+
+    @_bounded
+    async def pending_actions(self) -> list[ActionRequest]:
+        """Read typed pending entries without consuming them. Expiry mid-scan is normal;
+        malformed data or a failed read is missing evidence, never a silent omission."""
+        actions = []
+        r = self._redis()
+        try:
+            async for key in r.scan_iter(match=f"{PENDING_ACTIONS_PREFIX}*", count=100):
+                raw = await r.get(key)
+                if raw is None:
+                    continue
+                action = ActionRequest.model_validate_json(decode_stream_value(raw), strict=True)
+                if decode_stream_value(key) != f"{PENDING_ACTIONS_PREFIX}{action.request_id}":
+                    raise ValueError("pending key does not match its request_id")
+                actions.append(action)
+        except (ValueError, RedisError) as exc:
+            raise BusError(f"could not read pending actions: {exc}") from exc
+        return actions
+
+    @_bounded
+    async def delete_pending_actions(self, request_ids: list[str]) -> None:
+        """Remove only the sample's owned pending IDs, never the whole pending store."""
+        if request_ids:
+            await self._redis().delete(*(f"{PENDING_ACTIONS_PREFIX}{i}" for i in request_ids))
 
     async def wait_for_event(
         self, since_wall: float, timeout_s: float, wanted: Callable[[Entry], bool]

@@ -13,6 +13,7 @@ import httpx
 import pytest
 from redis import exceptions as redis_exceptions
 
+from bus.schemas.events import ActionRequest
 from core.reflex.tool_registry import ToolRegistry
 from evals.harness.bus import BusError, ContainerBus, zone_for_hour
 from shared.redis_streams import read
@@ -23,6 +24,7 @@ from shared.streams import (
     DND_STATE_KEY,
     EVENTS_STREAM,
     NOTIFICATION_DISPATCH_STREAM,
+    PENDING_ACTIONS_PREFIX,
     TRIGGERS_CHANGED_CHANNEL,
     TRIGGERS_KEY,
     USER_TIMEZONE_KEY,
@@ -338,6 +340,8 @@ class Frozen(fakeredis.FakeAsyncRedis):
 
 
 FROZEN_CALLS: dict[str, Callable[[ContainerBus], Awaitable[object]]] = {
+    "pending_actions": lambda b: b.pending_actions(),
+    "delete_pending_actions": lambda b: b.delete_pending_actions(["a"]),
     "events": lambda b: b.events(0),
     "actions": lambda b: b.actions(0),
     "notifications": lambda b: b.notifications(0),
@@ -369,3 +373,55 @@ async def test_a_frozen_redis_is_a_bus_error_not_a_hang(call: str) -> None:
     assert elapsed < 1
     if call == "wait_for_event":  # its own wait (0.2 s) comes first, then the call's bound
         assert elapsed >= 0.3
+
+
+async def test_pending_reads_preserve_real_ids_and_cleanup_only_requested_keys(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    action = ActionRequest(
+        source="conscious-engine",
+        request_id="a",
+        target_service="home-service",
+        tool_name="home.lock_unlock",
+    )
+    await redis.set(f"{PENDING_ACTIONS_PREFIX}a", action.model_dump_json(), ex=300)
+    await redis.set(
+        f"{PENDING_ACTIONS_PREFIX}keep",
+        action.model_copy(update={"request_id": "keep"}).model_dump_json(),
+        ex=300,
+    )
+    await redis.set("unrelated", "not json")
+    b = bus(redis)
+    assert {a.request_id for a in await b.pending_actions()} == {"a", "keep"}
+    await b.delete_pending_actions(["a", "expired"])
+    assert [a.request_id for a in await b.pending_actions()] == ["keep"]
+    assert await redis.get("unrelated") == b"not json"
+
+
+@pytest.mark.parametrize(
+    "raw", ["{", "{}", '{"source": 1,"target_service":"x","tool_name":"x","request_id":"bad"}']
+)
+async def test_malformed_pending_is_a_bus_error_not_silently_omitted(
+    redis: fakeredis.FakeAsyncRedis, raw: str
+) -> None:
+    await redis.set(f"{PENDING_ACTIONS_PREFIX}bad", raw)
+    with pytest.raises(BusError, match="pending"):
+        await bus(redis).pending_actions()
+
+
+async def test_pending_key_id_mismatch_is_a_bus_error(redis: fakeredis.FakeAsyncRedis) -> None:
+    action = ActionRequest(source="x", request_id="other", target_service="x", tool_name="x")
+    await redis.set(f"{PENDING_ACTIONS_PREFIX}a", action.model_dump_json())
+    with pytest.raises(BusError, match="pending"):
+        await bus(redis).pending_actions()
+
+
+async def test_pending_key_expiring_between_scan_and_get_is_valid_empty_evidence(
+    redis: fakeredis.FakeAsyncRedis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def expired(*args: Any, **kwargs: Any) -> Any:
+        yield f"{PENDING_ACTIONS_PREFIX}expired".encode()
+
+    monkeypatch.setattr(redis, "scan_iter", expired)
+    assert await bus(redis).pending_actions() == []

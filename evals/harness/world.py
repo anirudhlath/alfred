@@ -96,6 +96,7 @@ class World(BaseModel):
     devices: list[WorldDevice] = Field(default_factory=list)
     entities: list[WorldEntity]
     services: dict[str, dict[str, dict[str, Any]]]
+    credentials: dict[str, dict[str, str]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:

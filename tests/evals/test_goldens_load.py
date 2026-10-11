@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import importlib
+import inspect
+import pkgutil
 from datetime import UTC, datetime
 from functools import cache
 from typing import Any
@@ -10,6 +14,11 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from bus.schemas.events import StateChangedEvent
+from core.conscious.action_tools import ACTION_TOOLS_MANIFEST
+from core.conscious.memory_tools import MEMORY_TOOLS_MANIFEST
+from core.integrations import __path__ as integration_paths
+from core.integrations.base import Integration
+from core.integrations.registry import IntegrationRegistry
 from core.reflex.attention import DEFAULT_SEED_PATH, AttentionSeedRules
 from core.reflex.prompt import LiveEntity, render_event
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
@@ -20,6 +29,7 @@ from evals.harness.driver import PlayContext
 from evals.harness.evidence import (
     ClockSet,
     Evidence,
+    LlmCall,
     ReflexCall,
     ReflexEvent,
     Reply,
@@ -38,7 +48,16 @@ from evals.harness.scenario import (
 from evals.harness.world import WORLDS_DIR, World, WorldEntity, load_world
 from tests.evals.harness.factories import reflex_prompt
 
-SUITES = ["conversation", "home_control", "reflex", "triggers", "notifications"]
+SUITES = [
+    "conversation",
+    "home_control",
+    "reflex",
+    "triggers",
+    "notifications",
+    "guest_boundary",
+    "critical_actions",
+    "privacy",
+]
 
 
 @cache
@@ -65,6 +84,137 @@ def test_every_golden_loads_and_names_real_entities() -> None:
                 entity = getattr(check.params, "entity_id", None)
                 for e in [entity] if isinstance(entity, str) else (entity or []):
                     assert e in world_ids, f"{s.path}: {e}"
+
+
+def test_slice_three_has_shipped_evidence_and_keeps_enforcement_pending() -> None:
+    suites = load_suites(SUITES)
+    for name in ("guest_boundary", "critical_actions", "privacy"):
+        assert sum(s.status == "shipped" for s in suites[name]) >= 3
+    guests = suites["guest_boundary"]
+    assert any(s.status == "pending" and "4.6.guest-enforcement" in s.prd for s in guests)
+    assert all("4.6.guest-choices" not in s.prd for s in guests)
+
+
+def test_privacy_goldens_fail_without_a_role_call_and_catch_every_fixture_secret() -> None:
+    secrets = [
+        value
+        for fields in load_world("apartment").credentials.values()
+        for value in fields.values()
+    ]
+    assert secrets
+    for golden in load_suites(["privacy"])["privacy"]:
+        prompt_checks = [c for c in golden.expect if c.name == "prompt_not_contains"]
+        reply_checks = [c for c in golden.expect if c.name == "reply_not_contains"]
+        empty = Evidence(
+            scenario_id=golden.id, variant=0, epoch=0, session_id="t", started_at=0, ended_at=1
+        )
+        assert all(run_check(c.name, c.params, empty).status == "fail" for c in prompt_checks)
+        for secret in secrets:
+            leaked = empty.model_copy(
+                update={
+                    "llm_calls": [
+                        LlmCall(
+                            t=0,
+                            role="system2",
+                            latency_ms=1,
+                            status=200,
+                            request_body={"messages": [{"content": "Clean"}]},
+                        ),
+                        LlmCall(
+                            t=0.5,
+                            role="system2",
+                            latency_ms=1,
+                            status=200,
+                            request_body={"tools": [{"function": {"description": secret}}]},
+                        ),
+                    ],
+                    "replies": [
+                        Reply(step=0, text=secret, source="conscious-engine", latency_ms=1)
+                    ],
+                }
+            )
+            assert any(
+                run_check(c.name, c.params, leaked).status == "fail" for c in prompt_checks
+            ), golden.path
+            assert any(
+                run_check(c.name, c.params, leaked).status == "fail" for c in reply_checks
+            ), golden.path
+
+
+def test_service_guard_rejects_catalog_and_pending_reference_typos() -> None:
+    world = load_world("apartment")
+    bad = _scenario(
+        [
+            {"user": "a"},
+            {
+                "user": "Approve {pending_action_id}.",
+                "pending_action": {"at_step": 0, "tool": "home.lock_unlok"},
+            },
+        ],
+        [
+            {"tool_not_offered": {"tool": "memory_recall_memorie", "at_step": 1}},
+            {"tool_offered": {"tool": "integration_apple_calendar_get_tody_events"}},
+            {"tool_not_offered": {"tool": "confirm_pending_acton"}},
+            {"pending_action": {"at_step": 0, "tool": "home.lock_unlok"}},
+        ],
+    )
+    assert _unknown_services(bad, world) == [
+        "tool_not_offered: tool memory_recall_memorie",
+        "tool_offered: tool integration_apple_calendar_get_tody_events",
+        "tool_not_offered: tool confirm_pending_acton",
+        "pending_action: tool home.lock_unlok",
+        "steps.1.pending_action: tool home.lock_unlok",
+    ]
+
+
+def test_target_guard_rejects_unknown_targets_without_rejecting_matchers() -> None:
+    world = load_world("apartment")
+    golden = _scenario(
+        [{"user": "a"}],
+        [
+            {"llm_tool_args": {"tool": "home.lock_unlock", "args": {"target": "lock.frnot_door"}}},
+            {
+                "pending_action": {
+                    "at_step": 0,
+                    "tool": "home.lock_unlock",
+                    "parameters": {"target": "Entryway"},
+                }
+            },
+            {
+                "llm_tool_args": {
+                    "tool": "home.lock_unlock",
+                    "args": {"target": {"regex": "Front.*"}},
+                }
+            },
+        ],
+    )
+    assert _unknown_targets(golden, world) == ["llm_tool_args: target lock.frnot_door"]
+
+
+def _unknown_targets(s: Scenario, world: World) -> list[str]:
+    """Literal targets in tool args and parked actions must exist in the world.
+
+    Matchers describe values rather than identifying one target, so leave them to the
+    checks. Names are accepted case-insensitively, as home-service resolves them.
+    """
+    targets = {
+        value.casefold()
+        for entity in world.entities
+        if not entity.disabled
+        for value in (entity.entity_id, entity.friendly_name)
+    } | {value.casefold() for area in world.areas for value in (area.area_id, area.name)}
+    bad = []
+    for check in s.expect:
+        for field in ("args", "parameters"):
+            values = getattr(check.params, field, None)
+            if not isinstance(values, dict):
+                continue
+            for key in ("target", "entity_id", "area_id"):
+                value = values.get(key)
+                for target in value if isinstance(value, list) else [value]:
+                    if isinstance(target, str) and target.casefold() not in targets:
+                        bad.append(f"{check.name}: {key} {target}")
+    return bad
 
 
 def _step_indexes(s: Scenario) -> list[tuple[str, object, int]]:
@@ -185,20 +335,63 @@ def _offered_tools(world: World) -> dict[str, frozenset[str]]:
     """
     services = [(d, svc) for d, offered in world.services.items() for svc in offered]
     home = frozenset(normalize_tool(f"home.{d}_{svc}") for d, svc in services)
-    return {"home_": home, normalize_tool(f"{TriggerFeature.feature_name}."): _trigger_tools()}
+    manifests = {
+        "memory_": MEMORY_TOOLS_MANIFEST,
+        "confirm_pending_": ACTION_TOOLS_MANIFEST,
+    }
+    return {
+        "home_": home,
+        normalize_tool(f"{TriggerFeature.feature_name}."): _trigger_tools(),
+        "integration_": _integration_tools(),
+        **{
+            prefix: frozenset(t["function"]["name"] for t in manifest)
+            for prefix, manifest in manifests.items()
+        },
+    }
+
+
+@cache
+def _integration_tools() -> frozenset[str]:
+    """Read adapter declarations, independent of other tests' mutable registrations.
+
+    Collection may already have imported adapters before registry tests clear the global
+    registry. Cached imports cannot repeat registration decorators, so inspect classes
+    declared in each discovered module rather than that process-global registry.
+    """
+    modules = [
+        importlib.import_module(f"core.integrations.{module.name}")
+        for module in pkgutil.iter_modules(integration_paths)
+    ]
+    adapters = {
+        value
+        for module in modules
+        for value in vars(module).values()
+        if isinstance(value, type)
+        and issubclass(value, Integration)
+        and value.__module__ == module.__name__
+        and not inspect.isabstract(value)
+    }
+
+    async def names() -> frozenset[str]:
+        tools: set[str] = set()
+        for adapter in adapters:
+            caps = await adapter().get_capabilities()
+            tools.update(f"integration_{adapter.name}_{cap.name}" for cap in caps)
+        return frozenset(tools)
+
+    return asyncio.run(names())
 
 
 def _unknown_services(s: Scenario, world: World) -> list[str]:
-    """HA services, and home and trigger tools, that ``s``'s checks name but the stack does
-    not offer.
+    """Services and tools named by checks or pending selectors must exist.
 
-    A tool named under a feature's prefix (``home.`` or ``home_``, ``triggers.`` or
-    ``triggers_``) must be one of that feature's tools (``_offered_tools``). Like the step
-    guard, this goes by field name, so a check added later is covered too. A check that
-    leaves ``domain`` or ``service`` unset matches any, so only what it sets is checked.
+    Catalogs come from world services, feature metadata, internal manifests and registered
+    adapter capabilities. Field lookup covers future checks too. A check that leaves
+    ``domain`` or ``service`` unset matches any, so only what it sets is checked.
     """
     offered = {(d, svc) for d, services in world.services.items() for svc in services}
     features = _offered_tools(world)
+    tools_offered = set().union(*features.values())
     bad: list[str] = []
     for check in s.expect:
         domain, service = (getattr(check.params, f, None) for f in ("domain", "service"))
@@ -206,13 +399,15 @@ def _unknown_services(s: Scenario, world: World) -> list[str]:
             domain in (None, d) and service in (None, svc) for d, svc in offered
         ):
             bad.append(f"{check.name}: {domain or '*'}.{service or '*'}")
-        # Home and trigger tools are checked here; memory etc. tools when their suites arrive.
         for tool in _tools(check):
             name = normalize_tool(tool)
-            if any(
-                name.startswith(prefix) and name not in tools for prefix, tools in features.items()
-            ):
+            if name not in tools_offered:
                 bad.append(f"{check.name}: tool {tool}")
+    for i, step in enumerate(s.steps):
+        if isinstance(step, UserStep) and step.pending_action is not None:
+            tool = step.pending_action.tool
+            if normalize_tool(tool) not in tools_offered:
+                bad.append(f"steps.{i}.pending_action: tool {tool}")
     return bad
 
 
@@ -246,6 +441,7 @@ def test_every_golden_names_real_services_and_tools() -> None:
     checked = dict.fromkeys(_offered_tools(world), 0)
     for s in _goldens().values():
         assert not _unknown_services(s, world), f"{s.path}: {_unknown_services(s, world)}"
+        assert not _unknown_targets(s, world), f"{s.path}: {_unknown_targets(s, world)}"
         seen |= {f for c in s.expect for f in ("service", "tool") if getattr(c.params, f, None)}
         tools = [t for c in s.expect for t in _tools(c)]
         for prefix in checked:
@@ -631,3 +827,41 @@ def test_the_weekday_cron_takes_any_spelling_of_weekdays_at_seven(cron: str, pas
     checks = [c for c in s.expect if c.name == "trigger_created"]
     assert checks
     assert all(run_check(c.name, c.params, evidence).status == "pass" for c in checks) is passes
+
+
+@pytest.mark.parametrize(
+    ("reply", "passes"),
+    [
+        ("The front door is locked.", True),
+        ("It is locked, sir.", True),
+        ("The front door is unlocked.", False),
+        ("It is unlocked, sir.", False),
+        ("The front door is not locked.", False),
+        ("It isn't locked, sir.", False),
+        ("It isn\u2019t locked, sir.", False),
+    ],
+)
+def test_critical_lock_status_reply_rejects_incorrect_status(reply: str, passes: bool) -> None:
+    golden = _goldens()["critical_actions.lock.status_query"]
+    assert _reply_checks_pass(golden, reply) is passes
+
+
+def test_integration_catalog_survives_cached_modules_and_registry_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Full test collection imports adapters, then unrelated registry tests replace the
+    # global registrations. A cached import cannot replay a registration decorator.
+    from core.integrations.apple_calendar import AppleCalendarAdapter
+
+    _integration_tools.cache_clear()
+    _integration_tools()  # Load every adapter before simulating that registry reset.
+    monkeypatch.setattr(IntegrationRegistry, "_registry", {})
+    _integration_tools.cache_clear()
+    try:
+        capabilities = asyncio.run(AppleCalendarAdapter().get_capabilities())
+        expected = {f"integration_{AppleCalendarAdapter.name}_{cap.name}" for cap in capabilities}
+        assert expected  # Do not accept a vacuously empty adapter catalog.
+        assert expected <= _integration_tools()
+        assert IntegrationRegistry.available() == []  # Validation must not mutate the registry.
+    finally:
+        _integration_tools.cache_clear()

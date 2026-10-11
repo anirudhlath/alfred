@@ -245,3 +245,20 @@ def test_the_real_prd_is_fully_mapped() -> None:
         PRD_PATH.read_text(encoding="utf-8"), load_coverage(COVERAGE_PATH), load_suites(), REPO_ROOT
     )
     assert problems == [], "\n".join(problems)
+
+
+def test_slice_three_maps_shipped_evidence_and_capture_only_guest_choices() -> None:
+    coverage = load_coverage(COVERAGE_PATH)
+    rows = {row.id: row for row in coverage.rows}
+    for row_id, suite in [
+        ("principle.2", "privacy"),
+        ("4.5.secure-credentials", "privacy"),
+        ("4.6.identity-confidence", "guest_boundary"),
+        ("4.4.critical-confirmation", "critical_actions"),
+    ]:
+        assert suite in rows[row_id].suites
+        assert suite not in rows[row_id].pending_suites
+    assert rows["4.6.guest-enforcement"].pending_suites == ["guest_boundary"]
+    choices = rows["4.6.guest-choices"]
+    assert choices.not_llm and not choices.suites and not choices.pending_suites
+    assert "tests/core/channels/test_onboarding_defaults.py" in choices.tests

@@ -281,6 +281,7 @@ class LlmProxy:
             LlmCall,
             t=flight.t,
             role=flight.role,
+            request_body=body,
             messages=messages,
             tools_offered=tools,
         )

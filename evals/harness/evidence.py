@@ -11,7 +11,7 @@ from typing import Any, Literal, Self, get_args
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from bus.schemas.events import ReflexDecision, UrgencyLevel
+from bus.schemas.events import ActionRequest, ReflexDecision, UrgencyLevel
 
 Role = Literal["system1", "system2", "librarian", "unknown"]
 Decision = ReflexDecision
@@ -68,6 +68,7 @@ class LlmCall(BaseModel):
     # When the proxy recorded the reply: queued behind its upstream slots and the body read
     # included. None in a record from before it was kept.
     answered_at: float | None = None
+    request_body: dict[str, Any] = Field(default_factory=dict)
     messages: list[dict[str, Any]] = Field(default_factory=list)
     tools_offered: list[str] = Field(default_factory=list)
     response_text: str | None = None
@@ -206,6 +207,13 @@ class ClockSet(BaseModel):
     tz: str
 
 
+class PendingSnapshot(BaseModel):
+    """The sample's pending actions after a settled step; an empty list is evidence."""
+
+    step: int
+    actions: list[ActionRequest]
+
+
 class Evidence(BaseModel):
     scenario_id: str
     variant: int
@@ -228,6 +236,7 @@ class Evidence(BaseModel):
     advances: list[Advance] = Field(default_factory=list)
     clocks: list[ClockSet] = Field(default_factory=list)
     state_pushes: list[StatePush] = Field(default_factory=list)
+    pending: list[PendingSnapshot] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _one_kind_per_step(self) -> Self:
@@ -243,6 +252,14 @@ class Evidence(BaseModel):
             return list(self.ha_calls)
         start = self.step_start(step)
         return [c for c in self.ha_calls if c.t >= start]
+
+    def calls_at_step(self, step: int) -> list[HaCall]:
+        start, end = self.step_window(step)
+        return [c for c in self.ha_calls if start <= c.t < end]
+
+    def pending_at_step(self, step: int) -> PendingSnapshot | None:
+        index = self.step_index(step)
+        return next((p for p in self.pending if p.step == index), None)
 
     def step_index(self, step: int) -> int:
         """*step* (which counts every step, -1 the last) as a non-negative index."""
