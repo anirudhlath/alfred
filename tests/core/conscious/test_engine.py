@@ -903,7 +903,7 @@ async def test_dispatch_rejects_malformed_tool_arguments(
     mock_deps["domain_router"].route.assert_not_called()
 
 
-# ── trigger tools: dispatched in-process, validated like SDK dispatch (#324) ──
+# ── trigger tools: dispatched in-process, validated like SDK dispatch (issue #324)
 
 
 def _engine_with_triggers(
