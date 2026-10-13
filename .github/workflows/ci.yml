@@ -82,8 +82,14 @@ jobs:
           # save under the key the full `uv sync` jobs restore from.
           cache-suffix: sdk-floor
       - name: SDK tests at the pydantic floor
+        # An explicit `shell: bash` runs with pipefail, so a failing `uv export` cannot leave
+        # a truncated pins file behind.
+        shell: bash
         run: |
-          floor=$(uv run --no-project --with packaging python - <<'EOF'
+          uv export --frozen --all-extras --no-hashes --no-emit-project --no-header --no-annotate \
+            | grep -vE '^(pydantic|pydantic-core)==' > "$RUNNER_TEMP/pins.txt"
+          packaging_pin=$(grep -E '^packaging==' "$RUNNER_TEMP/pins.txt")
+          floor=$(uv run --no-project --with "$packaging_pin" python - <<'EOF'
           import tomllib
 
           from packaging.requirements import Requirement
@@ -113,8 +119,6 @@ jobs:
           EOF
           )
           echo "pydantic floor: $floor"
-          uv export --frozen --all-extras --no-hashes --no-emit-project --no-header --no-annotate \
-            | grep -vE '^(pydantic|pydantic-core)==' > "$RUNNER_TEMP/pins.txt"
           venv="$RUNNER_TEMP/sdk-floor"
           uv venv --python 3.13 "$venv"
           uv pip install --python "$venv/bin/python" -c "$RUNNER_TEMP/pins.txt" -e "sdk/[dev]" "pydantic==$floor"
