@@ -89,7 +89,9 @@ instead, losing its `$defs`, enums, defaults and constraints, resets `audience` 
 to their defaults ([#314](https://github.com/anirudhlath/alfred/issues/314)), and drops
 the validation (see [Dispatch](#dispatch)). To change the parameters
 themselves, pass `input_schema={}` to `replace` as well, so the schema is re-derived from
-the new ones.
+the new ones. Dispatch still validates against the method's signature, not the new
+parameters: `replace` keeps the signature model, so after a `parameters` or
+`input_schema` replace, what a model is offered and what dispatch accepts can differ.
 
 ### @tool with overrides
 
@@ -239,7 +241,7 @@ When Alfred's agent sends an MCP tool call to your service's HTTP endpoint, your
 result = await client.dispatch("lighting.dim_lights", {"room": "bedroom", "level": 50})
 ```
 
-Dispatch resolves the qualified tool name (e.g. `lighting.dim_lights`) to the bound method on the `LightingFeature` instance and calls it with the provided parameters as keyword arguments. Both sync and async methods are supported -- if the method returns a coroutine, it is awaited automatically.
+Dispatch resolves the qualified tool name (e.g. `lighting.dim_lights`) to the bound method on the `LightingFeature` instance and calls it with the validated parameters (see below) as keyword arguments. Both sync and async methods are supported -- if the method returns a coroutine, it is awaited automatically.
 
 `dispatch_sync()` is also available for testing without an event loop. It validates exactly as `dispatch()` does.
 
@@ -251,8 +253,11 @@ The arguments arrive as decoded JSON, but a `@tool` method declares richer types
 calling it, dispatch validates the arguments against the method's signature and passes
 the converted values ([#324](https://github.com/anirudhlath/alfred/issues/324)). It
 validates with the same Pydantic model discovery builds to generate the tool's
-`input_schema`, so what a model is offered and what dispatch accepts cannot drift.
-Validation is Pydantic's lax mode:
+`input_schema`, so for a discovered tool, and one whose description alone `replace`
+changed, what a model is offered and what dispatch accepts cannot drift. After a
+`replace` of `parameters` or `input_schema` they can: the schema follows the new value,
+while dispatch still validates against the method's signature. Validation is Pydantic's
+lax mode:
 
 | Declared type | Sent | The method receives |
 |---|---|---|
@@ -267,6 +272,12 @@ applies (a sentinel default arrives as the very same object). A parameter hidden
 the schema with `SkipJsonSchema` still takes its default when omitted, and is still
 accepted, and validated, when a caller sends it.
 
+Models often send `null` for an optional argument they mean to leave out. An explicit
+`null` for a parameter that has a default, but whose type does not admit `None`
+(`limit: int = 5`), counts as omitted, so the default applies. A `null` for a required
+parameter is refused like any other invalid value, and one for a parameter typed
+`X | None` arrives as `None`.
+
 When an argument is missing, invalid or unexpected, dispatch raises
 `ToolArgumentError` and the method is never called. It is one public exception type for
 all three, a `ValueError` subclass (`from alfred_sdk import ToolArgumentError`). Its
@@ -280,7 +291,11 @@ Tool 'plan.schedule' got invalid arguments: window.start: Field required; count:
 `exc.tool_name` and `exc.problems` (a tuple of `(path, message)` pairs) carry the same
 detail. Return the message to the caller as the tool call's error: Alfred hands it to the
 model as the tool result, which tells the model exactly which arguments to fix. The
-trigger engine's JSON-RPC shim answers it as `-32602` (invalid params).
+trigger engine's JSON-RPC shim answers it as `-32602` (invalid params). System 2 calls
+the trigger tools in-process rather than through `dispatch()`, and validates them the
+same way: it caches the trigger tools' `ToolMeta`s when the engine is built, and runs
+each call's arguments through `ToolMeta.validate_arguments()` before calling the method,
+so a refused call comes back to the model with the same message.
 
 **Hand-built tools are not validated.** A tool whose `ToolMeta` was built by hand (an
 overridden `get_tools()`, like home-service's generated tools, whose callables take
