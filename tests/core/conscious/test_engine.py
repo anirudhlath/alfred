@@ -901,3 +901,64 @@ async def test_dispatch_rejects_malformed_tool_arguments(
         # Nothing was dispatched anywhere on the malformed path.
         integration_call.assert_not_called()
     mock_deps["domain_router"].route.assert_not_called()
+
+
+# ── trigger tools: dispatched in-process, validated like SDK dispatch (#324) ──
+
+
+def _engine_with_triggers(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> tuple[ConsciousEngine, AsyncMock]:
+    store = AsyncMock(spec_set=TriggerStore)
+    store.list_all = AsyncMock(return_value=[])
+    feature = TriggerFeature(TriggerFeatureContext(store=store))
+    return ConsciousEngine(**mock_deps, trigger_feature=feature), store
+
+
+@pytest.mark.asyncio
+async def test_trigger_tool_with_bad_arguments_names_each_field_and_never_runs(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    engine, store = _engine_with_triggers(mock_deps)
+    result = await engine._dispatch_tool_call(
+        {
+            "id": "tc-1",
+            "name": "triggers.create_trigger",
+            "input": {"name": "wake", "conditions": "daily", "colour": "red"},
+        },
+        tools=[],
+    )
+    content = result["content"]
+    assert content.startswith(
+        "Error executing trigger: Tool 'triggers.create_trigger' got invalid arguments: "
+    )
+    for field_name in ("trigger_type:", "conditions:", "colour:"):
+        assert field_name in content
+    store.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trigger_tool_arguments_are_coerced_to_the_signature(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    engine, store = _engine_with_triggers(mock_deps)
+    result = await engine._dispatch_tool_call(
+        {"id": "tc-1", "name": "triggers.list_triggers", "input": {"enabled_only": "false"}},
+        tools=[],
+    )
+    assert result["content"] == "[]"
+    store.list_all.assert_awaited_once_with(enabled_only=False)
+
+
+def test_trigger_tools_are_discovered_once_when_the_engine_is_built(
+    mock_deps: dict[str, AsyncMock | MagicMock],
+) -> None:
+    engine, _ = _engine_with_triggers(mock_deps)
+    assert engine._triggers is not None
+    with patch.object(
+        type(engine._triggers), "get_tools", side_effect=AssertionError("rebuilt per call")
+    ):
+        meta = engine._resolve_trigger_tool("triggers.delete_trigger")
+    assert meta is not None
+    assert meta.arguments_model is not None
+    assert engine._resolve_trigger_tool("smart_home.get_lights") is None

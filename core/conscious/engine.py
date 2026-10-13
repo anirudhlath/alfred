@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from core.reflex.context_reader import ContextReader
     from core.reflex.tool_registry import ToolInfo, ToolRegistry
     from core.routing.domain_router import DomainRouter
+    from sdk.alfred_sdk.feature import ToolMeta
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
@@ -197,6 +198,10 @@ class ConsciousEngine:
         self._involuntary_recall_threshold = cfg.involuntary_recall_threshold
         self._routines = d.routine_store
         self._triggers = d.trigger_feature
+        # Discovered once: get_tools() builds every trigger tool's arguments model afresh.
+        self._trigger_tools: dict[str, ToolMeta] = (
+            {t.name: t for t in self._triggers.get_tools()} if self._triggers is not None else {}
+        )
         self._embedder = d.embedder
         self._context_index = d.context_index
 
@@ -384,21 +389,25 @@ class ConsciousEngine:
             usage.completion_tokens if usage else 0,
         )
 
-    def _resolve_trigger_method(self, tool_name: str) -> str | None:
-        """Check if tool_name is a trigger tool; return the method name if so."""
-        if self._triggers is None:
-            return None
-        for t in self._triggers.get_tools():
-            if t.name == tool_name:
-                return tool_name.removeprefix(f"{self._triggers.feature_name}.")
-        return None
+    def _resolve_trigger_tool(self, tool_name: str) -> ToolMeta | None:
+        """The trigger tool's metadata when ``tool_name`` names one, else None."""
+        return self._trigger_tools.get(tool_name)
 
-    async def _execute_trigger_call(self, method: str, params: dict[str, Any]) -> str:
-        """Execute a trigger tool call directly via TriggerFeature."""
+    async def _execute_trigger_call(self, meta: ToolMeta, params: dict[str, Any]) -> str:
+        """Execute a trigger tool call directly via TriggerFeature.
+
+        The arguments are validated and coerced against the method's signature first,
+        as ``AlfredClient.dispatch`` does for a service's tools.
+
+        Raises:
+            ToolArgumentError: An argument is missing, invalid or unexpected; the method
+                is not called.
+        """
         if self._triggers is None:
             return "Error: trigger feature not configured"
-        fn = getattr(self._triggers, method)
-        result: Any = await fn(**params)
+        kwargs = meta.validate_arguments(params)
+        fn = getattr(self._triggers, meta.name.removeprefix(f"{self._triggers.feature_name}."))
+        result: Any = await fn(**kwargs)
         return json.dumps(result) if not isinstance(result, str) else result
 
     @staticmethod
@@ -443,10 +452,10 @@ class ConsciousEngine:
             return self._make_tool_result(tc["id"], content)
 
         # 2. Trigger tools — direct in-process call (system-level feature)
-        trigger_method = self._resolve_trigger_method(name)
-        if trigger_method:
+        trigger_tool = self._resolve_trigger_tool(name)
+        if trigger_tool is not None:
             try:
-                content = await self._execute_trigger_call(trigger_method, params)
+                content = await self._execute_trigger_call(trigger_tool, params)
             except Exception as e:
                 content = f"Error executing trigger: {e}"
             return self._make_tool_result(tc["id"], content)
