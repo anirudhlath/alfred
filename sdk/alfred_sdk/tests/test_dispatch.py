@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import datetime as _dt
 import enum
 import json
+import pickle
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 
@@ -82,6 +84,20 @@ class _PlanFeature(BaseFeature):
         """Parameter names that collide with BaseModel internals."""
         self.calls.append({"model_config": model_config, "_private": _private})
 
+    @tool
+    def nullable(
+        self,
+        required: int,
+        limit: int = 5,
+        mode: _Speed = _Speed.SLOW,
+        cursor: str | None = "start",
+        when: Annotated[_dt.datetime, Field(description="When.")] | None = None,
+    ) -> None:
+        """Parameters a model may send `null` for."""
+        self.calls.append(
+            {"required": required, "limit": limit, "mode": mode, "cursor": cursor, "when": when}
+        )
+
 
 class _HandBuiltFeature(BaseFeature):
     """A tool built without a signature, like home-service's generated ones."""
@@ -104,6 +120,24 @@ class _HandBuiltFeature(BaseFeature):
                 description="Go somewhere.",
                 parameters={"to": ToolParameter(type="int", required=True)},
             )
+        ]
+
+
+class _ReparameterisedFeature(_PlanFeature):
+    """Replaces `go`'s parameters and re-derives its schema, the documented recipe."""
+
+    feature_name = "reparam"
+
+    def get_tools(self) -> list[ToolMeta]:
+        return [
+            dataclasses.replace(
+                t,
+                parameters={"y": ToolParameter(type="str", required=True)},
+                input_schema={},
+            )
+            if t.name == "reparam.go"
+            else t
+            for t in super().get_tools()
         ]
 
 
@@ -236,6 +270,25 @@ def test_tool_argument_error_is_a_value_error() -> None:
     assert issubclass(ToolArgumentError, ValueError)
 
 
+@pytest.mark.parametrize(
+    "round_trip",
+    [
+        pytest.param(copy.copy, id="copy"),
+        pytest.param(copy.deepcopy, id="deepcopy"),
+        pytest.param(lambda e: pickle.loads(pickle.dumps(e)), id="pickle"),
+    ],
+)
+def test_tool_argument_error_survives_copy_and_pickle(
+    round_trip: Callable[[ToolArgumentError], ToolArgumentError],
+) -> None:
+    error = ToolArgumentError("plan.go", [("x", "Field required"), ("y", "Unexpected argument")])
+    again = round_trip(error)
+    assert type(again) is ToolArgumentError
+    assert again.tool_name == "plan.go"
+    assert again.problems == error.problems
+    assert str(again) == str(error)
+
+
 # ── defaults and hidden parameters ──
 
 
@@ -270,6 +323,43 @@ async def test_a_hidden_parameter_keeps_todays_behaviour(dispatch: Dispatch) -> 
 
 
 @both_dispatches
+async def test_a_null_the_type_refuses_takes_the_default(dispatch: Dispatch) -> None:
+    """Ruling F7: models send `null` for optional parameters; it means "omitted"."""
+    client, feature = _client(_PlanFeature)
+    await dispatch(client, "plan.nullable", {"required": 1, "limit": None, "mode": None})
+    assert feature.calls == [
+        {"required": 1, "limit": 5, "mode": _Speed.SLOW, "cursor": "start", "when": None}
+    ]
+
+
+@both_dispatches
+async def test_a_null_the_type_admits_is_passed_as_none(dispatch: Dispatch) -> None:
+    client, feature = _client(_PlanFeature)
+    await dispatch(client, "plan.nullable", {"required": 1, "cursor": None, "when": None})
+    assert feature.calls[0]["cursor"] is None
+    assert feature.calls[0]["when"] is None
+
+
+@both_dispatches
+async def test_a_null_for_a_required_parameter_is_refused(dispatch: Dispatch) -> None:
+    client, feature = _client(_PlanFeature)
+    with pytest.raises(ToolArgumentError) as excinfo:
+        await dispatch(client, "plan.nullable", {"required": None, "limit": None})
+    # Only the required parameter fails; the defaulted one's null is still "omitted".
+    assert [path for path, _ in excinfo.value.problems] == ["required"]
+    assert feature.calls == []
+
+
+@both_dispatches
+async def test_a_null_does_not_hide_another_parameters_error(dispatch: Dispatch) -> None:
+    client, feature = _client(_PlanFeature)
+    with pytest.raises(ToolArgumentError) as excinfo:
+        await dispatch(client, "plan.nullable", {"required": 1, "limit": None, "mode": "warp"})
+    assert [path for path, _ in excinfo.value.problems] == ["mode"]
+    assert feature.calls == []
+
+
+@both_dispatches
 async def test_parameter_names_that_collide_with_pydantic_dispatch(dispatch: Dispatch) -> None:
     client, feature = _client(_PlanFeature)
     await dispatch(client, "plan.odd", {"model_config": "1", "_private": "p"})
@@ -294,6 +384,20 @@ async def test_a_tool_adjusted_with_replace_is_still_validated(dispatch: Dispatc
         await dispatch(client, "enriched.go", {"x": "lots"})
     assert await dispatch(client, "enriched.go", {"x": "4"}) == 4
     assert feature.calls == [{"x": 4}]
+
+
+@both_dispatches
+async def test_replacing_the_parameters_still_validates_against_the_signature(
+    dispatch: Dispatch,
+) -> None:
+    """The schema follows the new parameters; dispatch still follows the method."""
+    client, feature = _client(_ReparameterisedFeature)
+    meta = client._tool_metas["reparam.go"]
+    assert list(meta.input_schema["properties"]) == ["y"]
+    with pytest.raises(ToolArgumentError, match=r"y: Unexpected argument"):
+        await dispatch(client, "reparam.go", {"y": "a"})
+    assert await dispatch(client, "reparam.go", {"x": "3"}) == 3
+    assert feature.calls == [{"x": 3}]
 
 
 # ── the arguments model stays off the wire ──

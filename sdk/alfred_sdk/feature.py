@@ -217,6 +217,10 @@ class ToolArgumentError(ValueError):
         details = "; ".join(f"{path}: {msg}" if path else msg for path, msg in self.problems)
         super().__init__(f"Tool '{tool_name}' got invalid arguments: {details}")
 
+    def __reduce__(self) -> tuple[Any, ...]:
+        # BaseException rebuilds from `args` (the message alone), which `__init__` refuses.
+        return (type(self), (self.tool_name, self.problems))
+
 
 # ── ToolMeta dataclass ──
 
@@ -233,11 +237,14 @@ class ToolMeta:
 
     ``dataclasses.replace(meta, parameters=new)`` keeps the old ``input_schema``, which
     then no longer matches ``new``; pass ``input_schema={}`` as well to re-derive it.
+    Either way dispatch still validates against the method's signature, not ``new``.
 
     ``arguments_model`` is the Pydantic model ``@tool`` discovery builds from the
     method's signature, the same one ``input_schema`` is generated from, and
     ``validate_arguments`` checks a call's arguments against it. It describes the method,
-    not the manifest, so ``replace`` keeps it. It stays beside the tool: it is not
+    not the manifest, so ``replace`` keeps it: the schema and the model match for a
+    discovered tool and a description-only ``replace``, not after a ``replace`` of
+    ``parameters`` or ``input_schema``. It stays beside the tool: it is not
     compared, not in the repr, and never copied into a ``ToolManifest``. A tool built by
     hand leaves it ``None`` and is called with its arguments as they arrive.
     """
@@ -255,7 +262,9 @@ class ToolMeta:
 
         An ISO string becomes a ``datetime``, an enum value its member, a dict the
         nested model, ``"5"`` an ``int``. Only the arguments the call supplied are
-        returned, so an omitted one still takes the method's own default.
+        returned, so an omitted one still takes the method's own default. A ``null``
+        for a parameter with a default, whose type refuses ``None``, counts as omitted;
+        any other ``null`` is validated like any other value.
 
         Args:
             params: The arguments as decoded from JSON, keyed by parameter name.
@@ -276,17 +285,27 @@ class ToolMeta:
             raise ToolArgumentError(self.name, [("", problem)])
         # Fields are positional (`p0`, `p1`, ...) with the parameter name as alias.
         names = {key: info.alias or key for key, info in model.model_fields.items()}
+        validated, cause = _validate_against(model, params)
+        if cause is not None:
+            # Models send `null` for an optional argument they mean to leave out: one the
+            # type refuses, on a parameter with a default, is dropped so the default applies.
+            fields = model.model_fields.items()
+            defaulted = {names[key] for key, info in fields if not info.is_required()}
+            nulled = {
+                head
+                for error in cause.errors(include_url=False)
+                for head in error["loc"][:1]
+                if head in defaulted and params[head] is None
+            }
+            if nulled:
+                kept = {key: value for key, value in params.items() if key not in nulled}
+                validated, cause = _validate_against(model, kept)
         problems: list[tuple[str, str]] = []
-        cause: ValidationError | None = None
-        validated: BaseModel | None = None
-        try:
-            validated = model.model_validate(params)
-        except ValidationError as exc:
-            cause = exc
+        if cause is not None:
             # Error locations are by alias, so they name parameters, never `p0`.
             problems.extend(
                 (".".join(str(part) for part in error["loc"]), error["msg"])
-                for error in exc.errors(include_url=False)
+                for error in cause.errors(include_url=False)
             )
         accepted = set(names.values())
         problems.extend((key, "Unexpected argument") for key in params if key not in accepted)
@@ -456,6 +475,16 @@ def _sets_a_field_default(param: inspect.Parameter, hint: Any) -> bool:
     return False
 
 
+def _validate_against(
+    model: type[BaseModel], params: Mapping[str, Any]
+) -> tuple[BaseModel | None, ValidationError | None]:
+    """``model.model_validate(params)``, as the instance or the error it raised."""
+    try:
+        return model.model_validate(params), None
+    except ValidationError as exc:
+        return None, exc
+
+
 def _signature_arguments(
     qualified_name: str,
     params: list[inspect.Parameter],
@@ -465,7 +494,10 @@ def _signature_arguments(
     """Build a model of a tool's arguments from its signature, and its JSON Schema.
 
     One model serves both: the schema a model is offered is generated from it, and
-    dispatch validates the arguments with it, so the two cannot drift. Fields are
+    dispatch validates the arguments with it, so for a discovered tool, and one whose
+    description alone ``replace`` changes, the two cannot drift. A ``replace`` of
+    ``parameters``/``input_schema`` changes the schema but not the model: dispatch still
+    validates against the method's signature (see ``ToolMeta``). Fields are
     positional names with the parameter name as alias, so a parameter may be called
     anything (``model_config``, ``_private``) without colliding with BaseModel.
 
