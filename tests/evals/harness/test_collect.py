@@ -393,11 +393,11 @@ def test_targets_match_the_friendly_name_home_service_sees() -> None:
 REFLEX_TOOL = ToolInfo(
     name="home.light_turn_off",
     description="",
-    parameters={"target": {}},
     feature_name="home",
     feature_description="",
     target_service="home-service",
     audience="reflex",
+    input_schema={"type": "object", "properties": {"target": {}}, "required": ["target"]},
 )
 
 

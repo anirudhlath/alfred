@@ -503,7 +503,7 @@ class ConsciousEngine:
                 risk = t.risk
                 # A tool may own a `reason` parameter; `_tools_to_openai_format` leaves
                 # that schema alone, so it belongs to the service and must not be popped.
-                declares_own_reason = self._REASON_PARAM in t.input_schema.get("properties", {})
+                declares_own_reason = self._REASON_PARAM in t.parameter_names
                 break
 
         if not target:

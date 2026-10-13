@@ -21,23 +21,34 @@ TOOLS = [
     ToolInfo(
         name="home.light_turn_on",
         description="light.turn_on",
-        parameters={
-            "target": {"type": "str", "description": "Available light entities: Lamp A, Lamp B"},
-            "brightness_pct": {"type": "float"},
-        },
         feature_name="home",
         feature_description="",
         target_service="home-service",
         audience="reflex",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Available light entities: Lamp A, Lamp B",
+                },
+                "brightness_pct": {"type": "number"},
+            },
+            "required": ["target"],
+        },
     ),
     ToolInfo(
         name="home.lock_unlock",
         description="lock.unlock",
-        parameters={"target": {"type": "str"}},
         feature_name="home",
         feature_description="",
         target_service="home-service",
         audience="conscious",
+        input_schema={
+            "type": "object",
+            "properties": {"target": {"type": "string"}},
+            "required": ["target"],
+        },
     ),
 ]
 

@@ -37,12 +37,13 @@ _STRING_FIELDS = ("description", "feature_name", "feature_description", "target_
 def legacy_input_schema(parameters: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Build a tool's input schema from a manifest written before ``input_schema``.
 
-    Such a manifest gives every parameter ``"default": null`` (#300), so this
-    reproduces what the model was offered before: a parameter is required when it
-    says so, or, lacking a ``required`` key, when it has no ``default`` key. One
-    difference is deliberate: a parameter without a description gets no
-    ``description`` keyword, where System 2 used to send ``"description": ""``,
-    which tells a model nothing.
+    The one reader of a manifest's legacy ``parameters`` map (#325): the SDK no longer
+    writes it, but services repin their SDK on their own schedule. Such a manifest
+    gives every parameter ``"default": null`` (#300), so this reproduces what the model
+    was offered before: a parameter is required when it says so, or, lacking a
+    ``required`` key, when it has no ``default`` key. One difference is deliberate: a
+    parameter without a description gets no ``description`` keyword, where System 2
+    used to send ``"description": ""``, which tells a model nothing.
 
     Args:
         parameters: The manifest's ``parameters``: name → that parameter's metadata.
@@ -60,20 +61,30 @@ def legacy_input_schema(parameters: dict[str, dict[str, Any]]) -> dict[str, Any]
     )
 
 
+def _no_arguments() -> dict[str, Any]:
+    """The schema of a tool that takes no arguments."""
+    return {"type": "object", "properties": {}, "required": []}
+
+
 @dataclass(frozen=True)
 class ToolInfo:
-    """A single tool discovered from the registry."""
+    """A single tool discovered from the registry.
+
+    ``input_schema`` is the one description of the tool's arguments: the schema its
+    manifest ships, or, for a manifest written before ``input_schema`` existed, one the
+    registry derives from that manifest's ``parameters`` (``legacy_input_schema``). The
+    legacy map itself is not kept.
+    """
 
     name: str
     description: str
-    parameters: dict[str, dict[str, Any]]
     feature_name: str
     feature_description: str
     target_service: str
     audience: str = "conscious"
     risk: str = "benign"
-    # The tool's arguments as one JSON Schema object. Empty → derived from `parameters`.
-    input_schema: dict[str, Any] = field(default_factory=dict)
+    # The tool's arguments as one JSON Schema object, checked by `check_object_schema`.
+    input_schema: dict[str, Any] = field(default_factory=_no_arguments)
 
     def __post_init__(self) -> None:
         # These reach prompts, tool-call payloads and dispatch, so a bad one fails here.
@@ -89,29 +100,31 @@ class ToolInfo:
             )
         if not isinstance(self.risk, str) or self.risk not in _RISKS:
             raise ValueError(f"tool risk must be one of {sorted(_RISKS)}, not {self.risk!r}")
-        # Derived even when a schema ships: that validates `parameters`, which Reflex
-        # renders, so a malformed one fails here rather than in a later prompt.
-        derived = legacy_input_schema(self.parameters)
-        if not self.input_schema:
-            object.__setattr__(self, "input_schema", derived)
+        check_object_schema(self.input_schema)
+
+    @property
+    def parameter_names(self) -> tuple[str, ...]:
+        """The tool's parameter names, in its schema's order (Reflex renders them)."""
+        return tuple(self.input_schema.get("properties", {}))
 
 
-def _shipped_input_schema(schema: object) -> dict[str, Any]:
-    """Check the ``input_schema`` a manifest ships; ``{}`` when it ships none.
+def _input_schema(tool: Any) -> Any:
+    """The schema a manifest's tool ships, else one derived from its legacy ``parameters``.
+
+    An absent, null or empty ``input_schema`` means a manifest written before it existed.
+    A shipped one is returned as is, for ``ToolInfo`` to check, and ``parameters`` is then
+    never read.
 
     Args:
-        schema: The tool's ``input_schema`` value, as read from the manifest.
+        tool: One entry of a feature's ``tools``, as read from the manifest.
 
     Returns:
-        The schema, or ``{}`` when it is absent, null or empty (derive it instead).
-
-    Raises:
-        ValueError: The schema is present but not an object schema, by the SDK's
-            ``check_object_schema``.
+        The tool's input schema.
     """
-    if schema is None or schema == {}:
-        return {}
-    return check_object_schema(schema)
+    shipped = tool.get("input_schema")
+    if shipped is None or shipped == {}:
+        return legacy_input_schema(tool.get("parameters", {}))
+    return shipped
 
 
 class ToolRegistry:
@@ -183,20 +196,20 @@ class ToolRegistry:
                             ToolInfo(
                                 name=t["name"],
                                 description=t.get("description", ""),
-                                parameters=t.get("parameters", {}),
                                 feature_name=feature_name,
                                 feature_description=feature_desc,
                                 target_service=service_name,
                                 audience=t.get("audience", "conscious"),
                                 risk=t.get("risk", "benign"),
-                                input_schema=_shipped_input_schema(t.get("input_schema")),
+                                input_schema=_input_schema(t),
                             )
                         )
                     except (AttributeError, KeyError, TypeError, ValueError) as exc:
                         # One bad tool (an entry that is not an object, a missing or empty
                         # name, a description or feature name/description that is not a
-                        # string, an audience or risk the SDK does not allow, malformed
-                        # parameters, or a schema that is not an object schema) must not
+                        # string, an audience or risk the SDK does not allow, a schema that
+                        # is not an object schema, or, shipping none, malformed legacy
+                        # parameters) must not
                         # take down every other tool. pydantic's ValidationError is a
                         # ValueError.
                         logger.warning(

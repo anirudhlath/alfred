@@ -320,7 +320,7 @@ def render_tools(tools: Sequence[ToolInfo]) -> str:
         return NO_TOOLS
     lines = ["Tools:"]
     for tool in sorted(tools, key=lambda t: t.name):
-        line = f"- {tool.name}({', '.join(tool.parameters)}) [{tool.target_service}]"
+        line = f"- {tool.name}({', '.join(tool.parameter_names)}) [{tool.target_service}]"
         lines.append(f"{line}: {tool.description}" if tool.description else line)
     return "\n".join(lines)
 

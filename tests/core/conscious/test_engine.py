@@ -116,7 +116,6 @@ async def test_multi_turn_tool_use(mock_deps: dict[str, AsyncMock | MagicMock]) 
     tool = ToolInfo(
         name="smart_home.get_lights",
         description="Get light state",
-        parameters={},
         feature_name="home",
         feature_description="Home control",
         target_service="home-service",
@@ -210,7 +209,6 @@ async def test_max_iterations_fallback(mock_deps: dict[str, AsyncMock | MagicMoc
     tool = ToolInfo(
         name="some.tool",
         description="A tool",
-        parameters={},
         feature_name="test",
         feature_description="Test",
         target_service="test-service",
@@ -237,17 +235,22 @@ async def test_max_iterations_fallback(mock_deps: dict[str, AsyncMock | MagicMoc
 def test_tools_to_openai_format(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
     """Verify ToolInfo → OpenAI function-calling format conversion."""
     engine = ConsciousEngine(**mock_deps)
+    schema = {
+        "type": "object",
+        "properties": {
+            "room": {"type": "string", "description": "Room name"},
+            "level": {"type": "integer", "description": "Brightness", "default": 100},
+        },
+        "required": ["room"],
+    }
     tools = [
         ToolInfo(
             name="smart_home.set_light",
             description="Set light brightness",
-            parameters={
-                "room": {"type": "str", "description": "Room name"},
-                "level": {"type": "int", "description": "Brightness", "default": 100},
-            },
             feature_name="home",
             feature_description="Home",
             target_service="home-service",
+            input_schema=schema,
         ),
     ]
 
@@ -258,15 +261,8 @@ def test_tools_to_openai_format(mock_deps: dict[str, AsyncMock | MagicMock]) -> 
     func = result[0]["function"]
     # Dots sanitized to underscores for OpenAI compatibility
     assert func["name"] == "smart_home_set_light"
-    schema = func["parameters"]
-    assert "room" in schema["properties"]
-    assert "level" in schema["properties"]
-    # Python types mapped to JSON Schema types
-    assert schema["properties"]["room"]["type"] == "string"
-    assert schema["properties"]["level"]["type"] == "integer"
-    # room has no default → required; level has default → not required
-    assert "room" in schema["required"]
-    assert "level" not in schema["required"]
+    # The tool's input_schema is offered as is (an old manifest's is derived at parse time).
+    assert func["parameters"] == schema
 
 
 def test_tool_name_sanitization(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
@@ -278,7 +274,6 @@ def test_tool_name_sanitization(mock_deps: dict[str, AsyncMock | MagicMock]) -> 
         ToolInfo(
             name="lighting.dim_lights",
             description="Dim",
-            parameters={},
             feature_name="home",
             feature_description="Home",
             target_service="home-service",
@@ -402,7 +397,6 @@ def test_reason_is_offered_on_a_schema_without_properties(
     tool_info = ToolInfo(
         name="home.sound_alarm",
         description="Sound the alarm",
-        parameters={},
         feature_name="home",
         feature_description="Home control",
         target_service="home-service",
@@ -671,11 +665,15 @@ def _critical_tool() -> ToolInfo:
     return ToolInfo(
         name="home.unlock_door",
         description="Unlock a door",
-        parameters={"entity_id": {"type": "str", "description": "Lock entity"}},
         feature_name="home",
         feature_description="Home control",
         target_service="home-service",
         risk="critical",
+        input_schema={
+            "type": "object",
+            "properties": {"entity_id": {"type": "string", "description": "Lock entity"}},
+            "required": ["entity_id"],
+        },
     )
 
 
@@ -687,7 +685,6 @@ def test_critical_tools_get_a_reason_parameter(
     benign = ToolInfo(
         name="home.get_lights",
         description="Get light state",
-        parameters={},
         feature_name="home",
         feature_description="Home control",
         target_service="home-service",
@@ -736,11 +733,17 @@ def _critical_tool_with_own_reason() -> ToolInfo:
     return ToolInfo(
         name="home.log_incident",
         description="Log an incident",
-        parameters={"reason": {"type": "str", "description": "Incident reason for the audit log"}},
         feature_name="home",
         feature_description="Home control",
         target_service="home-service",
         risk="critical",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "description": "Incident reason for the audit log"}
+            },
+            "required": ["reason"],
+        },
     )
 
 
@@ -776,42 +779,6 @@ async def test_dispatch_preserves_a_tools_own_reason_parameter(
     assert routed.reason is None
 
 
-def _critical_tool_with_reason_in_its_schema_only() -> ToolInfo:
-    """A critical tool whose shipped `input_schema` declares `reason`; its `parameters` do not."""
-    return ToolInfo(
-        name="home.log_incident",
-        description="Log an incident",
-        parameters={},
-        feature_name="home",
-        feature_description="Home control",
-        target_service="home-service",
-        risk="critical",
-        input_schema={
-            "type": "object",
-            "properties": {"reason": {"type": "string", "description": "Incident reason"}},
-            "required": ["reason"],
-        },
-    )
-
-
-@pytest.mark.asyncio
-async def test_dispatch_reads_an_own_reason_from_the_schema_the_model_sees(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """A `reason` the shipped schema declares is the tool's own, whatever `parameters` say."""
-    mock_deps["domain_router"].route.return_value = MagicMock(status="success", result={"ok": True})
-    engine = ConsciousEngine(**mock_deps)
-
-    await engine._dispatch_tool_call(
-        {"id": "tc-1", "name": "home.log_incident", "input": {"reason": "Smoke alarm tripped."}},
-        tools=[_critical_tool_with_reason_in_its_schema_only()],
-    )
-
-    routed = mock_deps["domain_router"].route.call_args[0][0]
-    assert routed.parameters == {"reason": "Smoke alarm tripped."}
-    assert routed.reason is None
-
-
 @pytest.mark.asyncio
 async def test_dispatch_leaves_reason_alone_for_benign_tools(
     mock_deps: dict[str, AsyncMock | MagicMock],
@@ -822,10 +789,14 @@ async def test_dispatch_leaves_reason_alone_for_benign_tools(
     benign = ToolInfo(
         name="home.log_note",
         description="Log a note",
-        parameters={"reason": {"type": "str", "description": "Why"}},
         feature_name="home",
         feature_description="Home control",
         target_service="home-service",
+        input_schema={
+            "type": "object",
+            "properties": {"reason": {"type": "string", "description": "Why"}},
+            "required": ["reason"],
+        },
     )
 
     await engine._dispatch_tool_call(
