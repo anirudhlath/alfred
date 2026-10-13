@@ -81,7 +81,7 @@ def _argument_error_message() -> str:
     [
         # home-service's /mcp: the exception's type and message, as one string.
         pytest.param(f"ToolArgumentError: {_argument_error_message()}", id="string"),
-        # A JSON-RPC 2.0 server (the trigger engine's shim): an error object.
+        # Any JSON-RPC 2.0 server that returns an error object.
         pytest.param({"code": -32602, "message": _argument_error_message()}, id="object"),
     ],
 )
