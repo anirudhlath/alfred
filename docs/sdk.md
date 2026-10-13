@@ -352,15 +352,18 @@ them, but they are never sent ([#325](https://github.com/anirudhlath/alfred/issu
 SDKs before [#325](https://github.com/anirudhlath/alfred/issues/325) also wrote
 `parameters`, the older per-parameter map. Core still reads a manifest that carries only
 that map, deriving a schema from it, because each service repins its SDK on its own
-schedule; a manifest that ships a schema has its `parameters` left unread. A manifest written before `input_schema` existed marks nothing required
+schedule; a manifest that ships a schema has its `parameters` left unread. A manifest
+written before `input_schema` existed marks nothing required
 ([#300](https://github.com/anirudhlath/alfred/issues/300)), so a service gets correct
 `required` lists only once it is rebuilt against a newer SDK.
 
-**Deploy order.** Core ships first, then services repin. A core older than
-[#325](https://github.com/anirudhlath/alfred/issues/325) reads a tool without
-`parameters` as one that takes no arguments, so a service on this SDK must not register
-against it. Reflex's prompt stays byte-identical across the two forms
-(pinned by `tests/core/reflex/test_prompt_wire_forms.py`), which its shadow week
+**Deploy order.** Core ships first, then services repin. Reflex in a core older than
+[#325](https://github.com/anirudhlath/alfred/issues/325) renders a tool without
+`parameters` with no arguments (a core older than
+[#300](https://github.com/anirudhlath/alfred/issues/300) offers System 2 none either),
+so a service on this SDK must not register against it. Reflex's prompt stays
+byte-identical across the two forms (pinned by
+`tests/core/reflex/test_prompt_wire_forms.py`), which its shadow week
 ([#285](https://github.com/anirudhlath/alfred/issues/285)) depends on.
 
 ```mermaid
