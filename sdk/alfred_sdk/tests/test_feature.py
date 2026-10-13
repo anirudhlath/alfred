@@ -691,6 +691,24 @@ def test_signature_schema_carries_rich_types() -> None:
     assert props["meta"]["anyOf"][0] == {"type": "object", "additionalProperties": True}
 
 
+class _TallyFeature(BaseFeature):
+    feature_name = "tally"
+
+    @tool
+    def count(self, counts: dict[Literal["a", "b"], int]) -> None:
+        """Count things by key."""
+
+
+def test_signature_schema_keeps_a_dicts_key_constraint() -> None:
+    # Pydantic before 2.10 leaves `propertyNames` out without a warning, offering a model
+    # any key at all (issue #327).
+    assert _schema(_TallyFeature(), "tally.count")["properties"]["counts"] == {
+        "type": "object",
+        "additionalProperties": {"type": "integer"},
+        "propertyNames": {"enum": ["a", "b"]},
+    }
+
+
 def test_required_is_exactly_the_parameters_without_defaults() -> None:
     meta = {t.name: t for t in _ShapesFeature().get_tools()}["shapes.plan"]
     assert meta.input_schema["required"] == ["title", "tags", "mode", "speed", "at"]
