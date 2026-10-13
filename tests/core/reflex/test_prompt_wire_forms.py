@@ -1,8 +1,8 @@
-"""Reflex's prompt is the same whichever wire form a manifest takes (#325).
+"""Reflex's prompt is the same whichever wire form a manifest takes (issue #325).
 
-Reflex is in its shadow week (#285), so a service repinning its SDK must not change a
-byte of what the model sees. The expected prompt is a literal captured from master's
-renderer, which read the names from ``parameters``: comparing the forms only to each
+Reflex is in its shadow week (issue #285), so a service repinning its SDK must not change
+a byte of what the model sees. The expected prompt is a literal captured from the renderer
+before issue #325 (which joined ``tool.parameters``): comparing the forms only to each
 other would let both drift together.
 """
 
@@ -10,17 +10,18 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic.json_schema import SkipJsonSchema
 
 from bus.schemas.events import StateChangedEvent
-from core.reflex.prompt import build_state_change_prompt
-from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolRegistry
+from core.reflex.prompt import build_state_change_prompt, render_tools
+from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo, ToolRegistry
 from sdk.alfred_sdk.feature import BaseFeature, ToolMeta, ToolParameter, tool
 
-# What an SDK before #300 wrote: `parameters` only, every one with "default": null.
+# What an SDK before issue #300 wrote: `parameters` only, every one with "default": null.
 OLD_SDK_TOOLS: list[dict[str, Any]] = [
     {
         "name": "home.scene_all_off",
@@ -47,7 +48,7 @@ OLD_SDK_TOOLS: list[dict[str, Any]] = [
     },
 ]
 
-# The same tools as the SDK writes them since #325: `input_schema` only.
+# The same tools as the SDK writes them since issue #325: `input_schema` only.
 NEW_SDK_TOOLS: list[dict[str, Any]] = [
     {
         "name": "home.scene_all_off",
@@ -85,13 +86,14 @@ NEW_SDK_TOOLS: list[dict[str, Any]] = [
     },
 ]
 
-# What the SDKs of #300/#301 wrote: both, describing the same arguments.
+# What the SDKs of issues #300/#301 wrote: both, describing the same arguments.
 BOTH_FORMS_TOOLS: list[dict[str, Any]] = [
     {**old, "input_schema": new["input_schema"]}
     for old, new in zip(OLD_SDK_TOOLS, NEW_SDK_TOOLS, strict=True)
 ]
 
-# Captured from master's renderer (`', '.join(tool.parameters)`) for OLD_SDK_TOOLS.
+# Captured for OLD_SDK_TOOLS from the renderer before issue #325 (which joined
+# `tool.parameters`).
 EXPECTED_PROMPT = (
     "You are Alfred's Reflex Engine, the quiet steward of a home. One thing in the house "
     "just changed. Decide whether to do something about it.\n"
@@ -129,8 +131,8 @@ EXPECTED_PROMPT = (
 )
 
 
-async def _render(tools: list[dict[str, Any]]) -> str:
-    """Register ``tools`` as one service's manifest, read them back, render the prompt."""
+async def _register(tools: list[dict[str, Any]]) -> list[ToolInfo]:
+    """Register ``tools`` as one service's manifest and read them back."""
     manifest = {
         "service_name": "home-service",
         "service_endpoint": "http://home-service/mcp",
@@ -140,6 +142,12 @@ async def _render(tools: list[dict[str, Any]]) -> str:
     redis.hgetall.return_value = {b"home-service": json.dumps(manifest).encode()}
     registered = await ToolRegistry(redis).get_tools()
     assert len(registered) == len(tools), "a tool was skipped as malformed"
+    return registered
+
+
+async def _render(tools: list[dict[str, Any]]) -> str:
+    """Register ``tools``, read them back, render the prompt."""
+    registered = await _register(tools)
     return build_state_change_prompt(
         event=StateChangedEvent(
             source="home-service",
@@ -220,3 +228,24 @@ async def test_what_the_sdk_writes_renders_the_same_prompt(feature: type[BaseFea
     for t in written:
         t["audience"] = REFLEX_AUDIENCE
     assert await _render(written) == EXPECTED_PROMPT
+
+
+class _HiddenArgumentHome(BaseFeature):
+    """A tool with a parameter its schema skips: it has a default, so the model never fills it."""
+
+    feature_name = "home"
+
+    @tool(audience="reflex", description="Turn on a light.")
+    def light_turn_on(self, target: str, hidden: Annotated[int, SkipJsonSchema()] = 3) -> None: ...
+
+
+@pytest.mark.asyncio
+async def test_a_parameter_the_schema_skips_stays_out_of_the_prompt() -> None:
+    # The legacy map listed `hidden` too, so the renderer before issue #325 named an argument
+    # the model was never offered. The schema leaves it out, and Reflex now reads the schema.
+    written = json.loads(json.dumps(_HiddenArgumentHome().to_manifest().model_dump()))["tools"]
+    [registered] = await _register(written)
+    assert registered.parameter_names == ("target",)
+    assert render_tools([registered]) == (
+        "Tools:\n- home.light_turn_on(target) [home-service]: Turn on a light."
+    )
