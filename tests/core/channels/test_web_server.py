@@ -296,7 +296,7 @@ def test_lifespan_shutdown_closes_everything_past_a_failing_closer(tmp_path: Pat
 
     mock_redis = AsyncMock()
     mock_redis.hgetall = AsyncMock(return_value={})
-    mock_redis.close = AsyncMock()
+    mock_redis.aclose = AsyncMock()
 
     mock_store = AsyncMock()
     mock_store.initialize = AsyncMock()
@@ -336,7 +336,48 @@ def test_lifespan_shutdown_closes_everything_past_a_failing_closer(tmp_path: Pat
     assert mock_store.close.await_count == 1
     assert aclose_episodic.await_count == 1
     assert http_aclose.await_count == 1
-    assert mock_redis.close.await_count == 1
+    # Through aclose(): redis-py deprecated close() for it.
+    assert mock_redis.aclose.await_count == 1
+    assert mock_redis.close.await_count == 0
+
+
+def test_lifespan_closes_a_real_redis_pool_without_a_deprecation_warning(tmp_path: Path) -> None:
+    """redis-py deprecated ``close()`` for ``aclose()``, and the lifespan closed its pool by the
+    old name. A mock answers to either, so this pool is the real one the lifespan builds with
+    ``create_redis()``, pointed at a port nothing listens on — closing it needs no server.
+
+    Warnings are recorded rather than raised: teardown logs whatever a closer raises, so
+    ``-W error`` would turn the warning into a swallowed log line and pass regardless.
+    """
+    import warnings
+
+    from fastapi.testclient import TestClient
+
+    import core.channels.web_server as ws_mod
+
+    mock_store = AsyncMock()
+
+    with (
+        patch.object(ws_mod, "_SPA_DIST", _make_spa_dist(tmp_path)),
+        patch("core.channels.web_server.CredentialStore", return_value=mock_store),
+        patch("core.channels.web_server._init_apns_adapter", new=AsyncMock()),
+        patch(
+            "core.notifications.delivery.notification_delivery_worker",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.channels.service_credentials.credential_push_worker",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("core.channels.web_server.start_warmup", return_value=None),
+        warnings.catch_warnings(record=True) as caught,
+    ):
+        warnings.simplefilter("always")
+        app = create_app(redis_url="redis://127.0.0.1:1")
+        with TestClient(app):
+            pass
+
+    assert [str(w.message) for w in caught if issubclass(w.category, DeprecationWarning)] == []
 
 
 def test_ws_ping_is_a_no_op_and_does_not_lock_the_session(web_client: TestClient) -> None:
