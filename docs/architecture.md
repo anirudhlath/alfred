@@ -397,7 +397,6 @@ The `ToolRegistry` reads tool manifests from the Redis hash `alfred:tool_registr
 ToolInfo(
     name="lighting.dim_lights",
     description="Dim lights in a room",
-    parameters={"room": {"type": "str", "required": True}, "level": {"type": "int", "default": 50}},
     feature_name="lighting",
     feature_description="Smart home lighting control",
     target_service="home-service",
@@ -411,21 +410,30 @@ ToolInfo(
 )
 ```
 
-`input_schema` is the tool's arguments as one JSON Schema object, the form System 2
-offers the model; the SDK generates it from each `@tool` signature (see
-[docs/sdk.md](sdk.md)). `parameters` stays alongside it for Reflex, whose prompt renders
-the legacy type names. A manifest written before the SDK shipped `input_schema` has none,
-or an empty one, so the registry derives it from `parameters` with
-`legacy_input_schema()`, keeping today's `required` rule: a parameter is required when it
-says so, or, without a `required` key, when it has no `default` key. Old SDKs wrote
-`"default": null` for every parameter, so such a manifest marks nothing required
-([#300](https://github.com/anirudhlath/alfred/issues/300)).
+`input_schema` is the tool's arguments as one JSON Schema object, and the only
+description of them `ToolInfo` keeps. System 2 offers it to the model, and Reflex's prompt
+renders each tool's parameter names from its `properties`, in the schema's order
+(`ToolInfo.parameter_names`). The SDK generates it from each `@tool` signature, or
+assembles it from a hand-built tool's `ToolParameter`s, and since
+[#325](https://github.com/anirudhlath/alfred/issues/325) sends nothing else (see
+[docs/sdk.md](sdk.md)). `ToolInfo` checks it with the SDK's `check_object_schema()`; a
+tool built without one takes no arguments.
+
+A manifest written by an older SDK carries the legacy `parameters` map, and one written
+before `input_schema` existed has no schema, or an empty one. For such a manifest the
+registry derives the schema at parse time from `parameters` with `legacy_input_schema()`,
+the only code in core that reads the map, keeping today's `required` rule: a parameter is
+required when it says so, or, without a `required` key, when it has no `default` key.
+Old SDKs wrote `"default": null` for every parameter, so such a manifest marks nothing
+required ([#300](https://github.com/anirudhlath/alfred/issues/300)). A manifest that ships
+a schema has its `parameters`, if any, left unread. Both forms render the same Reflex
+prompt, byte for byte, so core can ship before services repin their SDK.
 
 One malformed entry never takes the others down. A tool whose name is missing or empty,
 whose description (or its feature's name or description) is not a string, whose
 `audience` or `risk` is not one the SDK's `ToolAudience`/`ToolRisk` allow, whose
-`parameters` are malformed, or whose `input_schema` fails the SDK's
-`check_object_schema()` is skipped with a
+`input_schema` fails the SDK's `check_object_schema()`, or which ships no schema and has
+malformed legacy `parameters` is skipped with a
 `Skipping malformed tool` WARNING. A feature that is not an object, or whose `tools` are
 not a list, is skipped with a `Skipping malformed feature` WARNING. A service whose
 manifest is not a JSON object, or whose `features` are not a list, is skipped with a
