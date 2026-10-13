@@ -37,10 +37,10 @@ _STRING_FIELDS = ("description", "feature_name", "feature_description", "target_
 def legacy_input_schema(parameters: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Build a tool's input schema from a manifest written before ``input_schema``.
 
-    The one reader of a manifest's legacy ``parameters`` map (#325): the SDK no longer
-    writes it, but services repin their SDK on their own schedule. Such a manifest
-    gives every parameter ``"default": null`` (#300), so this reproduces what the model
-    was offered before: a parameter is required when it says so, or, lacking a
+    The one reader of a manifest's legacy ``parameters`` map (issue #325): the SDK no
+    longer writes it, but services repin their SDK on their own schedule. Such a manifest
+    gives every parameter ``"default": null`` (issue #300), so this reproduces what the
+    model was offered before: a parameter is required when it says so, or, lacking a
     ``required`` key, when it has no ``default`` key. One difference is deliberate: a
     parameter without a description gets no ``description`` keyword, where System 2
     used to send ``"description": ""``, which tells a model nothing.
@@ -205,13 +205,11 @@ class ToolRegistry:
                             )
                         )
                     except (AttributeError, KeyError, TypeError, ValueError) as exc:
-                        # One bad tool (an entry that is not an object, a missing or empty
-                        # name, a description or feature name/description that is not a
-                        # string, an audience or risk the SDK does not allow, a schema that
-                        # is not an object schema, or, shipping none, malformed legacy
-                        # parameters) must not
-                        # take down every other tool. pydantic's ValidationError is a
-                        # ValueError.
+                        # One bad tool (an entry that is not an object, a missing or empty name, a
+                        # description or feature name/description that is not a string, an audience
+                        # or risk the SDK does not allow, a schema that is not an object schema, or,
+                        # shipping none, malformed legacy parameters) must not take down every other
+                        # tool. pydantic's ValidationError is a ValueError.
                         logger.warning(
                             "Skipping malformed tool %r from service '%s': %s",
                             t.get("name") if isinstance(t, dict) else t,

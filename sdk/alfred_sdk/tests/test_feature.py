@@ -623,7 +623,8 @@ def test_manifest_carries_input_schema_through_json() -> None:
         "properties": {"to": {"type": "string", "description": "Where."}},
         "required": ["to"],
     }
-    # `parameters` is how a hand-built tool is described, never what goes on the wire (#325).
+    # `parameters` is how a hand-built tool is described, never what goes on the wire
+    # (issue #325).
     assert "parameters" not in tool_json
 
 

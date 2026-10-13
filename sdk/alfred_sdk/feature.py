@@ -45,8 +45,9 @@ class ToolParameter(BaseModel):
 
     This is how a tool built by hand is described; its ``input_schema`` is assembled
     from these (``input_schema_from_parameters``), and only that schema goes on the wire
-    (#325). ``type`` is a Python type name. A hand-built tool sets ``required`` and, for
-    an exact schema, ``json_schema``; without it the schema is derived from ``type``.
+    (issue #325). ``type`` is a Python type name. A hand-built tool sets ``required``
+    and, for an exact schema, ``json_schema``; without it the schema is derived from
+    ``type``.
     """
 
     type: str
@@ -99,9 +100,9 @@ class CredentialSchema(BaseModel):
 class ToolManifest(BaseModel):
     """Schema for a single tool in the manifest.
 
-    A tool's arguments go on the wire once, as ``input_schema``. SDKs before #325 also
-    wrote the legacy ``parameters`` map; Alfred core still reads a manifest that carries
-    only that map, deriving the schema from it.
+    A tool's arguments go on the wire once, as ``input_schema``. SDKs before issue #325
+    also wrote the legacy ``parameters`` map; Alfred core still reads a manifest that
+    carries only that map, deriving the schema from it.
     """
 
     name: str
