@@ -18,6 +18,7 @@ import pytest
 from bus.schemas.events import StateChangedEvent
 from core.reflex.prompt import build_state_change_prompt
 from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolRegistry
+from sdk.alfred_sdk.feature import BaseFeature, ToolMeta, ToolParameter, tool
 
 # What an SDK before #300 wrote: `parameters` only, every one with "default": null.
 OLD_SDK_TOOLS: list[dict[str, Any]] = [
@@ -165,3 +166,57 @@ async def test_old_and_new_sdk_manifests_render_the_same_prompt() -> None:
 @pytest.mark.asyncio
 async def test_a_manifest_carrying_both_forms_renders_the_same_prompt() -> None:
     assert await _render(BOTH_FORMS_TOOLS) == EXPECTED_PROMPT
+
+
+class _HandBuiltHome(BaseFeature):
+    """The same tools built by hand from parameters, as home-service builds its own."""
+
+    feature_name = "home"
+
+    def get_tools(self) -> list[ToolMeta]:
+        return [
+            ToolMeta(name="home.scene_all_off", description="Turn everything off.", parameters={}),
+            ToolMeta(
+                name="home.light_turn_on",
+                description="Turn on a light.",
+                parameters={
+                    "target": ToolParameter(
+                        type="str", description="A room or a light.", required=True
+                    ),
+                    "brightness_pct": ToolParameter(type="int", description="0-100."),
+                    "color_name": ToolParameter(type="str"),
+                },
+            ),
+            ToolMeta(
+                name="home.fan_turn_off",
+                description="",
+                parameters={"target": ToolParameter(type="str", required=True)},
+            ),
+        ]
+
+
+class _DecoratedHome(BaseFeature):
+    """The same tools written as ``@tool`` methods."""
+
+    feature_name = "home"
+
+    @tool(description="Turn everything off.")
+    def scene_all_off(self) -> None: ...
+
+    @tool(description="Turn on a light.")
+    def light_turn_on(
+        self, target: str, brightness_pct: int | None = None, color_name: str | None = None
+    ) -> None: ...
+
+    @tool(description="")
+    def fan_turn_off(self, target: str) -> None: ...
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("feature", [_HandBuiltHome, _DecoratedHome])
+async def test_what_the_sdk_writes_renders_the_same_prompt(feature: type[BaseFeature]) -> None:
+    written = json.loads(json.dumps(feature().to_manifest().model_dump()))["tools"]
+    assert all("parameters" not in t for t in written)
+    for t in written:
+        t["audience"] = REFLEX_AUDIENCE
+    assert await _render(written) == EXPECTED_PROMPT

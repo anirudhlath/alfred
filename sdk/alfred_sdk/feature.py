@@ -41,11 +41,12 @@ JSON_TYPE_BY_PYTHON_NAME: dict[str, str] = {
 
 
 class ToolParameter(BaseModel):
-    """Schema for a single tool parameter in the manifest.
+    """One parameter of a tool, as ``ToolMeta.parameters`` describes it.
 
-    ``type`` is the legacy type name, kept on the wire for readers of ``parameters``
-    (Reflex renders the names). A hand-built tool sets ``required`` and, for an exact
-    schema, ``json_schema``; without it the schema is derived from ``type``.
+    This is how a tool built by hand is described; its ``input_schema`` is assembled
+    from these (``input_schema_from_parameters``), and only that schema goes on the wire
+    (#325). ``type`` is a Python type name. A hand-built tool sets ``required`` and, for
+    an exact schema, ``json_schema``; without it the schema is derived from ``type``.
     """
 
     type: str
@@ -96,11 +97,15 @@ class CredentialSchema(BaseModel):
 
 
 class ToolManifest(BaseModel):
-    """Schema for a single tool in the manifest."""
+    """Schema for a single tool in the manifest.
+
+    A tool's arguments go on the wire once, as ``input_schema``. SDKs before #325 also
+    wrote the legacy ``parameters`` map; Alfred core still reads a manifest that carries
+    only that map, deriving the schema from it.
+    """
 
     name: str
     description: str = ""
-    parameters: dict[str, ToolParameter] = {}
     # The tool's arguments as one JSON Schema object: what a model is offered.
     input_schema: dict[str, Any] = {}
     audience: ToolAudience = "conscious"
@@ -625,7 +630,7 @@ def _extract_tool_meta(
             description=doc_args.get(param.name, ""),
             # The schema's JSON default, never the raw Python one: an Enum becomes its
             # value, and a default JSON cannot carry (a sentinel) becomes None, so the
-            # manifest always serialises. A parameter the schema skips (`SkipJsonSchema`)
+            # parameter always serialises. A parameter the schema skips (`SkipJsonSchema`)
             # has no property at all, and so no default.
             default=input_schema["properties"].get(param.name, {}).get("default"),
             required=param.default is inspect.Parameter.empty,
@@ -684,7 +689,6 @@ class BaseFeature:
             ToolManifest(
                 name=t.name,
                 description=t.description,
-                parameters=dict(t.parameters),
                 audience=t.audience,
                 risk=t.risk,
                 input_schema=t.input_schema,
