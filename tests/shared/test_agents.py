@@ -12,9 +12,11 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel
 
 from shared.agents import instrumentation, model_key, resolve_model, role_headers
 from shared.config import AlfredConfig, apply_model_env
+from shared.llm_http import RetryingTransport
 from shared.llm_roles import LIBRARIAN, LLM_ROLES, ROLE_HEADER, SYSTEM1, SYSTEM2
 from tests.llm_fakes import Script
 
@@ -120,6 +122,23 @@ def test_an_openrouter_string_resolves_with_its_key(no_provider_env: pytest.Monk
     model = resolve_model("SYSTEM2_MODEL", "openrouter:anthropic/claude-sonnet-4")
     assert model is not None
     assert model_key(model) == "openrouter:anthropic/claude-sonnet-4"
+
+
+@pytest.mark.parametrize(
+    ("env", "value"),
+    [
+        ("VLLM_BASE_URL", "vllm:gemma-x"),
+        ("OPENROUTER_API_KEY", "openrouter:vendor/model"),
+    ],
+)
+def test_an_openai_compatible_model_retries_in_the_transport_not_the_sdk(
+    no_provider_env: pytest.MonkeyPatch, env: str, value: str
+) -> None:
+    no_provider_env.setenv(env, "http://vllm.test:8000/v1" if env == "VLLM_BASE_URL" else "k")
+    model = resolve_model("SYSTEM2_MODEL", value)
+    assert isinstance(model, OpenAIChatModel)
+    assert model.client.max_retries == 0
+    assert isinstance(model.client._client._transport, RetryingTransport)
 
 
 @pytest.mark.parametrize(

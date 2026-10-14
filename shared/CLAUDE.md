@@ -15,6 +15,7 @@ Cross-cutting utilities used by multiple top-level packages (core, bus, domains)
 - `traced.py` — `@traced` decorator for OTel span instrumentation (sync + async, optional name override)
 - `tracing.py` — `ReflexTraceRecord` / `ConsciousTraceRecord` dataclasses + `init_tracing()` with optional OTLP export
 - `otel.py` — TracerProvider init with Resource + optional OTLP BatchSpanProcessor
+- `llm_http.py` — `RetryingTransport` / `retrying_http_client()`: the one HTTP retry layer under every OpenAI-compatible model (`resolve_model` builds the SDK client with `max_retries=0`); a status that exhausts retries returns its last response so Pydantic AI raises `ModelHTTPError` with the real status (spec 6b)
 
 ## Key Stream Constants
 
