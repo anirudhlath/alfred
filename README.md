@@ -13,7 +13,7 @@ Alfred processes real-time events from smart home devices, responds to voice and
 Alfred uses a **dual-process cognitive model**:
 
 - **System 1 (Reflex Engine)** — a local SLM (Ollama) handles the fast path. State-change events pass through the SLM in sub-500ms to decide whether an action is needed.
-- **System 2 (Conscious Engine)** — Claude handles complex reasoning, multi-step planning, and conversational requests via an agentic tool-use loop.
+- **System 2 (Conscious Engine)** — Claude handles complex reasoning, multi-step planning, and conversational requests through a Pydantic AI agent with one tool catalog (see [docs/llm.md](docs/llm.md)).
 
 ```mermaid
 flowchart TB
@@ -37,7 +37,7 @@ flowchart TB
     subgraph CORE["Dual-Process Core"]
         Reflex["Reflex Engine — System 1<br/>local SLM (Ollama), fast path"]
         Triggers["Trigger Engine<br/>LLM-created triggers,<br/>deterministic firing"]
-        Conscious["Conscious Engine — System 2<br/>Claude agentic tool-use loop<br/>sessions, cost caps, identity gate"]
+        Conscious["Conscious Engine — System 2<br/>Pydantic AI agent, one tool catalog<br/>sessions, cost caps, identity gate"]
     end
 
     Streams -->|StateChangedEvent| Reflex
@@ -259,7 +259,8 @@ annotated source of truth, split into a short **REQUIRED** section and defaulted
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OPENROUTER_API_KEY` | — | System 2 cloud LLM key (required for reasoning) |
-| `CLAUDE_MODEL` | `openrouter/anthropic/claude-sonnet-4` | System 2 model (LiteLLM string) |
+| `SYSTEM2_MODEL` | `openrouter:anthropic/claude-sonnet-4` | System 2 model (Pydantic AI string: `openrouter:<vendor>/<model>` or `vllm:<served-name>`; see `docs/llm.md`) |
+| `VLLM_BASE_URL` | `OPENAI_COMPAT_HOST` + `/v1` | Where `vllm:` models are served |
 | `REFLEX_BACKEND` | `ollama` | System 1 backend: `ollama` \| `openai` |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API (localhost auto-rewritten in-container) |
 | `HA_HOST` | `http://localhost:8123` | Home Assistant base URL |

@@ -86,7 +86,7 @@ sequenceDiagram
   `tool_name`, `parameters` and `reason` — enough for a client to render the prompt
   without a second lookup. `reason` is the actor's one-sentence justification, offered
   as an extra argument on critical tools and moved off `parameters` by
-  `ConsciousEngine._dispatch_tool_call()` so the domain service never sees it —
+  `RegistryToolset` (`core/conscious/tools/registry.py`) so the domain service never sees it —
   unless the tool declares `reason` as its own parameter, in which case it belongs
   to the service and `ActionRequest.reason` stays null.
   It is **null for every non-conscious source** (trigger-fired actions —
@@ -121,11 +121,10 @@ sequenceDiagram
   key that vanished between the read and the TTL, -1 for one with no expiry), so clients
   can render the remaining fuse directly without guarding for a negative.
 - Chat confirm: Conscious internal tool `confirm_pending_action(request_id)`
-  (`core/conscious/action_tools.py`) — works over Signal/iOS/web chat. Action tools
-  (confirm + `attention_*`) are offered to sir turns only in the tool manifest, and
-  `ConsciousEngine._dispatch_tool_call()` re-checks the resolved identity at dispatch
-  time before executing any of them — defense-in-depth against a guest-turn model
-  hallucinating the call.
+  (`core/conscious/tools/attention.py`) — works over Signal/iOS/web chat. The confirm and
+  `attention_*` tools form a sir-only toolset: never offered on a guest turn, and refused
+  at call time if a guest turn names one anyway — defense-in-depth against a guest-turn
+  model hallucinating the call.
 - Execution: the conscious process's `_consume_internal_actions` consumer
   (group `conscious-engine` on `alfred:actions`) routes `confirmed=True`
   domain actions through the DomainRouter.

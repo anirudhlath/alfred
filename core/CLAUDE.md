@@ -69,21 +69,24 @@ graph LR
 
 ## Conscious (`conscious/`) — System 2 Cloud LLM
 
-Agentic tool-use loop with parallel execution (`asyncio.gather`).
+One Pydantic AI agent per request (`agent.py`); see `docs/llm.md`.
 
-- `engine.py` — Full reasoning loop: budget check → involuntary recall → tool dispatch → response
-- `context_assembler.py` — Two-stage: involuntary recall (auto semantic search) + deliberate recall (memory tools)
-- `memory_tools.py` — Internal tools: `recall_memories`, `get_live_state` (dispatched in-process, NOT via SDK/ToolRegistry)
+- `engine.py` — one turn: budget check → identity/session → involuntary recall → `TurnDeps` → agent run → spend, session, scratchpad note
+- `agent.py` — `build_system2_agent()`, `system2_toolsets()` (priority order), `REQUEST_LIMIT`
+- `tools/` — the catalog and its toolsets; every tool is named by `tools/names.wire_name`
+- `memory_tools.py` — `recall_memories()`, `get_live_state()`: the memory toolset's bodies
+- `context_assembler.py` — the instructions: identity, involuntary recall, integrations available, routine hint (no tool list)
 - `cost.py` — Daily cap tracking, 80% alert via NotificationPublisher
 - `identity.py` — Signal phone + local-claim trust (confidence=0.7) for web_pwa, voice, and ios channels
 - `session.py` — Redis-backed sessions, 30min timeout
 - `prompts/` — System prompt templates
 
-### Tool Dispatch (4 categories)
-1. Integration tools (prefix `integration_`) → `IntegrationRegistry.execute()`
-2. Trigger tools → in-process `TriggerFeature` methods, arguments validated and coerced first by the tool's `ToolMeta.validate_arguments` (metas cached once when the engine is built); a `ToolArgumentError` becomes the tool result, naming each field
-3. Memory tools (prefix `memory_`) → in-process `dispatch_memory_tool()`
-4. Domain tools → `DomainRouter` to external services
+### Tools (one catalog, five toolsets in priority order)
+1. Trigger tools (`tools/triggers.py`) → in-process `TriggerFeature` methods, arguments validated and coerced first by the tool's `ToolMeta.validate_arguments`; a `ToolArgumentError` becomes a failed tool result naming each field
+2. Memory tools (`tools/memory.py`, prefix `memory_`) → `memory_tools.py`; sir-only
+3. Attention + `confirm_pending_action` (`tools/attention.py`); sir-only
+4. Integration tools (`tools/integrations.py`, prefix `integration_`) → `IntegrationRegistry.execute()`; sir-only
+5. Registry tools (`tools/registry.py`) → `DomainRouter` to external services; a guest is offered `benign` risk only
 - `__main__.py` runs a 15-min background loop (`asyncio.wait_for`) for proactive routine suggestions; ignored suggestions have confidence decremented over time
 
 ## Voice (`voice/`) — Voice I/O

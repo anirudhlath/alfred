@@ -60,6 +60,7 @@ rows:
   - {id: 4.6.session-management, section: "4.6", prd: "Session and passkey management", not_llm: "auth routes", tests: [tests/core/identity/test_auth_routes.py, web/src/workshop/SystemSections.test.tsx, web/src/workshop/useSystem.test.tsx]}
   - {id: 4.6.identity-confidence, section: "4.6", prd: "Identity confidence levels per channel", suites: [guest_boundary], tests: [tests/core/conscious/test_identity_local_trust.py]}
   - {id: 4.6.guest-choices, section: "4.6", prd: "Guest access choices captured at onboarding", not_llm: "capture-only onboarding settings; enforcement remains planned", tests: [tests/core/channels/test_onboarding_defaults.py]}
+  - {id: 4.6.guest-tool-scoping, section: "4.6", prd: "Guest tool scoping in conversation", not_llm: "deterministic toolset scoping: the tool list and the call-time refusal, with no model judgment", tests: [tests/core/conscious/tools/test_sir_only.py, tests/core/conscious/tools/test_registry.py, tests/core/conscious/tools/test_catalog.py]}
   - {id: 4.6.guest-enforcement, section: "4.6", prd: "Guest boundary enforcement", pending_suites: [guest_boundary]}
   - {id: 4.6.cost-cap, section: "4.6", prd: "Daily cloud-spend cap", not_llm: "budget accounting", tests: [tests/core/conscious/test_cost.py]}
   # §4.7 Operations & quality

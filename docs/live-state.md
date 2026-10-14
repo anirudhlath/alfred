@@ -115,7 +115,7 @@ every attribute it is given.
 - `ContextReader` (`core/reflex/context_reader.py`) reads on every call — no cache — and
   renders the Markdown the Reflex prompts put under `## Home State`. Without live state it
   says `Live home state unavailable.`
-- Conscious's `memory_get_live_state` (`core/conscious/memory_tools.py`) returns
+- Conscious's `memory_get_live_state` (`core/conscious/tools/memory.py`) returns
   `{"available": true, "entities": [...]}`, or `{"available": false, "entities": []}`
   when there is no live state. Its entities come from both buckets, so a domain that is
   both controllable and a sensor keeps every entity.
@@ -202,7 +202,7 @@ state forwarding that shares the listener chain.
 | `sdk/alfred_sdk/live_state.py` | Key, `LiveStateEntry`, `LiveStateWriter`, `read_live_state()`, `read_live_state_by_service()` |
 | `sdk/alfred_sdk/context.py` | `ContextSnapshot`, `ContextEntry` — the shape readers return |
 | `core/reflex/context_reader.py` | `ContextReader` + `render_snapshot()` |
-| `core/conscious/memory_tools.py` | `memory_get_live_state` |
+| `core/conscious/tools/memory.py`, `core/conscious/memory_tools.py` | `memory_get_live_state` (the tool and its `get_live_state` body) |
 | `alfred-home-service`: `app/live_state.py`, `app/server.py` | The writer's one caller today: `LiveStatePublisher` (writes and heals) and the lifecycle wiring |
 
 ## Redis keys

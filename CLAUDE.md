@@ -70,7 +70,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `core/memory/routines/patterns.py` — `match_trigger_pattern()` (shared utility)
 - `core/memory/ingestor.py` — Memory Ingestor (hippocampus: ReflexObservation → episodic memory)
 - `core/memory/ingestor_main.py` — Memory Ingestor service entry point
-- `core/conscious/memory_tools.py` — Internal memory tools (recall_memories, get_live_state)
+- `core/conscious/memory_tools.py` — `recall_memories()`, `get_live_state()`: the memory tools' bodies (the toolset is `core/conscious/tools/memory.py`)
 - `core/warmup.py` — `start_warmup()` background model/component warmup at service startup
 - `core/shutdown.py` — `teardown()` orderly service shutdown (drains background tasks, then closes resources); the counterpart to `core/warmup.py`
 - `core/lazy.py` — `Lazy[T]`: builds a value (a model) at most once in a worker thread, from any event loop; the one lazy-load primitive behind Whisper/TTS, ECAPA and `SentenceTransformerProvider`
@@ -90,7 +90,8 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `conftest.py` — root test fixtures (InMemoryKeyring, telemetry clear, tv_on_event, mock_embedder, mock_vector_store)
 - `core/reflex/attention.py` — `AttentionSet` (SLM gating) + `attention_add/remove/list` helpers; seed rules in `core/reflex/attention_seed.yaml`
 - `core/routing/risk.py` + `core/routing/pending.py` — tool risk lookup + pending critical-action store/confirm (see `docs/autonomy.md`)
-- `core/conscious/action_tools.py` — internal `confirm_pending_action` + attention tools (sir-only, in-process like memory tools)
+- `core/conscious/tools/` — System 2's tools: `names.wire_name` (the one name mapping, #299), `catalog.CatalogToolset`, `scope` (guest = benign only), `registry`, `triggers`, `memory`, `attention` (sir-only confirm + attention), `integrations`; see `docs/llm.md`
+- `shared/agents.py` + `shared/llm_roles.py` — model resolution (`resolve_model`), the `X-Alfred-Role` header, agent instrumentation
 
 ## Secrets & Credentials
 
@@ -265,7 +266,7 @@ See `docs/superpowers/specs/2026-03-10-project-alfred-design.md` for full archit
 - **RediSearch replies change shape with the negotiated protocol.** redis-py 8 uses RESP3, where `FT.SEARCH` returns `{"results": [{"id", "extra_attributes"}], "total_results"}` and `FT.INFO` returns a mapping — not RESP2's flat arrays. `_parse_ft_results`/`_parse_ft_info` normalise both via `_ft_documents`; never add an `isinstance(raw, list)` guard. This shipped broken: the RESP2-only guard made every semantic recall return `[]` and `count()` return 0, with no exception and no log line — Redis was matching and scoring correctly the whole time
 - sqlite-vec `vec0` measures **L2 unless a table says `distance_metric=cosine`** — the cold store's do since schema v3, so `1 - distance` is the cosine similarity `EpisodicMemory.recall` merges with the hot store's (cosine distance: 0 identical, 1 orthogonal, 2 opposite). A pre-v3 file is rebuilt as cosine on first open, in one write transaction that keeps every vector — `vec0` cannot `RENAME`, so the rebuild copies through a TEMP table. The vec0 tables key vectors by `episodic_entries`' rowid, so a re-added id must keep its rowid: `SqliteVecStore.add()` upserts (`INSERT OR REPLACE` gives the row a new rowid and strands its vectors under the old one, #279) and deletes the rowid's vectors before inserting, because vec0 refuses `INSERT OR REPLACE` over a rowid it already holds
 - `ContextIndexManager.search_text()` embeds query internally — callers should NOT hold an EmbeddingProvider separately
-- Memory tools are INTERNAL to Conscious Engine — dispatched in-process like integration/trigger tools, NOT via BaseFeature/SDK/ToolRegistry
+- Memory tools are INTERNAL to Conscious Engine — an in-process toolset (`core/conscious/tools/memory.py`) like the trigger and integration tools, NOT via BaseFeature/SDK/ToolRegistry
 - `EpisodicMemory.copy_to_cold_and_remove()` writes to cold with the vectors hot already holds (`VectorStore.embeddings()`), embedding the text again only when hot cannot hand them back, then deletes hot — use for decay, not `migrate_to_cold()`
 - Every lazy model load (`SentenceTransformerProvider`, `SpeakerID`'s ECAPA, the channels' Whisper/TTS) goes through `Lazy` (`core/lazy.py`) — never an `asyncio.Lock` around `asyncio.to_thread`, which binds to the first event loop that contends on it and lets a cancelled caller start a second load. The first call blocks — services warm the models automatically via `core/warmup.py` background startup tasks
 - Trigger engine sensor evaluation consumes `HOME_STATE_STREAM` (not `alfred:events`) — `alfred:events` only carries TriggerFired/TriggerCreated/ServiceRegistered

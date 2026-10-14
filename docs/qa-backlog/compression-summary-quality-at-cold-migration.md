@@ -5,7 +5,7 @@
 **Type:** functional
 
 ## Prerequisites
-- Alfred server running with a valid LLM API key configured (for LiteLLM/OpenRouter)
+- Alfred server running with a valid LLM API key configured (`LIBRARIAN_MODEL`, see `docs/llm.md`)
 - At least two decayable episodic entries sharing the same entity (e.g., "kitchen lights") on the same calendar date
 - Librarian configured and able to run a consolidation cycle
 
