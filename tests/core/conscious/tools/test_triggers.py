@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from pydantic_ai import ToolFailed
 
+import core.triggers.types  # noqa: F401 — registers the trigger types create_trigger names
 from core.conscious.tools.triggers import TriggerToolset
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
-from tests.core.conscious.helpers import make_deps, run_context, tool_agent
+from shared.streams import TOOL_REGISTRY_KEY
+from tests.core.conscious.helpers import (
+    call_direct,
+    make_deps,
+    make_services,
+    run_context,
+    tool_agent,
+)
 from tests.llm_fakes import Script, tool_call
 
 
@@ -99,3 +110,146 @@ def test_tools_are_read_once_when_the_toolset_is_built() -> None:
 
         tools = asyncio.run(toolset.get_tools(run_context(make_deps())))
     assert "triggers_delete_trigger" in tools
+
+
+# ── guests: create (benign actions only) and list; never another trigger's settings
+
+
+def _registry_redis() -> AsyncMock:
+    """A tool registry holding one benign and one elevated home tool."""
+    manifest = {
+        "service_name": "home-service",
+        "features": [
+            {
+                "name": "home",
+                "tools": [
+                    {"name": "home.get_lights", "risk": "benign"},
+                    {"name": "home.unlock_door", "risk": "elevated"},
+                ],
+            }
+        ],
+    }
+    registry = {"home-service": json.dumps(manifest).encode()}
+    redis = AsyncMock()
+    redis.hget.side_effect = lambda key, field: (
+        registry.get(field) if key == TOOL_REGISTRY_KEY else None
+    )
+    return redis
+
+
+def _create_args(action: dict[str, Any] | None = None) -> dict[str, Any]:
+    args: dict[str, Any] = {
+        "name": "later",
+        "trigger_type": "time",
+        "conditions": {"run_in_seconds": 60},
+    }
+    if action is not None:
+        args["action"] = action
+    return args
+
+
+def _action(tool_name: str, target_service: str = "home-service") -> dict[str, Any]:
+    return {"tool_name": tool_name, "target_service": target_service, "parameters": {}}
+
+
+@pytest.mark.asyncio
+async def test_guest_is_offered_only_create_and_list() -> None:
+    toolset, _ = _toolset()
+    guest = await toolset.get_tools(run_context(make_deps("guest")))
+    sir = await toolset.get_tools(run_context(make_deps("sir")))
+
+    assert set(guest) == {"triggers_create_trigger", "triggers_list_triggers"}
+    assert {"triggers_update_trigger", "triggers_delete_trigger", "triggers_toggle_trigger"} <= (
+        set(sir)
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["update_trigger", "delete_trigger", "toggle_trigger"])
+async def test_a_guest_reaching_a_trigger_mutation_at_call_time_is_refused(tool_name: str) -> None:
+    toolset, store = _toolset()
+    name = f"triggers_{tool_name}"
+    with pytest.raises(ToolFailed, match=f"^{name} is only available to the verified user$"):
+        await call_direct(
+            toolset,
+            name,
+            {"trigger_id": "t-1", "enabled": False},
+            offered_to=make_deps("sir"),
+            called_by=make_deps("guest"),
+        )
+    store.get.assert_not_awaited()
+    store.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action", [None, _action("home.get_lights")], ids=["no action", "benign action"]
+)
+async def test_guest_create_trigger_without_a_risky_action_is_dispatched(
+    action: dict[str, Any] | None,
+) -> None:
+    toolset, store = _toolset()
+    script = Script(tool_call("triggers_create_trigger", _create_args(action)), "set")
+    deps = make_deps("guest", services=make_services(redis=_registry_redis()))
+
+    await tool_agent(script, toolset).run("go", deps=deps)
+
+    store.save.assert_awaited_once()
+    assert script.outcomes(1) == ["success"]
+    assert deps.actions_taken == ["triggers.create_trigger"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action",
+    [_action("home.unlock_door"), _action("home.not_registered"), _action("x", "nowhere")],
+    ids=["elevated", "unknown tool", "unknown service"],
+)
+async def test_guest_create_trigger_with_a_risky_action_is_refused(action: dict[str, Any]) -> None:
+    toolset, store = _toolset()
+    script = Script(tool_call("triggers_create_trigger", _create_args(action)), "no")
+    deps = make_deps("guest", services=make_services(redis=_registry_redis()))
+
+    await tool_agent(script, toolset).run("go", deps=deps)
+
+    assert script.returns(1) == ["triggers_create_trigger is only available to the verified user"]
+    assert script.outcomes(1) == ["failed"]
+    store.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_trigger_action_naming_a_trigger_mutation_is_refused_to_a_guest() -> None:
+    """A guest cannot schedule what they may not call: the trigger tools' own risks count."""
+    toolset, store = _toolset()
+    manifest = {
+        "features": [
+            {"name": "triggers", "tools": [{"name": "triggers.delete_trigger", "risk": "elevated"}]}
+        ]
+    }
+    redis = AsyncMock()
+    redis.hget.return_value = json.dumps(manifest).encode()
+    action = _action("triggers.delete_trigger", "trigger-engine")
+    script = Script(tool_call("triggers_create_trigger", _create_args(action)), "no")
+
+    await tool_agent(script, toolset).run(
+        "go", deps=make_deps("guest", services=make_services(redis=redis))
+    )
+
+    assert script.outcomes(1) == ["failed"]
+    store.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sir_create_trigger_with_an_elevated_action_is_dispatched_unchecked() -> None:
+    toolset, store = _toolset()
+    redis = _registry_redis()
+    script = Script(
+        tool_call("triggers_create_trigger", _create_args(_action("home.unlock_door"))), "set"
+    )
+
+    await tool_agent(script, toolset).run(
+        "go", deps=make_deps("sir", services=make_services(redis=redis))
+    )
+
+    store.save.assert_awaited_once()
+    redis.hget.assert_not_awaited()

@@ -170,7 +170,7 @@ class TriggerFeature(BaseFeature):
         triggers = await self._store_or_raise.list_all(enabled_only=enabled_only)
         return [t.model_dump(mode="json") for t in triggers]
 
-    @tool
+    @tool(risk="elevated")
     async def update_trigger(
         self,
         trigger_id: str,
@@ -217,13 +217,13 @@ class TriggerFeature(BaseFeature):
         await self._store_or_raise.save(updated)
         return updated.model_dump(mode="json")
 
-    @tool
+    @tool(risk="elevated")
     async def delete_trigger(self, trigger_id: str) -> dict[str, str]:
         """Delete a trigger by ID."""
         await self._store_or_raise.delete(trigger_id)
         return {"status": "deleted", "trigger_id": trigger_id}
 
-    @tool
+    @tool(risk="elevated")
     async def toggle_trigger(self, trigger_id: str, enabled: bool) -> dict[str, Any]:
         """Enable or disable a trigger."""
         target = await self._store_or_raise.get(trigger_id)

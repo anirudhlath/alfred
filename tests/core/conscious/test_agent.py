@@ -173,15 +173,17 @@ async def test_guest_is_offered_only_benign_tools_across_every_toolset(tmp_path:
         "hi", deps=make_deps("guest", registry_tools=registry, services=services), model=guest.model
     )
 
-    triggers = {name for name in sir.offered() if name.startswith("triggers_")}
-    assert triggers, "the trigger tools are benign and offered to both"
-    assert set(guest.offered()) == triggers | {"home_get_lights"}
+    guest_triggers = {"triggers_create_trigger", "triggers_list_triggers"}
+    assert set(guest.offered()) == guest_triggers | {"home_get_lights"}
     assert {
         "memory_recall_memories",
         "confirm_pending_action",
         "attention_add",
         "home_light_on",
-    } <= set(sir.offered())
+        "triggers_update_trigger",
+        "triggers_delete_trigger",
+        "triggers_toggle_trigger",
+    } | guest_triggers <= set(sir.offered())
 
 
 @pytest.mark.asyncio

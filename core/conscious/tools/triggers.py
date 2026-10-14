@@ -4,6 +4,10 @@ A custom toolset rather than a ``FunctionToolset``: it keeps the runtime-enriche
 ``create_trigger`` description and ``ToolMeta.validate_arguments``' lax coercion
 (``"false"`` becomes ``False``), the same validation ``AlfredClient.dispatch`` runs for a
 service's tools.
+
+A guest may create a trigger (and list them), but only one whose action is a ``benign``
+tool: a trigger's action runs later as the trigger engine, which the router does not
+scope by identity, so a guest must not schedule what they could not call.
 """
 
 from __future__ import annotations
@@ -18,8 +22,10 @@ from pydantic_ai.toolsets.abstract import ToolsetTool
 from core.conscious.deps import TurnDeps
 from core.conscious.tools.catalog import TOOL_RETRIES
 from core.conscious.tools.names import wire_name
-from core.conscious.tools.scope import allowed, refusal
+from core.conscious.tools.scope import SIR, allowed, refusal
 from core.conscious.tools.validation import ANY_OBJECT
+from core.routing.risk import tool_risk
+from core.triggers.models import ActionPayload
 from sdk.alfred_sdk.feature import ToolArgumentError
 
 if TYPE_CHECKING:
@@ -89,8 +95,24 @@ class TriggerToolset(AbstractToolset[TurnDeps]):
         if not allowed(meta.risk, ctx.deps.who):
             raise ToolFailed(refusal(name))
         kwargs = meta.validate_arguments(tool_args)
+        if not await self._action_allowed(kwargs.get("action"), ctx.deps):
+            raise ToolFailed(refusal(name))
         method = getattr(self.feature, meta.name.removeprefix(f"{self.feature.feature_name}."))
         result: Any = await method(**kwargs)
         if isinstance(result, dict) and "error" in result:
             raise ToolFailed(str(result["error"]))
         return result
+
+    @staticmethod
+    async def _action_allowed(action: Any, deps: TurnDeps) -> bool:
+        """Whether *deps*' identity may schedule *action*: sir anything, a guest only a
+        ``benign`` tool. No action (a reminder) is always allowed, and so is one that does
+        not parse, which ``create_trigger`` refuses itself without saving anything."""
+        if not action or deps.who == SIR:
+            return True
+        try:
+            payload = ActionPayload(**action)
+        except Exception:
+            return True
+        risk = await tool_risk(deps.services.redis, payload.target_service, payload.tool_name)
+        return allowed(risk, deps.who)
