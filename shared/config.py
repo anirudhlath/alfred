@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import functools
+import logging
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
 
 from shared.env import is_truthy_flag
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, MutableMapping
+
+logger = logging.getLogger(__name__)
 
 # Load .env from project root (walk up from this file to find it).
 #
@@ -197,6 +206,141 @@ def positive_seconds_env(name: str, default: float) -> float:
     return positive_seconds(name, os.getenv(name, ""), default)
 
 
+DEFAULT_OPENAI_COMPAT_HOST = "http://localhost:1234"
+DEFAULT_SYSTEM2_MODEL = "openrouter:anthropic/claude-sonnet-4"
+DEFAULT_SYSTEM2_MAX_TOKENS = 2048
+DEFAULT_SYSTEM2_TIMEOUT_S = 60.0
+# The served-name prefixes VLLMProvider picks a model profile from. A custom
+# --served-model-name defeats that, and `alfredctl doctor` warns.
+VLLM_KNOWN_FAMILIES: tuple[str, ...] = (
+    "llama",
+    "gemma",
+    "qwen",
+    "qwq",
+    "deepseek",
+    "mistral",
+    "command",
+    "c4ai-command",
+    "gpt-oss",
+    "glm",
+)
+_PROVIDER_PREFIX = re.compile(r"^[A-Za-z][\w-]*:")
+
+
+def translate_legacy_model(raw: str, *, openai_base_url: str = "") -> str:
+    """A LiteLLM model string (the old ``CLAUDE_MODEL``) as a Pydantic AI model string.
+
+    - ``openrouter/<vendor>/<model>`` → ``openrouter:<vendor>/<model>``;
+    - ``openai/<model>`` → ``vllm:<model>`` when ``OPENAI_BASE_URL`` names a server,
+      else ``openai:<model>``, which ``alfredctl doctor`` fails;
+    - a value that already names a provider (``vllm:…``) passes through;
+    - anything else is returned unchanged, for ``resolve_model`` to refuse at startup.
+    """
+    value = raw.strip()
+    if _PROVIDER_PREFIX.match(value):
+        return value
+    vendor, sep, rest = value.partition("/")
+    if sep and rest and vendor == "openrouter":
+        return f"openrouter:{rest}"
+    if sep and rest and vendor == "openai":
+        return f"vllm:{rest}" if openai_base_url.strip() else f"openai:{rest}"
+    return value
+
+
+@functools.cache
+def _warn_legacy_model(raw: str, translated: str) -> None:
+    logger.warning(
+        "CLAUDE_MODEL=%r is a LiteLLM model string; reading it as SYSTEM2_MODEL=%r. "
+        "Set SYSTEM2_MODEL instead to silence this.",
+        raw,
+        translated,
+    )
+
+
+def normalize_vllm_base_url(raw: str) -> str:
+    """An OpenAI-compatible server's base URL, ending in ``/v1``. Blank stays blank."""
+    url = raw.strip().rstrip("/")
+    if not url:
+        return ""
+    return url if url.endswith("/v1") else f"{url}/v1"
+
+
+def vllm_family_known(served_name: str) -> bool:
+    """Whether *served_name* (or its last ``/`` segment) starts with a known family."""
+    name = served_name.strip().lower()
+    return any(c.startswith(VLLM_KNOWN_FAMILIES) for c in (name, name.rsplit("/", 1)[-1]))
+
+
+def _positive_int(name: str, raw: str, default: int) -> int:
+    """Parse a positive whole number, naming the variable in every failure."""
+    text = raw.strip()
+    if not text:
+        return default
+    try:
+        value = int(text)
+    except ValueError:
+        raise RuntimeError(f"{name} must be a whole number, got {text!r}") from None
+    if value <= 0:
+        raise RuntimeError(f"{name} must be greater than 0, got {text!r}")
+    return value
+
+
+@dataclass(frozen=True)
+class LlmSettings:
+    """The LLM roles' settings, read once from the environment."""
+
+    system2_model: str
+    librarian_model: str
+    vllm_base_url: str
+    openrouter_api_key: str
+    system2_max_tokens: int
+    system2_timeout_s: float
+
+
+def resolve_llm_settings(env: Mapping[str, str]) -> LlmSettings:
+    """Read the LLM settings from *env*; a blank value means its default.
+
+    Takes a mapping rather than reading ``os.environ``, so ``alfredctl doctor`` checks
+    its merged ``.env`` by the same rule the services apply.
+
+    Raises:
+        RuntimeError: a token cap or timeout is not a positive number; the message names
+            the variable.
+    """
+
+    def get(name: str) -> str:
+        return env.get(name, "").strip()
+
+    openai_base_url = get("OPENAI_BASE_URL")
+    legacy = get("CLAUDE_MODEL")
+    system2 = get("SYSTEM2_MODEL")
+    from_legacy_openai = False
+    if not system2 and legacy:
+        system2 = translate_legacy_model(legacy, openai_base_url=openai_base_url)
+        if system2 != legacy:
+            _warn_legacy_model(legacy, system2)
+        from_legacy_openai = legacy.startswith("openai/") and bool(openai_base_url)
+    system2 = system2 or DEFAULT_SYSTEM2_MODEL
+    base_url = (
+        get("VLLM_BASE_URL")
+        or (openai_base_url if from_legacy_openai else "")
+        or get("OPENAI_COMPAT_HOST")
+        or get("LMSTUDIO_HOST")
+        or DEFAULT_OPENAI_COMPAT_HOST
+    )
+    tokens_name = "SYSTEM2_MAX_TOKENS" if get("SYSTEM2_MAX_TOKENS") else "CLAUDE_MAX_TOKENS"
+    return LlmSettings(
+        system2_model=system2,
+        librarian_model=get("LIBRARIAN_MODEL") or system2,
+        vllm_base_url=normalize_vllm_base_url(base_url),
+        openrouter_api_key=get("OPENROUTER_API_KEY") or get("CLAUDE_API_KEY"),
+        system2_max_tokens=_positive_int(tokens_name, get(tokens_name), DEFAULT_SYSTEM2_MAX_TOKENS),
+        system2_timeout_s=positive_seconds(
+            "SYSTEM2_TIMEOUT_S", get("SYSTEM2_TIMEOUT_S"), DEFAULT_SYSTEM2_TIMEOUT_S
+        ),
+    )
+
+
 def normalize_embedding_backend(raw: str) -> str:
     """Normalise and validate ``EMBEDDING_BACKEND``; blank means the default.
 
@@ -240,7 +384,7 @@ class AlfredConfig:
     # Reflex (System 1) inference backend: ollama (native /api/chat) | openai
     # (any OpenAI-compatible /v1/chat/completions server — vLLM, LM Studio)
     reflex_backend: str = "ollama"
-    openai_compat_host: str = "http://localhost:1234"
+    openai_compat_host: str = DEFAULT_OPENAI_COMPAT_HOST
     openai_compat_model: str = ""
     ha_host: str = "http://homeassistant.local:8123"
     ha_token: str = ""
@@ -252,6 +396,12 @@ class AlfredConfig:
     claude_api_key: str = ""
     claude_model: str = "openrouter/anthropic/claude-sonnet-4"
     claude_max_tokens: int = 2048
+    system2_model: str = DEFAULT_SYSTEM2_MODEL
+    librarian_model: str = DEFAULT_SYSTEM2_MODEL
+    vllm_base_url: str = ""
+    openrouter_api_key: str = ""
+    system2_max_tokens: int = DEFAULT_SYSTEM2_MAX_TOKENS
+    system2_timeout_s: float = DEFAULT_SYSTEM2_TIMEOUT_S
     session_timeout_minutes: int = 30
     proactivity_level: str = "opinionated"  # opinionated | moderate | conservative
 
@@ -319,6 +469,7 @@ class AlfredConfig:
 
     @classmethod
     def from_env(cls) -> AlfredConfig:
+        llm = resolve_llm_settings(os.environ)
         # EMBEDDING_DIM defaults to the known dimension for EMBEDDING_MODEL so the two
         # never silently drift out of sync (a mismatch breaks vector search).
         embedding_model = normalize_embedding_model(os.getenv("EMBEDDING_MODEL", ""))
@@ -334,7 +485,7 @@ class AlfredConfig:
         # OPENAI_COMPAT_HOST empty, and "" would satisfy os.getenv, defeat the
         # LMSTUDIO_HOST fallback this chain documents, and leave the reflex client
         # building a schemeless "" + "/v1/chat/completions" (httpx UnsupportedProtocol).
-        lmstudio_host = os.getenv("LMSTUDIO_HOST", "").strip() or "http://localhost:1234"
+        lmstudio_host = os.getenv("LMSTUDIO_HOST", "").strip() or DEFAULT_OPENAI_COMPAT_HOST
         openai_compat_host = os.getenv("OPENAI_COMPAT_HOST", "").strip() or lmstudio_host
         return cls(
             redis_host=os.getenv("REDIS_HOST", "localhost"),
@@ -357,6 +508,12 @@ class AlfredConfig:
             claude_api_key=os.getenv("OPENROUTER_API_KEY", os.getenv("CLAUDE_API_KEY", "")),
             claude_model=os.getenv("CLAUDE_MODEL", "openrouter/anthropic/claude-sonnet-4"),
             claude_max_tokens=int(os.getenv("CLAUDE_MAX_TOKENS", "2048")),
+            system2_model=llm.system2_model,
+            librarian_model=llm.librarian_model,
+            vllm_base_url=llm.vllm_base_url,
+            openrouter_api_key=llm.openrouter_api_key,
+            system2_max_tokens=llm.system2_max_tokens,
+            system2_timeout_s=llm.system2_timeout_s,
             session_timeout_minutes=int(os.getenv("SESSION_TIMEOUT_MINUTES", "30")),
             proactivity_level=os.getenv("PROACTIVITY_LEVEL", "opinionated"),
             # Phase 3: Cost
@@ -389,3 +546,17 @@ class AlfredConfig:
     @property
     def redis_url(self) -> str:
         return f"redis://{self.redis_host}:{self.redis_port}"
+
+
+def apply_model_env(config: AlfredConfig, environ: MutableMapping[str, str] = os.environ) -> None:
+    """Export the resolved base URL and key where Pydantic AI's providers read them.
+
+    ``vllm:`` reads ``VLLM_BASE_URL`` and ``openrouter:`` reads ``OPENROUTER_API_KEY``
+    when a model string is resolved. The resolved values include fallbacks the
+    providers know nothing of (``OPENAI_COMPAT_HOST``, ``CLAUDE_API_KEY``), so call this
+    before ``shared.agents.resolve_model``.
+    """
+    if config.vllm_base_url:
+        environ["VLLM_BASE_URL"] = config.vllm_base_url
+    if config.openrouter_api_key:
+        environ["OPENROUTER_API_KEY"] = config.openrouter_api_key
