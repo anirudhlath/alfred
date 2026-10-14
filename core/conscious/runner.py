@@ -5,10 +5,11 @@ recovery called XAUTOCLAIM and only logged the count, leaving what it claimed
 unprocessed and un-ACKed, to be reclaimed again a minute later forever.
 
 Every request is answered exactly once (spec 6, 6b): a transient failure is left
-pending for ``reclaim_due`` to redeliver; a permanent one, the last allowed delivery,
-or a redelivery past the replay window is answered with ``FAILED_REPLY``, ACKed and
-dead-lettered. The answered marker, set with the published response, makes a crash
-between publishing and ACKing harmless.
+pending for ``reclaim_due`` to redeliver, its backoff restarted from the failure; a
+permanent one, the last allowed delivery, or an entry past the replay window is
+answered with ``FAILED_REPLY``, ACKed and dead-lettered. An entry older than the
+answered marker's TTL is ACKed and dead-lettered unanswered. The marker, set with the
+published response, makes a crash between publishing and ACKing harmless.
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ async def process_request_entry(
     redis: AioRedis,
     stream: str,
     group: str,
+    consumer: str,
     delivery: int = 1,
     now_ms: int | None = None,
     after_answer: Callable[[], Awaitable[object]] | None = None,
@@ -56,12 +58,13 @@ async def process_request_entry(
     """Process one UserRequest entry; *delivery* counts this delivery (1 for a live read).
 
     ACKs every entry that is answered or can never be answered. Only a transient
-    failure before the last delivery stays pending.
+    failure before the last delivery stays pending. A Redis error is logged and the
+    entry left pending, never raised into the consumer loop.
     """
     raw = entry_data.get("event") or entry_data.get(b"event")
     if raw is None:
         logger.warning("Entry {} has no 'event' field — dropping", entry_id)
-        await redis.xack(stream, group, entry_id)
+        await _ack(redis, stream, group, entry_id)
         return
     event = decode_stream_value(raw)
 
@@ -69,18 +72,33 @@ async def process_request_entry(
         request = UserRequest.model_validate_json(event)
     except Exception as exc:
         logger.warning("Entry {} is not a valid UserRequest ({}) — dropping", entry_id, exc)
-        await redis.xack(stream, group, entry_id)
+        await _ack(redis, stream, group, entry_id)
         return
 
     turn = _Turn(redis, engine, request, entry_id, event, stream, group, delivery)
-    if await redis.exists(turn.answered_key):
+    try:
+        answered = bool(await redis.exists(turn.answered_key))
+    except Exception as exc:
+        logger.error("Could not check whether {} was answered: {}", entry_id, exc)
+        return
+    if answered:
         logger.info("Request {} was already answered — ACKing entry {}", request.event_id, entry_id)
-        await redis.xack(stream, group, entry_id)
+        # Its ACK may have failed after a good publish, before the hook ran.
+        if await _ack(redis, stream, group, entry_id):
+            await _run_after_answer(after_answer, entry_id)
         return
 
     now = now_ms if now_ms is not None else int(time.time() * 1000)
-    if delivery > 1 and not is_replayable(entry_id, now_ms=now):
+    if not is_replayable(entry_id, now_ms=now, max_age_ms=ANSWERED_TTL_S * 1000):
+        # Its marker may have lapsed, and an hours-late reply is noise.
+        await turn.drop("stale")
+        return
+    if not is_replayable(entry_id, now_ms=now):
         await turn.give_up(None, "expired")
+        return
+    if delivery > MAX_DELIVERIES:
+        # The last delivery's FAILED_REPLY never got out; never run the turn again.
+        await turn.give_up(None, "exhausted")
         return
 
     try:
@@ -91,7 +109,6 @@ async def process_request_entry(
         elif delivery >= MAX_DELIVERIES:
             await turn.give_up(exc, "exhausted")
         else:
-            # No ACK: reclaim_due redelivers it once its backoff has elapsed.
             logger.warning(
                 "Request {} failed on delivery {}/{} ({}: {}) — will retry",
                 entry_id,
@@ -100,13 +117,32 @@ async def process_request_entry(
                 type(exc).__name__,
                 exc,
             )
+            # No ACK: reclaim_due redelivers it once its backoff has elapsed.
+            await turn.restart_backoff(consumer)
         return
 
-    if await turn.answer(response) and after_answer is not None:
-        try:
-            await after_answer()
-        except Exception as exc:
-            logger.error("after_answer failed for request {}: {}", entry_id, exc)
+    if await turn.answer(response):
+        await _run_after_answer(after_answer, entry_id)
+
+
+async def _ack(redis: AioRedis, stream: str, group: str, entry_id: bytes | str) -> bool:
+    try:
+        await redis.xack(stream, group, entry_id)
+    except Exception as exc:
+        logger.error("Could not ACK entry {}: {}", entry_id, exc)
+        return False
+    return True
+
+
+async def _run_after_answer(
+    after_answer: Callable[[], Awaitable[object]] | None, entry_id: bytes | str
+) -> None:
+    if after_answer is None:
+        return
+    try:
+        await after_answer()
+    except Exception as exc:
+        logger.error("after_answer failed for request {}: {}", entry_id, exc)
 
 
 @dataclass(frozen=True)
@@ -128,6 +164,7 @@ class _Turn:
 
     async def answer(self, response: AlfredResponse) -> bool:
         """Publish *response* and set the answered marker in one transaction, then ACK.
+        True once published, whether or not the ACK lands.
 
         A failure is logged, not raised: the entry stays pending, and its redelivery
         either finds the marker (published, so it only ACKs) or runs again (nothing was
@@ -138,22 +175,46 @@ class _Turn:
                 pipe.xadd(USER_RESPONSES_STREAM, {"event": response.model_dump_json()})
                 pipe.set(self.answered_key, "1", ex=ANSWERED_TTL_S)
                 await pipe.execute()
-            await self.redis.xack(self.stream, self.group, self.entry_id)
         except Exception as exc:
-            logger.error("Could not publish or ACK the answer to {}: {}", self.entry_id, exc)
+            logger.error("Could not publish the answer to {}: {}", self.entry_id, exc)
             return False
+        await _ack(self.redis, self.stream, self.group, self.entry_id)
         return True
+
+    async def restart_backoff(self, consumer: str) -> None:
+        """Reset the entry's idle clock, so its backoff counts from this failure rather
+        than from its delivery (a turn that ran 20 s would otherwise be due at once).
+        JUSTID leaves ``times_delivered`` alone."""
+        try:
+            await self.redis.xclaim(
+                self.stream,
+                self.group,
+                consumer,
+                min_idle_time=0,
+                message_ids=[self.entry_id],
+                justid=True,
+            )
+        except Exception as exc:
+            logger.warning("Could not restart the backoff of {}: {}", self.entry_id, exc)
+
+    async def drop(self, reason: str) -> None:
+        """ACK and dead-letter the entry without answering it."""
+        if await _ack(self.redis, self.stream, self.group, self.entry_id):
+            await self._dead_letter(None, reason)
 
     async def give_up(
         self, exc: BaseException | None, reason: str, text: str = FAILED_REPLY
     ) -> None:
         """Answer *text* once, ACK, and dead-letter the entry."""
         if await self.answer(self.engine.failure_reply(self.request, text)):
-            await dead_letter(
-                self.redis,
-                entry_id=decode_stream_value(self.entry_id),
-                event=self.event,
-                exc=exc,
-                deliveries=self.delivery,
-                reason=reason,
-            )
+            await self._dead_letter(exc, reason)
+
+    async def _dead_letter(self, exc: BaseException | None, reason: str) -> None:
+        await dead_letter(
+            self.redis,
+            entry_id=decode_stream_value(self.entry_id),
+            event=self.event,
+            exc=exc,
+            deliveries=self.delivery,
+            reason=reason,
+        )

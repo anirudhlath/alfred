@@ -419,6 +419,7 @@ async def run(config: AlfredConfig) -> None:
                     redis=r,
                     stream=stream,
                     group=group,
+                    consumer=consumer,
                     delivery=delivery,
                     after_answer=cost_tracker.send_alert_if_needed,
                 )

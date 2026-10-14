@@ -230,6 +230,7 @@ async def reclaim_due(
     error is logged and answered with ``[]``, like ``reclaim_stale``.
     """
     try:
+        # count=10 is plenty: one sequential consumer leaves at most a few entries pending.
         pending: Any = await redis.xpending_range(stream, group, min="-", max="+", count=count)
     except Exception as exc:
         logger.warning("XPENDING failed on '{}' ({}) — skipping redelivery", stream, exc)

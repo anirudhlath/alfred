@@ -14,26 +14,24 @@ harmless.
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import AsyncMock
 
 import fakeredis
+import pytest
 from pydantic_ai.exceptions import ModelHTTPError
 
 from bus.schemas.events import AlfredResponse
 from core.conscious.engine import ConsciousEngine
 from core.conscious.failures import FAILED_REPLY
 from core.conscious.runner import process_request_entry
-from shared.redis_streams import forward_range
+from shared.redis_streams import forward_range, reclaim_due
 from shared.streams import (
     ANSWERED_KEY,
     DEAD_LETTER_STREAM,
     USER_REQUESTS_STREAM,
     USER_RESPONSES_STREAM,
 )
-
-if TYPE_CHECKING:
-    import pytest
 
 _EVENT_ID = "11111111-1111-1111-1111-111111111111"
 _REQUEST = (
@@ -43,6 +41,7 @@ _REQUEST = (
     '"content":"turn off the lights"}'
 )
 _GROUP = "conscious-engine"
+_CONSUMER = "worker-1"
 
 
 def _engine() -> AsyncMock:
@@ -63,7 +62,7 @@ async def _pending(
     redis = fakeredis.FakeAsyncRedis()
     await redis.xgroup_create(USER_REQUESTS_STREAM, _GROUP, id="0", mkstream=True)
     added = await redis.xadd(USER_REQUESTS_STREAM, fields or {"event": _REQUEST}, id=entry_id)
-    await redis.xreadgroup(_GROUP, "worker-1", {USER_REQUESTS_STREAM: ">"})
+    await redis.xreadgroup(_GROUP, _CONSUMER, {USER_REQUESTS_STREAM: ">"})
     return redis, added
 
 
@@ -79,8 +78,33 @@ async def _run(
         redis=redis,
         stream=USER_REQUESTS_STREAM,
         group=_GROUP,
+        consumer=_CONSUMER,
         **kw,
     )
+
+
+class _Clock:
+    """fakeredis's stream model reads one clock for delivery and idle times."""
+
+    def __init__(self) -> None:
+        self.ms = int(time.time() * 1000)
+
+    def advance(self, ms: int) -> None:
+        self.ms += ms
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    import fakeredis.model._stream as fake_stream
+
+    c = _Clock()
+    monkeypatch.setattr(fake_stream, "current_time", lambda: c.ms)
+    return c
+
+
+async def _times_delivered(redis: fakeredis.FakeAsyncRedis) -> list[int]:
+    pending = await redis.xpending_range(USER_REQUESTS_STREAM, _GROUP, min="-", max="+", count=10)
+    return [int(p["times_delivered"]) for p in pending]
 
 
 async def _pending_count(redis: fakeredis.FakeAsyncRedis) -> int:
@@ -193,15 +217,97 @@ async def test_a_redelivery_past_the_replay_window_is_not_run() -> None:
     assert letter[b"reason"] == b"expired"
 
 
-async def test_an_old_first_delivery_still_runs() -> None:
-    """The window bounds *re*deliveries; a live read is answered whatever its id."""
+async def test_an_old_first_delivery_is_not_run_either() -> None:
+    """A request read live after an outage is as late as a redelivered one."""
     now_ms = int(time.time() * 1000)
     redis, entry_id = await _pending(entry_id=f"{now_ms - 301_000}-0")
     engine = _engine()
 
     await _run(redis, entry_id, engine, delivery=1, now_ms=now_ms)
 
-    engine.process_request.assert_awaited_once()
+    engine.process_request.assert_not_awaited()
+    assert [r.text for r in await _responses(redis)] == [FAILED_REPLY]
+    assert await _pending_count(redis) == 0
+    [letter] = await _dead_letters(redis)
+    assert letter[b"reason"] == b"expired"
+
+
+@pytest.mark.parametrize("delivery", [1, 2])
+async def test_an_entry_older_than_the_marker_ttl_is_dropped_unanswered(delivery: int) -> None:
+    """Past the marker's TTL it may have been answered already, and an hours-late
+    reply is noise: ACK and dead-letter, publish nothing."""
+    now_ms = int(time.time() * 1000)
+    redis, entry_id = await _pending(entry_id=f"{now_ms - 3_601_000}-0")
+    engine = _engine()
+
+    await _run(redis, entry_id, engine, delivery=delivery, now_ms=now_ms)
+
+    engine.process_request.assert_not_awaited()
+    assert await _responses(redis) == []
+    assert await _pending_count(redis) == 0
+    [letter] = await _dead_letters(redis)
+    assert letter[b"reason"] == b"stale"
+
+
+async def test_a_delivery_past_the_cap_gives_up_without_running() -> None:
+    """Delivery 3 failed and its FAILED_REPLY could not be published: no 4th run."""
+    redis, entry_id = await _pending()
+    engine = _engine()
+
+    await _run(redis, entry_id, engine, delivery=4)
+
+    engine.process_request.assert_not_awaited()
+    assert [r.text for r in await _responses(redis)] == [FAILED_REPLY]
+    assert await _pending_count(redis) == 0
+    [letter] = await _dead_letters(redis)
+    assert letter[b"reason"] == b"exhausted"
+
+
+async def test_an_answered_redelivery_still_runs_the_post_answer_hook() -> None:
+    """The ACK failed after a good publish; the hook never ran on that delivery."""
+    redis, entry_id = await _pending()
+    await redis.set(ANSWERED_KEY.format(_EVENT_ID), "1")
+    after_answer = AsyncMock()
+
+    await _run(redis, entry_id, _engine(), delivery=2, after_answer=after_answer)
+
+    after_answer.assert_awaited_once()
+    assert await _pending_count(redis) == 0
+
+
+async def test_a_redis_error_on_the_marker_check_is_logged_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    redis, entry_id = await _pending()
+    engine = _engine()
+    monkeypatch.setattr(redis, "exists", AsyncMock(side_effect=ConnectionError("gone")))
+
+    await _run(redis, entry_id, engine, delivery=1)
+
+    engine.process_request.assert_not_awaited()
+    assert await _pending_count(redis) == 1
+
+
+async def test_backoff_counts_from_the_failure_not_the_delivery(
+    clock: _Clock,
+) -> None:
+    """A turn that runs 20 s and then fails must still wait 15 s for its retry."""
+    redis, entry_id = await _pending()
+    engine = _engine()
+
+    async def _slow_429(_request: object) -> AlfredResponse:
+        clock.advance(20_000)
+        raise ModelHTTPError(429, "m")
+
+    engine.process_request.side_effect = _slow_429
+
+    await _run(redis, entry_id, engine, delivery=1, now_ms=clock.ms)
+
+    assert await reclaim_due(redis, USER_REQUESTS_STREAM, _GROUP, _CONSUMER) == []
+    assert await _times_delivered(redis) == [1]
+    clock.advance(15_000)
+    [red] = await reclaim_due(redis, USER_REQUESTS_STREAM, _GROUP, _CONSUMER)
+    assert red.delivery == 2
 
 
 async def test_a_failing_after_answer_neither_raises_nor_unacks() -> None:
