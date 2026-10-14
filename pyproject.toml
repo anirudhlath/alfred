@@ -27,6 +27,9 @@ dependencies = [
     "wyoming>=1.10",
     "typer>=0.15",
     "rich>=13.0",
+    "pydantic-ai-slim==2.55.0",
+    "pydantic-ai-harness==0.55.0",
+    "jsonschema>=4.26",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +42,7 @@ dev = [
     "types-PyYAML>=6.0",
     "watchfiles>=1.0",
     "fakeredis>=2.39.0",
+    "types-jsonschema>=4.26.0.20261006",
 ]
 integrations = [
     "caldav>=1.3",

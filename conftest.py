@@ -23,9 +23,17 @@ from unittest.mock import AsyncMock
 
 import keyring
 import keyring.backend
+import pydantic_ai as _pydantic_ai
 import pytest
+from pydantic_ai import models as _pydantic_ai_models
 
 from bus.schemas.events import StateChangedEvent
+
+# No test reaches a real model. A test that forgets its FunctionModel fails loudly here
+# instead of calling the network.
+_pydantic_ai_models.ALLOW_MODEL_REQUESTS = False
+# Pydantic AI prints a banner on its first agent run; test output stays clean.
+_pydantic_ai.BANNER_ENABLED = False
 
 
 class InMemoryKeyring(keyring.backend.KeyringBackend):
