@@ -64,12 +64,11 @@ def _default_reflex_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin System 1 dispatch to the backend the tests mock.
 
     ``core.reflex.inference`` resolves ``REFLEX_BACKEND`` per call, and the reflex
-    tests patch ``core.reflex.ollama_client.infer``. Third-party imports load the
-    developer's .env into os.environ before any fixture can run — litellm does it
-    at import time (via ``core.conscious.engine``), and it cannot be stopped
-    without changing litellm's mode. A developer running ``REFLEX_BACKEND=openai``
-    would otherwise send those tests down the unmocked openai path and out to a
-    live endpoint. Pinning here is import-order independent.
+    tests patch ``core.reflex.ollama_client.infer``. Importing ``shared.config`` loads
+    the developer's .env into os.environ before any fixture can run. A developer
+    running ``REFLEX_BACKEND=openai`` would otherwise send those tests down the
+    unmocked openai path and out to a live endpoint. Pinning here is import-order
+    independent.
     """
     monkeypatch.setenv("REFLEX_BACKEND", "ollama")
 

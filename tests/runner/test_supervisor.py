@@ -160,7 +160,7 @@ class TestPipeOutput:
         self, capsys: pytest.CaptureFixture[str], line_len: int, dropped: bool
     ) -> None:
         """One oversized log line must not deadlock the child (regression: the
-        conscious engine hung mid-turn after litellm dumped a >64 KiB request)."""
+        conscious engine hung mid-turn after its LLM client logged a >64 KiB request)."""
         spec = ServiceSpec(
             name="chatty",
             command=[sys.executable, "-u", "-c", _LONG_LINE_CHILD, str(line_len)],

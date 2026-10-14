@@ -1,11 +1,11 @@
 """An Inspect model provider for an OpenAI-compatible vLLM server, over plain httpx.
 
-Inspect 0.3.277's own ``openai-api`` provider needs ``openai>=3.4``, which litellm (a base
-dependency) forbids, so it cannot load in this environment. This provider needs only httpx:
-``POST <base_url>/chat/completions``, text in and text out. Tools and streaming are not
-supported. Inspect still owns retries (through ``should_retry``), ``max_connections`` and
-``timeout``. The sampling settings vLLM understands are forwarded; any other setting is
-refused, never dropped in silence.
+Written when litellm pinned ``openai<3`` and Inspect's own ``openai-api`` provider could not
+load; PR 7 of the Pydantic AI adoption moves the judge onto that provider and deletes this
+module. It needs only httpx: ``POST <base_url>/chat/completions``, text in and text out.
+Tools and streaming are not supported. Inspect still owns retries (through
+``should_retry``), ``max_connections`` and ``timeout``. The sampling settings vLLM
+understands are forwarded; any other setting is refused, never dropped in silence.
 
 Use it as ``get_model("alfred-vllm/<served model>", base_url="http://host:8000/v1", ...)``.
 """

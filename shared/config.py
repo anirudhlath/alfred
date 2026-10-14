@@ -392,10 +392,7 @@ class AlfredConfig:
     signoz_enabled: bool = True
     otel_endpoint: str = "http://localhost:4317"
 
-    # Phase 3: Conscious Engine (via LiteLLM + OpenRouter)
-    claude_api_key: str = ""
-    claude_model: str = "openrouter/anthropic/claude-sonnet-4"
-    claude_max_tokens: int = 2048
+    # Phase 3: Conscious Engine (models and keys: see the LLM settings below)
     system2_model: str = DEFAULT_SYSTEM2_MODEL
     librarian_model: str = DEFAULT_SYSTEM2_MODEL
     vllm_base_url: str = ""
@@ -505,9 +502,6 @@ class AlfredConfig:
             signoz_enabled=is_truthy_flag(os.getenv("SIGNOZ_ENABLED", "true")),
             otel_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"),
             # Phase 3: Conscious Engine
-            claude_api_key=os.getenv("OPENROUTER_API_KEY", os.getenv("CLAUDE_API_KEY", "")),
-            claude_model=os.getenv("CLAUDE_MODEL", "openrouter/anthropic/claude-sonnet-4"),
-            claude_max_tokens=int(os.getenv("CLAUDE_MAX_TOKENS", "2048")),
             system2_model=llm.system2_model,
             librarian_model=llm.librarian_model,
             vllm_base_url=llm.vllm_base_url,

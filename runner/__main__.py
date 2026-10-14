@@ -1,10 +1,9 @@
 """Unified Alfred runner — starts all core services as supervised child processes.
 
-Usage: python -m runner [--no-reload] [--debug]
+Usage: python -m runner [--no-reload]
 
 Hot-reload is enabled by default: source file changes automatically
 restart the affected service.  Pass ``--no-reload`` to disable.
-Pass ``--debug`` to enable verbose LiteLLM logging.
 """
 
 from __future__ import annotations
@@ -244,8 +243,6 @@ def _grant_broker_ownership(persistence_dir: Path) -> None:
 
 def main() -> None:
     reload = "--no-reload" not in sys.argv
-    if "--debug" in sys.argv:
-        os.environ["ALFRED_DEBUG"] = "1"
     log = configure_logging(service="runner")
     rewrite_host_gateway()  # before from_env() so config picks up the rewritten hosts
     config = AlfredConfig.from_env()
