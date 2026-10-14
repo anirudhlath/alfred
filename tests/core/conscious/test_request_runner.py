@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis
 import pytest
@@ -53,7 +53,7 @@ def _engine() -> AsyncMock:
         )
     )
     engine.failure_reply = ConsciousEngine.failure_reply
-    engine.record_partial_turn = AsyncMock(side_effect=ConsciousEngine.failure_reply)
+    engine.record_partial_turn = AsyncMock()
     return engine
 
 
@@ -369,8 +369,25 @@ async def test_a_redelivery_that_already_acted_answers_from_its_ledger() -> None
     assert engine.record_partial_turn.await_args.args[1] == text
     assert await redis.exists(ANSWERED_KEY.format(_EVENT_ID))
     assert await _pending_count(redis) == 0
-    assert await _dead_letters(redis) == []
+    # The failed delivery's own dead letter may never have been written.
+    [letter] = await _dead_letters(redis)
+    assert letter[b"reason"] == b"partial"
     after_answer.assert_not_awaited()
+
+
+async def test_a_ledger_answer_that_cannot_be_published_leaves_the_session_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its redelivery answers again; the session must get the turn once, not twice."""
+    redis, entry_id = await _pending()
+    await _acted(redis)
+    engine = _engine()
+    monkeypatch.setattr(redis, "pipeline", MagicMock(side_effect=ConnectionError("gone")))
+
+    await _run(redis, entry_id, engine, delivery=2)
+
+    engine.record_partial_turn.assert_not_awaited()
+    assert await _pending_count(redis) == 1
 
 
 async def test_an_expired_entry_that_already_acted_answers_from_its_ledger() -> None:
@@ -480,3 +497,26 @@ async def test_a_redis_error_reading_the_ledger_after_a_failure_leaves_it_pendin
     assert await _responses(redis) == []
     assert await _pending_count(redis) == 1
     assert await _dead_letters(redis) == []
+
+
+async def test_a_redis_error_reading_the_ledger_after_a_failure_restarts_the_backoff(
+    clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    redis, entry_id = await _pending()
+    engine = _engine()
+    real_lrange = redis.lrange
+
+    async def _slow_failure(_request: object) -> AlfredResponse:
+        clock.advance(20_000)
+        monkeypatch.setattr(redis, "lrange", AsyncMock(side_effect=ConnectionError("gone")))
+        raise ModelHTTPError(503, "m")
+
+    engine.process_request.side_effect = _slow_failure
+
+    await _run(redis, entry_id, engine, delivery=1, now_ms=clock.ms)
+
+    monkeypatch.setattr(redis, "lrange", real_lrange)
+    assert await reclaim_due(redis, USER_REQUESTS_STREAM, _GROUP, _CONSUMER) == []
+    clock.advance(15_000)
+    [red] = await reclaim_due(redis, USER_REQUESTS_STREAM, _GROUP, _CONSUMER)
+    assert red.delivery == 2

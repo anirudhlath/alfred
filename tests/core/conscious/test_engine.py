@@ -30,7 +30,7 @@ from core.memory.vector_store import ContextMetadata, SearchResult
 from core.reflex.tool_registry import ToolInfo
 from shared.agents import model_key
 from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
-from tests.core.conscious.helpers import identity
+from tests.core.conscious.helpers import identity, mock_redis
 from tests.llm_fakes import Script, tool_call
 
 if TYPE_CHECKING:
@@ -61,7 +61,7 @@ def _request(**overrides: Any) -> UserRequest:
 
 def _deps(script: Script | None = None, *, who: str = "sir", **overrides: Any) -> ConsciousDeps:
     """Mocked services around a real System 2 agent; no script means no model."""
-    redis = AsyncMock()
+    redis = mock_redis()
     redis.get = AsyncMock(return_value=None)
     identity_gate = MagicMock()
     identity_gate.resolve.return_value = identity(who)  # type: ignore[arg-type]
@@ -673,25 +673,21 @@ async def test_process_request_injects_routine_hint() -> None:
 # ── a turn answered from its side-effect ledger (#304) ───────────────────────
 
 
-async def test_record_partial_turn_appends_the_turn_and_replies_concerned() -> None:
+async def test_record_partial_turn_appends_the_turn_to_the_session() -> None:
     deps = _deps()
     engine = ConsciousEngine(deps=deps)
     request = _request(content="turn on the porch light")
 
-    reply = await engine.record_partial_turn(request, "I did some of it, sir.")
+    await engine.record_partial_turn(request, "I did some of it, sir.")
 
-    assert (reply.text, reply.mood) == ("I did some of it, sir.", "concerned")
-    assert (reply.channel, reply.session_id) == ("web_pwa", "sess-1")
     assert deps.session_mgr.append_turn.await_args_list == [  # type: ignore[attr-defined]
         call("sess-1", "user", "turn on the porch light"),
         call("sess-1", "assistant", "I did some of it, sir."),
     ]
 
 
-async def test_record_partial_turn_still_replies_when_the_session_cannot_be_written() -> None:
+async def test_record_partial_turn_logs_rather_than_raises_a_session_failure() -> None:
     deps = _deps()
     deps.session_mgr.append_turn.side_effect = ConnectionError("gone")  # type: ignore[attr-defined]
 
-    reply = await ConsciousEngine(deps=deps).record_partial_turn(_request(), "partial")
-
-    assert reply.text == "partial"
+    await ConsciousEngine(deps=deps).record_partial_turn(_request(), "partial")

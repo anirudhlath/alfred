@@ -23,6 +23,7 @@ from pydantic_ai.capabilities import AbstractCapability
 from core.conscious.deps import TurnDeps
 from core.conscious.tools.catalog import tool_identity
 from core.conscious.tools.scope import Refused
+from core.routing.domain_router import CONFIRMATION_REQUIRED_PREFIX
 from shared.streams import EFFECTS_KEY
 
 if TYPE_CHECKING:
@@ -48,15 +49,16 @@ EFFECTS_TTL_S: Final = 3600
 # The ToolDefinition metadata key a toolset sets on each side-effecting tool.
 SIDE_EFFECT: Final = "side_effect"
 
-EffectStatus = Literal["started", "ok", "failed"]
-_STATUSES: Final[frozenset[str]] = frozenset({"started", "ok", "failed"})
+EffectStatus = Literal["started", "ok", "failed", "parked"]
+_STATUSES: Final[frozenset[str]] = frozenset({"started", "ok", "failed", "parked"})
 # A refused call's entry: kept in place, so no other entry's index moves, and never read.
 _REFUSED: Final = "refused"
 
 
 @dataclass(frozen=True)
 class Effect:
-    """One side-effecting call: ``started`` until it settles as ``ok`` or ``failed``."""
+    """One side-effecting call: ``started`` until it settles as ``ok``, ``failed``, or
+    ``parked`` (a critical action held for the user's confirmation, not yet done)."""
 
     tool: str  # registry / catalog name, e.g. "home.light_turn_on"
     args: dict[str, Any]
@@ -73,15 +75,19 @@ class EffectLedger:
         """Record a call about to run; returns its index for ``finished``."""
         key = EFFECTS_KEY.format(request_id)
         entry = json.dumps({"tool": tool, "args": args, "status": "started"}, default=str)
-        # Two commands, not MULTI: if EXPIRE fails the call does not run, and the entry
-        # left behind reads as in doubt, never as done.
-        length: int = await self._redis.rpush(key, entry)  # type: ignore[misc,unused-ignore]
-        await self._redis.expire(key, EFFECTS_TTL_S)
+        async with self._redis.pipeline(transaction=True) as pipe:
+            pipe.rpush(key, entry)
+            pipe.expire(key, EFFECTS_TTL_S)
+            length, _ = await pipe.execute()
         return int(length) - 1
 
     async def finished(self, request_id: str, index: int, ok: bool) -> None:
         """Settle the call at *index*: it returned (``ok``) or failed."""
         await self._settle(request_id, index, "ok" if ok else "failed")
+
+    async def parked(self, request_id: str, index: int) -> None:
+        """Settle the call at *index* as held for the user's confirmation."""
+        await self._settle(request_id, index, "parked")
 
     async def discard(self, request_id: str, index: int) -> None:
         """Strike the call at *index* from what ``read`` returns: it was refused, so it
@@ -123,7 +129,8 @@ def ledger_reply(effects: list[Effect]) -> str:
     """The answer to a turn that acted and then could not finish: what it did, and what
     may or may not have happened. A fixed template; no model call."""
     done = [e for e in effects if e.status == "ok"]
-    in_doubt = [e for e in effects if e.status != "ok"]
+    parked = [e for e in effects if e.status == "parked"]
+    in_doubt = [e for e in effects if e.status in ("started", "failed")]
     if done:
         text = (
             f"I'd started on that — I did: {_names(done)} — then ran into a problem before I "
@@ -136,6 +143,8 @@ def ledger_reply(effects: list[Effect]) -> str:
             f" I'm not certain these went through: {_names(in_doubt)}. "
             "Please check before asking again."
         )
+    if parked:
+        text += f" I've asked for your confirmation before: {_names(parked)}."
     return text
 
 
@@ -171,12 +180,18 @@ class RecordEffects(AbstractCapability[TurnDeps]):
         try:
             result = await handler(args)
         except BaseException as exc:
+            # Cancellation and control flow land here too, on purpose: whether the call
+            # acted is unknown, so it is recorded failed, which reads as in doubt.
             if _refused(exc):
                 await _quietly(ledger.discard(request_id, index), request_id)
             else:
                 await _quietly(ledger.finished(request_id, index, ok=False), request_id)
             raise
-        await _quietly(ledger.finished(request_id, index, ok=True), request_id)
+        if isinstance(result, str) and result.startswith(CONFIRMATION_REQUIRED_PREFIX):
+            # The router parked a critical action for confirmation: nothing happened yet.
+            await _quietly(ledger.parked(request_id, index), request_id)
+        else:
+            await _quietly(ledger.finished(request_id, index, ok=True), request_id)
         return result
 
 

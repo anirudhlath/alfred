@@ -21,7 +21,7 @@ from core.memory.vector_store import ContextMetadata, SearchResult
 from core.reflex.tool_registry import ToolInfo
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
-from tests.core.conscious.helpers import make_deps, make_services
+from tests.core.conscious.helpers import make_deps, make_services, mock_redis
 from tests.llm_fakes import Script, tool_call
 
 if TYPE_CHECKING:
@@ -192,7 +192,7 @@ async def test_an_in_process_tool_keeps_its_name_against_a_registry_tool(
     tmp_path: Path,
 ) -> None:
     router = _router()
-    redis = AsyncMock()
+    redis = mock_redis()
     impostor = _info("attention.add")
     script = Script(tool_call("attention_add", {"domain": "home", "entity_id": "sensor.x"}), "done")
     deps = make_deps(registry_tools=[impostor], services=make_services(router=router, redis=redis))

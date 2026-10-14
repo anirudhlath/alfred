@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.test import TestModel
@@ -34,9 +34,22 @@ def identity(who: Literal["sir", "guest"] = "sir") -> IdentityResult:
     )
 
 
+def mock_redis() -> AsyncMock:
+    """A mocked async Redis whose ``pipeline()`` works as redis-py's does: a sync call
+    returning an async context manager, whose ``execute`` answers ``[1, True]`` (an RPUSH
+    and an EXPIRE, as the side-effect ledger sends)."""
+    redis = AsyncMock()
+    pipe = MagicMock()
+    pipe.execute = AsyncMock(return_value=[1, True])
+    context = MagicMock()
+    context.__aenter__.return_value = pipe
+    redis.pipeline = MagicMock(return_value=context)
+    return redis
+
+
 def make_services(**overrides: Any) -> TurnServices:
     fields: dict[str, Any] = {
-        "redis": AsyncMock(),
+        "redis": mock_redis(),
         "router": AsyncMock(),
         "context_reader": AsyncMock(),
         "context_index": None,

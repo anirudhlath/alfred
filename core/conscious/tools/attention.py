@@ -66,7 +66,8 @@ async def attention_list(ctx: RunContext[TurnDeps], domain: str) -> dict[str, An
 
 ATTENTION_FUNCTIONS: FunctionToolset[TurnDeps] = FunctionToolset(
     [
-        confirm_pending_action,
+        # Confirming runs the parked action.
+        Tool(confirm_pending_action, metadata={SIDE_EFFECT: True}),
         Tool(attention_add, metadata={SIDE_EFFECT: True}),
         Tool(attention_remove, metadata={SIDE_EFFECT: True}),
         attention_list,

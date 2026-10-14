@@ -104,7 +104,8 @@ async def process_request_entry(
     if effects:
         # A delivery before this one acted and died before it answered (#304).
         logger.info("Request {} already acted — answering from its ledger", request.event_id)
-        await turn.answer_from_ledger(effects)
+        # Dead-lettered here too: the failed delivery's own record may never have landed.
+        await turn.answer_from_ledger(effects, None, "partial")
         return
     if not is_replayable(entry_id, now_ms=now):
         await turn.give_up(None, "expired")
@@ -120,6 +121,7 @@ async def process_request_entry(
         effects = await turn.effects()
         if effects is None:
             # It may have acted: never FAILED_REPLY it. Its redelivery reads the ledger.
+            await turn.restart_backoff(consumer)
             return
         if effects:
             await turn.answer_from_ledger(effects, exc, "partial")
@@ -209,12 +211,13 @@ class _Turn:
             return None
 
     async def answer_from_ledger(
-        self, effects: list[Effect], exc: BaseException | None = None, reason: str | None = None
+        self, effects: list[Effect], exc: BaseException | None, reason: str
     ) -> None:
-        """Answer from *effects* (stored in the session), ACK, and dead-letter the entry
-        when *reason* is given."""
-        response = await self.engine.record_partial_turn(self.request, ledger_reply(effects))
-        if await self.answer(response) and reason is not None:
+        """Answer from *effects*, ACK, and dead-letter the entry. The turn reaches the
+        session only once published, so a failed publish and its redelivery store it once."""
+        text = ledger_reply(effects)
+        if await self.answer(self.engine.failure_reply(self.request, text)):
+            await self.engine.record_partial_turn(self.request, text)
             await self._dead_letter(exc, reason)
 
     async def restart_backoff(self, consumer: str) -> None:

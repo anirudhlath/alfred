@@ -391,16 +391,15 @@ class ConsciousEngine:
         except Exception as exc:
             logger.warning("Failed to write scratchpad observation: %s", exc)
 
-    async def record_partial_turn(self, request: UserRequest, text: str) -> AlfredResponse:
-        """The answer to a turn that acted and then could not finish (*text*, from its
-        side-effect ledger): stored in the session like a normal turn, so the next turn
-        knows what was done. A failed session write is logged; the answer still goes."""
+    async def record_partial_turn(self, request: UserRequest, text: str) -> None:
+        """Store a turn answered from its side-effect ledger (*text*) in the session, like
+        a normal turn, so the next turn knows what was done. Called once the answer is
+        published; a failed write is logged, not raised."""
         try:
             await self._session_mgr.append_turn(request.session_id, "user", request.content)
             await self._session_mgr.append_turn(request.session_id, "assistant", text)
         except Exception:
             logger.warning("Failed to store a partial turn in the session", exc_info=True)
-        return self.failure_reply(request, text)
 
     @staticmethod
     def failure_reply(request: UserRequest, text: str) -> AlfredResponse:
