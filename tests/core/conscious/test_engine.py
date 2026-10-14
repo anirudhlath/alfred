@@ -668,3 +668,30 @@ async def test_process_request_injects_routine_hint() -> None:
 
     assert "[routine-suggestion]" in script.instructions()
     assert "evening_dim" in script.instructions()
+
+
+# ── a turn answered from its side-effect ledger (#304) ───────────────────────
+
+
+async def test_record_partial_turn_appends_the_turn_and_replies_concerned() -> None:
+    deps = _deps()
+    engine = ConsciousEngine(deps=deps)
+    request = _request(content="turn on the porch light")
+
+    reply = await engine.record_partial_turn(request, "I did some of it, sir.")
+
+    assert (reply.text, reply.mood) == ("I did some of it, sir.", "concerned")
+    assert (reply.channel, reply.session_id) == ("web_pwa", "sess-1")
+    assert deps.session_mgr.append_turn.await_args_list == [  # type: ignore[attr-defined]
+        call("sess-1", "user", "turn on the porch light"),
+        call("sess-1", "assistant", "I did some of it, sir."),
+    ]
+
+
+async def test_record_partial_turn_still_replies_when_the_session_cannot_be_written() -> None:
+    deps = _deps()
+    deps.session_mgr.append_turn.side_effect = ConnectionError("gone")  # type: ignore[attr-defined]
+
+    reply = await ConsciousEngine(deps=deps).record_partial_turn(_request(), "partial")
+
+    assert reply.text == "partial"

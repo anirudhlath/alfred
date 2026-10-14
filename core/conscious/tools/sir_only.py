@@ -5,13 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from pydantic_ai import RunContext, ToolFailed
 from pydantic_ai.toolsets import WrapperToolset
 
 from core.conscious.deps import TurnDeps
-from core.conscious.tools.scope import PERSONAL, allowed, refusal
+from core.conscious.tools.scope import PERSONAL, Refused, allowed
 
 if TYPE_CHECKING:
+    from pydantic_ai import RunContext
     from pydantic_ai.toolsets.abstract import ToolsetTool
 
 
@@ -36,5 +36,5 @@ class SirOnlyToolset(WrapperToolset[TurnDeps]):
         tool: ToolsetTool[TurnDeps],
     ) -> Any:
         if not allowed(PERSONAL, ctx.deps.who):
-            raise ToolFailed(refusal(name))
+            raise Refused(name)
         return await super().call_tool(name, tool_args, ctx, tool)

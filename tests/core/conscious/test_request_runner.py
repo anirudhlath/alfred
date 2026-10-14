@@ -22,6 +22,7 @@ import pytest
 from pydantic_ai.exceptions import ModelHTTPError
 
 from bus.schemas.events import AlfredResponse
+from core.conscious.effects import EffectLedger, ledger_reply
 from core.conscious.engine import ConsciousEngine
 from core.conscious.failures import FAILED_REPLY
 from core.conscious.runner import process_request_entry
@@ -52,7 +53,16 @@ def _engine() -> AsyncMock:
         )
     )
     engine.failure_reply = ConsciousEngine.failure_reply
+    engine.record_partial_turn = AsyncMock(side_effect=ConsciousEngine.failure_reply)
     return engine
+
+
+async def _acted(redis: fakeredis.FakeAsyncRedis, *, ok: bool = True) -> str:
+    """The request already turned a light on; returns the reply its ledger gives."""
+    ledger = EffectLedger(redis)
+    index = await ledger.started(_EVENT_ID, "home.light_turn_on", {"entity_id": "light.porch"})
+    await ledger.finished(_EVENT_ID, index, ok=ok)
+    return ledger_reply(await ledger.read(_EVENT_ID))
 
 
 async def _pending(
@@ -337,3 +347,136 @@ async def test_a_crash_between_publish_and_ack_does_not_answer_twice(
     engine.process_request.assert_awaited_once()
     assert len(await _responses(redis)) == 1
     assert await _pending_count(redis) == 0
+
+
+# ── the side-effect ledger (#304) ────────────────────────────────────────────
+
+
+async def test_a_redelivery_that_already_acted_answers_from_its_ledger() -> None:
+    """2b: a crash mid-turn left effects behind; the redelivery must not run again."""
+    redis, entry_id = await _pending()
+    text = await _acted(redis)
+    engine = _engine()
+    after_answer = AsyncMock()
+
+    await _run(redis, entry_id, engine, delivery=2, after_answer=after_answer)
+
+    engine.process_request.assert_not_awaited()
+    [reply] = await _responses(redis)
+    assert reply.text == text
+    assert (reply.channel, reply.session_id) == ("web_pwa", "s1")
+    engine.record_partial_turn.assert_awaited_once()
+    assert engine.record_partial_turn.await_args.args[1] == text
+    assert await redis.exists(ANSWERED_KEY.format(_EVENT_ID))
+    assert await _pending_count(redis) == 0
+    assert await _dead_letters(redis) == []
+    after_answer.assert_not_awaited()
+
+
+async def test_an_expired_entry_that_already_acted_answers_from_its_ledger() -> None:
+    """What was done is still worth telling, past the replay window."""
+    now_ms = int(time.time() * 1000)
+    redis, entry_id = await _pending(entry_id=f"{now_ms - 301_000}-0")
+    text = await _acted(redis)
+    engine = _engine()
+
+    await _run(redis, entry_id, engine, delivery=2, now_ms=now_ms)
+
+    engine.process_request.assert_not_awaited()
+    assert [r.text for r in await _responses(redis)] == [text]
+    assert await _pending_count(redis) == 0
+
+
+async def test_a_stale_entry_that_already_acted_is_still_dropped_unanswered() -> None:
+    now_ms = int(time.time() * 1000)
+    redis, entry_id = await _pending(entry_id=f"{now_ms - 3_601_000}-0")
+    await _acted(redis)
+    engine = _engine()
+
+    await _run(redis, entry_id, engine, delivery=2, now_ms=now_ms)
+
+    assert await _responses(redis) == []
+    assert [d[b"reason"] for d in await _dead_letters(redis)] == [b"stale"]
+
+
+async def test_an_answered_entry_with_a_ledger_only_acks() -> None:
+    """The normal answer went out; its ledger outlives it and must not answer again."""
+    redis, entry_id = await _pending()
+    await _acted(redis)
+    await redis.set(ANSWERED_KEY.format(_EVENT_ID), "1")
+
+    await _run(redis, entry_id, _engine(), delivery=2)
+
+    assert await _responses(redis) == []
+    assert await _pending_count(redis) == 0
+
+
+@pytest.mark.parametrize("status", [400, 503])
+async def test_a_turn_that_acted_then_failed_answers_from_its_ledger(status: int) -> None:
+    """5a: before classification, so neither a permanent nor a transient failure runs
+    the turn again or answers FAILED_REPLY."""
+    redis, entry_id = await _pending()
+    engine = _engine()
+    texts: list[str] = []
+
+    async def _act_then_fail(_request: object) -> AlfredResponse:
+        texts.append(await _acted(redis, ok=False))
+        raise ModelHTTPError(status, "m")
+
+    engine.process_request.side_effect = _act_then_fail
+
+    await _run(redis, entry_id, engine, delivery=1)
+
+    assert [r.text for r in await _responses(redis)] == texts
+    assert texts[0].startswith("I ran into a problem partway through, sir.")
+    assert await redis.exists(ANSWERED_KEY.format(_EVENT_ID))
+    assert await _pending_count(redis) == 0
+    [letter] = await _dead_letters(redis)
+    assert letter[b"reason"] == b"partial"
+    assert letter[b"error_type"] == b"ModelHTTPError"
+
+
+async def test_a_failed_turn_with_an_empty_ledger_is_retried_as_before() -> None:
+    redis, entry_id = await _pending()
+    engine = _engine()
+    engine.process_request.side_effect = ModelHTTPError(503, "m")
+
+    await _run(redis, entry_id, engine, delivery=1)
+
+    engine.record_partial_turn.assert_not_awaited()
+    assert await _responses(redis) == []
+    assert await _pending_count(redis) == 1
+
+
+async def test_a_redis_error_reading_the_ledger_before_running_leaves_it_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    redis, entry_id = await _pending()
+    engine = _engine()
+    monkeypatch.setattr(redis, "lrange", AsyncMock(side_effect=ConnectionError("gone")))
+
+    await _run(redis, entry_id, engine, delivery=1)
+
+    engine.process_request.assert_not_awaited()
+    assert await _responses(redis) == []
+    assert await _pending_count(redis) == 1
+
+
+async def test_a_redis_error_reading_the_ledger_after_a_failure_leaves_it_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never FAILED_REPLY a turn that may have acted: its redelivery reads the ledger."""
+    redis, entry_id = await _pending()
+    engine = _engine()
+
+    async def _fail(_request: object) -> AlfredResponse:
+        monkeypatch.setattr(redis, "lrange", AsyncMock(side_effect=ConnectionError("gone")))
+        raise ModelHTTPError(400, "m")
+
+    engine.process_request.side_effect = _fail
+
+    await _run(redis, entry_id, engine, delivery=3)
+
+    assert await _responses(redis) == []
+    assert await _pending_count(redis) == 1
+    assert await _dead_letters(redis) == []

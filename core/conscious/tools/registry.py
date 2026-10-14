@@ -19,9 +19,10 @@ from pydantic_ai.toolsets.abstract import ToolsetTool
 
 from bus.schemas.events import ActionRequest
 from core.conscious.deps import TurnDeps
+from core.conscious.effects import SIDE_EFFECT
 from core.conscious.tools.catalog import TOOL_RETRIES
 from core.conscious.tools.names import WireNameError, error_once, report_collision, wire_name
-from core.conscious.tools.scope import allowed, refusal
+from core.conscious.tools.scope import Refused, allowed
 from core.conscious.tools.validation import ANY_OBJECT, check_arguments, compile_schema
 from core.routing.domain_router import CONFIRMATION_REQUIRED_PREFIX
 from core.triggers.models import TRIGGER_ENGINE_SOURCE
@@ -103,6 +104,8 @@ class RegistryToolset(AbstractToolset[TurnDeps]):
                     "target_service": info.target_service,
                     "risk": info.risk,
                     "strip_reason": strip_reason,
+                    # Every registry tool reaches another service as an action.
+                    SIDE_EFFECT: True,
                 },
             ),
             max_retries=TOOL_RETRIES,
@@ -119,7 +122,7 @@ class RegistryToolset(AbstractToolset[TurnDeps]):
     ) -> Any:
         metadata = tool.tool_def.metadata or {}
         if not allowed(str(metadata["risk"]), ctx.deps.who):
-            raise ToolFailed(refusal(name))
+            raise Refused(name)
         params = dict(tool_args)
         reason = params.pop(REASON_PARAM, None) if metadata["strip_reason"] else None
         action = ActionRequest(

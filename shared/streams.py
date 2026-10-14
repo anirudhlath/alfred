@@ -37,6 +37,10 @@ DEAD_LETTER_STREAM = "alfred:conscious:dead_letters"
 # + UserRequest.event_id -> set (with a TTL) once that request's answer is published and
 # before its entry is ACKed, so a redelivery after a crash in between answers nothing.
 ANSWERED_KEY = "alfred:conscious:answered:{}"
+# + UserRequest.event_id -> LIST of JSON {tool, args, status}, one per side-effecting
+# tool call the turn made, written before the call and updated after it (with a TTL), so
+# a turn that fails or is redelivered after acting answers from it instead of acting twice.
+EFFECTS_KEY = "alfred:conscious:effects:{}"
 
 # Phase 3: Memory
 VOICEPRINT_KEY = "alfred:identity:voiceprint"

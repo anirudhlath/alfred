@@ -13,16 +13,17 @@ scope by identity, so a guest must not schedule what they could not call.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from pydantic_ai import ModelRetry, RunContext, ToolDefinition, ToolFailed
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai.toolsets.abstract import ToolsetTool
 
 from core.conscious.deps import TurnDeps
+from core.conscious.effects import SIDE_EFFECT
 from core.conscious.tools.catalog import TOOL_RETRIES
 from core.conscious.tools.names import wire_name
-from core.conscious.tools.scope import SIR, allowed, refusal
+from core.conscious.tools.scope import SIR, Refused, allowed
 from core.conscious.tools.validation import ANY_OBJECT
 from core.routing.risk import tool_risk
 from core.triggers.models import ActionPayload
@@ -33,6 +34,11 @@ if TYPE_CHECKING:
 
     from core.triggers.feature import TriggerFeature
     from sdk.alfred_sdk.feature import ToolMeta
+
+# The TriggerFeature methods that change a trigger; listing one changes nothing.
+SIDE_EFFECT_METHODS: Final = frozenset(
+    {"create_trigger", "update_trigger", "delete_trigger", "toggle_trigger"}
+)
 
 
 def _validator(meta: ToolMeta) -> Callable[..., None]:
@@ -59,6 +65,7 @@ class TriggerToolset(AbstractToolset[TurnDeps]):
         for meta in self.feature.get_tools():
             # These names are ours: one that has no wire name fails at startup.
             name = wire_name(meta.name)
+            method = self._method_name(meta)
             self._metas[name] = meta
             self._tools[name] = ToolsetTool(
                 toolset=self,
@@ -66,7 +73,11 @@ class TriggerToolset(AbstractToolset[TurnDeps]):
                     name=name,
                     description=meta.description,
                     parameters_json_schema=meta.input_schema,
-                    metadata={"registry_name": meta.name, "risk": meta.risk},
+                    metadata={
+                        "registry_name": meta.name,
+                        "risk": meta.risk,
+                        SIDE_EFFECT: method in SIDE_EFFECT_METHODS,
+                    },
                 ),
                 max_retries=TOOL_RETRIES,
                 args_validator=ANY_OBJECT,
@@ -93,15 +104,18 @@ class TriggerToolset(AbstractToolset[TurnDeps]):
     ) -> Any:
         meta = self._metas[name]
         if not allowed(meta.risk, ctx.deps.who):
-            raise ToolFailed(refusal(name))
+            raise Refused(name)
         kwargs = meta.validate_arguments(tool_args)
         if not await self._action_allowed(kwargs.get("action"), ctx.deps):
-            raise ToolFailed(refusal(name))
-        method = getattr(self.feature, meta.name.removeprefix(f"{self.feature.feature_name}."))
+            raise Refused(name)
+        method = getattr(self.feature, self._method_name(meta))
         result: Any = await method(**kwargs)
         if isinstance(result, dict) and "error" in result:
             raise ToolFailed(str(result["error"]))
         return result
+
+    def _method_name(self, meta: ToolMeta) -> str:
+        return meta.name.removeprefix(f"{self.feature.feature_name}.")
 
     @staticmethod
     async def _action_allowed(action: Any, deps: TurnDeps) -> bool:

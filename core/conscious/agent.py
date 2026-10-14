@@ -2,7 +2,8 @@
 
 Built once per process, with no model: the engine passes the resolved model on every run.
 Its one toolset is the catalog, so every tool reaches the model under one name mapping
-(``tools.names.wire_name``) and is dispatched by that same name.
+(``tools.names.wire_name``) and is dispatched by that same name. ``RecordEffects`` writes
+each side-effecting call to the request's ledger (``core.conscious.effects``).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 
 from core.conscious.deps import TurnDeps
+from core.conscious.effects import RecordEffects
 from core.conscious.tools.attention import attention_toolset
 from core.conscious.tools.catalog import CatalogToolset
 from core.conscious.tools.integrations import integration_toolset
@@ -65,7 +67,7 @@ def build_system2_agent(
         model_settings=ModelSettings(
             max_tokens=max_tokens, timeout=timeout_s, extra_headers=role_headers(SYSTEM2)
         ),
-        capabilities=[RepairToolArguments(), instrumentation()],
+        capabilities=[RepairToolArguments(), RecordEffects(), instrumentation()],
         defer_model_check=True,
     )
 

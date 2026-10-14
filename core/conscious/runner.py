@@ -10,6 +10,10 @@ permanent one, the last allowed delivery, or an entry past the replay window is
 answered with ``FAILED_REPLY``, ACKed and dead-lettered. An entry older than the
 answered marker's TTL is ACKed and dead-lettered unanswered. The marker, set with the
 published response, makes a crash between publishing and ACKing harmless.
+
+A request that already acted (its side-effect ledger holds calls, ``core.conscious.effects``)
+is never run again: a delivery that finds a ledger, or a turn that fails after acting, is
+answered from the ledger (``ledger_reply``) and ACKed, so no tool call runs twice (#304).
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Final
 from loguru import logger
 
 from bus.schemas.events import AlfredResponse, UserRequest
+from core.conscious.effects import Effect, EffectLedger, ledger_reply
 from core.conscious.failures import (
     FAILED_REPLY,
     MAX_DELIVERIES,
@@ -93,6 +98,14 @@ async def process_request_entry(
         # Its marker may have lapsed, and an hours-late reply is noise.
         await turn.drop("stale")
         return
+    effects = await turn.effects()
+    if effects is None:
+        return
+    if effects:
+        # A delivery before this one acted and died before it answered (#304).
+        logger.info("Request {} already acted — answering from its ledger", request.event_id)
+        await turn.answer_from_ledger(effects)
+        return
     if not is_replayable(entry_id, now_ms=now):
         await turn.give_up(None, "expired")
         return
@@ -104,7 +117,13 @@ async def process_request_entry(
     try:
         response = await engine.process_request(request)
     except Exception as exc:
-        if classify(exc) is FailureKind.PERMANENT:
+        effects = await turn.effects()
+        if effects is None:
+            # It may have acted: never FAILED_REPLY it. Its redelivery reads the ledger.
+            return
+        if effects:
+            await turn.answer_from_ledger(effects, exc, "partial")
+        elif classify(exc) is FailureKind.PERMANENT:
             await turn.give_up(exc, "permanent")
         elif delivery >= MAX_DELIVERIES:
             await turn.give_up(exc, "exhausted")
@@ -180,6 +199,23 @@ class _Turn:
             return False
         await _ack(self.redis, self.stream, self.group, self.entry_id)
         return True
+
+    async def effects(self) -> list[Effect] | None:
+        """The request's side-effect ledger, or None (logged) when it cannot be read."""
+        try:
+            return await EffectLedger(self.redis).read(self.request.event_id)
+        except Exception as exc:
+            logger.error("Could not read the ledger of {}: {}", self.entry_id, exc)
+            return None
+
+    async def answer_from_ledger(
+        self, effects: list[Effect], exc: BaseException | None = None, reason: str | None = None
+    ) -> None:
+        """Answer from *effects* (stored in the session), ACK, and dead-letter the entry
+        when *reason* is given."""
+        response = await self.engine.record_partial_turn(self.request, ledger_reply(effects))
+        if await self.answer(response) and reason is not None:
+            await self._dead_letter(exc, reason)
 
     async def restart_backoff(self, consumer: str) -> None:
         """Reset the entry's idle clock, so its backoff counts from this failure rather
