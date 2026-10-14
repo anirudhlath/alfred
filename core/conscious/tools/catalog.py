@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 # Retries per tool. Pydantic AI's default of 1 is low for a local model's first attempt.
 TOOL_RETRIES: Final = 2
+# How an empty list result reaches the model.
+EMPTY_LIST: Final = "[]"
 _PASS_THROUGH = (ModelRetry, ToolFailed, ApprovalRequired, CallDeferred)
 
 
@@ -73,9 +75,12 @@ class CatalogToolset(CombinedToolset[TurnDeps]):
             raise TypeError(f"{name} was not listed by the catalog")
         ctx.deps.actions_taken.append(_identity(tool, name))
         try:
-            return await tool.source_toolset.call_tool(name, tool_args, ctx, tool.source_tool)
+            result = await tool.source_toolset.call_tool(name, tool_args, ctx, tool.source_tool)
         except _PASS_THROUGH:
             raise
         except Exception as exc:
             logger.warning("Tool %s failed", name, exc_info=True)
             raise ToolFailed(f"{name} failed: {exc}") from exc
+        # Pydantic AI reads a list as multi-part content and renders an empty one as an
+        # empty tool result; "nothing found" should reach the model as "[]".
+        return EMPTY_LIST if result == [] else result

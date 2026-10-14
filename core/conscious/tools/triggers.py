@@ -93,8 +93,4 @@ class TriggerToolset(AbstractToolset[TurnDeps]):
         result: Any = await method(**kwargs)
         if isinstance(result, dict) and "error" in result:
             raise ToolFailed(str(result["error"]))
-        if result == []:
-            # Pydantic AI reads a list as multi-part content and renders an empty one as an
-            # empty tool result; "no triggers" should read as "[]".
-            return "[]"
         return result

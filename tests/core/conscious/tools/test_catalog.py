@@ -105,3 +105,15 @@ async def test_retries_and_tool_failures_pass_through_unchanged() -> None:
     assert script.outcomes(2) == ["failed"]
     assert attempts == [0, 1]
     assert deps.actions_taken == ["flaky", "flaky"]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_list_reaches_the_model_as_an_empty_json_array() -> None:
+    def find() -> list[str]:
+        """Nothing to find."""
+        return []
+
+    script = Script(tool_call("find", {}), "none")
+    await tool_agent(script, _toolset(find)).run("go", deps=make_deps())
+
+    assert script.returns(1) == ["[]"]
