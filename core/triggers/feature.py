@@ -164,7 +164,7 @@ class TriggerFeature(BaseFeature):
 
         return trigger.model_dump(mode="json")
 
-    @tool
+    @tool(risk="elevated")
     async def list_triggers(self, enabled_only: bool = True) -> list[dict[str, Any]]:
         """List all triggers."""
         triggers = await self._store_or_raise.list_all(enabled_only=enabled_only)

@@ -173,13 +173,14 @@ async def test_guest_is_offered_only_benign_tools_across_every_toolset(tmp_path:
         "hi", deps=make_deps("guest", registry_tools=registry, services=services), model=guest.model
     )
 
-    guest_triggers = {"triggers_create_trigger", "triggers_list_triggers"}
+    guest_triggers = {"triggers_create_trigger"}
     assert set(guest.offered()) == guest_triggers | {"home_get_lights"}
     assert {
         "memory_recall_memories",
         "confirm_pending_action",
         "attention_add",
         "home_light_on",
+        "triggers_list_triggers",
         "triggers_update_trigger",
         "triggers_delete_trigger",
         "triggers_toggle_trigger",

@@ -133,7 +133,7 @@ process, so a service can never register over an internal tool.
 
 | Order | Toolset | File | Offered to |
 |---|---|---|---|
-| 1 | `TriggerToolset` (over `TriggerFeature`'s metas) | `tools/triggers.py` | sir: all; guest: `create_trigger` (benign actions only) and `list_triggers` |
+| 1 | `TriggerToolset` (over `TriggerFeature`'s metas) | `tools/triggers.py` | sir: all; guest: `create_trigger` (benign actions only) |
 | 2 | memory (`memory_recall_memories`, `memory_get_live_state`) | `tools/memory.py` | sir, when the turn has a context index |
 | 3 | attention + `confirm_pending_action` | `tools/attention.py` | sir |
 | 4 | integrations | `tools/integrations.py` | sir |
@@ -148,8 +148,9 @@ neutral sentence: *"`{name}` is only available to the verified user"*. A refused
 never routed.
 
 The trigger tools need one more rule, because a trigger's action runs later as the trigger
-engine, which the router does not scope by identity. `update_trigger`, `delete_trigger` and
-`toggle_trigger` are `elevated`, so a guest cannot touch an existing trigger. A guest's
+engine, which the router does not scope by identity. `list_triggers`, `update_trigger`,
+`delete_trigger` and `toggle_trigger` are `elevated`, so a guest can neither read nor touch
+an existing trigger. A guest's
 `create_trigger` is refused, with the same sentence, when its `action` names a tool whose
 risk (`core/routing/risk.tool_risk`) is anything but `benign`, including a tool the
 registry does not know. A trigger with no action, a plain reminder, is allowed.

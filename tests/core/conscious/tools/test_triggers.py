@@ -153,20 +153,27 @@ def _action(tool_name: str, target_service: str = "home-service") -> dict[str, A
 
 
 @pytest.mark.asyncio
-async def test_guest_is_offered_only_create_and_list() -> None:
+async def test_guest_is_offered_only_create() -> None:
     toolset, _ = _toolset()
     guest = await toolset.get_tools(run_context(make_deps("guest")))
     sir = await toolset.get_tools(run_context(make_deps("sir")))
 
-    assert set(guest) == {"triggers_create_trigger", "triggers_list_triggers"}
-    assert {"triggers_update_trigger", "triggers_delete_trigger", "triggers_toggle_trigger"} <= (
-        set(sir)
-    )
+    assert set(guest) == {"triggers_create_trigger"}
+    assert {
+        "triggers_list_triggers",
+        "triggers_update_trigger",
+        "triggers_delete_trigger",
+        "triggers_toggle_trigger",
+    } <= set(sir)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["update_trigger", "delete_trigger", "toggle_trigger"])
-async def test_a_guest_reaching_a_trigger_mutation_at_call_time_is_refused(tool_name: str) -> None:
+@pytest.mark.parametrize(
+    "tool_name", ["list_triggers", "update_trigger", "delete_trigger", "toggle_trigger"]
+)
+async def test_a_guest_reaching_a_sir_only_trigger_tool_at_call_time_is_refused(
+    tool_name: str,
+) -> None:
     toolset, store = _toolset()
     name = f"triggers_{tool_name}"
     with pytest.raises(ToolFailed, match=f"^{name} is only available to the verified user$"):
@@ -179,6 +186,7 @@ async def test_a_guest_reaching_a_trigger_mutation_at_call_time_is_refused(tool_
         )
     store.get.assert_not_awaited()
     store.delete.assert_not_awaited()
+    store.list_all.assert_not_awaited()
 
 
 @pytest.mark.asyncio
