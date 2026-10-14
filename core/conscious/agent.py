@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from core.triggers.feature import TriggerFeature
 
 SYSTEM2_NAME: Final = "system2"
-# Model requests per turn; replaces the old loop's MAX_ITERATIONS.
+# Model requests per turn; past it the engine answers with its deliberating reply.
 REQUEST_LIMIT: Final = 10
 OUTPUT_RETRIES: Final = 2
 

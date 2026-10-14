@@ -1,38 +1,35 @@
-"""Conscious Engine — LLM-powered System 2 reasoning with agentic tool-use loop.
+"""Conscious Engine — System 2, the conversational brain.
 
-Routes through OpenRouter via LiteLLM for provider-agnostic model access.
+A request is answered in one agent run (``core.conscious.agent``): the engine resolves
+identity, checks the budget, gathers the turn's context into ``TurnDeps`` and runs the
+agent over the session's history. Spend is recorded for every run that starts, including
+one that fails; a failed run raises, so the request stays pending and is retried.
 """
 
 from __future__ import annotations
 
-import asyncio
-import copy
-import json
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal
 
-import litellm
+from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
+from pydantic_ai.usage import RunUsage, UsageLimits
 
-from bus.schemas.events import ActionRequest, AlfredResponse, UserRequest
-from core.conscious.action_tools import (
-    ACTION_TOOL_NAMES,
-    ACTION_TOOLS_MANIFEST,
-    dispatch_action_tool,
-)
-from core.conscious.memory_tools import (
-    MEMORY_TOOL_PREFIX,
-    MEMORY_TOOLS_MANIFEST,
-    dispatch_memory_tool,
-)
-from core.integrations.base import IntegrationRequest
-from core.integrations.registry import IntegrationRegistry
-from core.triggers.feature import TriggerFeature  # noqa: TC001 (runtime use)
-from sdk.alfred_sdk.telemetry import track_latency
+from bus.schemas.events import AlfredResponse, UserRequest
+from core.conscious.agent import REQUEST_LIMIT
+from core.conscious.deps import TurnDeps, TurnServices
+from core.conscious.tools.integrations import fetch_integration_tools
+from shared.agents import model_key
 from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
-from shared.env import is_truthy_flag
+from shared.otel import langfuse_attributes
 from shared.streams import SCRATCHPAD_QUEUE
 from shared.traced import traced
 from shared.usertime import (
@@ -41,505 +38,111 @@ from shared.usertime import (
     set_user_timezone,
 )
 
-_debug = is_truthy_flag(os.getenv("ALFRED_DEBUG"))
-# LiteLLM logging. LITELLM_LOG is litellm's official knob, but it is read once at import
-# time (already past by here), and configure_logging() drops the root logger to NOTSET — which
-# left litellm's own DEBUG handler dumping every request as one multi-hundred-KB line.
-# Pin the logger level; ALFRED_DEBUG (or an explicit LITELLM_LOG) opens it up.
-_litellm_level = os.getenv("LITELLM_LOG") or ("DEBUG" if _debug else "ERROR")
-logging.getLogger("LiteLLM").setLevel(_litellm_level.upper())
-litellm.suppress_debug_info = not _debug
-litellm.set_verbose = _debug  # type: ignore[attr-defined]
-
 if TYPE_CHECKING:
-    from core.conscious.context_assembler import ContextAssembler
+    from pydantic_ai import Agent
+    from pydantic_ai.models import Model
+
     from core.conscious.cost import CostTracker
     from core.conscious.identity import IdentityGate
     from core.conscious.session import SessionManager
+    from core.conscious.tools.integrations import IntegrationTool
     from core.memory.context_index import ContextIndexManager
-    from core.memory.embedding_provider import EmbeddingProvider
     from core.memory.routines.store import RoutineStore
     from core.memory.schemas import RoutineSpec
     from core.memory.vector_store import SearchResult
     from core.reflex.context_reader import ContextReader
-    from core.reflex.tool_registry import ToolInfo, ToolRegistry
+    from core.reflex.tool_registry import ToolRegistry
     from core.routing.domain_router import DomainRouter
-    from sdk.alfred_sdk.feature import ToolMeta
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 
-MAX_ITERATIONS = 10
+SOURCE: Final = "conscious-engine"
+BUDGET_REPLY: Final = (
+    "I'm afraid we've reached the daily budget, sir. "
+    "I'm operating in reduced capacity — ambient actions continue, "
+    "but I'll need to defer complex requests until tomorrow."
+)
+DELIBERATING_REPLY: Final = (
+    "I apologize, sir — I've been deliberating too long. Let me try a more direct approach."
+)
+NOT_CONFIGURED_REPLY: Final = (
+    "I'm afraid my connection to the thinking engine is not configured, sir."
+)
+
+
+def session_messages(history: list[dict[str, str]]) -> list[ModelMessage]:
+    """The stored session as the run's message history.
+
+    Sessions store only what was said, user and assistant text; tool calls and results are
+    not kept between turns yet. Anything else in the list is skipped.
+    """
+    messages: list[ModelMessage] = []
+    for turn in history:
+        content = turn.get("content", "")
+        if turn.get("role") == "user":
+            messages.append(ModelRequest(parts=[UserPromptPart(content)]))
+        elif turn.get("role") == "assistant":
+            messages.append(ModelResponse(parts=[TextPart(content)]))
+    return messages
 
 
 @dataclass
 class ConsciousConfig:
-    """LLM configuration for the Conscious Engine.
+    """Involuntary recall's settings; populate from ``AlfredConfig`` at the call site."""
 
-    Defaults are intentionally empty — populate from AlfredConfig at the call site.
-    """
-
-    model: str
-    api_key: str = ""
-    max_tokens: int = 2048
     involuntary_recall_limit: int = 10
     involuntary_recall_threshold: float = DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 
 
 @dataclass
 class ConsciousDeps:
-    """Service dependencies injected into the Conscious Engine."""
+    """The engine's services, its agent and the model the agent runs on.
+
+    ``model`` is None when ``SYSTEM2_MODEL`` resolved to nothing at startup; every request
+    then gets the not-configured reply.
+    """
 
     redis: AioRedis
     identity_gate: IdentityGate
     session_mgr: SessionManager
     cost_tracker: CostTracker
-    context_assembler: ContextAssembler
     domain_router: DomainRouter
     tool_registry: ToolRegistry
     context_reader: ContextReader
+    agent: Agent[TurnDeps, str]
+    model: Model | None
     routine_store: RoutineStore | None = None
-    trigger_feature: TriggerFeature | None = None
-    embedder: EmbeddingProvider | None = None
     context_index: ContextIndexManager | None = None
-    config: ConsciousConfig = field(default_factory=lambda: ConsciousConfig(model=""))
+    config: ConsciousConfig = field(default_factory=ConsciousConfig)
 
 
 class ConsciousEngine:
-    """The conversational brain of Alfred (System 2).
+    """The conversational brain of Alfred (System 2)."""
 
-    Receives UserRequest events, resolves identity, assembles context,
-    runs a multi-step agentic tool-use loop, and returns AlfredResponse.
-
-    Uses LiteLLM to route requests through OpenRouter or any supported provider.
-    """
-
-    def __init__(
-        self,
-        *,
-        deps: ConsciousDeps | None = None,
-        # Legacy kwargs — kept for backward compatibility with tests and call sites.
-        redis: AioRedis | None = None,
-        identity_gate: IdentityGate | None = None,
-        session_mgr: SessionManager | None = None,
-        cost_tracker: CostTracker | None = None,
-        context_assembler: ContextAssembler | None = None,
-        domain_router: DomainRouter | None = None,
-        tool_registry: ToolRegistry | None = None,
-        context_reader: ContextReader | None = None,
-        claude_model: str = "openrouter/anthropic/claude-sonnet-4",
-        claude_api_key: str = "",
-        claude_max_tokens: int = 2048,
-        routine_store: RoutineStore | None = None,
-        trigger_feature: TriggerFeature | None = None,
-        embedder: EmbeddingProvider | None = None,
-        context_index: ContextIndexManager | None = None,
-    ) -> None:
-        if deps is not None:
-            d = deps
-            cfg = d.config
-        else:
-            # Build from individual kwargs (backward compat)
-            required = {
-                "redis": redis,
-                "identity_gate": identity_gate,
-                "session_mgr": session_mgr,
-                "cost_tracker": cost_tracker,
-                "context_assembler": context_assembler,
-                "domain_router": domain_router,
-                "tool_registry": tool_registry,
-                "context_reader": context_reader,
-            }
-            missing = [k for k, v in required.items() if v is None]
-            if missing:
-                raise ValueError(f"Missing required deps: {', '.join(missing)}")
-            # All required deps verified non-None above; narrow for mypy
-            assert redis is not None
-            assert identity_gate is not None
-            assert session_mgr is not None
-            assert cost_tracker is not None
-            assert context_assembler is not None
-            assert domain_router is not None
-            assert tool_registry is not None
-            assert context_reader is not None
-            d = ConsciousDeps(
-                redis=redis,
-                identity_gate=identity_gate,
-                session_mgr=session_mgr,
-                cost_tracker=cost_tracker,
-                context_assembler=context_assembler,
-                domain_router=domain_router,
-                tool_registry=tool_registry,
-                context_reader=context_reader,
-                routine_store=routine_store,
-                trigger_feature=trigger_feature,
-                embedder=embedder,
-                context_index=context_index,
-                config=ConsciousConfig(
-                    model=claude_model,
-                    api_key=claude_api_key,
-                    max_tokens=claude_max_tokens,
-                ),
-            )
-            cfg = d.config
-
-        self._redis = d.redis
-        self._identity_gate = d.identity_gate
-        self._session_mgr = d.session_mgr
-        self._cost = d.cost_tracker
-        self._assembler = d.context_assembler
-        self._router = d.domain_router
-        self._tool_registry = d.tool_registry
-        self._context_reader = d.context_reader
-        self._model = cfg.model
-        self._api_key = cfg.api_key
-        self._max_tokens = cfg.max_tokens
-        self._involuntary_recall_limit = cfg.involuntary_recall_limit
-        self._involuntary_recall_threshold = cfg.involuntary_recall_threshold
-        self._routines = d.routine_store
-        self._triggers = d.trigger_feature
-        # Discovered once: get_tools() builds every trigger tool's arguments model afresh.
-        self._trigger_tools: dict[str, ToolMeta] = (
-            {t.name: t for t in self._triggers.get_tools()} if self._triggers is not None else {}
+    def __init__(self, *, deps: ConsciousDeps) -> None:
+        self._redis = deps.redis
+        self._identity_gate = deps.identity_gate
+        self._session_mgr = deps.session_mgr
+        self._cost = deps.cost_tracker
+        self._tool_registry = deps.tool_registry
+        self._agent = deps.agent
+        self._model = deps.model
+        self._routines = deps.routine_store
+        self._context_index = deps.context_index
+        self._recall_limit = deps.config.involuntary_recall_limit
+        self._recall_threshold = deps.config.involuntary_recall_threshold
+        self._services = TurnServices(
+            redis=deps.redis,
+            router=deps.domain_router,
+            context_reader=deps.context_reader,
+            context_index=deps.context_index,
         )
-        self._embedder = d.embedder
-        self._context_index = d.context_index
 
     @property
     def has_routine_store(self) -> bool:
         """Whether a routine store is configured."""
         return self._routines is not None
-
-    # Prefix for integration tool names to distinguish from domain tools
-    _INTEGRATION_PREFIX: ClassVar[str] = "integration_"
-    # Extra argument offered on critical tools; moved off `parameters` onto ActionRequest.reason
-    _REASON_PARAM: ClassVar[str] = "reason"
-
-    @staticmethod
-    def _sanitize_tool_name(name: str) -> str:
-        """Convert dotted tool names to OpenAI-compatible format (a-zA-Z0-9_-)."""
-        return name.replace(".", "_")
-
-    @classmethod
-    def _unsanitize_tool_name(cls, name: str, tools: list[ToolInfo]) -> str:
-        """Reverse sanitized name back to original dotted form.
-
-        Integration tool names (prefixed with 'integration_') are returned as-is.
-        """
-        if name.startswith(cls._INTEGRATION_PREFIX):
-            return name
-        sanitized_to_original = {t.name.replace(".", "_"): t.name for t in tools}
-        return sanitized_to_original.get(name, name)
-
-    def _tools_to_openai_format(self, tools: list[ToolInfo]) -> list[dict[str, Any]]:
-        """Convert ToolInfo list to OpenAI function-calling format (used by LiteLLM).
-
-        Each tool's ``input_schema`` is offered as is. It is deep-copied, because the
-        ``reason`` injected for critical tools must never reach the registry's copy.
-        """
-        openai_tools: list[dict[str, Any]] = []
-        for t in tools:
-            schema = copy.deepcopy(t.input_schema)
-            properties: dict[str, Any] = schema.setdefault("properties", {})
-            if t.risk == "critical" and self._REASON_PARAM not in properties:
-                properties[self._REASON_PARAM] = {
-                    "type": "string",
-                    "description": (
-                        "One sentence, addressed to the user, saying why this action is "
-                        "needed. It is shown on the confirmation prompt."
-                    ),
-                }
-
-            openai_tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": self._sanitize_tool_name(t.name),
-                        "description": t.description,
-                        "parameters": schema,
-                    },
-                }
-            )
-        return openai_tools
-
-    async def _integrations_to_openai_format(self) -> list[dict[str, Any]]:
-        """Convert integration capabilities to OpenAI function-calling format."""
-        openai_tools: list[dict[str, Any]] = []
-        for name in IntegrationRegistry.available():
-            instance = IntegrationRegistry.get(name)
-            try:
-                caps = await instance.get_capabilities()
-            except Exception:
-                logger.warning("Failed to get capabilities for integration %s", name)
-                continue
-            for cap in caps:
-                # Build tool name: integration_weather_get_current
-                tool_name = f"{self._INTEGRATION_PREFIX}{name}_{cap.name}"
-                properties = cap.params_schema.get("properties", {})
-                openai_tools.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": tool_name,
-                            "description": f"[{name}] {cap.description}",
-                            "parameters": {
-                                "type": "object",
-                                "properties": properties,
-                                "required": list(
-                                    k
-                                    for k, v in properties.items()
-                                    if isinstance(v, dict) and "default" not in v
-                                ),
-                            },
-                        },
-                    }
-                )
-        return openai_tools
-
-    async def _execute_integration_call(self, tool_name: str, params: dict[str, Any]) -> str:
-        """Execute an integration tool call. Returns result as string."""
-        # Parse: integration_weather_get_current -> integration="weather", action="get_current"
-        stripped = tool_name.removeprefix(self._INTEGRATION_PREFIX)
-        # Find which integration name matches (greedy match on registered names)
-        integration_name = ""
-        action = ""
-        for name in IntegrationRegistry.available():
-            prefix = f"{name}_"
-            if stripped.startswith(prefix):
-                integration_name = name
-                action = stripped.removeprefix(prefix)
-                break
-        if not integration_name:
-            return f"Error: unknown integration tool '{tool_name}'"
-
-        instance = IntegrationRegistry.get(integration_name)
-        request = IntegrationRequest(action=action, params=params)
-        result = await instance.execute(request)
-        if "error" in result.data:
-            return f"Error: {result.data['error']}"
-        return json.dumps(result.data)
-
-    async def _call_llm(
-        self,
-        system_prompt: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-        original_tools: list[ToolInfo] | None = None,
-    ) -> tuple[str, list[dict[str, Any]], int, int]:
-        """Call LLM via LiteLLM. Returns (text, tool_calls, prompt_tokens, completion_tokens).
-
-        Tool names are unsanitized back to dotted form
-        using the original_tools list for reverse mapping.
-        """
-        if not self._api_key:
-            return (
-                "I'm afraid my connection to the thinking engine is not configured, sir.",
-                [],
-                0,
-                0,
-            )
-
-        llm_messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_prompt},
-            *messages,
-        ]
-
-        kwargs: dict[str, Any] = {
-            "model": self._model,
-            "messages": llm_messages,
-            "max_tokens": self._max_tokens,
-            "api_key": self._api_key,
-        }
-        if tools:
-            kwargs["tools"] = tools
-
-        response = await litellm.acompletion(**kwargs)
-
-        choice = response.choices[0]
-        msg = choice.message
-
-        text = msg.content or ""
-        tool_calls: list[dict[str, Any]] = []
-
-        if msg.tool_calls:
-            for tc in msg.tool_calls:
-                tool_input = tc.function.arguments
-                if isinstance(tool_input, str):
-                    try:
-                        tool_input = json.loads(tool_input)
-                    except json.JSONDecodeError:
-                        tool_input = {}
-                # Map sanitized name back to original dotted name
-                fn_name = tc.function.name
-                if original_tools:
-                    fn_name = self._unsanitize_tool_name(fn_name, original_tools)
-                tool_calls.append(
-                    {
-                        "id": tc.id,
-                        "name": fn_name,
-                        "input": tool_input,
-                    }
-                )
-
-        usage = response.usage
-        return (
-            text,
-            tool_calls,
-            usage.prompt_tokens if usage else 0,
-            usage.completion_tokens if usage else 0,
-        )
-
-    def _resolve_trigger_tool(self, tool_name: str) -> ToolMeta | None:
-        """The trigger tool's metadata when ``tool_name`` names one, else None."""
-        return self._trigger_tools.get(tool_name)
-
-    async def _execute_trigger_call(self, meta: ToolMeta, params: dict[str, Any]) -> str:
-        """Execute a trigger tool call directly via TriggerFeature.
-
-        The arguments are validated and coerced against the method's signature first,
-        as ``AlfredClient.dispatch`` does for a service's tools.
-
-        Raises:
-            ToolArgumentError: An argument is missing, invalid or unexpected; the method
-                is not called.
-        """
-        if self._triggers is None:
-            return "Error: trigger feature not configured"
-        kwargs = meta.validate_arguments(params)
-        fn = getattr(self._triggers, meta.name.removeprefix(f"{self._triggers.feature_name}."))
-        result: Any = await fn(**kwargs)
-        return json.dumps(result) if not isinstance(result, str) else result
-
-    @staticmethod
-    def _make_tool_result(call_id: str, content: str) -> dict[str, Any]:
-        """Build an OpenAI-format tool result dict."""
-        return {"type": "tool_result", "tool_use_id": call_id, "content": content}
-
-    async def _dispatch_tool_call(
-        self, tc: dict[str, Any], tools: list[ToolInfo], *, is_sir: bool = True
-    ) -> dict[str, Any]:
-        """Dispatch a single tool call and return the result dict.
-
-        ``is_sir`` gates the action-tool branch only (confirmation + attention
-        tools). This is defense-in-depth: the manifest is already only offered
-        to sir turns (see ``process_request``), but a guest-turn model could
-        still hallucinate an action-tool call, so it's re-checked here at
-        dispatch time. Defaults to True so existing callers (tests, and any
-        caller that never routes to a guest turn) are unaffected — real
-        dispatch from ``process_request`` always passes the resolved identity.
-        """
-        name = tc["name"]
-        # A model can emit `"arguments": "null"`, which `_call_llm` parses to None —
-        # that means "no arguments". Anything else non-object is malformed and is
-        # refused rather than silently dispatched as a zero-argument call.
-        raw_input = tc.get("input")
-        if raw_input is None:
-            params: dict[str, Any] = {}
-        elif isinstance(raw_input, dict):
-            # Copy: the caller's dict must not be mutated by the `reason` pop below.
-            params = dict(raw_input)
-        else:
-            return self._make_tool_result(
-                tc["id"], "Error: malformed tool arguments (expected a JSON object)"
-            )
-
-        # 1. Integration tools — direct call via IntegrationRegistry
-        if name.startswith(self._INTEGRATION_PREFIX):
-            try:
-                content = await self._execute_integration_call(name, params)
-            except Exception as e:
-                content = f"Error executing integration: {e}"
-            return self._make_tool_result(tc["id"], content)
-
-        # 2. Trigger tools — direct in-process call (system-level feature)
-        trigger_tool = self._resolve_trigger_tool(name)
-        if trigger_tool is not None:
-            try:
-                content = await self._execute_trigger_call(trigger_tool, params)
-            except Exception as e:
-                content = f"Error executing trigger: {e}"
-            return self._make_tool_result(tc["id"], content)
-
-        # 3. Memory tools — direct in-process call
-        if name.startswith(MEMORY_TOOL_PREFIX):
-            if self._context_index:
-                try:
-                    content = await dispatch_memory_tool(
-                        name,
-                        params,
-                        self._context_index,
-                        self._context_reader,
-                    )
-                except Exception as e:
-                    content = f"Error executing memory tool: {e}"
-            else:
-                content = "Memory tools not available"
-            return self._make_tool_result(tc["id"], content)
-
-        # 3b. Action tools (confirmation + attention) — direct in-process call, sir-only.
-        # Dispatch-side gate (defense-in-depth): the manifest is only handed to sir
-        # turns, but a guest-turn model could still emit a hallucinated call for one
-        # of these names, so refuse rather than execute.
-        if name in ACTION_TOOL_NAMES:
-            if not is_sir:
-                logger.warning(
-                    "Refusing action tool '%s' for non-sir identity (dispatch-side gate)", name
-                )
-                content = json.dumps({"error": "confirm/attention tools require the verified user"})
-                return self._make_tool_result(tc["id"], content)
-            try:
-                content = await dispatch_action_tool(name, params, self._redis)
-            except Exception as e:
-                content = f"Error executing action tool: {e}"
-            return self._make_tool_result(tc["id"], content)
-
-        # 4. Domain tools — route to external service via DomainRouter
-        target = ""
-        risk = "benign"
-        declares_own_reason = False
-        for t in tools:
-            if t.name == name:
-                target = t.target_service
-                risk = t.risk
-                # A tool may own a `reason` parameter; `_tools_to_openai_format` leaves
-                # that schema alone, so it belongs to the service and must not be popped.
-                declares_own_reason = self._REASON_PARAM in t.parameter_names
-                break
-
-        if not target:
-            return self._make_tool_result(tc["id"], f"Error: tool '{name}' not found in registry")
-
-        reason = (
-            params.pop(self._REASON_PARAM, None)
-            if risk == "critical" and not declares_own_reason
-            else None
-        )
-        action = ActionRequest(
-            source="conscious-engine",
-            target_service=target,
-            tool_name=name,
-            parameters=params,
-            reason=reason if isinstance(reason, str) and reason.strip() else None,
-        )
-        action_result = await self._router.route(action)
-        content = str(
-            action_result.result if action_result.status == "success" else action_result.error
-        )
-        return self._make_tool_result(tc["id"], content)
-
-    async def _execute_tool_calls(
-        self, tool_calls: list[dict[str, Any]], tools: list[ToolInfo], *, is_sir: bool = True
-    ) -> list[dict[str, Any]]:
-        """Execute tool calls concurrently via integration, trigger, or domain dispatch.
-
-        ``is_sir`` is forwarded to ``_dispatch_tool_call`` to gate action tools
-        at dispatch time (defense-in-depth alongside the manifest-level gate).
-        """
-        return list(
-            await asyncio.gather(
-                *(self._dispatch_tool_call(tc, tools, is_sir=is_sir) for tc in tool_calls)
-            )
-        )
 
     _ROUTINE_SUGGESTION_COOLDOWN_HOURS: ClassVar[int] = 24
 
@@ -636,21 +239,14 @@ class ConsciousEngine:
             )
             logger.info("Proactive routine suggestion published: '%s'", routine.name)
 
-    @track_latency(category="conscious")
+    # No @track_latency (#308): its buffer was never flushed, and the agent run span
+    # measures the same latency.
     @traced(name="conscious.process_request")
     async def process_request(self, request: UserRequest) -> AlfredResponse:
-        """Process a user request through the full pipeline."""
+        """Answer one request: identity, budget, the turn's context, one agent run."""
         now = datetime.now(UTC)
-        if request.timezone and is_valid_timezone(request.timezone):
-            tz_name = request.timezone
-            # Persist the client-supplied timezone at the domain boundary, before
-            # any tool dispatch (run_at normalization / cron) reads the stored key.
-            # set_user_timezone is write-on-change — one cheap GET per request.
-            await set_user_timezone(self._redis, request.timezone)
-        else:
-            tz_name = await get_user_timezone(self._redis)
+        tz_name = await self._timezone(request)
 
-        # 1. Identity Gate
         identity = self._identity_gate.resolve(
             channel=request.channel,
             identity_claim=request.identity_claim,
@@ -664,170 +260,134 @@ class ConsciousEngine:
             identity.confidence,
         )
 
-        # 2. Budget check
         if await self._cost.is_budget_exceeded():
             logger.warning("Daily budget exceeded — returning System 1 fallback")
-            return AlfredResponse(
-                source="conscious-engine",
-                channel=request.channel,
-                session_id=request.session_id,
-                text=(
-                    "I'm afraid we've reached the daily budget, sir. "
-                    "I'm operating in reduced capacity — ambient actions continue, "
-                    "but I'll need to defer complex requests until tomorrow."
-                ),
-                actions_taken=[],
-                mood="concerned",
-            )
+            return self._reply(request, BUDGET_REPLY, [], mood="concerned")
 
-        # 3. Session
         session = await self._session_mgr.get_or_create(request.session_id, request.channel)
-
-        # 3b. Involuntary recall — embed user query, search unified context index
-        involuntary_context: list[SearchResult] = []
-        if self._context_index and request.content:
-            try:
-                involuntary_context = await self._context_index.search_text(
-                    request.content,
-                    limit=self._involuntary_recall_limit,
-                    min_similarity=self._involuntary_recall_threshold,
-                )
-            except Exception:
-                logger.warning("Involuntary recall failed", exc_info=True)
-
-        # 3c. Routine suggestion — check candidate routines against current time
-        routine_hint: str = ""
-        if self.has_routine_store:
-            try:
-                routine_hint = self._build_routine_hint(now, tz_name)
-            except Exception:
-                logger.warning("Routine suggestion check failed", exc_info=True)
-
-        # 4. Context assembly
-        tools = await self._tool_registry.get_tools()
-
-        # Integrations are exposed as callable tools (not prompt text).
-        # Pass a truthy flag so the assembler emits the integration hint for sir.
-        has_integrations = bool(IntegrationRegistry.available())
-
-        system_prompt = self._assembler.assemble(
+        deps = TurnDeps(
             identity=identity,
-            integrations_available=has_integrations,
-            proactivity_level="opinionated",
-            now=now,
-            relevant_context=involuntary_context if involuntary_context else None,
+            session_id=request.session_id,
             channel=request.channel,
+            request_id=request.event_id,
+            tz_name=tz_name,
+            now=now,
+            services=self._services,
             content_type=request.content_type,
             area=request.area,
-            tz_name=tz_name,
-            routine_hint=routine_hint,
+            recall=await self._recall(request.content),
+            routine_hint=self._routine_hint(now, tz_name),
+            registry_tools=await self._tool_registry.get_tools(),
+            integration_tools=await self._integration_tools(identity.identity),
         )
 
-        # 5. Build messages
-        messages: list[dict[str, Any]] = list(session["history"])
-        messages.append({"role": "user", "content": request.content})
+        usage = RunUsage()
+        text = await self._run(request, deps, session["history"], usage)
 
-        # 6. Agentic loop
-        openai_tools = self._tools_to_openai_format(tools)
-        # Add integration capabilities as callable tools (sir only)
-        if identity.identity == "sir":
-            try:
-                integration_tools = await self._integrations_to_openai_format()
-                openai_tools.extend(integration_tools)
-            except Exception:
-                logger.warning("Failed to build integration tools", exc_info=True)
-        # Add memory tools (sir only)
-        if identity.identity == "sir" and self._context_index:
-            openai_tools.extend(MEMORY_TOOLS_MANIFEST)
-        # Add confirmation + attention tools (sir only)
-        if identity.identity == "sir":
-            openai_tools.extend(ACTION_TOOLS_MANIFEST)
-        total_prompt_tokens = 0
-        total_completion_tokens = 0
-        all_actions: list[str] = []
-        final_text = ""
-
-        for _iteration in range(MAX_ITERATIONS):
-            text, tool_calls, pt, ct = await self._call_llm(
-                system_prompt, messages, openai_tools, original_tools=tools
-            )
-            total_prompt_tokens += pt
-            total_completion_tokens += ct
-
-            if not tool_calls:
-                # Final response — no more tool calls
-                final_text = text
-                break
-
-            # Execute tools and feed results back (uses original dotted names)
-            tool_results = await self._execute_tool_calls(
-                tool_calls, tools=tools, is_sir=identity.identity == "sir"
-            )
-            all_actions.extend(tc["name"] for tc in tool_calls)
-
-            # Append assistant turn with tool calls (OpenAI format — sanitized names)
-            assistant_msg: dict[str, Any] = {"role": "assistant"}
-            if text:
-                assistant_msg["content"] = text
-            assistant_msg["tool_calls"] = [
-                {
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {
-                        "name": self._sanitize_tool_name(tc["name"]),
-                        "arguments": (
-                            json.dumps(tc["input"])
-                            if isinstance(tc["input"], dict)
-                            else str(tc["input"])
-                        ),
-                    },
-                }
-                for tc in tool_calls
-            ]
-            messages.append(assistant_msg)
-
-            # Append tool results (OpenAI format)
-            for tr, tc in zip(tool_results, tool_calls, strict=True):
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": tr["content"],
-                    }
-                )
-        else:
-            if not final_text:
-                final_text = (
-                    "I apologize, sir — I've been deliberating too long. "
-                    "Let me try a more direct approach."
-                )
-
-        # 7. Record cost
-        await self._cost.record_spend(total_prompt_tokens, total_completion_tokens, self._model)
-
-        # 8. Update session
         await self._session_mgr.append_turn(request.session_id, "user", request.content)
-        await self._session_mgr.append_turn(request.session_id, "assistant", final_text)
+        await self._session_mgr.append_turn(request.session_id, "assistant", text)
+        await self._note(now, request.content, text, deps.actions_taken, usage)
+        return self._reply(request, text, deps.actions_taken)
 
-        # 8b. Write observation to scratchpad queue
+    async def _timezone(self, request: UserRequest) -> str:
+        """The client's zone when it sent a valid one, persisted; else the stored zone."""
+        if request.timezone and is_valid_timezone(request.timezone):
+            # Persisted at the domain boundary, before any tool (run_at normalisation,
+            # cron) reads the stored key. Write-on-change: one cheap GET per request.
+            await set_user_timezone(self._redis, request.timezone)
+            return request.timezone
+        return await get_user_timezone(self._redis)
+
+    async def _recall(self, content: str) -> list[SearchResult]:
+        """Involuntary recall: memories close enough to the request to show unasked."""
+        if self._context_index is None or not content:
+            return []
+        try:
+            return await self._context_index.search_text(
+                content, limit=self._recall_limit, min_similarity=self._recall_threshold
+            )
+        except Exception:
+            logger.warning("Involuntary recall failed", exc_info=True)
+            return []
+
+    def _routine_hint(self, now: datetime, tz_name: str) -> str:
+        if self._routines is None:
+            return ""
+        try:
+            return self._build_routine_hint(now, tz_name)
+        except Exception:
+            logger.warning("Routine suggestion check failed", exc_info=True)
+            return ""
+
+    async def _integration_tools(self, who: str) -> list[IntegrationTool]:
+        """The integrations' capabilities, read once per turn; sir only."""
+        if who != "sir":
+            return []
+        try:
+            return await fetch_integration_tools()
+        except Exception:
+            logger.warning("Failed to list integration tools", exc_info=True)
+            return []
+
+    async def _run(
+        self,
+        request: UserRequest,
+        deps: TurnDeps,
+        history: list[dict[str, str]],
+        usage: RunUsage,
+    ) -> str:
+        """One agent run. *usage* accumulates across it and is what spend is recorded from."""
+        model = self._model
+        if model is None:
+            return NOT_CONFIGURED_REPLY
+        try:
+            with langfuse_attributes(
+                session_id=request.session_id, user_id=deps.who, tags=[request.channel]
+            ):
+                result = await self._agent.run(
+                    request.content,
+                    deps=deps,
+                    message_history=session_messages(history),
+                    model=model,
+                    usage=usage,
+                    usage_limits=UsageLimits(request_limit=REQUEST_LIMIT),
+                )
+            return result.output
+        except UsageLimitExceeded:
+            logger.warning("System 2 used its %d model requests without answering", REQUEST_LIMIT)
+            return DELIBERATING_REPLY
+        finally:
+            await self._cost.record_spend(usage.input_tokens, usage.output_tokens, model_key(model))
+
+    async def _note(
+        self, now: datetime, content: str, text: str, actions: list[str], usage: RunUsage
+    ) -> None:
+        """One line on the scratchpad for the Librarian: the question, never the reply."""
         try:
             timestamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-            actions_str = ", ".join(all_actions) if all_actions else "none"
+            actions_str = ", ".join(actions) if actions else "none"
             observation = (
                 f"{timestamp} [conscious] "
-                f"user='{request.content[:80]}' → {len(final_text)} chars "
-                f"(actions={actions_str}, tokens={total_prompt_tokens}+{total_completion_tokens})"
+                f"user='{content[:80]}' → {len(text)} chars "
+                f"(actions={actions_str}, tokens={usage.input_tokens}+{usage.output_tokens})"
             )
             await self._redis.lpush(SCRATCHPAD_QUEUE, observation)
         except Exception as exc:
             logger.warning("Failed to write scratchpad observation: %s", exc)
 
-        # 9. Build response
+    @staticmethod
+    def _reply(
+        request: UserRequest,
+        text: str,
+        actions: list[str],
+        *,
+        mood: Literal["neutral", "concerned"] = "neutral",
+    ) -> AlfredResponse:
         return AlfredResponse(
-            source="conscious-engine",
+            source=SOURCE,
             channel=request.channel,
             session_id=request.session_id,
-            text=final_text,
-            actions_taken=all_actions,
-            mood="neutral",
+            text=text,
+            actions_taken=actions,
+            mood=mood,
         )
