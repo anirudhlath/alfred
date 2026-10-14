@@ -77,30 +77,40 @@ async def dispatch_memory_tool(
 ) -> str:
     """Dispatch a memory tool call. Returns JSON string result."""
     if tool_name == "memory_recall_memories":
-        return await _recall_memories(params, context_index)
+        return json.dumps(
+            await recall_memories(
+                context_index,
+                params.get("query", ""),
+                types=params.get("types"),
+                since_days_ago=params.get("since_days_ago"),
+                limit=params.get("limit", 10),
+            )
+        )
     elif tool_name == "memory_get_live_state":
-        return await _get_live_state(params, context_reader)
+        return json.dumps(await get_live_state(context_reader, params.get("entities")))
     else:
         return json.dumps({"error": f"Unknown memory tool: {tool_name}"})
 
 
-async def _recall_memories(
-    params: dict[str, Any],
-    context_index: ContextIndexManager,
-) -> str:
-    query: str = params.get("query", "")
-    limit: int = params.get("limit", 10)
-    since_days: int | None = params.get("since_days_ago")
+async def recall_memories(
+    index: ContextIndexManager,
+    query: str,
+    *,
+    types: list[str] | None = None,
+    since_days_ago: int | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Search hot memory and the cold archive, compressed entries included.
 
-    # Hot and the cold archive, compressed entries included; counts as using the memory.
-    # The filters go to the search, so the limit counts only memories that match.
-    results = await context_index.recall(
+    Counts as using the memories it returns. The filters go to the search, so the limit
+    counts only memories that match.
+    """
+    results = await index.recall(
         query,
         limit=limit,
-        types=params.get("types"),
-        since=datetime.now(UTC) - timedelta(days=since_days) if since_days else None,
+        types=types,
+        since=datetime.now(UTC) - timedelta(days=since_days_ago) if since_days_ago else None,
     )
-
     formatted = [
         {
             "content": r.content,
@@ -110,16 +120,18 @@ async def _recall_memories(
         }
         for r in results
     ]
-    return json.dumps({"memories": formatted, "count": len(formatted)})
+    return {"memories": formatted, "count": len(formatted)}
 
 
-async def _get_live_state(
-    params: dict[str, Any],
-    context_reader: ContextReader,
-) -> str:
-    states = await context_reader.get_entity_states(
-        patterns=params.get("entities"),
-    )
+async def get_live_state(
+    reader: ContextReader, entities: list[str] | None = None
+) -> dict[str, Any]:
+    """The current state of *entities* (ids or globs), or every entity.
+
+    ``available`` is False when Alfred has no live state at all, which is not the same as
+    nothing being on.
+    """
+    states = await reader.get_entity_states(patterns=entities)
     if states is None:
-        return json.dumps({"available": False, "entities": []})
-    return json.dumps({"available": True, "entities": states})
+        return {"available": False, "entities": []}
+    return {"available": True, "entities": states}

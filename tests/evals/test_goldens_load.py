@@ -14,8 +14,8 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from bus.schemas.events import StateChangedEvent
-from core.conscious.action_tools import ACTION_TOOLS_MANIFEST
-from core.conscious.memory_tools import MEMORY_TOOLS_MANIFEST
+from core.conscious.tools.attention import ATTENTION_FUNCTIONS
+from core.conscious.tools.memory import MEMORY_FUNCTIONS
 from core.integrations import __path__ as integration_paths
 from core.integrations.base import Integration
 from core.integrations.registry import IntegrationRegistry
@@ -335,18 +335,12 @@ def _offered_tools(world: World) -> dict[str, frozenset[str]]:
     """
     services = [(d, svc) for d, offered in world.services.items() for svc in offered]
     home = frozenset(normalize_tool(f"home.{d}_{svc}") for d, svc in services)
-    manifests = {
-        "memory_": MEMORY_TOOLS_MANIFEST,
-        "confirm_pending_": ACTION_TOOLS_MANIFEST,
-    }
     return {
         "home_": home,
         normalize_tool(f"{TriggerFeature.feature_name}."): _trigger_tools(),
         "integration_": _integration_tools(),
-        **{
-            prefix: frozenset(t["function"]["name"] for t in manifest)
-            for prefix, manifest in manifests.items()
-        },
+        "memory_": frozenset(MEMORY_FUNCTIONS.tools),
+        "confirm_pending_": frozenset(ATTENTION_FUNCTIONS.tools),
     }
 
 

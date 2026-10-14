@@ -9,7 +9,6 @@ memory that gets recalled resists migration to cold storage. Only
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -78,12 +77,10 @@ async def test_search_text_does_not_record_by_default() -> None:
 
 @pytest.mark.asyncio
 async def test_the_recall_tool_opts_in() -> None:
-    from core.conscious.memory_tools import dispatch_memory_tool
+    from core.conscious.memory_tools import recall_memories
 
     index, store = _index([_result("a")])
-    raw = await dispatch_memory_tool(
-        "memory_recall_memories", {"query": "what do you know about me"}, index, AsyncMock()
-    )
+    reply = await recall_memories(index, "what do you know about me")
 
-    assert json.loads(raw)["count"] == 1
+    assert reply["count"] == 1
     store.update_metadata.assert_awaited_once()

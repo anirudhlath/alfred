@@ -65,6 +65,13 @@ class TriggerFeature(BaseFeature):
             "Sets notification urgency when trigger fires without an action. "
             "Default: informational."
         )
+        timing_docs = (
+            '\n\nTiming (type "time"): for a relative time ("in 20 minutes", "in 2 hours") '
+            "pass run_in_seconds (e.g. 1200) and let the server do the arithmetic — never "
+            'compute a run_at for one. For a wall-clock time ("at 3pm") pass run_at in '
+            "ISO-8601 WITH the user's current UTC offset (e.g. 2026-07-16T15:00:00-06:00), "
+            "read from the Current Time section. Never pass both."
+        )
 
         enriched: list[ToolMeta] = []
         for t in tools:
@@ -75,7 +82,12 @@ class TriggerFeature(BaseFeature):
                     dataclasses.replace(
                         t,
                         description=(
-                            t.description + "\n\n" + conditions_docs + action_docs + urgency_docs
+                            t.description
+                            + "\n\n"
+                            + conditions_docs
+                            + action_docs
+                            + urgency_docs
+                            + timing_docs
                         ),
                     )
                 )
