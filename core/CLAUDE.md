@@ -82,7 +82,7 @@ One Pydantic AI agent per request (`agent.py`); see `docs/llm.md`.
 - `prompts/` — System prompt templates
 
 ### Tools (one catalog, five toolsets in priority order)
-1. Trigger tools (`tools/triggers.py`) → in-process `TriggerFeature` methods, arguments validated and coerced first by the tool's `ToolMeta.validate_arguments`; a `ToolArgumentError` becomes a failed tool result naming each field
+1. Trigger tools (`tools/triggers.py`) → in-process `TriggerFeature` methods, arguments validated and coerced first by the tool's `ToolMeta.validate_arguments`; a `ToolArgumentError` becomes a `ModelRetry` naming each field (a retry prompt, up to `TOOL_RETRIES`)
 2. Memory tools (`tools/memory.py`, prefix `memory_`) → `memory_tools.py`; sir-only
 3. Attention + `confirm_pending_action` (`tools/attention.py`); sir-only
 4. Integration tools (`tools/integrations.py`, prefix `integration_`) → `IntegrationRegistry.execute()`; sir-only

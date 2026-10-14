@@ -136,7 +136,7 @@ boot fails "without reaching the LLM proxy"; when every one came back with an er
 because "the LLM upstream failed", with the statuses. A System 1 or Librarian call does not
 count. When none was classed as System 2 but some were `unknown`, the boot fails saying so: some
 LLM request went out without the `X-Alfred-Role` header (`shared/llm_roles.py`), which every
-request Alfred makes must carry. The stack records the suite's first
+request to an OpenAI-compatible server must carry (the eval stack runs Reflex on that backend). The stack records the suite's first
 boot time and that first reply's latency for the scorecard. Teardown removes the container
 and wipes the data dir (the container writes it as root).
 

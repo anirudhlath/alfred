@@ -16,8 +16,8 @@ traces are recorded, and how the eval harness tells the roles apart.
 | Librarian | `core/librarian/agents.py` | `LIBRARIAN_MODEL` | `librarian-analyse`, `librarian-extract`, `librarian-resolve`, `librarian-compress`, `librarian-patterns` | `librarian` |
 
 The header name and values live in `shared/llm_roles.py`, which has no dependencies so the
-Reflex process can import it without loading Pydantic AI. Every LLM request Alfred makes
-carries the header.
+Reflex process can import it without loading Pydantic AI. Every request Alfred sends to an
+OpenAI-compatible server carries the header; the Ollama Reflex backend sends none.
 
 ## Settings and model resolution
 
