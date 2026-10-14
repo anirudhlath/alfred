@@ -79,8 +79,10 @@ class CatalogToolset(CombinedToolset[TurnDeps]):
         except _PASS_THROUGH:
             raise
         except Exception as exc:
+            # The exception's text can carry hosts, ports or paths: log it, and tell the
+            # model only that the call failed.
             logger.warning("Tool %s failed", name, exc_info=True)
-            raise ToolFailed(f"{name} failed: {exc}") from exc
+            raise ToolFailed(f"{name} failed") from exc
         # Pydantic AI reads a list as multi-part content and renders an empty one as an
         # empty tool result; "nothing found" should reach the model as "[]".
         return EMPTY_LIST if result == [] else result

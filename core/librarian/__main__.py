@@ -84,6 +84,7 @@ async def run() -> None:
             significance_scorer=scorer,
             context_index=context_index,
             model=resolve_model("LIBRARIAN_MODEL", config.librarian_model),
+            timeout_s=config.system2_timeout_s,
             cost_tracker=CostTracker(redis=r, daily_cap_usd=config.daily_cost_cap_usd),
             conflict_min_observations=config.conflict_min_observations,
             conflict_min_days=config.conflict_min_days,

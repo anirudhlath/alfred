@@ -38,7 +38,7 @@ from core.memory.schemas import (
     SignificanceScore,
 )
 from core.memory.vector_store import Range
-from shared.config import DEFAULT_DECAY_MIGRATION_THRESHOLD
+from shared.config import DEFAULT_DECAY_MIGRATION_THRESHOLD, DEFAULT_SYSTEM2_TIMEOUT_S
 from shared.streams import LIBRARIAN_QUEUE, LIBRARIAN_STATUS_KEY
 from shared.usertime import get_user_timezone
 
@@ -207,6 +207,7 @@ class Librarian:
         preferences_dir: str = _DEFAULT_PREFERENCES_DIR,
         profile_dir: str = _DEFAULT_PROFILE_DIR,
         model: Model | None = None,
+        timeout_s: float = DEFAULT_SYSTEM2_TIMEOUT_S,
         cost_tracker: CostTracker | None = None,
         conflict_min_observations: int = 5,
         conflict_min_days: int = 14,
@@ -229,7 +230,9 @@ class Librarian:
         self._profile_dir = Path(profile_dir)
         # No model: every LLM step takes its fallback (heuristic significance,
         # concatenated summaries, no preferences or patterns).
-        self._agents = build_librarian_agents(model) if model is not None else None
+        self._agents = (
+            build_librarian_agents(model, timeout_s=timeout_s) if model is not None else None
+        )
         self._cost = cost_tracker
         self._conflict_min_observations = conflict_min_observations
         self._conflict_min_days = conflict_min_days

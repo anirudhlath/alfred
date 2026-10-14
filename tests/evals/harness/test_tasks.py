@@ -381,7 +381,7 @@ def test_the_test_package_pins_inspect_display_none() -> None:
     assert display_type_initialized() and display_type() == "none"
 
 
-def _reply_only() -> Scenario:
+def _reply_only(*also: dict[str, Any]) -> Scenario:
     return Scenario.model_validate(
         {
             "id": "conversation.persona.greeting",
@@ -389,7 +389,7 @@ def _reply_only() -> Scenario:
             "status": "shipped",
             "suite": "conversation",
             "steps": [{"user": "Good evening, Alfred."}],
-            "expect": [{"reply_contains": {"text": "sir"}}],
+            "expect": [{"reply_contains": {"text": "sir"}}, *also],
         }
     )
 
@@ -408,6 +408,16 @@ async def test_the_offered_check_is_appended_last_when_system2_called_a_tool() -
     assert [r.name for r in results] == ["reply_contains", TOOL_CALLS_OFFERED]
     assert results[-1].status == "fail" and results[-1].counted
     assert outcome == "I"
+
+
+async def test_the_offered_check_runs_once_when_the_golden_declares_it() -> None:
+    declared = _reply_only({TOOL_CALLS_OFFERED: {}})
+    ev = evidence(
+        replies=["Of course, sir."],
+        llm_calls=[llm("system2", ("home.light_turn_on", {}))],
+    )
+    _, results = await score_evidence(ev, declared, _unused_judge(), set())
+    assert [r.name for r in results] == ["reply_contains", TOOL_CALLS_OFFERED]
 
 
 async def test_the_offered_check_is_absent_without_a_system2_tool_call() -> None:

@@ -169,3 +169,18 @@ async def test_consolidate_empty_scratchpad_no_updates(tmp_path: Path) -> None:
     # With empty scratchpad, no updates
     result = await librarian.consolidate()
     assert result["entries_processed"] == 0
+
+
+def test_the_librarian_passes_its_timeout_to_its_agents() -> None:
+    context_index = AsyncMock()
+    librarian = Librarian(
+        redis=AsyncMock(),
+        episodic_memory=AsyncMock(),
+        routine_store=MagicMock(),
+        significance_scorer=_make_scorer_mock(),
+        context_index=context_index,
+        model=Script().model,
+        timeout_s=7.0,
+    )
+    assert librarian._agents is not None
+    assert librarian._agents.timeout_s == 7.0

@@ -131,6 +131,19 @@ async def test_a_confirmation_request_reaches_the_model_as_plain_content() -> No
 
 
 @pytest.mark.asyncio
+async def test_guest_calling_a_benign_tool_is_routed_and_recorded() -> None:
+    router = _router({"lights": []})
+    script = Script(tool_call("home_get_lights", {"entity_id": "light.desk"}), "here")
+
+    _, deps = await _run(script, [_info("home.get_lights")], who="guest", router=router)
+
+    router.route.assert_awaited_once()
+    assert router.route.await_args.args[0].tool_name == "home.get_lights"
+    assert script.outcomes(1) == ["success"]
+    assert deps.actions_taken == ["home.get_lights"]
+
+
+@pytest.mark.asyncio
 async def test_invalid_arguments_are_retried_with_the_schema_errors_and_never_routed() -> None:
     router = _router({"ok": True})
     script = Script(

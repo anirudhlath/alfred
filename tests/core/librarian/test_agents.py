@@ -16,6 +16,7 @@ from core.librarian.agents import (
     resolve_instructions,
 )
 from shared.agents import model_key
+from shared.config import DEFAULT_SYSTEM2_TIMEOUT_S
 from tests.llm_fakes import Script
 
 _ANALYSIS = {
@@ -56,6 +57,7 @@ async def test_a_request_carries_the_role_header_the_cap_and_the_instructions() 
     assert out == [ObservationAnalysis.model_validate(_ANALYSIS)]
     assert script.settings()["extra_headers"] == {"X-Alfred-Role": "librarian"}
     assert script.settings()["max_tokens"] == 300
+    assert script.settings()["timeout"] == DEFAULT_SYSTEM2_TIMEOUT_S
     assert script.instructions() == "ANALYSE"
     assert script.prompt() == "1. kitchen on"
 
@@ -178,3 +180,16 @@ def test_pattern_instructions_keep_thresholds_zone_and_the_reflex_paragraph() ->
     assert "at least 7 different days" in text
     assert "Entry times are local (America/Los_Angeles)" in text
     assert "System 1 (Reflex Engine)" in text
+
+
+@pytest.mark.asyncio
+async def test_a_request_carries_the_configured_timeout() -> None:
+    """A hung provider must not stall a nightly step: System 2's timeout applies."""
+    script = Script([_ANALYSIS])
+    agents = build_librarian_agents(script.model, timeout_s=12.5)
+
+    await agents.ask(
+        agents.analyse, "1. on", LibrarianTask("ANALYSE", expected_items=1), max_tokens=9, cost=None
+    )
+
+    assert script.settings()["timeout"] == 12.5

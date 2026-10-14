@@ -61,9 +61,9 @@ async def test_a_wire_name_two_toolsets_offer_goes_to_the_first(
 
 
 @pytest.mark.asyncio
-async def test_each_dispatched_call_is_recorded_and_an_unexpected_error_is_a_failed_result() -> (
-    None
-):
+async def test_each_dispatched_call_is_recorded_and_an_unexpected_error_is_a_failed_result(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     def ok() -> str:
         """Works."""
         return "fine"
@@ -75,12 +75,15 @@ async def test_each_dispatched_call_is_recorded_and_an_unexpected_error_is_a_fai
     script = Script(tool_call("ok"), tool_call("boom"), "done")
     deps = make_deps()
 
-    result = await tool_agent(script, _toolset(ok, boom)).run("go", deps=deps)
+    with caplog.at_level(logging.WARNING, logger="core.conscious.tools.catalog"):
+        result = await tool_agent(script, _toolset(ok, boom)).run("go", deps=deps)
 
     assert result.output == "done"
     assert deps.actions_taken == ["ok", "boom"]
-    assert script.returns(2) == ["boom failed: socket closed"]
+    # The exception's text can carry hosts or paths: it is logged, never shown the model.
+    assert script.returns(2) == ["boom failed"]
     assert script.outcomes(2) == ["failed"]
+    assert "socket closed" in caplog.text
 
 
 @pytest.mark.asyncio

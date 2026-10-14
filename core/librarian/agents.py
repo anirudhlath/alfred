@@ -21,6 +21,7 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage
 
 from shared.agents import instrumentation, model_key, role_headers
+from shared.config import DEFAULT_SYSTEM2_TIMEOUT_S
 from shared.llm_roles import LIBRARIAN
 
 if TYPE_CHECKING:
@@ -174,7 +175,7 @@ class LibrarianTask:
 
 @dataclass(frozen=True)
 class LibrarianAgents:
-    """The five agents and the model they run on."""
+    """The five agents, the model they run on and each request's timeout."""
 
     model: Model
     analyse: Agent[LibrarianTask, list[ObservationAnalysis]]
@@ -182,6 +183,7 @@ class LibrarianAgents:
     resolve: Agent[LibrarianTask, list[ConflictItem]]
     compress: Agent[LibrarianTask, CompressionSummary]
     patterns: Agent[LibrarianTask, list[RoutineCandidate]]
+    timeout_s: float = DEFAULT_SYSTEM2_TIMEOUT_S
 
     async def ask[T](
         self,
@@ -203,7 +205,7 @@ class LibrarianAgents:
                 prompt,
                 deps=task,
                 model=self.model,
-                model_settings=ModelSettings(max_tokens=max_tokens),
+                model_settings=ModelSettings(max_tokens=max_tokens, timeout=self.timeout_s),
                 usage=usage,
             )
         finally:
@@ -247,8 +249,11 @@ def _agent[T](model: Model, name: str, kind: type[T]) -> Agent[LibrarianTask, T]
     return agent
 
 
-def build_librarian_agents(model: Model) -> LibrarianAgents:
-    """The Librarian's agents on *model*, built once per process."""
+def build_librarian_agents(
+    model: Model, *, timeout_s: float = DEFAULT_SYSTEM2_TIMEOUT_S
+) -> LibrarianAgents:
+    """The Librarian's agents on *model*, built once per process. *timeout_s* bounds each
+    request, so a hung provider cannot stall a nightly step: System 2's setting."""
     analyse = _agent(model, "librarian-analyse", list[ObservationAnalysis])
 
     @analyse.output_validator
@@ -270,4 +275,5 @@ def build_librarian_agents(model: Model) -> LibrarianAgents:
         resolve=_agent(model, "librarian-resolve", list[ConflictItem]),
         compress=_agent(model, "librarian-compress", CompressionSummary),
         patterns=_agent(model, "librarian-patterns", list[RoutineCandidate]),
+        timeout_s=timeout_s,
     )
