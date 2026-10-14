@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
 from unittest.mock import patch
 
 import pytest
@@ -69,12 +70,37 @@ async def test_instrumentation_records_the_agent_and_model_spans() -> None:
 _PROVIDER_ENV = ("VLLM_BASE_URL", "OPENROUTER_API_KEY", "CLAUDE_API_KEY", "SYSTEM2_MODEL")
 
 
+def _clear_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset the provider variables so that ``monkeypatch.undo`` restores them exactly.
+
+    ``delenv(name, raising=False)`` records no undo for a variable that is absent, so
+    anything a test then writes (``apply_model_env`` sets ``VLLM_BASE_URL``) would leak
+    into later tests. ``setenv`` first records the original state, absent or present.
+    """
+    for name in _PROVIDER_ENV:
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+
+
 @pytest.fixture
 def no_provider_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """A developer's .env reaches os.environ on import (``shared.config``); clear it."""
-    for name in _PROVIDER_ENV:
-        monkeypatch.delenv(name, raising=False)
+    _clear_provider_env(monkeypatch)
     return monkeypatch
+
+
+def test_clearing_provider_env_restores_what_a_test_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VLLM_BASE_URL", raising=False)  # baseline: absent
+    inner = pytest.MonkeyPatch()
+    try:
+        _clear_provider_env(inner)
+        os.environ["VLLM_BASE_URL"] = "http://written-by-a-test"
+        inner.undo()
+        assert "VLLM_BASE_URL" not in os.environ
+    finally:
+        os.environ.pop("VLLM_BASE_URL", None)
 
 
 def test_litellm_is_gone() -> None:
