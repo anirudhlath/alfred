@@ -183,7 +183,7 @@ These five failure modes are the most likely to reach a person. Each is pinned b
     - `.instructions(i)`, `.offered(i)`, `.schema(name, i=0)`, `.settings(i)`, `.returns(i)` and `.retries(i)`;
     - the module helpers `tool_call(name, args)`, `tool_calls(*pairs)` and `ScriptExhausted`.
 
-- [ ] **Step 1: Add the dependencies**
+- [x] **Step 1: Add the dependencies**
 
 ```bash
 cd "$W"
@@ -194,7 +194,7 @@ uv run --no-sync python -c "import litellm, pydantic_ai, pydantic_ai_harness, js
 ```
 Expected: `2.55.0`, with litellm still importable. If `uv add` tries to move litellm below 1.88.6, stop: an extra slipped in.
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 `tests/shared/test_agents.py`:
 ```python
@@ -371,12 +371,12 @@ async def test_structured_replies_follow_the_model_profile(native: bool) -> None
     assert result.output == [_Item(a=1)]
 ```
 
-- [ ] **Step 3: Run the tests to verify they fail**
+- [x] **Step 3: Run the tests to verify they fail**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/shared/test_agents.py tests/shared/test_otel.py tests/test_llm_fakes.py -q -p no:randomly`
 Expected: collection errors, because `shared.agents`, `shared.llm_roles`, `tests.llm_fakes` and the new `shared.otel` names do not exist.
 
-- [ ] **Step 4: Write the implementation**
+- [x] **Step 4: Write the implementation**
 
 `conftest.py`: add after the existing imports, before the first fixture:
 ```python
@@ -643,12 +643,12 @@ class Script:
         ]
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/shared/test_agents.py tests/shared/test_otel.py tests/test_llm_fakes.py -q -p no:randomly`
 Expected: all pass. If `test_instrumentation_records_the_agent_and_model_spans` names its spans differently, read the names from the exporter and match the test to what 2.55 emits (`invoke_agent <name>` and `chat <model>` were observed in the probe). Do not drop the assertion.
 
-- [ ] **Step 6: Gate and commit**
+- [x] **Step 6: Gate and commit**
 
 Run the full gate. Then:
 ```bash
@@ -676,7 +676,7 @@ git commit -m "feat(llm): add Pydantic AI foundation — role header, model reso
     - the frozen dataclass `LlmSettings` (`system2_model`, `librarian_model`, `vllm_base_url`, `openrouter_api_key`, `system2_max_tokens`, `system2_timeout_s`).
   - New fields on `AlfredConfig`, with the same names as `LlmSettings`'s. The `claude_*` fields stay until Task 9.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/shared/test_llm_settings.py`:
 ```python
@@ -908,12 +908,12 @@ def test_legacy_openai_model_with_a_base_url_passes(tmp_path: Path) -> None:
     assert _status(checks, "conscious (System 2)") == "pass"
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/shared/test_llm_settings.py tests/alfredctl/test_doctor.py -q -p no:randomly`
 Expected: ImportError on `resolve_llm_settings` and the other new names. The new doctor tests fail.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `shared/config.py`:
 - Add the imports `import functools`, `import logging`, `import re` and `from collections.abc import Mapping, MutableMapping`, then `logger = logging.getLogger(__name__)` after the imports.
@@ -1150,12 +1150,12 @@ def _check_conscious(env: dict[str, str], online: bool) -> DoctorCheck:
     return DoctorCheck(_CONSCIOUS, "pass", detail)
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/shared/test_llm_settings.py tests/alfredctl/test_doctor.py tests/shared/test_env_example.py tests/shared/ -q -p no:randomly`
 Expected: all pass. If `test_env_example.py` fails, it found a new key whose blank value differs from its absence. Fix the resolver, not the test.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run the full gate. Then:
 ```bash
@@ -1193,7 +1193,7 @@ git commit -m "feat(config): per-role Pydantic AI model strings with legacy CLAU
     - `run_context(deps) -> RunContext[TurnDeps]`;
     - `call_direct(toolset, name, args, *, offered_to, called_by) -> Any`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/core/conscious/helpers.py`:
 ```python
@@ -1504,12 +1504,12 @@ async def test_sir_only_refuses_a_guest_at_call_time() -> None:
         )
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/core/conscious/tools/ -q -p no:randomly`
 Expected: collection errors (`core.conscious.tools` does not exist).
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `core/conscious/tools/__init__.py`:
 ```python
@@ -1810,7 +1810,7 @@ class SirOnlyToolset(WrapperToolset[TurnDeps]):
         return await super().call_tool(name, tool_args, ctx, tool)
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/core/conscious/tools/ -q -p no:randomly`
 Expected: all pass.
@@ -1818,7 +1818,7 @@ Expected: all pass.
 - If `ToolsetTool` has a non-init field, the `fields(...) if f.init` filter already skips it.
 - If mypy rejects `CatalogTool(**base, ...)`, build it with explicit keywords from `tool` instead (`toolset=tool.toolset, tool_def=tool.tool_def, ...`). Do not add a `type: ignore`.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run the full gate. Then:
 ```bash
@@ -1851,7 +1851,7 @@ git commit -m "feat(conscious): add the tool catalog, the one wire-name mapping 
     - `RegistryToolset(skip_services: frozenset[str] = frozenset({TRIGGER_ENGINE_SOURCE}))`.
   - Tool metadata keys that later tasks read: `registry_name`, `target_service`, `risk`, `strip_reason`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/core/conscious/tools/test_validation.py`:
 ```python
@@ -2299,12 +2299,12 @@ async def test_an_enum_outside_the_schema_is_retried() -> None:
     router.route.assert_not_awaited()
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/core/conscious/tools/test_validation.py tests/core/conscious/tools/test_registry.py -q -p no:randomly`
 Expected: collection errors (`validation` and `registry` do not exist).
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `core/conscious/tools/validation.py`:
 ```python
@@ -2508,14 +2508,14 @@ class RegistryToolset(AbstractToolset[TurnDeps]):
         return result.result if result.result is not None else {"status": "success"}
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/core/conscious/tools/ -q -p no:randomly`
 Expected: all pass.
 - If `test_rich_sdk_types_reach_the_model` sees a transformed schema (inlined `$ref`, say), the `FunctionModel` profile applied a JSON-schema transformer. Read `script.requests[0][1].function_tools[0]` and confirm the transform comes from Pydantic AI, not from this toolset; then assert on what the toolset hands over, by calling `RegistryToolset().get_tools(run_context(deps))` directly.
 - If the unknown-tool retry text in `test_guest_naming_an_elevated_tool_is_never_routed` does not include the called name, assert on the available names instead. The test exists to prove the router is never awaited.
 
-- [ ] **Step 5: Gate and commit**
+- [x] **Step 5: Gate and commit**
 
 Run the full gate. Then:
 ```bash
@@ -2552,7 +2552,7 @@ git commit -m "feat(conscious): validate registry tool calls against their JSON 
     - `integration_toolset() -> AbstractToolset[TurnDeps]` (sir-only).
   - Wire names: `triggers_<method>`, `memory_recall_memories`, `memory_get_live_state`, `confirm_pending_action`, `attention_add`, `attention_remove`, `attention_list`, `integration_<name>_<capability>`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/core/conscious/tools/test_triggers.py`:
 ```python
@@ -2963,12 +2963,12 @@ async def test_a_guest_is_offered_no_integration_tools() -> None:
     assert script.offered() == []
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/core/conscious/tools/ -q -p no:randomly`
 Expected: collection errors for the four new test files; the Task 3–4 tests still pass.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `core/triggers/feature.py`, in `get_tools`: add a `timing_docs` string after `urgency_docs`, and append it in the `create_trigger` description. The timing guidance moves here from System 2's personality prompt, so it travels with the tool:
 ```python
@@ -3432,7 +3432,7 @@ def integration_toolset() -> AbstractToolset[TurnDeps]:
     return SirOnlyToolset(IntegrationToolset())
 ```
 
-- [ ] **Step 4: Move the old callers onto the public memory functions**
+- [x] **Step 4: Move the old callers onto the public memory functions**
 
 `tests/core/memory/test_retrieval_stats.py`, `test_the_recall_tool_opts_in`:
 ```python
@@ -3486,14 +3486,14 @@ Drop the `json` import if nothing else in the file uses it.
   ```
   `normalize_tool` stays until Task 8.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/core/conscious/ tests/core/memory/test_retrieval_stats.py tests/evals/test_goldens_load.py tests/core/triggers/ -q -p no:randomly`
 Expected: all pass.
 - `FunctionToolset` parses Google docstrings with griffe, which ships with `pydantic-ai-slim`. If `test_recall_is_offered_with_its_descriptions_and_query_required` finds no parameter description, pass `docstring_format="google"` to both `FunctionToolset(...)` calls.
 - A trigger test that asserts on `create_trigger`'s description elsewhere in `tests/core/triggers/` may need `timing_docs` added to its expected text.
 
-- [ ] **Step 6: Gate and commit**
+- [x] **Step 6: Gate and commit**
 
 Run the full gate. Then:
 ```bash
@@ -3522,7 +3522,7 @@ The old engine still calls `assemble(..., tools_section=...)`. Leave `core/consc
     - `build_system2_agent(*, toolsets, assembler, max_tokens: int, timeout_s: float) -> Agent[TurnDeps, str]`.
   - `ContextAssembler.assemble(identity, *, integrations_available=False, proactivity_level="opinionated", now=None, relevant_context=None, channel="", content_type="text", area=None, tz_name="UTC", routine_hint="") -> str`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/core/conscious/test_agent.py`:
 ```python
@@ -3763,12 +3763,12 @@ Then:
 
 `tests/core/conscious/test_context_area.py`: drop `tools_section=""` from both calls.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/core/conscious/test_agent.py tests/core/conscious/test_context_assembler.py tests/core/conscious/test_context_area.py -q -p no:randomly`
 Expected: `test_agent.py` fails to import `core.conscious.agent`; the assembler tests fail with `TypeError` (unexpected keyword `integrations_available`).
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `core/conscious/context_assembler.py`, `assemble`: replace the signature and the body's sections 3–4, and append the routine hint:
 ```python
@@ -3891,7 +3891,7 @@ def build_system2_agent(
     return agent
 ```
 
-- [ ] **Step 4: Keep the old engine compiling until Task 6b**
+- [x] **Step 4: Keep the old engine compiling until Task 6b**
 
 In `core/conscious/engine.py`'s `process_request`, change the `self._assembler.assemble(...)` call:
 - drop `tools_section=...`;
@@ -3901,12 +3901,12 @@ In `core/conscious/engine.py`'s `process_request`, change the `self._assembler.a
 
 Task 6b deletes this code; this keeps the suite green in between.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/core/conscious/ -q -p no:randomly`
 Expected: all pass, the old engine tests included. If an old engine test asserted the tools section (`"Available Tools"` or a tool listed in the prompt), delete that assertion: the section is gone by the owner's decision.
 
-- [ ] **Step 6: Gate and commit**
+- [x] **Step 6: Gate and commit**
 
 Run the full gate. Then:
 ```bash
@@ -3948,7 +3948,7 @@ What `test_two_stage_assembly.py` covered, involuntary recall and memory tools o
   - `ConsciousDeps(redis, identity_gate, session_mgr, cost_tracker, domain_router, tool_registry, context_reader, agent, model, routine_store=None, context_index=None, config=ConsciousConfig())`;
   - `ConsciousEngine(*, deps: ConsciousDeps)`, keyword-only so `tests/core/test_service_shutdown.py`'s `_FakeEngine(**kwargs)` stand-in keeps working. Its methods are `process_request`, `check_routine_suggestions` and `has_routine_store`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/core/conscious/test_engine.py`: keep the routine block, today's lines 418–662 (`_make_routine` through `test_check_routine_suggestions_no_routines`), but drop `test_process_request_injects_routine_hint`, which is rewritten below. Delete everything else in the file: lines 1–416 (imports, fixture and the old loop's tests) and 664–935 (the reason and trigger tests, already ported). Then put this head above the routine block:
 
@@ -4478,12 +4478,12 @@ The old fixture wrote preference files into `tmp_path` that nothing read; they g
 
 `tests/core/memory/test_bug_fixes.py:252`: `ConsciousConfig(model="test")` becomes `ConsciousConfig()`.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/core/conscious/test_engine.py tests/integration/test_conscious_pipeline.py -q -p no:randomly`
 Expected: collection fails with `ImportError: cannot import name 'BUDGET_REPLY' from 'core.conscious.engine'`.
 
-- [ ] **Step 3: Rewrite the engine**
+- [x] **Step 3: Rewrite the engine**
 
 `core/conscious/engine.py`, the whole file. The routine methods (`_ROUTINE_SUGGESTION_COOLDOWN_HOURS`, `_eligible_candidates`, `_build_routine_hint`, `check_routine_suggestions`) are copied verbatim from today's file, lines 544–639. They are shown here in full so the file is complete:
 
@@ -4888,7 +4888,7 @@ Notes for the implementer:
 - `datetime` is imported at runtime: `test_process_request_injects_routine_hint` patches `core.conscious.engine.datetime`.
 - Pydantic AI may run `@agent.instructions` once per model request, which would assemble the prompt again on each. That is fine: the assembler is pure over `TurnDeps`.
 
-- [ ] **Step 4: Rewire the process**
+- [x] **Step 4: Rewire the process**
 
 `core/conscious/__main__.py`:
 - Imports: replace `from core.conscious.engine import ConsciousConfig, ConsciousDeps, ConsciousEngine` with:
@@ -4945,14 +4945,14 @@ git grep -n 'category="conscious"' -- core/
 ```
 Expected: no output from either. Markdown mentions are Task 10's.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/core/conscious/ tests/integration/test_conscious_pipeline.py tests/core/test_service_shutdown.py tests/core/memory/test_bug_fixes.py -q -p no:randomly`
 Expected: all pass. `test_service_shutdown.py` builds the real agent with the default (keyless) settings, so `resolve_model` logs one ERROR and returns `None`. That ERROR is the designed behaviour (Review Focus 4), not a failure.
 
 Then: `git grep -n "litellm" -- core/conscious/` prints nothing.
 
-- [ ] **Step 6: Gate and commit**
+- [x] **Step 6: Gate and commit**
 
 Run the full gate. Then:
 ```bash
@@ -4995,7 +4995,7 @@ The Librarian makes five LLM calls through `litellm.acompletion`, each parsing f
 - **`CostTracker` stays in `core/conscious/cost.py`.** The Librarian imports it only under `TYPE_CHECKING`. Moving it to `shared/` is PR 6's ledger work.
 - **Re-keyed prices** (per million tokens, input/output): `openrouter:anthropic/claude-opus-4` 15/75, `openrouter:anthropic/claude-sonnet-4` 3/15, `openrouter:anthropic/claude-3.5-sonnet` 3/15, `openrouter:google/gemini-2.5-pro-preview` 1.25/10, `openrouter:deepseek/deepseek-chat-v3-0324` 0.27/1.1. The un-prefixed `claude-*` keys go (R9). Unknown keys keep the 3/15 default.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tests/core/librarian/test_agents.py`:
 ```python
@@ -5172,12 +5172,12 @@ async def test_prompt_is_the_user_prompt_of_the_request() -> None:
 ```
 If `Agent` or `pytest` is not yet imported in that file, add `from pydantic_ai import Agent` and `import pytest`.
 
-- [ ] **Step 2: Run them to verify they fail**
+- [x] **Step 2: Run them to verify they fail**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/core/librarian/test_agents.py tests/core/conscious/test_cost.py tests/test_llm_fakes.py -q -p no:randomly`
 Expected: FAIL. `core.librarian.agents` does not exist, `record_spend` takes no `count_request`, `vllm:gemma-x` is priced at the default, and `Script` has no `prompt`.
 
-- [ ] **Step 3: Write `core/librarian/agents.py`, `Script.prompt` and the cost changes**
+- [x] **Step 3: Write `core/librarian/agents.py`, `Script.prompt` and the cost changes**
 
 `core/librarian/agents.py`:
 ```python
@@ -5501,12 +5501,12 @@ mypy accepted `_output` and an `Agent[...]`-annotated `Agent(None, output_type=_
   ```
   and its update dict uses `"request_count": state.request_count + (1 if count_request else 0)`.
 
-- [ ] **Step 4: Run the new tests to verify they pass**
+- [x] **Step 4: Run the new tests to verify they pass**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/core/librarian/test_agents.py tests/core/conscious/test_cost.py tests/test_llm_fakes.py -q -p no:randomly`
 Expected: all pass.
 
-- [ ] **Step 5: Move the consolidator onto the agents**
+- [x] **Step 5: Move the consolidator onto the agents**
 
 `core/librarian/consolidator.py`:
 - Header docstring: replace `Uses Claude for LLM-powered extraction and conflict resolution.` with `LLM calls go through the agents in core/librarian/agents.py, on LIBRARIAN_MODEL.`
@@ -5656,7 +5656,7 @@ Expected: all pass.
 
 Then: `git grep -n "litellm\|_api_key\|self\._model\b" -- core/librarian/` prints nothing.
 
-- [ ] **Step 6: Wire the model and the cost tracker**
+- [x] **Step 6: Wire the model and the cost tracker**
 
 `core/librarian/__main__.py`:
 - Imports: add `from core.conscious.cost import CostTracker` and `from shared.agents import resolve_model`; change `from shared.config import AlfredConfig` to `from shared.config import AlfredConfig, apply_model_env`.
@@ -5676,7 +5676,7 @@ When `LIBRARIAN_MODEL` equals `SYSTEM2_MODEL` this resolves the string a second 
 
 `evals/memory/env.py`, `SimEnv.librarian`: delete `claude_api_key="",` and change the docstring to `"""A Librarian with no model: no analysis calls, and compression falls back to its own deterministic concatenation summary (the "stub" summarizer)."""`.
 
-- [ ] **Step 7: Migrate the Librarian tests**
+- [x] **Step 7: Migrate the Librarian tests**
 
 The four files patch `litellm.acompletion`. Each now scripts the model instead. The recipe:
 
@@ -5838,14 +5838,14 @@ git grep -n "litellm\|claude_api_key\|claude_model" -- tests/core/librarian/ tes
 ```
 Expected: no output.
 
-- [ ] **Step 8: Run the tests to verify they pass**
+- [x] **Step 8: Run the tests to verify they pass**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/core/librarian/ tests/core/conscious/test_cost.py tests/evals/test_memory_metrics.py tests/evals/test_memory_env.py tests/evals/test_memory_runner.py tests/test_llm_fakes.py tests/core/test_service_shutdown.py -q -p no:randomly`
 Expected: all pass.
 
 Then: `git grep -n "litellm" -- core/ evals/memory/` prints nothing. litellm itself is still installed; Task 9 removes it.
 
-- [ ] **Step 9: Gate and commit**
+- [x] **Step 9: Gate and commit**
 
 Run the full gate. Then:
 ```bash
@@ -5883,7 +5883,7 @@ The proxy stops reading the first message's text to decide whose call it is (`RO
   - `evals.harness.checks.llm.RoleParams` and `tool_calls_offered(evidence, p: RoleParams) -> CheckResult`, registered as `"tool_calls_offered"`.
   - `evals.harness.tasks.TOOL_CALLS_OFFERED = "tool_calls_offered"`.
 
-- [ ] **Step 1: Write the failing proxy tests**
+- [x] **Step 1: Write the failing proxy tests**
 
 `tests/evals/harness/test_proxy.py`:
 
@@ -5952,7 +5952,7 @@ The proxy stops reading the first message's text to decide whose call it is (`RO
       assert all(ROLES_BY_HEADER[r] == r for r in LLM_ROLES)
   ```
 
-- [ ] **Step 2: Write the failing Reflex header test**
+- [x] **Step 2: Write the failing Reflex header test**
 
 `tests/core/reflex/test_inference_backends.py`. `_StubAsyncClient.post` must accept the header and record it:
 ```python
@@ -5979,7 +5979,7 @@ In `test_openai_infer_request_shape_and_parse`, after `url, body = stub.requests
 ```
 The literal pins the wire value; `shared.llm_roles` is the source the code uses.
 
-- [ ] **Step 3: Write the failing check tests**
+- [x] **Step 3: Write the failing check tests**
 
 `tests/evals/harness/test_checks.py`. Add `same_tool` to the `evals.harness.checks.llm` import:
 ```python
@@ -6123,7 +6123,7 @@ async def test_the_offered_check_is_absent_without_a_system2_tool_call() -> None
     assert outcome == "C"
 ```
 
-- [ ] **Step 4: Write the failing stack tests**
+- [x] **Step 4: Write the failing stack tests**
 
 `tests/evals/harness/test_stack.py`. Replace `test_container_env_points_every_llm_at_the_proxy_and_ha_at_the_fake` (lines 118–130) with:
 ```python
@@ -6166,12 +6166,12 @@ and its id from `"unclassified-calls"` to `"calls-without-a-role-header"`.
 
 These tests pass already once the import resolves: they pin that the goldens keep loading through the one mapping.
 
-- [ ] **Step 5: Run the tests to verify they fail**
+- [x] **Step 5: Run the tests to verify they fail**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/evals/harness/test_proxy.py tests/evals/harness/test_checks.py tests/evals/harness/test_tasks.py tests/evals/harness/test_stack.py tests/core/reflex/test_inference_backends.py -q -p no:randomly`
 Expected: collection errors on `ROLES_BY_HEADER`, `same_tool` and `TOOL_CALLS_OFFERED`. Once those exist, the failures are the header roles, the Reflex header, the new check, the container env and the readiness message.
 
-- [ ] **Step 6: Attribute roles by header in the proxy**
+- [x] **Step 6: Attribute roles by header in the proxy**
 
 `evals/harness/proxy.py`:
 
@@ -6210,7 +6210,7 @@ Expected: collection errors on `ROLES_BY_HEADER`, `same_tool` and `TOOL_CALLS_OF
 
 `_headers` already forwards every header except `_DROP_HEADERS`, so vLLM receives `X-Alfred-Role` and ignores it. Do not add it to the drop list.
 
-- [ ] **Step 7: Send the header from Reflex**
+- [x] **Step 7: Send the header from Reflex**
 
 `core/reflex/openai_client.py`. Add the import:
 ```python
@@ -6232,7 +6232,7 @@ and in `infer`, pass the header to the post:
 ```
 Reflex imports `shared.llm_roles`, not `shared.agents`: it has no agent, and `shared.agents` would load Pydantic AI into the Reflex process for one dict.
 
-- [ ] **Step 8: Compare tool names through `wire_name`**
+- [x] **Step 8: Compare tool names through `wire_name`**
 
 `evals/harness/checks/llm.py`:
 
@@ -6323,7 +6323,7 @@ git grep -n "normalize_tool\|classify_role\|ROLE_FINGERPRINTS" -- '*.py'
 ```
 Expected: no output.
 
-- [ ] **Step 9: Append the check in `score_evidence`**
+- [x] **Step 9: Append the check in `score_evidence`**
 
 `evals/harness/tasks.py`. Add the constant after the imports:
 ```python
@@ -6353,7 +6353,7 @@ async def score_evidence(
     return verdict(results), results
 ```
 
-- [ ] **Step 10: Point the eval container at the new settings**
+- [x] **Step 10: Point the eval container at the new settings**
 
 `evals/harness/stack.py`:
 
@@ -6379,12 +6379,12 @@ async def score_evidence(
                       )
   ```
 
-- [ ] **Step 11: Run the tests to verify they pass**
+- [x] **Step 11: Run the tests to verify they pass**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/evals/ tests/core/reflex/test_inference_backends.py -q -p no:randomly`
 Expected: all pass. `tests/evals/harness/test_checks_pending.py` names `home.lock_unlock` in one test and `home_lock_unlock` in another; both still match through `same_tool`.
 
-- [ ] **Step 12: Gate and commit**
+- [x] **Step 12: Gate and commit**
 
 Run the full gate. Then:
 ```bash
@@ -6415,7 +6415,7 @@ The runner's `--debug` flag goes too. Its only effect was `ALFRED_DEBUG=1`, whic
   - `shared.config.AlfredConfig.from_env()`, `AlfredConfig.system2_model`, and `apply_model_env(config, environ=os.environ)` (Task 2).
 - Produces: an environment where `vllm:` and `openrouter:` strings resolve to real models. Task 11 runs against it.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/shared/test_agents.py`, adding `import importlib.util` to the imports and `from shared.config import AlfredConfig, apply_model_env` beside the `shared.agents` import:
 ```python
@@ -6484,12 +6484,12 @@ def test_the_legacy_fields_are_gone() -> None:
 ```
 `apply_model_env` writes `os.environ` directly; `monkeypatch.delenv` on `VLLM_BASE_URL` in the fixture means monkeypatch restores it (to absent) after the test, so the write does not leak.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/shared/test_agents.py -q -p no:randomly`
 Expected: `test_litellm_is_gone` and `test_the_legacy_fields_are_gone` fail, and so do the three tests that expect a model: without the `[openai,openrouter]` extras the providers cannot load, so `resolve_model` logs an ERROR and returns `None`. The missing-setting test may already pass, for the same reason.
 
-- [ ] **Step 3: Swap the dependencies**
+- [x] **Step 3: Swap the dependencies**
 
 ```bash
 uv remove litellm
@@ -6506,7 +6506,7 @@ module = ["litellm.*"]
 ignore_missing_imports = true
 ```
 
-- [ ] **Step 4: Delete the legacy config fields**
+- [x] **Step 4: Delete the legacy config fields**
 
 `shared/config.py`:
 - In `AlfredConfig`, delete the comment `# Phase 3: Conscious Engine (via LiteLLM + OpenRouter)` and the three fields under it:
@@ -6524,7 +6524,7 @@ git grep -n "claude_api_key\|claude_model\|claude_max_tokens\|litellm\|LiteLLM\|
 ```
 Expected: matches only in the four docstrings and the runner, which the next step rewrites.
 
-- [ ] **Step 5: Rewrite what still names litellm**
+- [x] **Step 5: Rewrite what still names litellm**
 
 `conftest.py`, the `_default_reflex_backend` docstring:
 ```python
@@ -6578,12 +6578,12 @@ Keep the `Use it as …` paragraph that follows unchanged.
 
 Run the grep from Step 4 again. Expected: no output.
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 Run: `PYTHONDONTWRITEBYTECODE=1 uv run --no-sync pytest tests/shared/ tests/runner/ tests/alfredctl/test_doctor.py tests/core/conscious/ tests/core/librarian/ -q -p no:randomly`
 Expected: all pass.
 
-- [ ] **Step 7: Gate and commit**
+- [x] **Step 7: Gate and commit**
 
 Run the full gate. Then:
 ```bash
@@ -6607,7 +6607,7 @@ git commit -m "build: drop litellm for Pydantic AI's OpenAI and OpenRouter provi
 - Consumes: the names every earlier task produced, as listed in the File Map. The doc quotes them; it defines none.
 - Produces: nothing code reads.
 
-- [ ] **Step 1: Write `docs/llm.md`**
+- [x] **Step 1: Write `docs/llm.md`**
 
 ````markdown
 # The LLM layer
@@ -6857,7 +6857,7 @@ one-toolset agent.
 
 Check the doc against the code before committing, item by item: the toolset order against `system2_toolsets`, the defaults against `resolve_llm_settings`, the agent names against `core/librarian/agents.py`, and each toolset's audience against its `*_toolset()` function. Where the code differs, correct the doc, not the code.
 
-- [ ] **Step 2: Correct the architecture and autonomy docs**
+- [x] **Step 2: Correct the architecture and autonomy docs**
 
 `docs/architecture.md`:
 - Line 10, the System 2 bullet: replace "runs an agentic tool-use loop" with "runs one Pydantic AI agent per request, with every tool in one catalog ([docs/llm.md](llm.md))".
@@ -6886,7 +6886,7 @@ Check the doc against the code before committing, item by item: the toolset orde
 
 `docs/live-state.md`, lines 118 and 205: replace `core/conscious/memory_tools.py` with `core/conscious/tools/memory.py` (the tool) — the function body stays in `memory_tools.py` as `get_live_state`, so line 205's table row becomes `` | `core/conscious/tools/memory.py`, `core/conscious/memory_tools.py` | `memory_get_live_state` (the tool and its `get_live_state` body) | ``.
 
-- [ ] **Step 3: Correct the eval docs**
+- [x] **Step 3: Correct the eval docs**
 
 `docs/evals.md`:
 - Lines 97–98: replace "told apart by the first message's text, `ROLE_FINGERPRINTS`; anything else is `unknown`" with "told apart by the request's `X-Alfred-Role` header, `ROLES_BY_HEADER`; a request without a recognised one is `unknown`".
@@ -6899,7 +6899,7 @@ Check the doc against the code before committing, item by item: the toolset orde
 - Lines 860–863, **The model**: replace "Inspect's own `openai-api` provider needs `openai>=3.4`, and litellm, a base dependency, pins `openai<3`, so it cannot load here." with "Inspect's own `openai-api` provider could not load beside the old LLM client's `openai<3` pin; PR 7 of the Pydantic AI adoption moves the judge onto it and deletes `alfred-vllm`."
 - Line 1039: replace `` `ROLE_FINGERPRINTS` `` with `` `ROLES_BY_HEADER` ``.
 
-- [ ] **Step 4: Correct the README, the CLAUDE files and the QA backlog**
+- [x] **Step 4: Correct the README, the CLAUDE files and the QA backlog**
 
 `README.md`, line 262: replace the `CLAUDE_MODEL` row with two rows:
 ```markdown
@@ -6930,7 +6930,7 @@ Keep the `context_assembler.py` bullet, changing "Two-stage: involuntary recall 
 - `reminder-5s-latency.md:10`: "Ollama/LiteLLM route configured" → "`SYSTEM2_MODEL` configured".
 - `voice-satellite-real-mic-full-loop.md:11`: "(LiteLLM/OpenRouter)" → "(`SYSTEM2_MODEL`, see `docs/llm.md`)".
 
-- [ ] **Step 5: Update the PRD**
+- [x] **Step 5: Update the PRD**
 
 `docs/PRD.md`:
 - Under row 156 (guest access choices), add:
@@ -6940,7 +6940,7 @@ Keep the `context_assembler.py` bullet, changing "Two-stage: involuntary recall 
 - Leave row 157 (`Guest boundary enforcement via tiered autonomy`, Planned): Reflex and triggers are not covered yet.
 - Line 3: set "Capability statuses current as of" to the day you commit, in the same bold `YYYY-MM-DD` form.
 
-- [ ] **Step 6: Check nothing stale is left, and commit**
+- [x] **Step 6: Check nothing stale is left, and commit**
 
 ```bash
 git grep -n -i "litellm\|ROLE_FINGERPRINTS\|action_tools\|_dispatch_tool_call\|normalize_tool\|CLAUDE_MODEL" -- '*.md' ':!docs/superpowers' ':!research'
@@ -6983,7 +6983,7 @@ Nothing here is committed except a ledger entry. The results go into the PR desc
   - the `tool_calls_offered` check (Task 8).
 - Produces: the numbers for the PR description.
 
-- [ ] **Step 1: Gate and hygiene**
+- [x] **Step 1: Gate and hygiene**
 
 Run the full gate on the branch tip. Then run the greps in `~/code/alfred-deploy/PWA-EXPOSURE-RUNBOOK.md` §Secret hygiene against `origin/master..HEAD`. They must show zero new matches. Do not copy those commands into any file in the repo.
 
@@ -6993,7 +6993,7 @@ git log --format=%B origin/master..HEAD | grep -n -i "opus\|sonnet\|haiku\|fable
 ```
 Expected: no output. Code and docs may name model *strings* (the `openrouter:anthropic/claude-sonnet-4` default, the price table). Commit messages may not.
 
-- [ ] **Step 2: Both output modes, and one traced System 2 turn, against vLLM**
+- [x] **Step 2: Both output modes, and one traced System 2 turn, against vLLM**
 
 Write `$SCRATCH/verify_pr2.py`:
 ```python
@@ -7111,7 +7111,7 @@ Open `http://linux-server:3300` → Sessions → `pr2-verify` and record what th
 - the model request;
 - the usage.
 
-- [ ] **Step 3: The eval suites, master first**
+- [x] **Step 3: The eval suites, master first**
 
 ```bash
 git -C ~/code/.worktrees/alfred/pydantic-ai-adoption fetch origin master
@@ -7135,7 +7135,7 @@ Both runs bundle the same home-service checkout. A run whose stack fails to star
 
 Put both `report.md` files in the ledger verbatim, plus a per-row table: row, master pass rate, branch pass rate, delta.
 
-- [ ] **Step 4: Clean up**
+- [x] **Step 4: Clean up**
 
 ```bash
 git -C ~/code/.worktrees/alfred/pydantic-ai-adoption worktree remove ~/code/.worktrees/alfred/pr2-baseline
