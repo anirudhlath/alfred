@@ -97,7 +97,8 @@ stream, so the proxy is the only place their arguments can be seen. It records e
 `POST /v1/chat/completions`: the role (System 1, System 2 or the Librarian, told apart by
 the request's `X-Alfred-Role` header, `ROLES_BY_HEADER`; a request without a recognised one
 is `unknown`), the messages, the tools offered, the reply text, the tool calls with their
-arguments, token counts and latency. It never changes a request or a reply. Other paths pass through unrecorded, and
+arguments, token counts and latency. It never changes a request or a reply. Other paths
+pass through unrecorded, and
 streaming requests are refused. At most 2 requests are upstream at once, recorded or passed
 through (`MAX_UPSTREAM`), because the vLLM server is shared with production.
 
@@ -114,7 +115,8 @@ it waits a 5 s window. A golden that watches Reflex (see [One sample](#one-sampl
 instead for System 1's answer to that event, up to 15 s: a System 1 call about any other
 change does not end the wait. When the steps are done it waits for every LLM call sent
 since the sample started and still upstream to be recorded (a call is recorded when vLLM
-answers, stamped with when it reached the proxy; up to 120 s, then a harness error). A call from before the sample started, such
+answers, stamped with when it reached the proxy; up to 120 s, then a harness error).
+A call from before the sample started, such
 as one a restarted container left upstream, never enters its window and is not waited on.
 Then it collects the **evidence** (`evals/harness/evidence.py`): the transcript, every
 reply with its latency, the fake HA's calls and the proxy's LLM calls inside the sample's

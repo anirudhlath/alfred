@@ -218,6 +218,18 @@ async def test_guest_create_trigger_with_a_risky_action_is_refused(action: dict[
 
 
 @pytest.mark.asyncio
+async def test_guest_create_trigger_with_an_unparseable_action_is_refused() -> None:
+    toolset, store = _toolset()
+    script = Script(tool_call("triggers_create_trigger", _create_args({"bogus": 1})), "no")
+    deps = make_deps("guest", services=make_services(redis=_registry_redis()))
+
+    await tool_agent(script, toolset).run("go", deps=deps)
+
+    assert script.returns(1) == ["triggers_create_trigger is only available to the verified user"]
+    store.save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_a_trigger_action_naming_a_trigger_mutation_is_refused_to_a_guest() -> None:
     """A guest cannot schedule what they may not call: the trigger tools' own risks count."""
     toolset, store = _toolset()

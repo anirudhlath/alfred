@@ -106,13 +106,13 @@ class TriggerToolset(AbstractToolset[TurnDeps]):
     @staticmethod
     async def _action_allowed(action: Any, deps: TurnDeps) -> bool:
         """Whether *deps*' identity may schedule *action*: sir anything, a guest only a
-        ``benign`` tool. No action (a reminder) is always allowed, and so is one that does
-        not parse, which ``create_trigger`` refuses itself without saving anything."""
+        ``benign`` tool. No action (a reminder) is always allowed; an action that does not
+        parse is refused to a guest here rather than left to ``create_trigger``."""
         if not action or deps.who == SIR:
             return True
         try:
             payload = ActionPayload(**action)
         except Exception:
-            return True
+            return False
         risk = await tool_risk(deps.services.redis, payload.target_service, payload.tool_name)
         return allowed(risk, deps.who)
