@@ -392,6 +392,12 @@ class ConsciousEngine:
             logger.warning("Failed to write scratchpad observation: %s", exc)
 
     @staticmethod
+    def failure_reply(request: UserRequest, text: str) -> AlfredResponse:
+        """The answer to a turn that could not finish: a normal reply's channel, session
+        and source, no actions, concerned."""
+        return ConsciousEngine._reply(request, text, [], mood="concerned")
+
+    @staticmethod
     def _reply(
         request: UserRequest,
         text: str,

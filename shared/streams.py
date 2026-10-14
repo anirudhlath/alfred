@@ -31,6 +31,12 @@ DND_STATE_KEY = "alfred:memory:dnd"
 DEFERRED_NOTIFICATIONS_KEY = "alfred:notifications:deferred"
 NOTIFICATION_DISPATCH_STREAM = "alfred:notifications:dispatch"
 DEVICE_TOKENS_KEY = "alfred:push:devices"
+# Turns the Conscious Engine gave up on (permanent failure, deliveries exhausted, or
+# redelivered past the replay window): entry id, event, error, deliveries, reason.
+DEAD_LETTER_STREAM = "alfred:conscious:dead_letters"
+# + UserRequest.event_id -> set (with a TTL) once that request's answer is published and
+# before its entry is ACKed, so a redelivery after a crash in between answers nothing.
+ANSWERED_KEY = "alfred:conscious:answered:{}"
 
 # Phase 3: Memory
 VOICEPRINT_KEY = "alfred:identity:voiceprint"

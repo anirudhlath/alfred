@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-import time
 from typing import TYPE_CHECKING, Any
 
 # Import modules to trigger @register decorators
@@ -53,7 +52,7 @@ from shared.agents import resolve_model
 from shared.config import AlfredConfig, apply_model_env
 from shared.logging import configure_logging
 from shared.otel import init_tracing
-from shared.redis_streams import create_redis, read_group, reclaim_replayable
+from shared.redis_streams import create_redis, read_group, reclaim_due
 from shared.streams import (
     ACTIONS_STREAM,
     USER_REQUESTS_STREAM,
@@ -139,10 +138,6 @@ async def _consume_internal_actions(
             if not _shutdown.is_set():
                 log.error("Internal action consumer error: {}", e)
                 await asyncio.sleep(1)
-
-
-# One PEL recovery pass per minute at the loop's 5s block.
-_PEL_RECLAIM_EVERY = 12
 
 
 async def run(config: AlfredConfig) -> None:
@@ -398,26 +393,25 @@ async def run(config: AlfredConfig) -> None:
 
     log.info("Conscious Engine started. Listening on '{}'...", stream)
 
-    pel_counter = 0  # Check PEL every N iterations
-
     try:
         while not _shutdown.is_set():
             entries = await read_group(r, group, consumer, {stream: ">"}, count=1, block=5000)
-            batch = [pair for _stream_key, stream_entries in entries for pair in stream_entries]
+            # (entry id, fields, delivery): a live read is the first delivery.
+            batch = [
+                (entry_id, entry_data, 1)
+                for _stream_key, stream_entries in entries
+                for entry_id, entry_data in stream_entries
+            ]
 
-            # XREADGROUP '>' never redelivers, so an un-ACKed entry only comes back
-            # through an explicit reclaim — and it has to be *processed*, not merely
-            # counted, or the same entries are re-claimed every pass forever.
-            pel_counter += 1
-            if pel_counter >= _PEL_RECLAIM_EVERY:
-                pel_counter = 0
-                batch.extend(
-                    await reclaim_replayable(
-                        r, stream, group, consumer, now_ms=int(time.time() * 1000)
-                    )
-                )
+            # XREADGROUP '>' never redelivers, so a failed turn left un-ACKed only comes
+            # back through a reclaim — every iteration, once its backoff has elapsed, and
+            # processed by the same runner, which caps its deliveries.
+            batch.extend(
+                (red.entry_id, red.fields, red.delivery)
+                for red in await reclaim_due(r, stream, group, consumer)
+            )
 
-            for entry_id, entry_data in batch:
+            for entry_id, entry_data, delivery in batch:
                 await process_request_entry(
                     entry_id,
                     entry_data,
@@ -425,7 +419,8 @@ async def run(config: AlfredConfig) -> None:
                     redis=r,
                     stream=stream,
                     group=group,
-                    cost_tracker=cost_tracker,
+                    delivery=delivery,
+                    after_answer=cost_tracker.send_alert_if_needed,
                 )
     finally:
         log.info("Shutting down Conscious Engine...")
