@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -62,6 +63,10 @@ class CostTracker:
         self._redis = redis
         self._daily_cap = daily_cap_usd
         self._notifier = notifier
+        # Serialises record_spend's read-modify-write within this process (the
+        # Librarian's concurrent compressions and System 2 share one tracker). Writers in
+        # other processes can still interleave.
+        self._spend_lock = asyncio.Lock()
 
     async def _get_state(self) -> CostState:
         """Get today's cost state from Redis, creating if needed."""
@@ -100,16 +105,17 @@ class CostTracker:
     ) -> CostState:
         """Record one model run's spend. *count_request* is False for background work
         (the Librarian), so ``request_count`` stays the number of handled requests."""
-        state = await self._get_state()
         cost = self._estimate_cost(prompt_tokens, completion_tokens, model)
-        state = state.model_copy(
-            update={
-                "spend_usd": state.spend_usd + cost,
-                "cap_usd": self._daily_cap,
-                "request_count": state.request_count + (1 if count_request else 0),
-            }
-        )
-        await self._save_state(state)
+        async with self._spend_lock:
+            state = await self._get_state()
+            state = state.model_copy(
+                update={
+                    "spend_usd": state.spend_usd + cost,
+                    "cap_usd": self._daily_cap,
+                    "request_count": state.request_count + (1 if count_request else 0),
+                }
+            )
+            await self._save_state(state)
         logger.debug(
             "Recorded $%.4f spend (total: $%.2f / $%.2f)",
             cost,
@@ -130,9 +136,10 @@ class CostTracker:
 
     async def mark_alert_sent(self) -> None:
         """Mark that the 80% budget alert has been sent."""
-        state = await self._get_state()
-        state = state.model_copy(update={"alert_sent": True})
-        await self._save_state(state)
+        async with self._spend_lock:
+            state = await self._get_state()
+            state = state.model_copy(update={"alert_sent": True})
+            await self._save_state(state)
 
     async def send_alert_if_needed(self) -> bool:
         """Check budget and send alert notification if threshold exceeded."""
@@ -147,6 +154,6 @@ class CostTracker:
             source="cost_tracker",
             urgency=Urgency.URGENT,
         )
-        state = state.model_copy(update={"alert_sent": True})
-        await self._save_state(state)
+        # Re-read under the lock: spend recorded while the alert was publishing must stay.
+        await self.mark_alert_sent()
         return True

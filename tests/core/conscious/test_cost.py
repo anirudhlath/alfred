@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -202,3 +203,65 @@ async def test_spend_without_a_request_leaves_the_count(mock_redis: AsyncMock) -
 
     assert state.request_count == 3
     assert state.spend_usd > 1.0
+
+
+class _YieldingRedis:
+    """A key-value store whose reads and writes yield to the loop, as a network call does."""
+
+    def __init__(self) -> None:
+        self.value: str | None = None
+
+    async def get(self, key: str) -> str | None:
+        await asyncio.sleep(0)
+        return self.value
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        await asyncio.sleep(0)
+        self.value = value
+
+
+@pytest.mark.asyncio
+async def test_concurrent_spend_records_sum_exactly() -> None:
+    redis = _YieldingRedis()
+    tracker = CostTracker(redis=redis, daily_cap_usd=5.0)  # type: ignore[arg-type]
+
+    await asyncio.gather(
+        *(
+            tracker.record_spend(
+                prompt_tokens=1_000_000,
+                completion_tokens=0,
+                model="openrouter:anthropic/claude-sonnet-4",
+                count_request=i % 2 == 0,
+            )
+            for i in range(20)
+        )
+    )
+
+    assert redis.value is not None
+    state = CostState.model_validate_json(redis.value)
+    assert state.spend_usd == pytest.approx(60.0)  # 20 x $3
+    assert state.request_count == 10
+
+
+@pytest.mark.asyncio
+async def test_spend_recorded_while_the_alert_publishes_is_kept() -> None:
+    redis = _YieldingRedis()
+    redis.value = CostState(date=_TODAY, spend_usd=4.5, cap_usd=5.0).model_dump_json()
+    notifier = AsyncMock()
+    tracker = CostTracker(redis=redis, daily_cap_usd=5.0, notifier=notifier)  # type: ignore[arg-type]
+
+    async def publish(**_: object) -> None:
+        await tracker.record_spend(
+            prompt_tokens=1_000_000,
+            completion_tokens=0,
+            model="openrouter:anthropic/claude-sonnet-4",
+        )
+
+    notifier.publish.side_effect = publish
+
+    assert await tracker.send_alert_if_needed() is True
+
+    assert redis.value is not None
+    state = CostState.model_validate_json(redis.value)
+    assert state.alert_sent is True
+    assert state.spend_usd == pytest.approx(7.5)

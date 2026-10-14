@@ -11,6 +11,7 @@ output tool where it does not.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -27,6 +28,8 @@ if TYPE_CHECKING:
     from pydantic_ai.output import OutputSpec
 
     from core.conscious.cost import CostTracker
+
+logger = logging.getLogger(__name__)
 
 # One more try when the output fails validation (a wrong count, a malformed object);
 # after that the caller takes its fallback.
@@ -189,7 +192,11 @@ class LibrarianAgents:
         max_tokens: int,
         cost: CostTracker | None,
     ) -> T:
-        """Run *agent* once on this model; its tokens are recorded even when it fails."""
+        """Run *agent* once on this model; its tokens are recorded even when it fails.
+
+        A failed spend write is logged, never raised: raising would discard a paid
+        result, or replace the run's own exception with the bookkeeping one.
+        """
         usage = RunUsage()
         try:
             result = await agent.run(
@@ -201,13 +208,17 @@ class LibrarianAgents:
             )
         finally:
             if cost is not None:
-                await cost.record_spend(
-                    usage.input_tokens,
-                    usage.output_tokens,
-                    model_key(self.model),
-                    count_request=False,
-                )
+                await _record_spend(cost, usage, self.model)
         return result.output
+
+
+async def _record_spend(cost: CostTracker, usage: RunUsage, model: Model) -> None:
+    try:
+        await cost.record_spend(
+            usage.input_tokens, usage.output_tokens, model_key(model), count_request=False
+        )
+    except Exception:
+        logger.warning("Failed to record Librarian spend", exc_info=True)
 
 
 def _output[T](model: Model, kind: type[T]) -> OutputSpec[T]:

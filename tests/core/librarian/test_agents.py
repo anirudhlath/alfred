@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from core.librarian.agents import (
     OUTPUT_RETRIES,
@@ -118,6 +119,52 @@ async def test_a_failed_run_still_records_its_spend() -> None:
         await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500, cost=cost)
 
     cost.record_spend.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_exhausts_its_retries_still_records_its_spend() -> None:
+    script = Script([_ANALYSIS], [_ANALYSIS])
+    agents = build_librarian_agents(script.model)
+    cost = AsyncMock()
+
+    with pytest.raises(UnexpectedModelBehavior):
+        await agents.ask(
+            agents.analyse,
+            "1. a\n2. b",
+            LibrarianTask("I", expected_items=2),
+            max_tokens=300,
+            cost=cost,
+        )
+
+    assert script.call_count == 2
+    cost.record_spend.assert_awaited_once()
+    args, kwargs = cost.record_spend.await_args
+    assert args[0] > 0 and args[1] > 0
+    assert kwargs == {"count_request": False}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_spend_write_keeps_the_result() -> None:
+    script = Script([])
+    agents = build_librarian_agents(script.model)
+    cost = AsyncMock()
+    cost.record_spend.side_effect = ConnectionError("redis blip")
+
+    out = await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500, cost=cost)
+
+    assert out == []
+    cost.record_spend.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_spend_write_keeps_the_runs_own_exception() -> None:
+    script = Script(RuntimeError("gateway down"))
+    agents = build_librarian_agents(script.model)
+    cost = AsyncMock()
+    cost.record_spend.side_effect = ConnectionError("redis blip")
+
+    with pytest.raises(RuntimeError, match="gateway down"):
+        await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500, cost=cost)
 
 
 def test_resolve_instructions_state_the_contradiction_threshold() -> None:

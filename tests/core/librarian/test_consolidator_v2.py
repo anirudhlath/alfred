@@ -153,9 +153,11 @@ async def test_analyse_batch_retries_a_short_response() -> None:
 @pytest.mark.asyncio
 async def test_analyse_batch_falls_back_when_the_retry_is_short_too() -> None:
     one = [{"entities": ["x"], "significance": {}, "semantic_key": "x"}]
-    librarian = _make_librarian(script=Script(one, one))
+    script = Script(one, one)
+    librarian = _make_librarian(script=script)
 
     assert await librarian._analyse_batch(["a", "b", "c"]) == [{}, {}, {}]
+    assert script.call_count == 2
 
 
 # ---------------------------------------------------------------------------
