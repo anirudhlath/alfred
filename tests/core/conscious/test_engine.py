@@ -529,7 +529,7 @@ def test_build_routine_hint_morning_pattern_matches_morning(
 async def test_process_request_injects_routine_hint(
     mock_deps: dict[str, AsyncMock | MagicMock],
 ) -> None:
-    """process_request should append routine hint to system prompt when a candidate matches."""
+    """process_request should hand the routine hint to the assembler when a candidate matches."""
     routine_store = MagicMock()
     routine_store.list_by_state.return_value = [_make_routine(trigger_pattern="20:00 daily")]
 
@@ -545,11 +545,10 @@ async def test_process_request_injects_routine_hint(
 
             await engine.process_request(_make_request())
 
-    # The system_prompt passed to _call_llm should contain the routine hint
-    call_kwargs = mock_llm.call_args
-    system_prompt_arg = call_kwargs[0][0]  # first positional arg
-    assert "[routine-suggestion]" in system_prompt_arg
-    assert "evening_dim" in system_prompt_arg
+    # The assembler appends the hint to the prompt (test_context_assembler pins that)
+    hint = mock_deps["context_assembler"].assemble.call_args.kwargs["routine_hint"]
+    assert "[routine-suggestion]" in hint
+    assert "evening_dim" in hint
 
 
 def test_build_routine_hint_includes_steps_and_confidence(

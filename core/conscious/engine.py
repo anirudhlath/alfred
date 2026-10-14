@@ -712,8 +712,7 @@ class ConsciousEngine:
 
         system_prompt = self._assembler.assemble(
             identity=identity,
-            tools_section="\n".join(f"- {t.name}: {t.description}" for t in tools),
-            integrations_section="available" if has_integrations else "",
+            integrations_available=has_integrations,
             proactivity_level="opinionated",
             now=now,
             relevant_context=involuntary_context if involuntary_context else None,
@@ -721,9 +720,8 @@ class ConsciousEngine:
             content_type=request.content_type,
             area=request.area,
             tz_name=tz_name,
+            routine_hint=routine_hint,
         )
-        if routine_hint:
-            system_prompt = system_prompt + "\n\n" + routine_hint
 
         # 5. Build messages
         messages: list[dict[str, Any]] = list(session["history"])

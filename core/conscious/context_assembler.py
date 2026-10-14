@@ -47,8 +47,8 @@ class ContextAssembler:
     def assemble(
         self,
         identity: IdentityResult,
-        tools_section: str,
-        integrations_section: str = "",
+        *,
+        integrations_available: bool = False,
         proactivity_level: str = "opinionated",
         now: datetime | None = None,
         relevant_context: list[SearchResult] | None = None,
@@ -56,11 +56,12 @@ class ContextAssembler:
         content_type: str = "text",
         area: str | None = None,
         tz_name: str = "UTC",
+        routine_hint: str = "",
     ) -> str:
-        """Build the complete system prompt for Claude.
+        """Build System 2's instructions for one turn.
 
-        Parameters that were removed (now handled via involuntary/deliberate recall):
-            preferences_text, context_text, history, episodic_text, procedural_text
+        The tools are not listed here: the model is offered them as tool definitions,
+        under the names it must call them by (#299).
         """
         parts: list[str] = []
 
@@ -96,12 +97,8 @@ class ContextAssembler:
             stamp = f"{local.strftime('%A')} {local.isoformat(timespec='seconds')}"
             parts.append(f"\n## Current Time\n{stamp} ({tz_name})")
 
-        # 3. Tools (always — guest can use allowed tools)
-        if tools_section:
-            parts.append(f"\n## Available Tools\n{tools_section}")
-
         # 4. Integrations hint (sir only) — actual capabilities are exposed as tools
-        if identity.identity == "sir" and integrations_section:
+        if identity.identity == "sir" and integrations_available:
             parts.append(
                 "\n## Integrations\n"
                 "You have integration tools (prefixed `integration_`) for calendar, "
@@ -120,4 +117,7 @@ class ContextAssembler:
         if identity.identity == "sir":
             parts.append(f"\n## Proactivity Level: {proactivity_level}")
 
-        return "\n".join(parts)
+        prompt = "\n".join(parts)
+        if routine_hint:
+            prompt += "\n\n" + routine_hint
+        return prompt
