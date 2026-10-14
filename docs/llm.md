@@ -16,8 +16,9 @@ traces are recorded, and how the eval harness tells the roles apart.
 | Librarian | `core/librarian/agents.py` | `LIBRARIAN_MODEL` | `librarian-analyse`, `librarian-extract`, `librarian-resolve`, `librarian-compress`, `librarian-patterns` | `librarian` |
 
 The header name and values live in `shared/llm_roles.py`, which has no dependencies so the
-Reflex process can import it without loading Pydantic AI. Every request Alfred sends to an
-OpenAI-compatible server carries the header; the Ollama Reflex backend sends none.
+Reflex process can import it without loading Pydantic AI. Every chat request Alfred sends
+to an OpenAI-compatible server carries the header; embedding requests and the Ollama Reflex
+backend send none.
 
 ## Settings and model resolution
 
@@ -37,14 +38,16 @@ A model is a Pydantic AI model string; there is no model factory.
 |---|---|---|
 | `SYSTEM2_MODEL` | the translated `CLAUDE_MODEL`, else `openrouter:anthropic/claude-sonnet-4` | `openrouter:<vendor>/<model>` or `vllm:<served-name>` |
 | `LIBRARIAN_MODEL` | `SYSTEM2_MODEL` | the same forms |
-| `VLLM_BASE_URL` | `OPENAI_COMPAT_HOST` + `/v1` | where `vllm:` models are served |
+| `VLLM_BASE_URL` | the first set of `OPENAI_BASE_URL` (legacy only, see below), `OPENAI_COMPAT_HOST`, `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended | where `vllm:` models are served |
 | `OPENROUTER_API_KEY` | `CLAUDE_API_KEY` | the key `openrouter:` models use |
 | `SYSTEM2_MAX_TOKENS` | `CLAUDE_MAX_TOKENS`, else 2048 | System 2's per-request output cap |
-| `SYSTEM2_TIMEOUT_S` | 60 | System 2's per-request model timeout |
+| `SYSTEM2_TIMEOUT_S` | 60 | the per-request model timeout, for System 2 and the Librarian |
 
 A blank value means the default. The legacy `CLAUDE_MODEL` is translated in one place:
 `openrouter/<vendor>/<model>` becomes `openrouter:<vendor>/<model>`, and `openai/<model>`
-becomes `vllm:<model>` when `OPENAI_BASE_URL` is set. A direct `claude-*` string is not
+becomes `vllm:<model>` when `OPENAI_BASE_URL` is set. `OPENAI_BASE_URL` is read as the
+`vllm:` server only in that case: when `SYSTEM2_MODEL` is blank and `CLAUDE_MODEL` is a
+legacy `openai/` string. A direct `claude-*` string is not
 translated: no Anthropic provider ships, so `alfredctl doctor` fails it and
 `resolve_model` returns `None`.
 
@@ -134,7 +137,7 @@ process, so a service can never register over an internal tool.
 | 2 | memory (`memory_recall_memories`, `memory_get_live_state`) | `tools/memory.py` | sir, when the turn has a context index |
 | 3 | attention + `confirm_pending_action` | `tools/attention.py` | sir |
 | 4 | integrations | `tools/integrations.py` | sir |
-| 5 | `RegistryToolset` (every SDK-registered tool) | `tools/registry.py` | sir: all; guest: `benign` risk only |
+| 5 | `RegistryToolset` (every SDK-registered tool except the `trigger-engine` service's, which `TriggerToolset` serves) | `tools/registry.py` | sir: all; guest: `benign` risk only |
 
 Each toolset retries a failed call twice (`TOOL_RETRIES = 2`).
 
@@ -163,11 +166,14 @@ drops only that tool, with one ERROR across requests.
 failed tool result with the service's exact text and does not spend a retry. Critical tools
 take an optional `reason` argument, which `RegistryToolset` moves onto
 `ActionRequest.reason` so the service never sees it. Confirmations still go through the
-router's critical intercept and `confirm_pending_action` until PR 5.
+router's critical intercept and `confirm_pending_action` until PR 5; the intercept's
+`confirmation_required:<id>` text reaches the model as plain content, not as a failed call.
+An unexpected exception in a toolset is logged with its traceback, and the model reads only
+*"`{name}` failed"*: the exception's text can carry hosts or paths.
 
 `actions_taken` records every call the catalog dispatches, failed ones included, under the
-tool's registry name (or its wire name, for in-process tools). Calls refused before dispatch
-are not recorded.
+tool's registry name (or its wire name, for in-process tools). Calls whose arguments fail
+validation are not recorded.
 
 ## The Librarian
 
@@ -184,9 +190,11 @@ and returns a typed output:
 | `librarian-patterns` | `list[RoutineCandidate]` | detecting routines |
 
 The output mode follows the model's profile: JSON-schema output where the model supports it,
-an output tool where it does not. Each agent retries its output once. The analysis agent also checks the count: a reply with
-the wrong number of elements is retried with a prompt naming both numbers, and a second
-miss leaves every observation unscored rather than misaligned. Without a model, or when a
+an output tool where it does not. Each request is bounded by `SYSTEM2_TIMEOUT_S`, so a hung
+provider cannot stall a nightly step. Each agent retries its output once. The analysis agent
+also checks the count: a reply with the wrong number of elements is retried with a prompt
+naming both numbers, and a second miss leaves every observation unscored rather than
+misaligned. Without a model, or when a
 call fails, each caller keeps its deterministic fallback.
 
 ## Spend

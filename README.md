@@ -260,7 +260,7 @@ annotated source of truth, split into a short **REQUIRED** section and defaulted
 |----------|---------|-------------|
 | `OPENROUTER_API_KEY` | — | System 2 cloud LLM key (required for reasoning) |
 | `SYSTEM2_MODEL` | `openrouter:anthropic/claude-sonnet-4` | System 2 model (Pydantic AI string: `openrouter:<vendor>/<model>` or `vllm:<served-name>`; see `docs/llm.md`) |
-| `VLLM_BASE_URL` | `OPENAI_COMPAT_HOST` + `/v1` | Where `vllm:` models are served |
+| `VLLM_BASE_URL` | first set of `OPENAI_BASE_URL` (legacy `openai/` `CLAUDE_MODEL` only), `OPENAI_COMPAT_HOST`, `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended | Where `vllm:` models are served |
 | `REFLEX_BACKEND` | `ollama` | System 1 backend: `ollama` \| `openai` |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API (localhost auto-rewritten in-container) |
 | `HA_HOST` | `http://localhost:8123` | Home Assistant base URL |
