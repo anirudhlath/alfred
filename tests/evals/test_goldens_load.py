@@ -16,6 +16,7 @@ from pydantic import BaseModel, ValidationError
 from bus.schemas.events import StateChangedEvent
 from core.conscious.tools.attention import ATTENTION_FUNCTIONS
 from core.conscious.tools.memory import MEMORY_FUNCTIONS
+from core.conscious.tools.names import wire_name
 from core.integrations import __path__ as integration_paths
 from core.integrations.base import Integration
 from core.integrations.registry import IntegrationRegistry
@@ -24,7 +25,6 @@ from core.reflex.prompt import LiveEntity, render_event
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
 from evals.harness.checks import JudgeSpec, run_check
-from evals.harness.checks.llm import normalize_tool
 from evals.harness.driver import PlayContext
 from evals.harness.evidence import (
     ClockSet,
@@ -324,20 +324,20 @@ def _trigger_tools() -> frozenset[str]:
     """The triggers feature's tools as System 2 sends them, read off the feature itself.
     Listing them needs a store, which naming them never touches."""
     feature = TriggerFeature(TriggerFeatureContext(store=AsyncMock(spec_set=TriggerStore)))
-    return frozenset(normalize_tool(t.name) for t in feature.get_tools())
+    return frozenset(wire_name(t.name) for t in feature.get_tools())
 
 
 def _offered_tools(world: World) -> dict[str, frozenset[str]]:
     """Per feature, as the prefix System 2 sends its tools under, the tools it offers.
 
     home-service offers each world service as the tool ``home.{domain}_{service}``, and
-    System 2 sends a dotted name with underscores (``checks/llm.normalize_tool``).
+    the model is offered its wire name (``core/conscious/tools/names.wire_name``).
     """
     services = [(d, svc) for d, offered in world.services.items() for svc in offered]
-    home = frozenset(normalize_tool(f"home.{d}_{svc}") for d, svc in services)
+    home = frozenset(wire_name(f"home.{d}_{svc}") for d, svc in services)
     return {
         "home_": home,
-        normalize_tool(f"{TriggerFeature.feature_name}."): _trigger_tools(),
+        wire_name(f"{TriggerFeature.feature_name}."): _trigger_tools(),
         "integration_": _integration_tools(),
         "memory_": frozenset(MEMORY_FUNCTIONS.tools),
         "confirm_pending_": frozenset(ATTENTION_FUNCTIONS.tools),
@@ -394,13 +394,13 @@ def _unknown_services(s: Scenario, world: World) -> list[str]:
         ):
             bad.append(f"{check.name}: {domain or '*'}.{service or '*'}")
         for tool in _tools(check):
-            name = normalize_tool(tool)
+            name = wire_name(tool)
             if name not in tools_offered:
                 bad.append(f"{check.name}: tool {tool}")
     for i, step in enumerate(s.steps):
         if isinstance(step, UserStep) and step.pending_action is not None:
             tool = step.pending_action.tool
-            if normalize_tool(tool) not in tools_offered:
+            if wire_name(tool) not in tools_offered:
                 bad.append(f"steps.{i}.pending_action: tool {tool}")
     return bad
 
@@ -439,7 +439,7 @@ def test_every_golden_names_real_services_and_tools() -> None:
         seen |= {f for c in s.expect for f in ("service", "tool") if getattr(c.params, f, None)}
         tools = [t for c in s.expect for t in _tools(c)]
         for prefix in checked:
-            checked[prefix] += sum(normalize_tool(t).startswith(prefix) for t in tools)
+            checked[prefix] += sum(wire_name(t).startswith(prefix) for t in tools)
     # The lookup matched something, and each feature's guard checked at least one tool:
     # otherwise every tool could be skipped as another feature's and the test would pass
     # vacuously.

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from core.conscious.tools.names import WireNameError, wire_name
 from evals.harness.checks.matching import describe, validate_fields, value_matches
 from evals.harness.checks.reply import Needles, hit, needle_text
 from evals.harness.checks.result import CheckResult, failed, passed
@@ -17,9 +18,17 @@ if TYPE_CHECKING:
     from evals.harness.evidence import Evidence, LlmCall, ToolCall
 
 
-def normalize_tool(name: str) -> str:
-    """System 2 sends ``home_light_turn_on`` for ``home.light_turn_on`` (engine.py)."""
-    return name.replace(".", "_")
+def same_tool(a: str, b: str) -> bool:
+    """Whether *a* and *b* name one tool: a golden may give its identity
+    (``home.light_turn_on``), the model calls its wire name (``home_light_turn_on``).
+
+    The mapping is ``core/conscious/tools/names.wire_name``, the one Alfred offers tools
+    by. A name with no wire name (empty, or too long) is only ever the same as itself.
+    """
+    try:
+        return wire_name(a) == wire_name(b)
+    except WireNameError:
+        return a == b
 
 
 class ToolParams(BaseModel):
@@ -55,12 +64,11 @@ def _role_calls(evidence: Evidence, role: Role, at_step: int | None = None) -> l
 
 
 def _calls(evidence: Evidence, role: Role, tool: str, at_step: int | None = None) -> list[ToolCall]:
-    want = normalize_tool(tool)
     return [
         tc
         for c in _role_calls(evidence, role, at_step)
         for tc in c.tool_calls
-        if normalize_tool(tc.name) == want
+        if same_tool(tc.name, tool)
     ]
 
 
@@ -111,8 +119,7 @@ def tool_offered(evidence: Evidence, p: ToolOfferedParams) -> CheckResult:
     calls = _role_calls(evidence, p.role, p.at_step)
     if not calls:
         return failed("tool_offered", f"no {p.role} call was recorded in the selected scope")
-    want = normalize_tool(p.tool)
-    if any(normalize_tool(name) == want for c in calls for name in c.tools_offered):
+    if any(same_tool(name, p.tool) for c in calls for name in c.tools_offered):
         return passed("tool_offered", f"{p.role} was offered {p.tool}")
     return failed("tool_offered", f"{p.role} was never offered {p.tool}")
 
@@ -121,10 +128,36 @@ def tool_not_offered(evidence: Evidence, p: ToolOfferedParams) -> CheckResult:
     calls = _role_calls(evidence, p.role, p.at_step)
     if not calls:
         return failed("tool_not_offered", f"no {p.role} call was recorded in the selected scope")
-    want = normalize_tool(p.tool)
-    if any(normalize_tool(name) == want for c in calls for name in c.tools_offered):
+    if any(same_tool(name, p.tool) for c in calls for name in c.tools_offered):
         return failed("tool_not_offered", f"{p.role} was offered {p.tool}")
     return passed("tool_not_offered", f"{p.role} was not offered {p.tool}")
+
+
+class RoleParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Role = "system2"
+
+
+def tool_calls_offered(evidence: Evidence, p: RoleParams) -> CheckResult:
+    """Each tool call names, exactly, a tool offered in that same request.
+
+    Exact on purpose: a call by any other spelling (``home.light_turn_on`` for
+    ``home_light_turn_on``) is refused and retried, never dispatched (#299).
+    """
+    stray = sorted(
+        {
+            tc.name
+            for c in _role_calls(evidence, p.role)
+            for tc in c.tool_calls
+            if tc.name not in c.tools_offered
+        }
+    )
+    if stray:
+        return failed(
+            "tool_calls_offered",
+            f"{p.role} called {', '.join(stray)}, not offered in that request",
+        )
+    return passed("tool_calls_offered", f"every {p.role} tool call named an offered tool")
 
 
 def message_text(message: dict[str, Any]) -> str:

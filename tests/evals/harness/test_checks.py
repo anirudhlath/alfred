@@ -6,14 +6,14 @@ import pytest
 from pydantic import ValidationError
 
 from evals.harness.checks import CHECK_PARAMS, DETERMINISTIC, run_check
-from evals.harness.checks.llm import PromptParams, ToolArgsParams
+from evals.harness.checks.llm import PromptParams, ToolArgsParams, same_tool
 from evals.harness.checks.matching import validate_expected, value_matches
-from evals.harness.evidence import HaState, LlmCall
+from evals.harness.evidence import HaState, LlmCall, ToolCall
 from tests.evals.harness.factories import call, evidence, llm
 
 if TYPE_CHECKING:
     from evals.harness.checks.result import CheckResult
-    from evals.harness.evidence import Evidence
+    from evals.harness.evidence import Evidence, Role
 
 
 def check(name: str, params: dict[str, Any], ev: Evidence) -> CheckResult:
@@ -452,3 +452,78 @@ def test_tool_call_checks_scope_calls_and_arguments_to_a_step() -> None:
         ).status
         == "pass"
     )
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("home.light_turn_on", "home_light_turn_on", True),
+        ("home_light_turn_on", "home_light_turn_on", True),
+        ("memory_recall_memories", "memory_recall_memories", True),
+        ("home.light_turn_on", "home.light_turn_off", False),
+        ("home.light_turn_on", "homelight_turn_on", False),
+        ("", "", True),
+        ("", "home_light_turn_on", False),
+        ("x" * 65, "x" * 65, True),
+        ("x" * 65, "x" * 64, False),
+    ],
+)
+def test_same_tool_compares_wire_names(a: str, b: str, same: bool) -> None:
+    """A golden may name a tool by its identity; the model calls it by its wire name.
+    A name with no wire name (empty, too long) is only ever the same as itself."""
+    assert same_tool(a, b) is same
+    assert same_tool(b, a) is same
+
+
+def _offered(offered: list[str], *called: str, role: Role = "system2") -> LlmCall:
+    return LlmCall(
+        t=1.0,
+        role=role,
+        latency_ms=10.0,
+        status=200,
+        tools_offered=offered,
+        tool_calls=[ToolCall(name=n) for n in called],
+    )
+
+
+def test_tool_calls_offered_passes_when_every_call_names_an_offered_tool() -> None:
+    ev = evidence(
+        llm_calls=[
+            _offered(["home_light_turn_on", "memory_recall_memories"], "home_light_turn_on"),
+            _offered(["memory_recall_memories"], "memory_recall_memories"),
+        ]
+    )
+    result = check("tool_calls_offered", {}, ev)
+    assert result.status == "pass", result.reason
+
+
+def test_tool_calls_offered_fails_on_a_dotted_name_and_names_it() -> None:
+    """The exact wire name, never the identity: a dotted call was refused, not dispatched."""
+    ev = evidence(llm_calls=[_offered(["home_light_turn_on"], "home.light_turn_on")])
+    result = check("tool_calls_offered", {}, ev)
+    assert result.status == "fail"
+    assert "home.light_turn_on" in result.reason
+
+
+def test_tool_calls_offered_reads_each_request_alone() -> None:
+    """Offered in an earlier request is not offered in this one."""
+    ev = evidence(
+        llm_calls=[
+            _offered(["home_light_turn_on"]),
+            _offered(["memory_recall_memories"], "home_light_turn_on"),
+        ]
+    )
+    result = check("tool_calls_offered", {}, ev)
+    assert result.status == "fail"
+    assert "home_light_turn_on" in result.reason
+
+
+def test_tool_calls_offered_ignores_other_roles() -> None:
+    ev = evidence(llm_calls=[_offered([], "home_light_turn_on", role="system1")])
+    result = check("tool_calls_offered", {}, ev)
+    assert result.status == "pass", result.reason
+
+
+def test_tool_calls_offered_rejects_unknown_params() -> None:
+    with pytest.raises(ValidationError):
+        CHECK_PARAMS["tool_calls_offered"].model_validate({"tool": "x"})

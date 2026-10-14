@@ -13,7 +13,8 @@ import pytest
 from evals.harness import proxy as proxy_module
 from evals.harness.evidence import LlmCall
 from evals.harness.judge import JUDGE_CONNECTIONS, make_judge_model
-from evals.harness.proxy import MAX_UPSTREAM, LlmProxy, classify_role
+from evals.harness.proxy import MAX_UPSTREAM, ROLES_BY_HEADER, LlmProxy
+from shared.llm_roles import LIBRARIAN, LLM_ROLES, ROLE_HEADER, SYSTEM1, SYSTEM2
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -76,7 +77,9 @@ async def test_records_a_system2_tool_call(proxy: LlmProxy) -> None:
         ],
     }
     async with httpx.AsyncClient() as client:
-        r = await client.post(f"{proxy.url}/v1/chat/completions", json=body)
+        r = await client.post(
+            f"{proxy.url}/v1/chat/completions", json=body, headers={ROLE_HEADER: SYSTEM2}
+        )
     assert r.json() == COMPLETION
     [call] = proxy.calls
     assert call.role == "system2" and call.tools_offered == ["home_light_turn_on"]
@@ -84,6 +87,7 @@ async def test_records_a_system2_tool_call(proxy: LlmProxy) -> None:
     assert call.prompt_tokens == 100 and call.status == 200
     assert call.request_body == body
     assert json.loads(proxy.seen[0].content) == body  # type: ignore[attr-defined]
+    assert proxy.seen[0].headers[ROLE_HEADER] == SYSTEM2  # type: ignore[attr-defined]
 
 
 async def test_passthrough_is_not_recorded(proxy: LlmProxy) -> None:
@@ -203,7 +207,7 @@ async def test_a_failed_call_is_not_left_in_flight() -> None:
         assert p.in_flight == 0 and await p.wait_idle(0.0, 0.01)
 
 
-SYSTEM1 = {
+SYSTEM1_BODY = {
     "model": "m",
     "messages": [{"role": "system", "content": "You are Alfred's Reflex Engine"}],
 }
@@ -225,7 +229,13 @@ async def test_wait_for_call_wakes_when_the_proxy_records_a_wanted_call() -> Non
     try:
         async with httpx.AsyncClient() as client:
             waiting = asyncio.create_task(p.wait_for_call(time.monotonic(), 5, is_system1))
-            sent = asyncio.create_task(client.post(f"{p.url}/v1/chat/completions", json=SYSTEM1))
+            sent = asyncio.create_task(
+                client.post(
+                    f"{p.url}/v1/chat/completions",
+                    json=SYSTEM1_BODY,
+                    headers={ROLE_HEADER: SYSTEM1},
+                )
+            )
             while not p.in_flight:
                 await asyncio.sleep(0.005)
             assert not waiting.done()  # in flight is not recorded
@@ -291,22 +301,22 @@ async def test_wait_idle_waits_only_on_calls_sent_since() -> None:
         await p.stop()
 
 
-SYSTEM2 = {
+SYSTEM2_BODY = {
     "model": "m",
     "messages": [{"role": "system", "content": "You are Alfred — personal butler"}],
 }
 
 
 async def test_waiting_on_one_role_is_not_held_by_another_roles_call() -> None:
-    """A call in flight counts for a role once its body says whose it is; before then it
-    could be anyone's, so it counts for every role."""
+    """A call in flight counts for a role once its body has been read and its header says whose
+    it is; before then it could be anyone's, so it counts for every role."""
     release, body_sent = asyncio.Event(), asyncio.Event()
 
     async def gated(request: httpx.Request) -> httpx.Response:
         await release.wait()
         return httpx.Response(200, json=COMPLETION)
 
-    raw = json.dumps(SYSTEM2).encode()
+    raw = json.dumps(SYSTEM2_BODY).encode()
     split = raw.index(b'"messages"')
 
     async def slow_body() -> AsyncIterator[bytes]:
@@ -322,7 +332,7 @@ async def test_waiting_on_one_role_is_not_held_by_another_roles_call() -> None:
                 client.post(
                     f"{p.url}/v1/chat/completions",
                     content=slow_body(),
-                    headers={"content-type": "application/json"},
+                    headers={"content-type": "application/json", ROLE_HEADER: SYSTEM2},
                 )
             )
             async with asyncio.timeout(5):
@@ -379,17 +389,37 @@ def test_the_proxy_and_the_judge_share_one_vllm_budget_of_four() -> None:
 
 
 @pytest.mark.parametrize(
-    ("text", "role"),
+    ("headers", "role"),
     [
-        ("You are Alfred's Reflex Engine — a fast-acting steward for a smart home.", "system1"),
-        ("You are Alfred — personal butler and assistant to sir.\n...", "system2"),
-        ("You are a pattern analyst for ...", "librarian"),
-        ("hello", "unknown"),
+        ({ROLE_HEADER: SYSTEM1}, "system1"),
+        ({ROLE_HEADER: SYSTEM2}, "system2"),
+        ({ROLE_HEADER: LIBRARIAN}, "librarian"),
+        ({ROLE_HEADER: "System2"}, "unknown"),
+        ({ROLE_HEADER: "reflex"}, "unknown"),
+        ({}, "unknown"),
     ],
+    ids=["system1", "system2", "librarian", "wrong-case", "not-a-role", "no-header"],
 )
-def test_classify_role(text: str, role: str) -> None:
-    assert classify_role([{"role": "system", "content": text}]) == role
-    assert classify_role([{"role": "user", "content": [{"type": "text", "text": text}]}]) == role
+async def test_a_calls_role_is_its_role_header_and_never_its_prompt(
+    headers: dict[str, str], role: Role
+) -> None:
+    # The prompt is System 2's. Only the header may say so: with no header, it is unknown.
+    body = {
+        "model": "m",
+        "messages": [{"role": "system", "content": "You are Alfred — personal butler"}],
+    }
+    async with (
+        serving(lambda r: httpx.Response(200, json=COMPLETION)) as p,
+        httpx.AsyncClient() as client,
+    ):
+        await client.post(f"{p.url}/v1/chat/completions", json=body, headers=headers)
+    [call] = p.calls
+    assert call.role == role
+
+
+def test_every_alfred_role_has_a_proxy_role() -> None:
+    assert set(ROLES_BY_HEADER) == LLM_ROLES
+    assert all(ROLES_BY_HEADER[r] == r for r in LLM_ROLES)
 
 
 @asynccontextmanager
@@ -400,15 +430,6 @@ async def serving(handle: Callable[[httpx.Request], httpx.Response]) -> AsyncIte
         yield p
     finally:
         await p.stop()
-
-
-def test_classify_role_skips_text_parts_it_cannot_read() -> None:
-    content = [
-        {"type": "text", "text": 5},
-        "x",
-        {"type": "text", "text": "You are a memory analyst"},
-    ]
-    assert classify_role([{"role": "user", "content": content}]) == "librarian"
 
 
 async def test_passthrough_upstream_failure_is_a_json_502() -> None:

@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 CONSCIOUS_SOURCE = "conscious-engine"
 SYSTEM2_ROLE: Role = "system2"  # the proxy's role for Conscious's calls
-UNKNOWN_ROLE: Role = "unknown"  # a call no ROLE_FINGERPRINTS entry matched
+UNKNOWN_ROLE: Role = "unknown"  # a call with no recognised X-Alfred-Role header
 EVAL_SOURCE = "alfred-evals"
 EVAL_OPENROUTER_PLACEHOLDER = "alfred-eval-not-a-key"
 EVAL_SIGNAL_NUMBER = "+15550100"
@@ -92,9 +92,9 @@ def container_env(cfg: StackConfig, *, proxy_port: int, fake_ha_port: int) -> di
         "REFLEX_BACKEND": "openai",
         "OPENAI_COMPAT_HOST": proxy,
         "OPENAI_COMPAT_MODEL": cfg.model,
-        "CLAUDE_MODEL": f"openai/{cfg.model}",
-        "OPENAI_API_BASE": f"{proxy}/v1",
-        "OPENAI_BASE_URL": f"{proxy}/v1",
+        "SYSTEM2_MODEL": f"vllm:{cfg.model}",
+        "LIBRARIAN_MODEL": f"vllm:{cfg.model}",
+        "VLLM_BASE_URL": f"{proxy}/v1",
         "OPENROUTER_API_KEY": EVAL_OPENROUTER_PLACEHOLDER,
         "EMBEDDING_BACKEND": "openai",
         "EMBEDDING_HOST": container_reachable(cfg.embed_url),
@@ -397,9 +397,9 @@ class Stack:
                 if not calls and unclassified:
                     raise await self._fail(
                         "System 2 answered the readiness request, but the LLM proxy saw "
-                        f"{unclassified} call(s) it could not classify (role unknown) and none "
-                        "recognised as System 2 — if System 2's prompt changed, update "
-                        "ROLE_FINGERPRINTS in evals/harness/proxy.py"
+                        f"{unclassified} call(s) with no recognised X-Alfred-Role header and "
+                        "none from System 2 — every LLM request Alfred makes must carry the "
+                        "header (shared/llm_roles.py)"
                     )
                 if not calls:
                     raise await self._fail(

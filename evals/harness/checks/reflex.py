@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
-from evals.harness.checks.llm import normalize_tool
+from evals.harness.checks.llm import same_tool
 from evals.harness.checks.result import CheckResult, failed, passed
 from evals.harness.evidence import Decision
 
@@ -128,7 +128,7 @@ def uncalled(name: str, step: int, unattributed: list[ReflexCall]) -> CheckResul
 
 
 def _tool_is(c: ReflexCall, tool: str) -> bool:
-    return c.tool is not None and normalize_tool(c.tool) == normalize_tool(tool)
+    return c.tool is not None and same_tool(c.tool, tool)
 
 
 def _describe(c: ReflexCall) -> str:

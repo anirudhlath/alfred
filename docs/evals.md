@@ -95,7 +95,8 @@ pushed, so goldens do not inherit each other's lights.
 in front of vLLM. System 2's tool calls go to the model and to home-service, never onto a
 stream, so the proxy is the only place their arguments can be seen. It records every
 `POST /v1/chat/completions`: the role (System 1, System 2 or the Librarian, told apart by
-the first message's text, `ROLE_FINGERPRINTS`; anything else is `unknown`), the messages,
+the `X-Alfred-Role` header every Alfred LLM request carries, `ROLES_BY_HEADER`; no header, or
+one it does not know, is `unknown`), the messages,
 the tools offered, the reply text, the tool calls with their arguments, token counts and
 latency. It never changes a request or a reply. Other paths pass through unrecorded, and
 streaming requests are refused. At most 2 requests are upstream at once, recorded or passed
@@ -135,9 +136,8 @@ request was sent, and vLLM must have answered at least one with a 2xx. With no s
 boot fails "without reaching the LLM proxy"; when every one came back with an error it fails
 because "the LLM upstream failed", with the statuses. A System 1 or Librarian call does not
 count. When none was classed as System 2 but some were classed `unknown`, the boot fails
-saying so: System 2's prompt has probably changed, and `ROLE_FINGERPRINTS` in
-`evals/harness/proxy.py` needs updating (`tests/evals/harness/test_role_fingerprints.py` pins
-each fingerprint to the first message its role sends). The stack records the suite's first
+saying so: some LLM request is missing its `X-Alfred-Role` header (`shared/llm_roles.py`).
+The stack records the suite's first
 boot time and that first reply's latency for the scorecard. Teardown removes the container
 and wipes the data dir (the container writes it as root).
 
@@ -748,6 +748,7 @@ scored separately. Params are validated at load and unknown keys are rejected.
 | `tool_called` | `tool` (required); `role` (default `system2`); `at_step` (optional) | That role's recorded LLM replies include a call to the tool |
 | `tool_offered` | `tool` (required); `role` (default `system2`); `at_step` (optional) | At least one recorded request in scope offers the tool; fails without a role call |
 | `tool_not_offered` | same | Every recorded request in scope withholds the tool; fails without a role call |
+| `tool_calls_offered` | `role` (default `system2`) | Each tool call names, exactly, a tool offered in that same request. Not written in goldens: `score_evidence` appends it last to every scenario with a System 2 tool call |
 | `pending_action` | `at_step`, `tool` (required); `target_service`; `parameters` (mapping); `count` (default 1) | Exactly `count` matching parked actions exist in the settled snapshot; a missing snapshot fails |
 | `pending_action_absent` | same, but `count` must be 0 | No matching pending action exists in that snapshot; a missing snapshot fails |
 | `tool_not_called` | `tool` (required); `role` (default `system2`); `at_step` (optional) | No such call |
@@ -1036,7 +1037,7 @@ goldens are public. Everything about it is fake or fenced.
 | `evals/harness/fake_ha.py` | `FakeHA`: the Home Assistant WebSocket double |
 | `evals/harness/world.py` | `World` schema and `load_world()` |
 | `evals/harness/worlds/` | World fixtures (`apartment.yaml`) |
-| `evals/harness/proxy.py` | `LlmProxy`: the recording pass-through to vLLM; `ROLE_FINGERPRINTS` |
+| `evals/harness/proxy.py` | `LlmProxy`: the recording pass-through to vLLM; `ROLES_BY_HEADER` |
 | `evals/harness/scenario.py` | The golden schema, the loader, variants and selection |
 | `evals/harness/driver.py` | `play()`: one variant against a running stack; `build_request()` |
 | `evals/harness/bus.py` | `ContainerBus`: what the driver reads from the container and does through it (see [The bus](#the-bus)) |

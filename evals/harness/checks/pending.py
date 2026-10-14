@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from evals.harness.checks.llm import normalize_tool
+from evals.harness.checks.llm import same_tool
 from evals.harness.checks.matching import describe, validate_fields, value_matches
 from evals.harness.checks.result import CheckResult, failed, passed
 
@@ -35,7 +35,7 @@ class PendingActionAbsentParams(PendingActionParams):
 
 def matches(action: ActionRequest, p: PendingActionParams) -> bool:
     return (
-        normalize_tool(action.tool_name) == normalize_tool(p.tool)
+        same_tool(action.tool_name, p.tool)
         and (p.target_service is None or value_matches(p.target_service, action.target_service))
         and value_matches(p.parameters, action.parameters)
     )
