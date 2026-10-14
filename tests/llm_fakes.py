@@ -101,9 +101,13 @@ class Script:
         return list(last.parts) if isinstance(last, ModelRequest) else []
 
     def returns(self, i: int) -> list[str]:
-        """The tool results request *i* carried, as the model reads them."""
+        """The tool results request *i* carried, as the model reads them.
+
+        A failed result (``ToolFailed``) is its bare message: the ``{"error": ...}`` wrapper
+        Pydantic AI adds for providers without a native error channel is left off.
+        """
         return [
-            p.model_response_str()
+            p.model_response_str(wrap_if_error=False)
             for p in self._last_request_parts(i)
             if isinstance(p, ToolReturnPart)
         ]
