@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 from pydantic import BaseModel
-from pydantic_ai import Agent, NativeOutput
+from pydantic_ai import Agent, NativeOutput, ToolFailed
 
-from tests.llm_fakes import Script, ScriptExhausted, tool_call
+from tests.llm_fakes import Script, ScriptExhausted, tool_call, tool_calls
 
 
 class _Item(BaseModel):
@@ -30,6 +30,25 @@ async def test_script_answers_in_order_and_records_each_request() -> None:
     assert script.instructions(0) == "be brief"
     assert script.returns(1) == ['{"ok":1}']
     assert script.retries(1) == []
+
+
+@pytest.mark.asyncio
+async def test_outcomes_tell_a_failed_result_from_a_successful_one() -> None:
+    script = Script(tool_calls(("ok", {}), ("broken", {})), "done")
+    agent = Agent(script.model)
+
+    @agent.tool_plain
+    def ok() -> str:
+        return "fine"
+
+    @agent.tool_plain
+    def broken() -> str:
+        raise ToolFailed("offline")
+
+    await agent.run("go")
+
+    assert script.returns(1) == ["fine", "offline"]
+    assert script.outcomes(1) == ["success", "failed"]
 
 
 @pytest.mark.asyncio

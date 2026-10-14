@@ -80,6 +80,7 @@ async def test_each_dispatched_call_is_recorded_and_an_unexpected_error_is_a_fai
     assert result.output == "done"
     assert deps.actions_taken == ["ok", "boom"]
     assert script.returns(2) == ["boom failed: socket closed"]
+    assert script.outcomes(2) == ["failed"]
 
 
 @pytest.mark.asyncio
@@ -95,8 +96,12 @@ async def test_retries_and_tool_failures_pass_through_unchanged() -> None:
 
     script = Script(tool_call("flaky", {"n": 0}), tool_call("flaky", {"n": 1}), "ok")
 
-    await tool_agent(script, _toolset(flaky)).run("go", deps=make_deps())
+    deps = make_deps()
+
+    await tool_agent(script, _toolset(flaky)).run("go", deps=deps)
 
     assert script.retries(1) and "n must be positive" in script.retries(1)[0]
     assert script.returns(2) == ["the lamp is offline"]
+    assert script.outcomes(2) == ["failed"]
     assert attempts == [0, 1]
+    assert deps.actions_taken == ["flaky", "flaky"]

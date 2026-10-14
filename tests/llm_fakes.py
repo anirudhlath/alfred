@@ -112,6 +112,14 @@ class Script:
             if isinstance(p, ToolReturnPart)
         ]
 
+    def outcomes(self, i: int) -> list[str]:
+        """The outcome of each tool result request *i* carried, in ``returns(i)``'s order.
+
+        ``"success"`` or ``"failed"`` (a ``ToolFailed``), among others: ``returns`` renders
+        both as bare text, so this is how a test tells them apart.
+        """
+        return [p.outcome for p in self._last_request_parts(i) if isinstance(p, ToolReturnPart)]
+
     def retries(self, i: int) -> list[str]:
         """The retry prompts request *i* carried (unknown tools, invalid arguments)."""
         return [
