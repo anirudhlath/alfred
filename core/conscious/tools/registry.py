@@ -3,7 +3,8 @@
 Offered by wire name, scoped by identity (a guest sees ``benign`` tools only), validated
 against the tool's own JSON Schema, and dispatched as one ``ActionRequest`` through the
 domain router. A failed action reaches the model as a failed tool result with the
-service's text, which spends no retry.
+service's text, which spends no retry; a critical action parked for confirmation is not a
+failure, and its text reaches the model as plain content.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from core.conscious.tools.catalog import TOOL_RETRIES
 from core.conscious.tools.names import WireNameError, error_once, report_collision, wire_name
 from core.conscious.tools.scope import allowed, refusal
 from core.conscious.tools.validation import ANY_OBJECT, check_arguments, compile_schema
+from core.routing.domain_router import CONFIRMATION_REQUIRED_PREFIX
 from core.triggers.models import TRIGGER_ENGINE_SOURCE
 
 if TYPE_CHECKING:
@@ -129,5 +131,9 @@ class RegistryToolset(AbstractToolset[TurnDeps]):
         )
         result = await ctx.deps.services.router.route(action)
         if result.status != "success":
+            # A parked critical action is not a failure: the model reads the router's
+            # text as plain content, as before, so it asks for confirmation (R1).
+            if result.error and result.error.startswith(CONFIRMATION_REQUIRED_PREFIX):
+                return result.error
             raise ToolFailed(result.error or f"{name} failed")
         return result.result if result.result is not None else {"status": "success"}

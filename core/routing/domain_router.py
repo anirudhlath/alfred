@@ -17,7 +17,7 @@ unconditionally (offline/eval contexts and legacy tests).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Final, Protocol, runtime_checkable
 
 from loguru import logger
 
@@ -31,6 +31,9 @@ from shared.streams import REFLEX_OBSERVATIONS_STREAM
 if TYPE_CHECKING:
     from core.notifications.publisher import NotificationPublisher
     from shared.types import AioRedis
+
+# An intercepted critical action's error: this prefix, then the pending action's id.
+CONFIRMATION_REQUIRED_PREFIX: Final = "confirmation_required:"
 
 
 @runtime_checkable
@@ -127,7 +130,7 @@ class DomainRouter:
             action.tool_name,
             action.request_id,
         )
-        return self._error_result(action, f"confirmation_required:{action.request_id}")
+        return self._error_result(action, f"{CONFIRMATION_REQUIRED_PREFIX}{action.request_id}")
 
     async def route(self, action: ActionRequest) -> ActionResult:
         """Route an ActionRequest to the appropriate domain agent."""

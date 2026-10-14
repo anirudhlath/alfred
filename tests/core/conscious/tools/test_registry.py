@@ -16,6 +16,7 @@ from pydantic_ai import ToolFailed
 from core.conscious.tools import names, validation
 from core.conscious.tools.registry import RegistryToolset
 from core.reflex.tool_registry import ToolInfo, ToolRegistry
+from core.routing.domain_router import CONFIRMATION_REQUIRED_PREFIX
 from core.triggers.models import TRIGGER_ENGINE_SOURCE
 from sdk.alfred_sdk.client import AlfredClient
 from sdk.alfred_sdk.feature import BaseFeature, tool
@@ -113,6 +114,20 @@ async def test_domain_error_reaches_the_model_without_spending_a_retry() -> None
     assert script.outcomes(1) == ["failed"]
     assert script.retries(1) == []
     assert deps.actions_taken == ["home.light_on"] * 3
+
+
+@pytest.mark.asyncio
+async def test_a_confirmation_request_reaches_the_model_as_plain_content() -> None:
+    """R1: the router's critical intercept reads as it did before, not as a failed call."""
+    pending = f"{CONFIRMATION_REQUIRED_PREFIX}req-42"
+    router = _router(error=pending)
+    script = Script(tool_call("home_unlock_door", {"entity_id": "lock.front"}), "Confirm, sir?")
+
+    _, deps = await _run(script, [_info("home.unlock_door", risk="critical")], router=router)
+
+    assert script.returns(1) == [pending]
+    assert script.outcomes(1) == ["success"]
+    assert deps.actions_taken == ["home.unlock_door"]
 
 
 @pytest.mark.asyncio
