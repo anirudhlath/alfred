@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.usage import RequestUsage
 
@@ -23,6 +24,7 @@ from core.conscious.engine import (
     ConsciousEngine,
     session_messages,
 )
+from core.conscious.tools.catalog import TOOL_RETRIES
 from core.memory.schemas import RoutineSpec
 from core.memory.vector_store import ContextMetadata, SearchResult
 from core.reflex.tool_registry import ToolInfo
@@ -217,6 +219,57 @@ async def test_the_request_limit_ends_the_turn_with_the_deliberating_reply() -> 
     assert script.call_count == REQUEST_LIMIT
     assert response.actions_taken == ["home.get_lights"] * REQUEST_LIMIT
     deps.cost_tracker.record_spend.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_blank_replies_past_the_output_retries_end_with_the_deliberating_reply() -> None:
+    script = Script("", "", "")
+    deps = _deps(script)
+
+    response = await ConsciousEngine(deps=deps).process_request(_request())
+
+    assert response.text == DELIBERATING_REPLY
+    assert script.call_count == 3
+    deps.cost_tracker.record_spend.assert_awaited_once()  # type: ignore[attr-defined]
+    deps.session_mgr.append_turn.assert_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_failing_past_its_retries_ends_with_the_deliberating_reply() -> None:
+    registry = AsyncMock()
+    registry.get_tools.return_value = [_info("home.get_lights")]
+    script = Script(*[tool_call("home_get_lights", {}) for _ in range(TOOL_RETRIES + 1)])
+    deps = _deps(script, tool_registry=registry, domain_router=_router())
+
+    response = await ConsciousEngine(deps=deps).process_request(_request())
+
+    assert response.text == DELIBERATING_REPLY
+    assert script.call_count == TOOL_RETRIES + 1
+    assert response.actions_taken == []
+    deps.domain_router.route.assert_not_awaited()  # type: ignore[attr-defined]
+    deps.cost_tracker.record_spend.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_a_provider_error_still_raises_so_the_request_is_retried() -> None:
+    deps = _deps(Script(ModelHTTPError(status_code=503, model_name="test")))
+
+    with pytest.raises(ModelHTTPError):
+        await ConsciousEngine(deps=deps).process_request(_request())
+
+    deps.cost_tracker.record_spend.assert_awaited_once()  # type: ignore[attr-defined]
+    deps.session_mgr.append_turn.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_spend_write_still_returns_the_reply() -> None:
+    deps = _deps(Script("Hello, sir."))
+    deps.cost_tracker.record_spend.side_effect = ConnectionError("redis blip")  # type: ignore[attr-defined]
+
+    response = await ConsciousEngine(deps=deps).process_request(_request())
+
+    assert response.text == "Hello, sir."
+    deps.session_mgr.append_turn.assert_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

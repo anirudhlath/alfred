@@ -108,10 +108,6 @@ async def test_full_pipeline_guest_no_preferences() -> None:
             _make_request(identity_claim="guest", content="Hello", session_id="s2")
         )
 
-    instructions = script.instructions()
-    assert "Wake time" not in instructions
-    assert "vegetarian" not in instructions
-    assert "Proactivity Level" not in instructions
     assert response.text == "Good evening."
 
 

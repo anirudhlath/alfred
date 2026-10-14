@@ -3,7 +3,9 @@
 A request is answered in one agent run (``core.conscious.agent``): the engine resolves
 identity, checks the budget, gathers the turn's context into ``TurnDeps`` and runs the
 agent over the session's history. Spend is recorded for every run that starts, including
-one that fails; a failed run raises, so the request stays pending and is retried.
+one that fails. A model that runs out of requests or retries gets the deliberating reply,
+because replaying the request would spend again and repeat its tool calls; a provider or
+transport failure raises, so the request stays pending and is retried.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal
 
-from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -356,8 +358,22 @@ class ConsciousEngine:
         except UsageLimitExceeded:
             logger.warning("System 2 used its %d model requests without answering", REQUEST_LIMIT)
             return DELIBERATING_REPLY
+        except UnexpectedModelBehavior as exc:
+            # Retries exhausted, blank replies, or the token limit hit before any output.
+            # ModelAPIError (HTTP, connection, timeout) is a sibling, not a subclass, so a
+            # provider failure still raises and the request is retried.
+            logger.warning("System 2 gave up on the model's replies: %s", exc)
+            return DELIBERATING_REPLY
         finally:
+            await self._record_spend(usage, model)
+
+    async def _record_spend(self, usage: RunUsage, model: Model) -> None:
+        """Spend for one run. A failed write is logged, never raised: raising here would
+        replace the run's reply and replay the request, repeating its tool calls."""
+        try:
             await self._cost.record_spend(usage.input_tokens, usage.output_tokens, model_key(model))
+        except Exception:
+            logger.warning("Failed to record System 2 spend", exc_info=True)
 
     async def _note(
         self, now: datetime, content: str, text: str, actions: list[str], usage: RunUsage
