@@ -1,4 +1,4 @@
-"""CostTracker — daily Claude API spend tracking + budget enforcement."""
+"""CostTracker — daily LLM spend tracking + budget enforcement."""
 
 from __future__ import annotations
 
@@ -19,13 +19,13 @@ logger = logging.getLogger(__name__)
 
 
 class CostState(BaseModel):
-    """Daily Claude API spend tracking. Stored at alfred:cost:daily in Redis."""
+    """Daily LLM spend. Stored at alfred:cost:daily in Redis."""
 
     date: str  # ISO date YYYY-MM-DD
     spend_usd: float
     cap_usd: float
     alert_sent: bool = False
-    request_count: int = 0  # record_spend calls today (one per handled request)
+    request_count: int = 0  # handled user requests today; the Librarian's calls do not count
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -34,24 +34,22 @@ class CostState(BaseModel):
         return round(self.spend_usd / self.request_count, 6) if self.request_count else 0.0
 
 
-# Approximate pricing per million tokens (via OpenRouter)
-# Keyed by LiteLLM model string — update with actual pricing
+# Approximate pricing per million tokens, keyed by shared.agents.model_key
+# ("<provider>:<served name>"). A self-hosted model costs nothing per token.
 _PRICING: dict[str, dict[str, float]] = {
-    # Direct Anthropic
-    "claude-opus-4-6": {"input": 15.0, "output": 75.0},
-    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
-    # OpenRouter prefixed
-    "openrouter/anthropic/claude-opus-4": {"input": 15.0, "output": 75.0},
-    "openrouter/anthropic/claude-sonnet-4": {"input": 3.0, "output": 15.0},
-    "openrouter/anthropic/claude-3.5-sonnet": {"input": 3.0, "output": 15.0},
-    "openrouter/google/gemini-2.5-pro-preview": {"input": 1.25, "output": 10.0},
-    "openrouter/deepseek/deepseek-chat-v3-0324": {"input": 0.27, "output": 1.1},
+    "openrouter:anthropic/claude-opus-4": {"input": 15.0, "output": 75.0},
+    "openrouter:anthropic/claude-sonnet-4": {"input": 3.0, "output": 15.0},
+    "openrouter:anthropic/claude-3.5-sonnet": {"input": 3.0, "output": 15.0},
+    "openrouter:google/gemini-2.5-pro-preview": {"input": 1.25, "output": 10.0},
+    "openrouter:deepseek/deepseek-chat-v3-0324": {"input": 0.27, "output": 1.1},
 }
+_FREE_PROVIDERS: frozenset[str] = frozenset({"vllm"})
+_FREE = {"input": 0.0, "output": 0.0}
 _DEFAULT_PRICING = {"input": 3.0, "output": 15.0}
 
 
 class CostTracker:
-    """Tracks daily Claude API spend against a configurable budget."""
+    """Tracks daily LLM spend against a configurable budget."""
 
     ALERT_THRESHOLD = 0.8  # Alert at 80% of cap
 
@@ -85,23 +83,30 @@ class CostTracker:
         )
 
     def _estimate_cost(self, prompt_tokens: int, completion_tokens: int, model: str) -> float:
-        """Estimate cost in USD for a Claude API call."""
-        pricing = _PRICING.get(model, _DEFAULT_PRICING)
+        """Estimated USD cost of one model run's tokens."""
+        provider = model.partition(":")[0]
+        pricing = _FREE if provider in _FREE_PROVIDERS else _PRICING.get(model, _DEFAULT_PRICING)
         input_cost = (prompt_tokens / 1_000_000) * pricing["input"]
         output_cost = (completion_tokens / 1_000_000) * pricing["output"]
         return input_cost + output_cost
 
     async def record_spend(
-        self, prompt_tokens: int, completion_tokens: int, model: str
+        self,
+        prompt_tokens: int,
+        completion_tokens: int,
+        model: str,
+        *,
+        count_request: bool = True,
     ) -> CostState:
-        """Record spend for a Claude API call. Returns updated state."""
+        """Record one model run's spend. *count_request* is False for background work
+        (the Librarian), so ``request_count`` stays the number of handled requests."""
         state = await self._get_state()
         cost = self._estimate_cost(prompt_tokens, completion_tokens, model)
         state = state.model_copy(
             update={
                 "spend_usd": state.spend_usd + cost,
                 "cap_usd": self._daily_cap,
-                "request_count": state.request_count + 1,
+                "request_count": state.request_count + (1 if count_request else 0),
             }
         )
         await self._save_state(state)

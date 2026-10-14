@@ -66,3 +66,10 @@ async def test_structured_replies_follow_the_model_profile(native: bool) -> None
     result = await Agent(script.model, output_type=output_type).run("go")
 
     assert result.output == [_Item(a=1)]
+
+
+@pytest.mark.asyncio
+async def test_prompt_is_the_user_prompt_of_the_request() -> None:
+    script = Script("ok")
+    await Agent(script.model).run("what time is it")
+    assert script.prompt() == "what time is it"

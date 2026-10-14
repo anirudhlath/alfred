@@ -23,6 +23,7 @@ from pydantic_ai.messages import (
     TextPart,
     ToolCallPart,
     ToolReturnPart,
+    UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.profiles import ModelProfile
@@ -82,6 +83,20 @@ class Script:
     def instructions(self, i: int = 0) -> str:
         """The instructions the agent sent with request *i*."""
         return self.requests[i][1].instructions or ""
+
+    def prompt(self, i: int = 0) -> str:
+        """The latest user prompt request *i* carried."""
+        parts = [
+            p
+            for m in self.requests[i][0]
+            if isinstance(m, ModelRequest)
+            for p in m.parts
+            if isinstance(p, UserPromptPart)
+        ]
+        if not parts:
+            return ""
+        content = parts[-1].content
+        return content if isinstance(content, str) else str(content)
 
     def offered(self, i: int = 0) -> list[str]:
         """The function tools request *i* offered, by wire name."""

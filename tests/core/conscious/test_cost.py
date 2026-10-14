@@ -22,7 +22,7 @@ async def test_record_spend(mock_redis: AsyncMock) -> None:
     mock_redis.get.return_value = None  # no existing state
     tracker = CostTracker(redis=mock_redis, daily_cap_usd=5.0)
     state = await tracker.record_spend(
-        prompt_tokens=1000, completion_tokens=500, model="claude-opus-4-6"
+        prompt_tokens=1000, completion_tokens=500, model="openrouter:anthropic/claude-opus-4"
     )
     assert state.spend_usd > 0
     assert state.date  # should be today
@@ -66,7 +66,7 @@ async def test_day_rollover_resets_spend(mock_redis: AsyncMock) -> None:
     assert exceeded is False  # fresh day, spend_usd=0.0
 
     state = await tracker.record_spend(
-        prompt_tokens=100, completion_tokens=50, model="claude-opus-4-6"
+        prompt_tokens=100, completion_tokens=50, model="openrouter:anthropic/claude-opus-4"
     )
     assert state.request_count == 1  # yesterday's count does not carry over
 
@@ -122,7 +122,7 @@ async def test_record_spend_counts_requests(mock_redis: AsyncMock) -> None:
     tracker = CostTracker(redis=mock_redis, daily_cap_usd=5.0)
 
     state = await tracker.record_spend(
-        prompt_tokens=1000, completion_tokens=500, model="claude-opus-4-6"
+        prompt_tokens=1000, completion_tokens=500, model="openrouter:anthropic/claude-opus-4"
     )
 
     assert state.request_count == 4
@@ -162,3 +162,43 @@ async def test_mark_alert_sent_keeps_request_count(mock_redis: AsyncMock) -> Non
     saved = CostState.model_validate_json(mock_redis.set.call_args[0][1])
     assert saved.alert_sent is True
     assert saved.request_count == 7
+
+
+@pytest.mark.asyncio
+async def test_a_vllm_model_is_free(mock_redis: AsyncMock) -> None:
+    mock_redis.get.return_value = None
+    tracker = CostTracker(redis=mock_redis, daily_cap_usd=5.0)
+    state = await tracker.record_spend(
+        prompt_tokens=1_000_000, completion_tokens=1_000_000, model="vllm:gemma-x"
+    )
+    assert state.spend_usd == 0.0
+    assert state.request_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_known_openrouter_model_is_priced_by_its_key(mock_redis: AsyncMock) -> None:
+    mock_redis.get.return_value = None
+    tracker = CostTracker(redis=mock_redis, daily_cap_usd=5.0)
+    state = await tracker.record_spend(
+        prompt_tokens=1_000_000,
+        completion_tokens=1_000_000,
+        model="openrouter:anthropic/claude-opus-4",
+    )
+    assert state.spend_usd == pytest.approx(90.0)  # 15 in + 75 out
+
+
+@pytest.mark.asyncio
+async def test_spend_without_a_request_leaves_the_count(mock_redis: AsyncMock) -> None:
+    existing = CostState(date=_TODAY, spend_usd=1.0, cap_usd=5.0, request_count=3)
+    mock_redis.get.return_value = existing.model_dump_json().encode()
+    tracker = CostTracker(redis=mock_redis, daily_cap_usd=5.0)
+
+    state = await tracker.record_spend(
+        prompt_tokens=1000,
+        completion_tokens=500,
+        model="openrouter:anthropic/claude-sonnet-4",
+        count_request=False,
+    )
+
+    assert state.request_count == 3
+    assert state.spend_usd > 1.0

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from core.conscious.cost import CostTracker
 from core.librarian.consolidator import Librarian
 from core.memory.context_index import ContextIndexManager
 from core.memory.embedding_backend import build_embedding_provider
@@ -21,7 +22,8 @@ from core.memory.routines.store import RoutineStore
 from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
 from core.shutdown import teardown
-from shared.config import AlfredConfig
+from shared.agents import resolve_model
+from shared.config import AlfredConfig, apply_model_env
 from shared.logging import configure_logging
 from shared.otel import init_tracing
 from shared.redis_streams import create_redis
@@ -33,6 +35,7 @@ if TYPE_CHECKING:
 async def run() -> None:
     log = configure_logging(service="librarian")
     config = AlfredConfig.from_env()
+    apply_model_env(config)
     init_tracing(
         service_name="librarian",
         endpoint=config.otel_endpoint if config.signoz_enabled else None,
@@ -80,8 +83,8 @@ async def run() -> None:
             routine_store=RoutineStore(),
             significance_scorer=scorer,
             context_index=context_index,
-            claude_api_key=config.claude_api_key,
-            claude_model=config.claude_model,
+            model=resolve_model("LIBRARIAN_MODEL", config.librarian_model),
+            cost_tracker=CostTracker(redis=r, daily_cap_usd=config.daily_cost_cap_usd),
             conflict_min_observations=config.conflict_min_observations,
             conflict_min_days=config.conflict_min_days,
             decay_migration_threshold=config.decay_migration_threshold,
