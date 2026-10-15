@@ -21,14 +21,18 @@ def _make_mock_registry() -> AsyncMock:
         ToolInfo(
             name="lighting.dim_lights",
             description="Dim the lights in a room.",
-            parameters={
-                "room": {"type": "str", "description": "The room to dim."},
-                "level": {"type": "int", "description": "Brightness level 0-100."},
-            },
             feature_name="lighting",
             feature_description="Smart home lighting controls.",
             target_service="home-service",
             audience="reflex",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "room": {"type": "string", "description": "The room to dim."},
+                    "level": {"type": "integer", "description": "Brightness level 0-100."},
+                },
+                "required": ["room", "level"],
+            },
         ),
     ]
     registry = AsyncMock()

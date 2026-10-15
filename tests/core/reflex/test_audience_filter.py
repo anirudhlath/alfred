@@ -97,13 +97,13 @@ def test_toolinfo_defaults() -> None:
     tool = ToolInfo(
         name="x.y",
         description="",
-        parameters={},
         feature_name="x",
         feature_description="",
         target_service="svc",
     )
     assert tool.audience == "conscious"
     assert tool.risk == "benign"
+    assert tool.input_schema == {"type": "object", "properties": {}, "required": []}
 
 
 def test_reflex_audience_is_a_tag_the_sdk_writes() -> None:

@@ -18,6 +18,7 @@ from pydantic.json_schema import SkipJsonSchema
 from sdk.alfred_sdk.feature import (
     BaseFeature,
     ServiceManifest,
+    ToolManifest,
     ToolMeta,
     ToolParameter,
     _parse_google_docstring_args,
@@ -622,8 +623,13 @@ def test_manifest_carries_input_schema_through_json() -> None:
         "properties": {"to": {"type": "string", "description": "Where."}},
         "required": ["to"],
     }
-    # The legacy map stays on the wire, now saying which parameters are required.
-    assert tool_json["parameters"]["to"]["required"] is True
+    # `parameters` is how a hand-built tool is described, never what goes on the wire
+    # (issue #325).
+    assert "parameters" not in tool_json
+
+
+def test_tool_manifest_carries_no_parameters_map() -> None:
+    assert "parameters" not in ToolManifest.model_fields
 
 
 # ── input_schema: generated from @tool signatures ──
@@ -838,7 +844,9 @@ def test_sentinel_default_still_registers() -> None:
         features=[_SentinelFeature().to_manifest()],
     )
     dumped = json.loads(json.dumps(manifest.model_dump()))
-    assert dumped["features"][0]["tools"][0]["parameters"]["cursor"]["default"] is None
+    assert dumped["features"][0]["tools"][0]["input_schema"]["required"] == ["query"]
+    meta = {t.name: t for t in _SentinelFeature().get_tools()}["sentinel.find"]
+    assert meta.parameters["cursor"].default is None
 
 
 class _EnumDefaultFeature(BaseFeature):
@@ -855,7 +863,7 @@ def test_enum_default_is_carried_as_its_json_value() -> None:
     assert meta.parameters["speed"].default == "slow"
     assert meta.input_schema["properties"]["speed"]["default"] == "slow"
     dumped = json.loads(json.dumps(_EnumDefaultFeature().to_manifest().model_dump()))
-    assert dumped["tools"][0]["parameters"]["speed"]["default"] == "slow"
+    assert dumped["tools"][0]["input_schema"]["properties"]["speed"]["default"] == "slow"
 
 
 class _OddNamesFeature(BaseFeature):

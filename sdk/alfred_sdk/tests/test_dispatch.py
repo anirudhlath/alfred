@@ -423,7 +423,6 @@ def test_the_arguments_model_never_reaches_the_manifest() -> None:
         assert set(tool_json) == {
             "name",
             "description",
-            "parameters",
             "input_schema",
             "audience",
             "risk",

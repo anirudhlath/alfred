@@ -20,11 +20,15 @@ def _tool(service: str, *params: str, description: str = "") -> ToolInfo:
     return ToolInfo(
         name="home." + service.replace(".", "_"),
         description=service,
-        parameters={p: {"type": "str", "description": description} for p in params},
         feature_name="home",
         feature_description="",
         target_service="home-service",
         audience="reflex",
+        input_schema={
+            "type": "object",
+            "properties": {p: {"type": "string", "description": description} for p in params},
+            "required": list(params),
+        },
     )
 
 

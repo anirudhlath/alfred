@@ -9,7 +9,7 @@ Fast event → decision loop via a local SLM (vLLM through `REFLEX_BACKEND=opena
 - `engine.py` — `ReflexEngine`: gathers preferences, reflex-audience tools, live state and timezone; returns a `ReflexProposal` (act/ask/none/invalid) for StateChanged and TriggerFired
 - `prompt.py` — pure prompt builder: rules + tools, Preferences, Now, House by `attributes.area`, What changed / Trigger fired; `HOUSE_DOMAINS`
 - `decision.py` — `parse_decision()`: model reply → `ReflexProposal`, tool validated against Reflex's tools; anything else is `invalid` with the raw text
-- `tool_registry.py` — Reads tool manifests from Redis `alfred:tool_registry`
+- `tool_registry.py` — Reads tool manifests from Redis `alfred:tool_registry`. `ToolInfo.input_schema` is each tool's one argument description: the schema the manifest ships, or, for an old SDK's manifest, one derived at parse time from its legacy `parameters` by `legacy_input_schema()` (the only reader of that map). Reflex renders `ToolInfo.parameter_names`
 - `context_reader.py` — `ContextReader`: reads live state fresh on every call through the SDK's `read_live_state()` (no cache) and renders it for the prompts; says `Live home state unavailable.` when no service has any; `get_snapshot()` and `get_user_timezone()` feed Reflex's prompt
 - `runner.py` — Event loop orchestration + `ensure_consumer_group()`, `observe_passively()`, `publish_observation()`, `publish_proposal()`, `count_decision()` (shadow mode, #285)
 - `shadow_report.py` — `python -m core.reflex.shadow_report --days N`: Markdown of daily decision counts and every act/ask/invalid proposal, for #285's shadow review
@@ -158,6 +158,7 @@ uv run python -m core.channels   # Web + Signal channels
 
 ## Gotchas
 
+- **Deploy order for a manifest change: core first, services repin after** ([#325](https://github.com/anirudhlath/alfred/issues/325)). Core reads both the legacy form (`parameters` only) and the current one (`input_schema` only), and Reflex renders both byte-identically (`tests/core/reflex/test_prompt_wire_forms.py`, which its shadow week depends on). Never drop `legacy_input_schema()` while any service may still pin an SDK from before #300
 - Memory tools are INTERNAL — dispatched in-process, NOT via BaseFeature/SDK/ToolRegistry
 - `ContextIndexManager.search_text()` embeds query internally — callers don't need separate EmbeddingProvider
 - `SentenceTransformerProvider` loads its model once, from any thread, through `Lazy` (`core/lazy.py`) and blocks on first call — services warm it via `core/warmup.py` (`start_warmup()`) background tasks at startup, warming through `EmbeddingProvider.warmup()` so the check is the backend's own

@@ -13,11 +13,15 @@ TOOLS = [
     ToolInfo(
         name="home.light_turn_on",
         description="light.turn_on",
-        parameters={"target": {"type": "str"}, "brightness_pct": {"type": "float"}},
         feature_name="home",
         feature_description="",
         target_service="home-service",
         audience="reflex",
+        input_schema={
+            "type": "object",
+            "properties": {"target": {"type": "string"}, "brightness_pct": {"type": "number"}},
+            "required": ["target"],
+        },
     )
 ]
 

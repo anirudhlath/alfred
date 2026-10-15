@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from typing import Any
@@ -61,8 +62,9 @@ async def test_get_tools_parses_manifest() -> None:
     assert tools[0].target_service == "home-service"
     assert tools[0].feature_name == "lighting"
     assert tools[0].feature_description == "Smart home lighting controls."
-    assert "room" in tools[0].parameters
-    assert tools[0].parameters["room"]["type"] == "str"
+    # An old-SDK manifest: its schema is derived from `parameters`, in their order.
+    assert tools[0].parameter_names == ("room", "level")
+    assert tools[0].input_schema["properties"]["room"]["type"] == "string"
 
 
 @pytest.mark.asyncio
@@ -291,10 +293,6 @@ _VALID_SCHEMA = {"type": "object", "properties": {}, "required": []}
         pytest.param({"name": "f.x", "description": 5}, id="non-string-description"),
         pytest.param({"name": "f.x", "audience": "everyone"}, id="unknown-audience"),
         pytest.param({"name": "f.x", "risk": 5}, id="non-string-risk"),
-        pytest.param(
-            {"name": "f.bad", "input_schema": _VALID_SCHEMA, "parameters": {"p": "x"}},
-            id="schema-with-malformed-parameters",
-        ),
     ],
 )
 async def test_malformed_tool_is_skipped_alone(
@@ -314,7 +312,6 @@ def test_tool_info_refuses_a_non_string_feature_or_service(field_name: str) -> N
     fields: dict[str, Any] = {
         "name": "f.x",
         "description": "",
-        "parameters": {},
         "feature_name": "f",
         "feature_description": "",
         "target_service": "svc",
@@ -399,3 +396,72 @@ async def test_unset_input_schema_is_derived_from_parameters(shipped: Any) -> No
         "properties": {"room": {"type": "string"}},
         "required": ["room"],
     }
+
+
+@pytest.mark.asyncio
+async def test_new_sdk_manifest_without_parameters_loads() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"target": {"type": "string"}, "brightness_pct": {"type": "integer"}},
+        "required": ["target"],
+    }
+    feature = {"name": "f", "tools": [{"name": "f.go", "input_schema": schema}]}
+    tools = await _registry_with(feature).get_tools()
+    assert tools[0].input_schema == schema
+    assert tools[0].parameter_names == ("target", "brightness_pct")
+
+
+@pytest.mark.asyncio
+async def test_a_shipped_schema_leaves_the_legacy_parameters_unread() -> None:
+    # Nothing reads `parameters` once a schema ships, so a malformed map cannot cost the tool.
+    feature = {
+        "name": "f",
+        "tools": [{"name": "f.go", "input_schema": _VALID_SCHEMA, "parameters": {"p": "x"}}],
+    }
+    tools = await _registry_with(feature).get_tools()
+    assert [t.name for t in tools] == ["f.go"]
+    assert tools[0].input_schema == _VALID_SCHEMA
+
+
+def test_tool_info_carries_no_parameters_map() -> None:
+    assert "parameters" not in {f.name for f in dataclasses.fields(ToolInfo)}
+
+
+def _tool_info(**overrides: Any) -> ToolInfo:
+    fields: dict[str, Any] = {
+        "name": "f.x",
+        "description": "",
+        "feature_name": "f",
+        "feature_description": "",
+        "target_service": "svc",
+    }
+    return ToolInfo(**{**fields, **overrides})
+
+
+def test_tool_info_defaults_to_a_schema_with_no_arguments() -> None:
+    tool = _tool_info()
+    assert tool.input_schema == {"type": "object", "properties": {}, "required": []}
+    assert tool.parameter_names == ()
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        pytest.param({}, id="empty"),
+        pytest.param({"type": "array"}, id="not-an-object"),
+        pytest.param({"type": "object", "properties": ["p"]}, id="non-dict-properties"),
+        pytest.param("oops", id="string"),
+    ],
+)
+def test_tool_info_refuses_a_schema_that_is_not_an_object_schema(schema: Any) -> None:
+    with pytest.raises(ValueError, match="input_schema"):
+        _tool_info(input_schema=schema)
+
+
+def test_parameter_names_keep_the_schema_order() -> None:
+    schema = {"type": "object", "properties": {"b": {}, "a": {}, "c": {}}, "required": []}
+    assert _tool_info(input_schema=schema).parameter_names == ("b", "a", "c")
+
+
+def test_parameter_names_of_a_schema_without_properties_are_empty() -> None:
+    assert _tool_info(input_schema={"type": "object"}).parameter_names == ()
