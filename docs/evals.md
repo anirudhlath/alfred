@@ -383,6 +383,32 @@ uv run alfred evals run --include-pending --no-build --keep
 | `--display` | `rich` | Inspect's console display: `rich`, `plain` or `none`. Inspect's `full` display crashes under `eval_async`, so it is not offered (`evals/harness/display.py`) |
 | `--fake-ha-port` | 18123 | Port the fake Home Assistant listens on, on the bridge gateway; `0` takes any free port. See [Host firewall](#host-firewall) |
 | `--proxy-port` | 18100 | Port the LLM proxy listens on, on the bridge gateway; `0` takes any free port |
+| `--prompt-label` | none | Serve System 2's and the Librarian's prompts from Langfuse at this label instead of the repo defaults. See [Testing a prompt in Langfuse](#testing-a-prompt-in-langfuse) |
+
+### Testing a prompt in Langfuse
+
+By default the eval container serves the repo defaults. `--prompt-label <label>` serves the
+prompts from Langfuse at that label instead, so a candidate edit is scored before it is
+`production`.
+
+- The run reads `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` from your
+  environment and hands them to the container. If one is missing the command exits 2 naming
+  it, rather than quietly running the repo defaults.
+- The container reaches Langfuse through `container_reachable(LANGFUSE_HOST)`. A Langfuse
+  published only on the host's loopback (say `http://localhost:3300`) is **not** reachable
+  from it: use an address the container can reach.
+- The scorecard's commit line says what the run used, `(prompts: Langfuse label <label>)`,
+  so a scorecard cannot be mistaken for a repo-default one.
+
+The candidate workflow:
+
+1. Push the repo defaults without `--promote` (`alfred prompts push`), or edit the prompt in
+   Langfuse, so the candidate is the `latest` version and `production` is untouched.
+2. `uv run alfred evals run --prompt-label latest`.
+3. Run again without `--prompt-label` for the repo-default baseline, and compare the two
+   scorecards.
+4. If the candidate holds, move the `production` label to it in Langfuse (or merge the repo
+   default and `alfred prompts push --promote`).
 
 ### What a run does
 

@@ -92,6 +92,64 @@ resolution".
 > it, and System 2 starts without a model and answers that it is not configured. Run
 > `alfredctl doctor` after editing `.env`; it resolves the models by the same rule.
 
+### Prompts from Langfuse (optional)
+
+**Langfuse is optional.** Without it, Alfred serves System 2's and the Librarian's prompts
+from the repo defaults in `shared/prompts/defaults/`, which are versioned in git and ship in
+the image. You lose live editing without a deploy, version history, labels (a `production`
+and a candidate version side by side) and the prompt-linked traces. Nothing else changes,
+so a self-hoster can ignore this section. An optional compose profile that runs Langfuse
+alongside Alfred is tracked in [#365](https://github.com/anirudhlath/alfred/issues/365).
+How the prompts are served, and the edit workflow, are in [docs/llm.md](llm.md#prompts).
+
+To serve them from a Langfuse you run yourself, set these in `.env`:
+
+| Setting | Default | What |
+|---------|---------|------|
+| `LANGFUSE_HOST` | unset | Base URL of Langfuse's web service. Unset means repo defaults only, with no network call |
+| `LANGFUSE_PUBLIC_KEY` | unset | The project's public key |
+| `LANGFUSE_SECRET_KEY` | unset | The project's secret key |
+| `ALFRED_PROMPT_LABEL` | `production` | The label whose version is served |
+| `PROMPT_CACHE_TTL_S` | `60` | Seconds a fetched prompt is served from memory before a background refresh |
+
+A host without both keys logs one WARNING at startup and serves the repo defaults. The
+startup log says which source is live: `Prompts: repo defaults` or
+`Prompts: Langfuse, label <label>`.
+
+1. **Share a network.** The Alfred container must reach Langfuse's web service, so put it on
+   Langfuse's docker network. Do that in the operator-owned `docker-compose.override.yml`,
+   not the tracked compose file (a deploy overwrites that; see
+   [The deploy workspace](#the-deploy-workspace)). `<langfuse-network>` is the network
+   Langfuse's compose project created (`docker network ls`):
+
+   ```yaml
+   services:
+     alfred:
+       networks:
+         - default
+         - langfuse
+   networks:
+     langfuse:
+       external: true
+       name: <langfuse-network>
+   ```
+
+   Then `LANGFUSE_HOST=http://langfuse-web:3000`, the service name and its internal port.
+2. **Seed Langfuse before enabling it.** Create a project in Langfuse and its API keys. On
+   the host, push the repo defaults as the `production` versions, reaching Langfuse by its
+   published port:
+
+   ```bash
+   LANGFUSE_HOST=http://localhost:3300 LANGFUSE_PUBLIC_KEY=... LANGFUSE_SECRET_KEY=... \
+     uv run alfred prompts push --promote
+   ```
+3. **Then add the variables to `.env`** and restart. Because the push came first, Langfuse
+   already serves exactly the text the repo does, so enabling it changes nothing until you
+   edit a prompt.
+
+Check it with `alfred prompts diff` (exit 1 when Langfuse differs from the repo) and the
+`Prompts:` line in the conscious process's log.
+
 ## `alfredctl doctor` — preflight
 
 Run before starting to catch config gaps early instead of discovering them in the logs:

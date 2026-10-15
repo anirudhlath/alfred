@@ -25,13 +25,8 @@ from zoneinfo import ZoneInfo
 from pydantic_ai_harness.spend import SpendLimitExceeded
 
 from core.librarian.agents import (
-    ANALYSE_INSTRUCTIONS,
-    COMPRESS_INSTRUCTIONS,
-    EXTRACT_INSTRUCTIONS,
     LibrarianTask,
     build_librarian_agents,
-    pattern_instructions,
-    resolve_instructions,
 )
 from core.memory.paths import preferences_dir as _preferences_dir
 from core.memory.paths import profile_dir as _profile_dir
@@ -44,6 +39,14 @@ from core.memory.schemas import (
 )
 from core.memory.vector_store import Range
 from shared.config import DEFAULT_DECAY_MIGRATION_THRESHOLD, DEFAULT_SYSTEM2_TIMEOUT_S
+from shared.prompts.names import (
+    LIBRARIAN_ANALYSE,
+    LIBRARIAN_COMPRESS,
+    LIBRARIAN_EXTRACT,
+    LIBRARIAN_PATTERNS,
+    LIBRARIAN_RESOLVE,
+)
+from shared.prompts.store import PromptStore
 from shared.spend import ALERT_SOURCE, alert_if_needed
 from shared.streams import LIBRARIAN_QUEUE, LIBRARIAN_STATUS_KEY
 from shared.usertime import get_user_timezone
@@ -218,6 +221,7 @@ class Librarian:
         timeout_s: float = DEFAULT_SYSTEM2_TIMEOUT_S,
         spend: SpendLimits[Any] | None = None,
         notifier: NotificationPublisher | None = None,
+        prompts: PromptStore | None = None,
         conflict_min_observations: int = 5,
         conflict_min_days: int = 14,
         decay_migration_threshold: float = DEFAULT_DECAY_MIGRATION_THRESHOLD,
@@ -250,6 +254,7 @@ class Librarian:
             if model is not None
             else None
         )
+        self._prompts = prompts if prompts is not None else PromptStore()
         self._send_alert = notifier.urgent(ALERT_SOURCE) if notifier else None
         self._conflict_min_observations = conflict_min_observations
         self._conflict_min_days = conflict_min_days
@@ -322,7 +327,9 @@ class Librarian:
             analyses = await agents.ask(
                 agents.analyse,
                 numbered,
-                LibrarianTask(ANALYSE_INSTRUCTIONS, expected_items=len(summaries)),
+                LibrarianTask(
+                    await self._prompts.get(LIBRARIAN_ANALYSE), expected_items=len(summaries)
+                ),
                 max_tokens=max(300, 150 * len(summaries)),
             )
         except SpendLimitExceeded:
@@ -409,7 +416,13 @@ class Librarian:
             return await agents.ask(
                 agents.resolve,
                 user_content,
-                LibrarianTask(resolve_instructions(conflict_min_observations, conflict_min_days)),
+                LibrarianTask(
+                    await self._prompts.get(
+                        LIBRARIAN_RESOLVE,
+                        min_observations=conflict_min_observations,
+                        min_days=conflict_min_days,
+                    )
+                ),
                 max_tokens=800,
             )
         except SpendLimitExceeded:
@@ -487,7 +500,7 @@ class Librarian:
             preferences = await agents.ask(
                 agents.extract,
                 summaries,
-                LibrarianTask(EXTRACT_INSTRUCTIONS),
+                LibrarianTask(await self._prompts.get(LIBRARIAN_EXTRACT)),
                 max_tokens=500,
             )
             if not preferences:
@@ -586,7 +599,7 @@ class Librarian:
                 compressed = await agents.ask(
                     agents.compress,
                     group_text,
-                    LibrarianTask(COMPRESS_INSTRUCTIONS),
+                    LibrarianTask(await self._prompts.get(LIBRARIAN_COMPRESS)),
                     max_tokens=200,
                 )
                 summary_text = compressed.summary
@@ -780,8 +793,11 @@ class Librarian:
                 agents.patterns,
                 summaries,
                 LibrarianTask(
-                    pattern_instructions(
-                        self._pattern_min_occurrences, self._pattern_min_days, tz_name
+                    await self._prompts.get(
+                        LIBRARIAN_PATTERNS,
+                        min_occurrences=self._pattern_min_occurrences,
+                        min_days=self._pattern_min_days,
+                        tz_name=tz_name,
                     )
                 ),
                 max_tokens=1000,

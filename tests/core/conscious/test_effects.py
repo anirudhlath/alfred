@@ -21,7 +21,6 @@ from pydantic_ai.exceptions import ModelHTTPError
 
 from bus.schemas.events import ActionRequest, UserRequest
 from core.conscious.agent import build_system2_agent, system2_toolsets
-from core.conscious.context_assembler import ContextAssembler
 from core.conscious.deps import TurnDeps
 from core.conscious.effects import (
     EFFECTS_TTL_S,
@@ -536,7 +535,6 @@ def _engine(redis: fakeredis.FakeAsyncRedis, script: Script, router: AsyncMock) 
             context_reader=AsyncMock(),
             agent=build_system2_agent(
                 toolsets=system2_toolsets(None),
-                assembler=ContextAssembler(),
                 max_tokens=256,
                 timeout_s=5.0,
                 spend=spend,

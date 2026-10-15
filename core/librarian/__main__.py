@@ -28,6 +28,7 @@ from shared.agents import resolve_model
 from shared.config import AlfredConfig, apply_model_env
 from shared.logging import configure_logging
 from shared.otel import init_tracing
+from shared.prompts.store import PromptStore
 from shared.redis_streams import create_redis
 from shared.spend import build_spend_limits, local_clock
 from shared.usertime import last_user_timezone
@@ -46,6 +47,8 @@ async def run() -> None:
     )
 
     r: AioRedis = create_redis(config.redis_url)
+    prompts = PromptStore.from_config(config, redis=r)
+    log.info("Prompts: {}", prompts.describe())
 
     embedder = None
     context_index = None
@@ -98,6 +101,7 @@ async def run() -> None:
             notifier=NotificationPublisher(
                 NotificationDispatcher(redis=r, dnd_checker=DNDChecker(r, calendar_adapter=None))
             ),
+            prompts=prompts,
             conflict_min_observations=config.conflict_min_observations,
             conflict_min_days=config.conflict_min_days,
             decay_migration_threshold=config.decay_migration_threshold,
@@ -116,6 +120,7 @@ async def run() -> None:
         await teardown(
             closers={
                 "embedding provider": embedder.aclose if embedder is not None else None,
+                "prompt store": prompts.aclose,
                 "redis": r.aclose,
             }
         )

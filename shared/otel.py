@@ -11,6 +11,8 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import Span, SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
+from shared.prompts.link import PromptLinkProcessor
+
 if TYPE_CHECKING:
     from collections.abc import Iterator, MutableMapping, Sequence
 
@@ -93,6 +95,7 @@ def init_tracing(
     provider = TracerProvider(resource=resource)
     # First, so the attributes are set before any exporter sees the span.
     provider.add_span_processor(LangfuseBaggageProcessor())
+    provider.add_span_processor(PromptLinkProcessor())
 
     if endpoint:
         try:

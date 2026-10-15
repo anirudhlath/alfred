@@ -12,7 +12,7 @@ import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -73,6 +73,29 @@ def _first_error(exc: ValidationError) -> str:
 
 
 @dataclass(frozen=True)
+class LangfuseAccess:
+    """Where the eval stack fetches prompts when ``--prompt-label`` is given."""
+
+    host: str
+    public_key: str
+    secret_key: str = field(repr=False)
+    label: str
+
+
+def langfuse_access(env: Mapping[str, str], label: str) -> LangfuseAccess:
+    """The operator's Langfuse settings for *label*; raises ``StackError`` naming what is
+    missing, so a run never silently falls back to the repo prompts it was not asked for."""
+    names = ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY")
+    values = {name: env.get(name, "").strip() for name in names}
+    missing = [name for name, value in values.items() if not value]
+    if missing:
+        raise StackError(f"--prompt-label needs {', '.join(missing)} in the environment")
+    return LangfuseAccess(
+        values["LANGFUSE_HOST"], values["LANGFUSE_PUBLIC_KEY"], values["LANGFUSE_SECRET_KEY"], label
+    )
+
+
+@dataclass(frozen=True)
 class StackConfig:
     model: str
     vllm_url: str  # host view, with /v1
@@ -83,10 +106,12 @@ class StackConfig:
     boot_timeout_s: float = 420.0
     reply_timeout_s: float = 120.0
     keep: bool = False
+    langfuse: LangfuseAccess | None = None
 
 
 def container_env(cfg: StackConfig, *, proxy_port: int, fake_ha_port: int) -> dict[str, str]:
-    """Everything the container needs; nothing from the operator's environment."""
+    """Everything the container needs; nothing from the operator's environment except, with
+    ``--prompt-label``, the Langfuse settings the CLI read."""
     proxy = in_container_url(proxy_port)
     env = {
         "REFLEX_BACKEND": "openai",
@@ -106,6 +131,11 @@ def container_env(cfg: StackConfig, *, proxy_port: int, fake_ha_port: int) -> di
     }
     if cfg.embed_model == DEFAULT_EMBEDDING_MODEL:
         env["INVOLUNTARY_RECALL_THRESHOLD"] = str(DEFAULT_INVOLUNTARY_RECALL_THRESHOLD)
+    if cfg.langfuse is not None:
+        env["LANGFUSE_HOST"] = container_reachable(cfg.langfuse.host)
+        env["LANGFUSE_PUBLIC_KEY"] = cfg.langfuse.public_key
+        env["LANGFUSE_SECRET_KEY"] = cfg.langfuse.secret_key
+        env["ALFRED_PROMPT_LABEL"] = cfg.langfuse.label
     return env
 
 

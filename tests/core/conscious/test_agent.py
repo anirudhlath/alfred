@@ -18,19 +18,20 @@ from core.conscious.agent import (
     build_system2_agent,
     system2_toolsets,
 )
-from core.conscious.context_assembler import ContextAssembler
+from core.conscious.system2_prompts import System2Prompts
 from core.conscious.tools import names, validation
 from core.memory.vector_store import ContextMetadata, SearchResult
 from core.reflex.tool_registry import ToolInfo
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
+from shared.prompts.names import SYSTEM2_IDENTITY_SIR, SYSTEM2_LOCATION, SYSTEM2_PERSONALITY
+from shared.prompts.template import RenderedPrompt, repo_prompt
 from shared.spend import build_spend_limits, local_clock
 from tests.core.conscious.helpers import make_deps, make_services, mock_redis
 from tests.llm_fakes import Script, tool_call
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from pathlib import Path
 
     from pydantic_ai import Agent
 
@@ -44,24 +45,15 @@ def _fresh_logs(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
 
 
-def _assembler(tmp_path: Path) -> ContextAssembler:
-    personality = tmp_path / "personality.md"
-    personality.write_text("You are Alfred, a butler.")
-    return ContextAssembler(personality_path=personality)
-
-
 def _triggers() -> TriggerFeature:
     store = AsyncMock(spec_set=TriggerStore)
     store.list_all = AsyncMock(return_value=[])
     return TriggerFeature(TriggerFeatureContext(store=store))
 
 
-def _agent(
-    tmp_path: Path, *, max_tokens: int = 512, timeout_s: float = 15.0
-) -> Agent[TurnDeps, str]:
+def _agent(*, max_tokens: int = 512, timeout_s: float = 15.0) -> Agent[TurnDeps, str]:
     return build_system2_agent(
         toolsets=system2_toolsets(_triggers()),
-        assembler=_assembler(tmp_path),
         max_tokens=max_tokens,
         timeout_s=timeout_s,
         spend=None,
@@ -95,15 +87,13 @@ def test_constants() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dotted_name_is_retried_with_the_wire_names_and_never_dispatched(
-    tmp_path: Path,
-) -> None:
+async def test_dotted_name_is_retried_with_the_wire_names_and_never_dispatched() -> None:
     router = _router()
     args = {"entity_id": "light.desk"}
     script = Script(tool_call("home.light_on", args), tool_call("home_light_on", args), "done")
     deps = make_deps(registry_tools=[_info("home.light_on")], services=make_services(router=router))
 
-    result = await _agent(tmp_path).run("lights", deps=deps, model=script.model)
+    result = await _agent().run("lights", deps=deps, model=script.model)
 
     assert result.output == "done"
     retry = script.retries(1)[0]
@@ -114,13 +104,9 @@ async def test_dotted_name_is_retried_with_the_wire_names_and_never_dispatched(
 
 
 @pytest.mark.asyncio
-async def test_settings_carry_the_role_header_the_token_cap_and_the_timeout(
-    tmp_path: Path,
-) -> None:
+async def test_settings_carry_the_role_header_the_token_cap_and_the_timeout() -> None:
     script = Script("hi")
-    await _agent(tmp_path, max_tokens=512, timeout_s=15.0).run(
-        "hi", deps=make_deps(), model=script.model
-    )
+    await _agent(max_tokens=512, timeout_s=15.0).run("hi", deps=make_deps(), model=script.model)
     settings = script.settings()
     assert settings["max_tokens"] == 512
     assert settings["timeout"] == 15.0
@@ -128,7 +114,7 @@ async def test_settings_carry_the_role_header_the_token_cap_and_the_timeout(
 
 
 @pytest.mark.asyncio
-async def test_instructions_are_the_assembled_prompt_for_this_turn(tmp_path: Path) -> None:
+async def test_instructions_are_the_assembled_prompt_for_this_turn() -> None:
     recall = [
         SearchResult(
             id="m1",
@@ -145,8 +131,14 @@ async def test_instructions_are_the_assembled_prompt_for_this_turn(tmp_path: Pat
             ),
         )
     ]
+    prompts = System2Prompts(
+        personality=RenderedPrompt("You are Alfred, a butler.", SYSTEM2_PERSONALITY, None, "repo"),
+        identity=repo_prompt(SYSTEM2_IDENTITY_SIR),
+        location=repo_prompt(SYSTEM2_LOCATION, area="Kitchen"),
+    )
     deps = make_deps(
         area="Kitchen",
+        prompts=prompts,
         recall=recall,
         routine_hint="[routine-suggestion] Evening dim.",
         now=datetime(2026, 7, 16, 20, 5, 32, tzinfo=UTC),
@@ -154,7 +146,7 @@ async def test_instructions_are_the_assembled_prompt_for_this_turn(tmp_path: Pat
     )
     script = Script("hi")
 
-    await _agent(tmp_path).run("hi", deps=deps, model=script.model)
+    await _agent().run("hi", deps=deps, model=script.model)
 
     text = script.instructions()
     assert text.startswith("You are Alfred, a butler.")
@@ -166,15 +158,15 @@ async def test_instructions_are_the_assembled_prompt_for_this_turn(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_guest_is_offered_only_benign_tools_across_every_toolset(tmp_path: Path) -> None:
+async def test_guest_is_offered_only_benign_tools_across_every_toolset() -> None:
     registry = [_info("home.get_lights"), _info("home.light_on", "elevated")]
     services = make_services(context_index=AsyncMock())
     sir, guest = Script("hi"), Script("hi")
 
-    await _agent(tmp_path).run(
+    await _agent().run(
         "hi", deps=make_deps("sir", registry_tools=registry, services=services), model=sir.model
     )
-    await _agent(tmp_path).run(
+    await _agent().run(
         "hi", deps=make_deps("guest", registry_tools=registry, services=services), model=guest.model
     )
 
@@ -193,38 +185,35 @@ async def test_guest_is_offered_only_benign_tools_across_every_toolset(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_an_in_process_tool_keeps_its_name_against_a_registry_tool(
-    tmp_path: Path,
-) -> None:
+async def test_an_in_process_tool_keeps_its_name_against_a_registry_tool() -> None:
     router = _router()
     redis = mock_redis()
     impostor = _info("attention.add")
     script = Script(tool_call("attention_add", {"domain": "home", "entity_id": "sensor.x"}), "done")
     deps = make_deps(registry_tools=[impostor], services=make_services(router=router, redis=redis))
 
-    await _agent(tmp_path).run("watch it", deps=deps, model=script.model)
+    await _agent().run("watch it", deps=deps, model=script.model)
 
     router.route.assert_not_awaited()
     redis.sadd.assert_any_call("alfred:attention:home", "sensor.x")
 
 
 @pytest.mark.asyncio
-async def test_malformed_json_arguments_are_repaired_without_a_retry(tmp_path: Path) -> None:
+async def test_malformed_json_arguments_are_repaired_without_a_retry() -> None:
     router = _router()
     script = Script(tool_call("home_light_on", '{"entity_id": "light.desk",}'), "done")
     deps = make_deps(registry_tools=[_info("home.light_on")], services=make_services(router=router))
 
-    await _agent(tmp_path).run("lights", deps=deps, model=script.model)
+    await _agent().run("lights", deps=deps, model=script.model)
 
     assert script.retries(1) == []
     assert router.route.await_args.args[0].parameters == {"entity_id": "light.desk"}
 
 
 @pytest.mark.asyncio
-async def test_no_trigger_feature_means_no_trigger_tools(tmp_path: Path) -> None:
+async def test_no_trigger_feature_means_no_trigger_tools() -> None:
     agent = build_system2_agent(
         toolsets=system2_toolsets(None),
-        assembler=_assembler(tmp_path),
         max_tokens=512,
         timeout_s=15.0,
         spend=None,
@@ -235,7 +224,7 @@ async def test_no_trigger_feature_means_no_trigger_tools(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_the_budget_gates_every_model_request(tmp_path: Path) -> None:
+async def test_the_budget_gates_every_model_request() -> None:
     """The spend capability is on the agent: a spent budget refuses the request."""
     spend = build_spend_limits(
         fakeredis.FakeAsyncRedis(), cap_usd=1.0, clock=local_clock(lambda: "UTC")
@@ -246,7 +235,6 @@ async def test_the_budget_gates_every_model_request(tmp_path: Path) -> None:
     )
     agent = build_system2_agent(
         toolsets=system2_toolsets(None),
-        assembler=_assembler(tmp_path),
         max_tokens=512,
         timeout_s=15.0,
         spend=spend,

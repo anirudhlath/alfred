@@ -16,6 +16,7 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 
+from core.conscious.context_assembler import assemble
 from core.conscious.deps import TurnDeps
 from core.conscious.effects import RecordEffects
 from core.conscious.tools.attention import attention_toolset
@@ -34,7 +35,6 @@ if TYPE_CHECKING:
     from pydantic_ai.toolsets import AbstractToolset
     from pydantic_ai_harness.spend import SpendLimits
 
-    from core.conscious.context_assembler import ContextAssembler
     from core.triggers.feature import TriggerFeature
 
 SYSTEM2_NAME: Final = "system2"
@@ -56,7 +56,6 @@ def system2_toolsets(trigger_feature: TriggerFeature | None) -> list[AbstractToo
 def build_system2_agent(
     *,
     toolsets: Sequence[AbstractToolset[TurnDeps]],
-    assembler: ContextAssembler,
     max_tokens: int,
     timeout_s: float,
     spend: SpendLimits[Any] | None,
@@ -89,14 +88,11 @@ def build_system2_agent(
     @agent.instructions
     def _instructions(ctx: RunContext[TurnDeps]) -> str:
         d = ctx.deps
-        return assembler.assemble(
-            d.identity,
-            integrations_available=bool(d.integration_tools),
+        return assemble(
+            d.prompts,
+            who=d.who,
             now=d.now,
             relevant_context=d.recall or None,
-            channel=d.channel,
-            content_type=d.content_type,
-            area=d.area,
             tz_name=d.tz_name,
             routine_hint=d.routine_hint,
         )

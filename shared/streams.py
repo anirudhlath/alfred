@@ -15,6 +15,9 @@ LIBRARIAN_QUEUE = "alfred:librarian:queue"
 LIBRARIAN_STATUS_KEY = "alfred:librarian:status"
 TRIGGERS_KEY = "alfred:triggers"
 TOOL_REGISTRY_KEY = "alfred:tool_registry"
+# Last prompt text fetched from Langfuse, per prompt and label (shared.prompts.store).
+# A format string: PROMPT_COPY_KEY.format(name=..., label=...).
+PROMPT_COPY_KEY = "alfred:prompts:{name}:{label}"
 
 # Home domain streams (used by MQTT bridge + Reflex Runner)
 HOME_STATE_STREAM = "alfred:home:state_changed"

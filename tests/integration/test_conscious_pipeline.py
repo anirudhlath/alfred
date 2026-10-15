@@ -12,7 +12,6 @@ from pydantic_ai.usage import RequestUsage
 
 from bus.schemas.events import UserRequest
 from core.conscious.agent import build_system2_agent, system2_toolsets
-from core.conscious.context_assembler import ContextAssembler
 from core.conscious.engine import ConsciousDeps, ConsciousEngine
 from core.conscious.identity import IdentityGate
 from core.conscious.session import SessionManager
@@ -64,7 +63,7 @@ def _no_integrations() -> AbstractContextManager[AsyncMock]:
 
 
 def _engine(script: Script) -> ConsciousEngine:
-    """A fully wired engine: real gate, sessions, budget and assembler; mocked Redis, with
+    """A fully wired engine: real gate, sessions, budget and repo prompts; mocked Redis, with
     the budget's counter on fakeredis (the mock cannot run its script)."""
     redis = _make_redis_mock()
     spend = build_spend_limits(
@@ -81,7 +80,6 @@ def _engine(script: Script) -> ConsciousEngine:
             context_reader=AsyncMock(get_rendered_context=AsyncMock(return_value="")),
             agent=build_system2_agent(
                 toolsets=system2_toolsets(None),
-                assembler=ContextAssembler(),
                 max_tokens=256,
                 timeout_s=5.0,
                 spend=spend,

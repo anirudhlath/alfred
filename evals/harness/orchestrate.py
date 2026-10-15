@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from evals.harness.display import Display
     from evals.harness.judge import CalibrationReport
     from evals.harness.scenario import ScenarioVariant
+    from evals.harness.stack import LangfuseAccess
 
 logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -86,6 +87,7 @@ class RunOptions:
     display: Display
     fake_ha_port: int  # 0: any free port
     proxy_port: int  # 0: any free port
+    langfuse: LangfuseAccess | None = None
 
 
 @dataclass(frozen=True)
@@ -312,6 +314,8 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
         # The image holds whatever home-service it was built with; the checkout may not be it.
         hs_commit = home_service_commit(opts.home_service) + NOT_REBUILT
     commit = alfred_commit(REPO_ROOT) + ("" if opts.build else NOT_REBUILT)
+    if opts.langfuse is not None:
+        commit += f" (prompts: Langfuse label {opts.langfuse.label})"
     report = read_calibration(CALIBRATION_FILE, opts.model)
     # A file that cannot be used is a CalibrationError naming it, a one-line preflight error.
     digests = calibration_digests(load_calibration_sets(CALIBRATION_DIR))
@@ -331,6 +335,7 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
         work_dir=run_dir / "data",
         home_service_dir=opts.home_service,
         keep=opts.keep,
+        langfuse=opts.langfuse,
     )
 
     def make_ctx(stack: Stack, variants: Sequence[ScenarioVariant]) -> RunContext:

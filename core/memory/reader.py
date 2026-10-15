@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class MemoryReader:
     """Reads preference and profile Markdown files from disk.
 
-    Provides text sections for ContextAssembler. Files are read-only at runtime
+    Provides preference and profile text sections. Files are read-only at runtime
     (only the Librarian or humans edit them).
     """
 

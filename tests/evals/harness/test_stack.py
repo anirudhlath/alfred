@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import socket
 import subprocess
@@ -19,13 +20,16 @@ from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.identity import IDENTITY_SIR
 from evals.harness.evidence import LlmCall
 from evals.harness.fake_ha import FakeHA
+from evals.harness.net import container_reachable
 from evals.harness.proxy import LlmProxy
 from evals.harness.stack import (
     Docker,
+    LangfuseAccess,
     Stack,
     StackConfig,
     StackError,
     container_env,
+    langfuse_access,
     probe_host_ports,
     run_cmd,
 )
@@ -47,6 +51,56 @@ def cfg(tmp_path: Path, **kw) -> StackConfig:  # type: ignore[no-untyped-def]
         boot_timeout_s=5.0,
     )
     return StackConfig(**{**base, **kw})
+
+
+def test_container_env_serves_repo_prompts_by_default(tmp_path: Path) -> None:
+    env = container_env(cfg(tmp_path), proxy_port=9100, fake_ha_port=9200)
+    assert "LANGFUSE_HOST" not in env and "ALFRED_PROMPT_LABEL" not in env
+
+
+def test_container_env_points_prompts_at_langfuse_with_a_label(tmp_path: Path) -> None:
+    access = LangfuseAccess(
+        host="http://langfuse.test:3300", public_key="pk", secret_key="sk", label="latest"
+    )
+    env = container_env(
+        dataclasses.replace(cfg(tmp_path), langfuse=access), proxy_port=9100, fake_ha_port=9200
+    )
+    assert env["LANGFUSE_HOST"] == "http://langfuse.test:3300"
+    assert (env["LANGFUSE_PUBLIC_KEY"], env["LANGFUSE_SECRET_KEY"]) == ("pk", "sk")
+    assert env["ALFRED_PROMPT_LABEL"] == "latest"
+
+
+def test_langfuse_access_keeps_the_secret_out_of_its_repr() -> None:
+    access = LangfuseAccess(
+        host="http://langfuse.test", public_key="pk", secret_key="s3cret-value", label="latest"
+    )
+    assert "s3cret-value" not in repr(access)
+
+
+def test_a_loopback_langfuse_is_spelled_for_the_container(tmp_path: Path) -> None:
+    access = LangfuseAccess(
+        host="http://localhost:3300", public_key="pk", secret_key="sk", label="latest"
+    )
+    env = container_env(
+        dataclasses.replace(cfg(tmp_path), langfuse=access), proxy_port=9100, fake_ha_port=9200
+    )
+    assert env["LANGFUSE_HOST"] == container_reachable("http://localhost:3300")
+
+
+def test_langfuse_access_names_what_is_missing() -> None:
+    with pytest.raises(StackError, match="LANGFUSE_SECRET_KEY"):
+        langfuse_access(
+            {"LANGFUSE_HOST": "http://langfuse.test", "LANGFUSE_PUBLIC_KEY": "pk"}, "latest"
+        )
+    access = langfuse_access(
+        {
+            "LANGFUSE_HOST": "http://langfuse.test",
+            "LANGFUSE_PUBLIC_KEY": "pk",
+            "LANGFUSE_SECRET_KEY": "sk",
+        },
+        "latest",
+    )
+    assert access.label == "latest"
 
 
 class FakeDocker:

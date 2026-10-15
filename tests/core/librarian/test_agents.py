@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
@@ -16,14 +17,16 @@ from core.librarian.agents import (
     LibrarianTask,
     ObservationAnalysis,
     build_librarian_agents,
-    pattern_instructions,
-    resolve_instructions,
 )
 from shared.config import DEFAULT_SYSTEM2_TIMEOUT_S
+from shared.prompts.names import LIBRARIAN_ANALYSE, LIBRARIAN_PATTERNS, LIBRARIAN_RESOLVE
+from shared.prompts.template import PromptRef, RenderedPrompt, repo_prompt
 from shared.spend import build_spend_limits, local_clock
 from tests.llm_fakes import Script
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from pydantic_ai_harness.spend import SpendLimits
 
 _ANALYSIS = {
@@ -48,6 +51,10 @@ def test_agents_are_named_by_role() -> None:
     ]
 
 
+def _task(text: str, expected_items: int | None = None) -> LibrarianTask:
+    return LibrarianTask(RenderedPrompt(text, LIBRARIAN_ANALYSE, None, "repo"), expected_items)
+
+
 @pytest.mark.asyncio
 async def test_a_request_carries_the_role_header_the_cap_and_the_instructions() -> None:
     script = Script([_ANALYSIS])
@@ -56,7 +63,7 @@ async def test_a_request_carries_the_role_header_the_cap_and_the_instructions() 
     out = await agents.ask(
         agents.analyse,
         "1. kitchen on",
-        LibrarianTask("ANALYSE", expected_items=1),
+        _task("ANALYSE", expected_items=1),
         max_tokens=300,
     )
 
@@ -74,9 +81,7 @@ async def test_output_mode_follows_the_model_profile(native: bool, mode: str) ->
     script = Script([_ANALYSIS], json_schema_output=native)
     agents = build_librarian_agents(script.model)
 
-    out = await agents.ask(
-        agents.analyse, "1. x", LibrarianTask("I", expected_items=1), max_tokens=300
-    )
+    out = await agents.ask(agents.analyse, "1. x", _task("I", expected_items=1), max_tokens=300)
 
     assert out[0].semantic_key == "kitchen light on"
     assert script.requests[0][1].model_request_parameters.output_mode == mode
@@ -90,7 +95,7 @@ async def test_a_wrong_count_is_retried_once_with_the_expected_count() -> None:
     out = await agents.ask(
         agents.analyse,
         "1. a\n2. b",
-        LibrarianTask("I", expected_items=2),
+        _task("I", expected_items=2),
         max_tokens=300,
     )
 
@@ -118,7 +123,7 @@ async def test_every_model_request_is_counted_against_the_budget() -> None:
     spend = _limits()
     agents = build_librarian_agents(script.model, spend=spend)
 
-    await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500)
+    await agents.ask(agents.extract, "- obs", _task("I"), max_tokens=500)
 
     (status,) = await spend.status()
     assert status.spent.requests == 1
@@ -135,7 +140,7 @@ async def test_a_run_that_exhausts_its_retries_counts_each_request() -> None:
         await agents.ask(
             agents.analyse,
             "1. a\n2. b",
-            LibrarianTask("I", expected_items=2),
+            _task("I", expected_items=2),
             max_tokens=300,
         )
 
@@ -154,7 +159,7 @@ async def test_a_spent_budget_refuses_the_request() -> None:
     agents = build_librarian_agents(script.model, spend=spend)
 
     with pytest.raises(SpendLimitExceeded):
-        await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500)
+        await agents.ask(agents.extract, "- obs", _task("I"), max_tokens=500)
 
     assert script.call_count == 0
 
@@ -164,9 +169,9 @@ async def test_the_hook_runs_after_every_ask_even_a_failed_one() -> None:
     hook = AsyncMock()
     agents = build_librarian_agents(Script([], RuntimeError("gateway down")).model, after_ask=hook)
 
-    await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500)
+    await agents.ask(agents.extract, "- obs", _task("I"), max_tokens=500)
     with pytest.raises(RuntimeError, match="gateway down"):
-        await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500)
+        await agents.ask(agents.extract, "- obs", _task("I"), max_tokens=500)
 
     assert hook.await_count == 2
 
@@ -176,7 +181,7 @@ async def test_a_failed_hook_keeps_the_result() -> None:
     hook = AsyncMock(side_effect=ConnectionError("redis blip"))
     agents = build_librarian_agents(Script([]).model, after_ask=hook)
 
-    out = await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500)
+    out = await agents.ask(agents.extract, "- obs", _task("I"), max_tokens=500)
 
     assert out == []
     hook.assert_awaited_once()
@@ -188,20 +193,47 @@ async def test_a_failed_hook_keeps_the_runs_own_exception() -> None:
     agents = build_librarian_agents(Script(RuntimeError("gateway down")).model, after_ask=hook)
 
     with pytest.raises(RuntimeError, match="gateway down"):
-        await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500)
+        await agents.ask(agents.extract, "- obs", _task("I"), max_tokens=500)
 
 
-def test_resolve_instructions_state_the_contradiction_threshold() -> None:
-    text = resolve_instructions(5, 14)
+def test_the_resolve_prompt_states_the_contradiction_threshold() -> None:
+    text = repo_prompt(LIBRARIAN_RESOLVE, min_observations=5, min_days=14).text
     assert "at least 5 consistent observations over at least 14 days" in text
 
 
-def test_pattern_instructions_keep_thresholds_zone_and_the_reflex_paragraph() -> None:
-    text = pattern_instructions(3, 7, "America/Los_Angeles")
+def test_the_pattern_prompt_keeps_thresholds_zone_and_the_reflex_paragraph() -> None:
+    text = repo_prompt(
+        LIBRARIAN_PATTERNS, min_occurrences=3, min_days=7, tz_name="America/Los_Angeles"
+    ).text
     assert "at least 3 occurrences" in text
     assert "at least 7 different days" in text
     assert "Entry times are local (America/Los_Angeles)" in text
+    assert "source 'reflex'" in text
     assert "System 1 (Reflex Engine)" in text
+
+
+@pytest.mark.asyncio
+async def test_ask_sends_the_rendered_prompt_and_links_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[tuple[PromptRef, ...]] = []
+
+    @contextmanager
+    def _linked(*refs: PromptRef) -> Iterator[None]:
+        seen.append(refs)
+        yield
+
+    monkeypatch.setattr("core.librarian.agents.linked_prompts", _linked)
+    script = Script([_ANALYSIS])
+    agents = build_librarian_agents(script.model)
+    prompt = RenderedPrompt("Analyse these.", LIBRARIAN_ANALYSE, 3, "langfuse")
+
+    await agents.ask(
+        agents.analyse, "1. kitchen on", LibrarianTask(prompt, expected_items=1), max_tokens=300
+    )
+
+    assert script.instructions() == "Analyse these."
+    assert seen == [(PromptRef(LIBRARIAN_ANALYSE, 3, "langfuse"),)]
 
 
 @pytest.mark.asyncio
@@ -210,8 +242,6 @@ async def test_a_request_carries_the_configured_timeout() -> None:
     script = Script([_ANALYSIS])
     agents = build_librarian_agents(script.model, timeout_s=12.5)
 
-    await agents.ask(
-        agents.analyse, "1. on", LibrarianTask("ANALYSE", expected_items=1), max_tokens=9
-    )
+    await agents.ask(agents.analyse, "1. on", _task("ANALYSE", expected_items=1), max_tokens=9)
 
     assert script.settings()["timeout"] == 12.5

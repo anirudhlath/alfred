@@ -232,6 +232,10 @@ def positive_seconds_env(name: str, default: float) -> float:
     return positive_seconds(name, os.getenv(name, ""), default)
 
 
+# Where prompt text is read from (shared/prompts/store.py): the Langfuse label, and how
+# long a fetched text is served before it is refreshed in the background.
+DEFAULT_PROMPT_LABEL = "production"
+DEFAULT_PROMPT_CACHE_TTL_S = 60.0
 DEFAULT_OPENAI_COMPAT_HOST = "http://localhost:1234"
 DEFAULT_SYSTEM2_MODEL = "openrouter:anthropic/claude-sonnet-4"
 DEFAULT_SYSTEM2_MAX_TOKENS = 2048
@@ -428,6 +432,14 @@ class AlfredConfig:
     session_timeout_minutes: int = 30
     proactivity_level: str = "opinionated"  # opinionated | moderate | conservative
 
+    # Prompts (shared/prompts): served from Langfuse when LANGFUSE_HOST is set, else
+    # the repo defaults.
+    langfuse_host: str = ""
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    prompt_label: str = DEFAULT_PROMPT_LABEL
+    prompt_cache_ttl_s: float = DEFAULT_PROMPT_CACHE_TTL_S
+
     # Phase 3: Cost
     daily_cost_cap_usd: float = 5.0
 
@@ -536,6 +548,13 @@ class AlfredConfig:
             system2_timeout_s=llm.system2_timeout_s,
             session_timeout_minutes=int(os.getenv("SESSION_TIMEOUT_MINUTES", "30")),
             proactivity_level=os.getenv("PROACTIVITY_LEVEL", "opinionated"),
+            langfuse_host=os.getenv("LANGFUSE_HOST", "").strip(),
+            langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY", "").strip(),
+            langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY", "").strip(),
+            prompt_label=os.getenv("ALFRED_PROMPT_LABEL", "").strip() or DEFAULT_PROMPT_LABEL,
+            prompt_cache_ttl_s=positive_seconds_env(
+                "PROMPT_CACHE_TTL_S", DEFAULT_PROMPT_CACHE_TTL_S
+            ),
             # Phase 3: Cost
             daily_cost_cap_usd=cost_cap_usd(os.getenv("DAILY_COST_CAP_USD", ""), 5.0),
             # Memory: Embedding (env-configurable; see above for the dim default).

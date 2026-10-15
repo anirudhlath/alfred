@@ -95,7 +95,8 @@ sequenceDiagram
 **The agent** is built once per process by `build_system2_agent()`
 (`core/conscious/agent.py`): output type `str`, two output retries, model settings
 `max_tokens`, `timeout` and the role header, and the instructions assembled per turn by
-`ContextAssembler` from `TurnDeps`. Its capabilities are instrumentation and
+`assemble()` (`core/conscious/context_assembler.py`) from `TurnDeps`, whose prose sections
+the engine rendered from the prompt store before the run (see [Prompts](#prompts)). Its capabilities are instrumentation and
 `RepairToolArguments`, which repairs malformed JSON in a call's arguments before they are
 validated. The engine passes the model on each run, so tests run the same agent against a
 `FunctionModel`.
@@ -198,6 +199,92 @@ also checks the count: a reply with the wrong number of elements is retried with
 naming both numbers, and a second miss leaves every observation unscored rather than
 misaligned. Without a model, or when a
 call fails, each caller keeps its deterministic fallback.
+
+## Prompts
+
+The prose of System 2's instructions and of the Librarian's five agents is served by the
+prompt store (`shared/prompts/`). In production it lives in a self-hosted Langfuse, where
+it can be edited and versioned without a deploy; without Langfuse, Alfred serves the repo
+defaults in `shared/prompts/defaults/<name>.md`, which are versioned in git. Langfuse is
+optional (see [Deployment](deployment.md#prompts-from-langfuse-optional)).
+
+| Prompt | Variables |
+|---|---|
+| `system2-personality` | none |
+| `system2-voice-delivery` | none |
+| `system2-identity-sir` | none |
+| `system2-identity-guest` | none |
+| `system2-location` | `{{area}}` |
+| `system2-integrations` | none |
+| `system2-proactivity` | `{{level}}` |
+| `librarian-analyse` | none |
+| `librarian-extract` | none |
+| `librarian-compress` | none |
+| `librarian-resolve` | `{{min_observations}}`, `{{min_days}}` |
+| `librarian-patterns` | `{{min_occurrences}}`, `{{min_days}}`, `{{tz_name}}` |
+
+A name is also its default's file name and its name in Langfuse. Variables use Langfuse's
+`{{name}}` syntax. **The store renders only the prose; code renders the data**: the
+current time, involuntary recall and the routine hint in System 2, and the observations the
+Librarian analyses, are built in code and sit between or after the prompts. The engine
+renders System 2's sections before each turn, fetched concurrently, so the agent's
+instructions function stays sync; the Librarian passes each agent its prompt.
+
+**Where a prompt comes from**, in order:
+
+1. Langfuse, at `ALFRED_PROMPT_LABEL` (default `production`).
+2. The last Langfuse text the store saved in Redis (`alfred:prompts:{name}:{label}`, no
+   expiry), when Langfuse fails.
+3. The repo default.
+
+With no `LANGFUSE_HOST`, only the repo defaults are used and there is no network call. With
+a host but not both keys, startup logs one WARNING and the repo defaults are used. The
+startup log says which: `Prompts: repo defaults` or `Prompts: Langfuse, label <label>`.
+
+**Refresh.** A read is served from memory for `PROMPT_CACHE_TTL_S` (default 60 s). After
+that the stale text is still served while one background task per prompt refetches it, so
+a turn never waits on Langfuse once a process is warm. Only a cold read waits, and every
+Langfuse call is bounded by a 2 s deadline, so an outage costs one wait per prompt per
+process start. Whatever is served, a fallback included, is cached for the TTL.
+
+**Failures.**
+
+- A prompt Langfuse does not have (404) serves the repo default, quietly: that is normal
+  before the first `alfred prompts push`.
+- An error, a timeout or a rejected key keeps the last good text the process already holds,
+  else the Redis copy, else the repo default. It logs a WARNING once per prompt and an INFO
+  when Langfuse answers again.
+- **Refused edits.** A chat-type prompt, or a text using a variable the code does not pass,
+  is not served: the repo default is, with a WARNING naming the prompt and version. A bad
+  edit in Langfuse never breaks a turn.
+- A caller passing the wrong variables is a bug, and raises `ValueError`.
+
+**The trace link.** On `chat` spans (the model calls, not the agent run around them), the
+store's primary prompt is linked to Langfuse's prompt management through
+`langfuse.observation.prompt.name` and `.version`: `system2-personality` for System 2, the
+agent's own prompt for the Librarian. They are set only when that prompt came from Langfuse
+or the Redis copy, since a repo default has no Langfuse version. `alfred.prompts` lists
+every prompt the call used as `name@version`, or `name@repo` for a default. The link is a
+context variable, not baggage, so it never reaches an outgoing HTTP header.
+
+**Editing a prompt.** Either way, a change is checked against the goldens before it is
+live:
+
+- *In Langfuse:* edit the prompt (a new version labelled `latest`), run
+  `alfred evals run --prompt-label latest` and compare it with a repo-default run (see
+  [docs/evals.md](evals.md#testing-a-prompt-in-langfuse)), then move the `production` label
+  to the version in Langfuse.
+- *In the repo:* edit `shared/prompts/defaults/<name>.md`, open a PR, and after it merges
+  run `alfred prompts push --promote`.
+
+`alfred prompts` reads `LANGFUSE_HOST` and both keys from the environment (exit 2 if one is
+missing):
+
+| Command | Does |
+|---|---|
+| `push [names]` | Creates a version of each prompt whose default differs from Langfuse's `latest`; `--promote` also labels it `production` |
+| `diff [names] [--label L]` | Shows where Langfuse's version at the label (default `production`) differs from the repo; exits 1 on drift |
+| `pull [names] [--label L]` | Writes Langfuse's versions at the label back over the repo defaults, skipping unusable ones, so UI edits can be committed |
 
 ## Retries
 
@@ -365,7 +452,7 @@ one-toolset agent.
 
 | PR | Changes here |
 |---|---|
-| 3 | prompts move to the self-hosted Langfuse, with repo defaults |
+| 3 | prompts move to the self-hosted Langfuse, with repo defaults (done, see [Prompts](#prompts)) |
 | 4 | full session history, tool calls and results included |
 | 5 | deferred tool approvals replace the critical intercept; late replies become follow-ups |
 | 6 | retries, the turn ledger and spend on the harness's `SpendLimits` (done, see [Retries](#retries) and [Spend](#spend)) |
@@ -380,6 +467,8 @@ one-toolset agent.
 | `shared/agents.py` | `resolve_model` (providers on the retrying client), `model_key`, `role_headers`, `instrumentation` |
 | `shared/config.py` | `resolve_llm_settings`, the LLM fields on `AlfredConfig`, `apply_model_env` |
 | `shared/otel.py` | `langfuse_attributes`, `LangfuseBaggageProcessor` |
+| `shared/prompts/` | `names` (the twelve prompts and their variables), `store.PromptStore`, `template`, `link` (the span link), `cli` (`alfred prompts`), `defaults/<name>.md` |
+| `core/conscious/system2_prompts.py` | `System2Prompts`: one turn's rendered sections |
 | `core/conscious/agent.py` | `build_system2_agent`, `system2_toolsets`, `REQUEST_LIMIT` |
 | `core/conscious/engine.py` | `ConsciousEngine`: one turn around one agent run |
 | `core/conscious/deps.py` | `TurnServices`, `TurnDeps` |
