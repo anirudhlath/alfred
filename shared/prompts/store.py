@@ -10,7 +10,6 @@ an outage costs one wait per prompt, not one per turn.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import time
@@ -18,7 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from shared.config import DEFAULT_PROMPT_CACHE_TTL_S, DEFAULT_PROMPT_LABEL
-from shared.prompts.langfuse import LangfuseClient, LangfuseError
+from shared.prompts.langfuse import LangfuseClient
 from shared.prompts.template import (
     PromptSource,
     RenderedPrompt,
@@ -37,6 +36,9 @@ if TYPE_CHECKING:
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
+
+# Redis is only a fallback and a copy; neither may hold a read for longer than this.
+_REDIS_TIMEOUT_S = 0.5
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,7 @@ class PromptStore:
         self._cache: dict[str, _Entry] = {}
         self._inflight: dict[str, asyncio.Task[_Template]] = {}
         self._failing: set[str] = set()
+        self._closed = False
 
     @classmethod
     def from_config(cls, config: AlfredConfig, *, redis: AioRedis | None) -> PromptStore:
@@ -125,6 +128,7 @@ class PromptStore:
 
     async def aclose(self) -> None:
         """Cancel in-flight refreshes and close the Langfuse client."""
+        self._closed = True
         tasks = list(self._inflight.values())
         for task in tasks:
             task.cancel()
@@ -136,6 +140,8 @@ class PromptStore:
         if self._langfuse is None:
             return _repo(name)
         entry = self._cache.get(name)
+        if self._closed:
+            return entry.template if entry is not None else _repo(name)
         if entry is None:
             # Shielded: a reader that gives up must not cancel the fetch others await.
             return await asyncio.shield(self._refresh(name))
@@ -156,9 +162,9 @@ class PromptStore:
         assert self._langfuse is not None
         try:
             remote = await self._langfuse.get(name, label=self._label)
-        except LangfuseError as exc:
+        except Exception as exc:  # nothing may escape a fallback
             self._note_failure(name, exc)
-            template = await self._copy(name) or _repo(name)
+            template = await self._fallback(name)
         else:
             self._note_recovery(name)
             if remote is None:
@@ -174,9 +180,17 @@ class PromptStore:
             else:
                 assert remote.text is not None
                 template = _Template(remote.text, remote.version, "langfuse")
-                await self._save_copy(name, template)
         self._cache[name] = _Entry(template, self._clock())
+        if template.source == "langfuse":
+            await self._save_copy(name, template)
         return template
+
+    async def _fallback(self, name: str) -> _Template:
+        """What to serve when Langfuse failed: the last good text, then Redis, then the repo."""
+        cached = self._cache.get(name)
+        if cached is not None and cached.template.source != "repo":
+            return cached.template
+        return await self._copy(name) or _repo(name)
 
     def _key(self, name: str) -> str:
         return PROMPT_COPY_KEY.format(name=name, label=self._label)
@@ -186,7 +200,8 @@ class PromptStore:
         if self._redis is None:
             return None
         try:
-            raw = await self._redis.get(self._key(name))
+            async with asyncio.timeout(_REDIS_TIMEOUT_S):
+                raw = await self._redis.get(self._key(name))
             if raw is None:
                 return None
             data = json.loads(raw)
@@ -204,10 +219,13 @@ class PromptStore:
         if self._redis is None:
             return
         payload = json.dumps({"text": template.text, "version": template.version})
-        with contextlib.suppress(Exception):
-            await self._redis.set(self._key(name), payload)
+        try:
+            async with asyncio.timeout(_REDIS_TIMEOUT_S):
+                await self._redis.set(self._key(name), payload)
+        except Exception as exc:  # a copy that is not saved is not an error
+            logger.debug("Could not save the Redis copy of prompt %s: %r", name, exc)
 
-    def _note_failure(self, name: str, exc: LangfuseError) -> None:
+    def _note_failure(self, name: str, exc: Exception) -> None:
         if name in self._failing:
             logger.debug("Langfuse still unreachable for prompt %s: %s", name, exc)
             return

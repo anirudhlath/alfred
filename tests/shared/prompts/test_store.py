@@ -32,10 +32,16 @@ def _store(fake: FakeLangfuse, **kwargs: object) -> tuple[PromptStore, Clock]:
     return PromptStore(langfuse=fake, clock=clock, **kwargs), clock  # type: ignore[arg-type]
 
 
-async def _settle() -> None:
-    """Let background refreshes on the in-memory fake finish."""
-    for _ in range(5):
-        await asyncio.sleep(0)
+async def _settle(store: PromptStore) -> None:
+    """Wait for the store's in-flight refreshes (on the in-memory fake) to finish."""
+    while store._inflight:
+        await asyncio.gather(*store._inflight.values(), return_exceptions=True)
+        await asyncio.sleep(0)  # let the done-callbacks drop the finished tasks
+
+
+async def _started() -> None:
+    """Give freshly created reader tasks their first step (they queue on the gate)."""
+    await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
@@ -81,7 +87,7 @@ async def test_a_stale_read_serves_the_cached_text_and_refreshes_in_the_backgrou
     assert stale.text == "v1"
 
     fake.gate.set()
-    await _settle()
+    await _settle(store)
     assert (await store.get(SYSTEM2_PERSONALITY)).text == "v2"
     await store.aclose()
 
@@ -126,7 +132,7 @@ async def test_an_outage_is_cached_so_turns_do_not_wait(
         await store.get(SYSTEM2_PERSONALITY)
         clock.now += 61
         await store.get(SYSTEM2_PERSONALITY)
-        await _settle()
+        await _settle(store)
 
     assert first.source == "repo"
     assert len(fake.calls) == 2  # the cold read and one background refresh, not one per read
@@ -162,7 +168,7 @@ async def test_concurrent_cold_reads_share_one_fetch() -> None:
     store, _ = _store(fake)
 
     readers = [asyncio.create_task(store.get(SYSTEM2_PERSONALITY)) for _ in range(5)]
-    await _settle()
+    await _started()
     fake.gate.set()
     results = await asyncio.gather(*readers)
 
@@ -178,7 +184,7 @@ async def test_a_cancelled_reader_does_not_cancel_the_shared_fetch() -> None:
 
     quitter = asyncio.create_task(store.get(SYSTEM2_PERSONALITY))
     stayer = asyncio.create_task(store.get(SYSTEM2_PERSONALITY))
-    await _settle()
+    await _started()
     quitter.cancel()
     fake.gate.set()
 
@@ -228,3 +234,136 @@ def test_describe_names_the_source() -> None:
     assert PromptStore().describe() == "repo defaults"
     store, _ = _store(FakeLangfuse(), label="candidate")
     assert store.describe() == "Langfuse, label candidate"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_refresh_keeps_the_last_langfuse_text() -> None:
+    fake = FakeLangfuse({SYSTEM2_PERSONALITY: "Good."})
+    store, clock = _store(fake)
+    await store.get(SYSTEM2_PERSONALITY)
+
+    fake.error = LangfuseError("refused")
+    clock.now += 61
+    await store.get(SYSTEM2_PERSONALITY)  # serves the cache, starts the refresh
+    await _settle(store)
+    clock.now += 1
+    prompt = await store.get(SYSTEM2_PERSONALITY)
+
+    assert (prompt.text, prompt.version, prompt.source) == ("Good.", 7, "langfuse")
+    assert len(fake.calls) == 2  # the failure re-stamped the entry: no refresh per read
+
+
+@pytest.mark.asyncio
+async def test_a_failed_refresh_keeps_a_last_good_text_even_with_redis_down() -> None:
+    redis = MagicMock()
+    redis.get = AsyncMock(side_effect=RedisConnectionError("down"))
+    redis.set = AsyncMock(side_effect=RedisConnectionError("down"))
+    fake = FakeLangfuse({SYSTEM2_PERSONALITY: "Good."})
+    store, clock = _store(fake, redis=redis)
+    await store.get(SYSTEM2_PERSONALITY)
+
+    fake.error = LangfuseError("refused")
+    clock.now += 61
+    await store.get(SYSTEM2_PERSONALITY)
+    await _settle(store)
+
+    assert (await store.get(SYSTEM2_PERSONALITY)).source == "langfuse"
+
+
+class _Hang:
+    """A Redis whose calls never answer."""
+
+    def __init__(self) -> None:
+        self.never = asyncio.Event()
+
+    async def get(self, key: str) -> None:
+        await self.never.wait()
+
+    async def set(self, key: str, value: str) -> None:
+        await self.never.wait()
+
+
+@pytest.mark.asyncio
+async def test_a_hung_redis_never_holds_a_read_for_long() -> None:
+    down = FakeLangfuse()
+    down.error = LangfuseError("refused")
+    store, _ = _store(down, redis=_Hang())
+    prompt = await asyncio.wait_for(store.get(SYSTEM2_PERSONALITY), timeout=1.5)
+    assert prompt.source == "repo"
+
+    up, _ = _store(FakeLangfuse({SYSTEM2_PERSONALITY: "Up."}), redis=_Hang())
+    prompt = await asyncio.wait_for(up.get(SYSTEM2_PERSONALITY), timeout=1.5)
+    assert (prompt.text, prompt.source) == ("Up.", "langfuse")
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_error_falls_back_instead_of_escaping(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake = FakeLangfuse({SYSTEM2_PERSONALITY: "x"})
+    fake.error = ValueError("odd")
+    store, _ = _store(fake)
+    with caplog.at_level(logging.WARNING, logger="shared.prompts.store"):
+        prompt = await store.get(SYSTEM2_PERSONALITY)
+    assert prompt.source == "repo"
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
+
+
+@pytest.mark.asyncio
+async def test_after_aclose_reads_are_served_without_a_fetch() -> None:
+    fake = FakeLangfuse({SYSTEM2_PERSONALITY: "v1"})
+    store, clock = _store(fake)
+    await store.get(SYSTEM2_PERSONALITY)
+    await store.aclose()
+
+    clock.now += 61
+    cached = await store.get(SYSTEM2_PERSONALITY)  # stale, but no refresh starts
+    cold = await store.get(SYSTEM2_LOCATION, area="hall")  # never cached: the repo default
+
+    assert (cached.text, cached.source) == ("v1", "langfuse")
+    assert cold.source == "repo"
+    assert len(fake.calls) == 1
+    assert not store._inflight
+
+
+@pytest.mark.asyncio
+async def test_recovery_is_logged_at_info(caplog: pytest.LogCaptureFixture) -> None:
+    fake = FakeLangfuse({SYSTEM2_PERSONALITY: "x"})
+    fake.error = LangfuseError("refused")
+    store, clock = _store(fake)
+    await store.get(SYSTEM2_PERSONALITY)
+
+    fake.error = None
+    clock.now += 61
+    with caplog.at_level(logging.INFO, logger="shared.prompts.store"):
+        await store.get(SYSTEM2_PERSONALITY)
+        await _settle(store)
+
+    assert any(
+        r.levelno == logging.INFO and "reachable again" in r.getMessage() for r in caplog.records
+    )
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        json.dumps({"text": "In the {{room}}.", "version": 3}),  # undeclared variable
+        "not json",
+        json.dumps({"text": 5, "version": 3}),
+        json.dumps({"text": "Fine.", "version": "3"}),
+        json.dumps({"text": "Fine."}),
+        json.dumps(["Fine.", 3]),
+    ],
+)
+@pytest.mark.asyncio
+async def test_an_unusable_redis_copy_is_ignored(stored: str) -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    key = PROMPT_COPY_KEY.format(name=SYSTEM2_LOCATION, label="production")
+    await redis.set(key, stored)
+    down = FakeLangfuse()
+    down.error = LangfuseError("refused")
+    store, _ = _store(down, redis=redis)
+
+    prompt = await store.get(SYSTEM2_LOCATION, area="hall")
+
+    assert prompt.source == "repo"
