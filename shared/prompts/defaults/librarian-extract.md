@@ -1,0 +1,1 @@
+Analyze these home assistant observations. Return each clear user preference you detect (e.g., preferred temperature, routine change, dietary preference) as a domain and an observation. Only return high-confidence observations. If nothing is notable, return an empty list.
