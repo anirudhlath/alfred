@@ -9,7 +9,8 @@ pending for ``reclaim_due`` to redeliver, its backoff restarted from the failure
 permanent one, the last allowed delivery, or an entry past the replay window is
 answered with ``FAILED_REPLY``, ACKed and dead-lettered. An entry older than the
 answered marker's TTL is ACKed and dead-lettered unanswered. The marker, set with the
-published response, makes a crash between publishing and ACKing harmless.
+published response, makes a crash between publishing and ACKing harmless. Every published
+answer, whichever path gave it, runs ``after_answer`` (the spend alert check).
 
 A request that already acted (its side-effect ledger holds calls, ``core.conscious.effects``)
 is never run again: a delivery that finds a ledger, or a turn that fails after acting, is
@@ -80,7 +81,7 @@ async def process_request_entry(
         await _ack(redis, stream, group, entry_id)
         return
 
-    turn = _Turn(redis, engine, request, entry_id, event, stream, group, delivery)
+    turn = _Turn(redis, engine, request, entry_id, event, stream, group, delivery, after_answer)
     try:
         answered = bool(await redis.exists(turn.answered_key))
     except Exception as exc:
@@ -90,7 +91,7 @@ async def process_request_entry(
         logger.info("Request {} was already answered — ACKing entry {}", request.event_id, entry_id)
         # Its ACK may have failed after a good publish, before the hook ran.
         if await _ack(redis, stream, group, entry_id):
-            await _run_after_answer(after_answer, entry_id)
+            await turn.after_answered()
         return
 
     now = now_ms if now_ms is not None else int(time.time() * 1000)
@@ -143,8 +144,7 @@ async def process_request_entry(
             await turn.restart_backoff(consumer)
         return
 
-    if await turn.answer(response):
-        await _run_after_answer(after_answer, entry_id)
+    await turn.answer(response)
 
 
 async def _ack(redis: AioRedis, stream: str, group: str, entry_id: bytes | str) -> bool:
@@ -154,17 +154,6 @@ async def _ack(redis: AioRedis, stream: str, group: str, entry_id: bytes | str) 
         logger.error("Could not ACK entry {}: {}", entry_id, exc)
         return False
     return True
-
-
-async def _run_after_answer(
-    after_answer: Callable[[], Awaitable[object]] | None, entry_id: bytes | str
-) -> None:
-    if after_answer is None:
-        return
-    try:
-        await after_answer()
-    except Exception as exc:
-        logger.error("after_answer failed for request {}: {}", entry_id, exc)
 
 
 @dataclass(frozen=True)
@@ -179,14 +168,18 @@ class _Turn:
     stream: str
     group: str
     delivery: int
+    after_answer: Callable[[], Awaitable[object]] | None = None
 
     @property
     def answered_key(self) -> str:
         return ANSWERED_KEY.format(self.request.event_id)
 
     async def answer(self, response: AlfredResponse) -> bool:
-        """Publish *response* and set the answered marker in one transaction, then ACK.
-        True once published, whether or not the ACK lands.
+        """Publish *response* and set the answered marker in one transaction, then ACK and
+        run the post-answer hook. True once published, whether or not the ACK lands.
+
+        Every answer runs the hook (the spend alert check), a success, a give-up or a
+        ledger answer alike: a failed turn's spend is real too.
 
         A failure is logged, not raised: the entry stays pending, and its redelivery
         either finds the marker (published, so it only ACKs) or runs again (nothing was
@@ -201,7 +194,17 @@ class _Turn:
             logger.error("Could not publish the answer to {}: {}", self.entry_id, exc)
             return False
         await _ack(self.redis, self.stream, self.group, self.entry_id)
+        await self.after_answered()
         return True
+
+    async def after_answered(self) -> None:
+        """Run the post-answer hook; a failure is logged, never raised into the loop."""
+        if self.after_answer is None:
+            return
+        try:
+            await self.after_answer()
+        except Exception as exc:
+            logger.error("after_answer failed for request {}: {}", self.entry_id, exc)
 
     async def effects(self) -> list[Effect] | None:
         """The request's side-effect ledger, or None (logged) when it cannot be read."""

@@ -372,7 +372,7 @@ async def test_a_redelivery_that_already_acted_answers_from_its_ledger() -> None
     # The failed delivery's own dead letter may never have been written.
     [letter] = await _dead_letters(redis)
     assert letter[b"reason"] == b"partial"
-    after_answer.assert_not_awaited()
+    after_answer.assert_awaited_once()  # the spend alert is checked on every answer
 
 
 async def test_a_ledger_answer_that_cannot_be_published_leaves_the_session_alone(
@@ -532,3 +532,90 @@ async def test_the_turn_is_told_when_its_request_entered_the_stream() -> None:
     await _run(redis, entry_id, engine, delivery=2)
 
     engine.process_request.assert_awaited_once_with(ANY, received_ms=now - 40_000)
+
+
+async def test_every_failure_reply_names_the_request_it_answers() -> None:
+    redis, entry_id = await _pending()
+    engine = _engine()
+    engine.process_request.side_effect = ModelHTTPError(429, "m")
+
+    await _run(redis, entry_id, engine, delivery=3)
+
+    [reply] = await _responses(redis)
+    assert reply.in_reply_to == _EVENT_ID
+
+
+async def test_a_ledger_reply_names_the_request_it_answers() -> None:
+    redis, entry_id = await _pending()
+    await _acted(redis)
+
+    await _run(redis, entry_id, _engine(), delivery=2)
+
+    [reply] = await _responses(redis)
+    assert reply.in_reply_to == _EVENT_ID
+
+
+async def test_a_give_up_runs_the_post_answer_hook() -> None:
+    """The spend alert is checked after a failed turn too: its spend was real."""
+    redis, entry_id = await _pending()
+    engine = _engine()
+    engine.process_request.side_effect = ModelHTTPError(429, "m")
+    after_answer = AsyncMock()
+
+    await _run(redis, entry_id, engine, delivery=3, after_answer=after_answer)
+
+    after_answer.assert_awaited_once()
+
+
+async def test_an_expired_give_up_runs_the_post_answer_hook() -> None:
+    old = int(time.time() * 1000) - 301_000
+    redis, entry_id = await _pending(entry_id=f"{old}-0")
+    after_answer = AsyncMock()
+
+    await _run(redis, entry_id, _engine(), delivery=2, after_answer=after_answer)
+
+    assert [r.text for r in await _responses(redis)] == [FAILED_REPLY]
+    after_answer.assert_awaited_once()
+
+
+async def test_a_turn_that_acted_then_failed_runs_the_post_answer_hook() -> None:
+    redis, entry_id = await _pending()
+    engine = _engine()
+
+    async def _act_then_fail(_request: object, **_: object) -> AlfredResponse:
+        await _acted(redis)
+        raise ModelHTTPError(503, "m")
+
+    engine.process_request.side_effect = _act_then_fail
+    after_answer = AsyncMock()
+
+    await _run(redis, entry_id, engine, delivery=1, after_answer=after_answer)
+
+    after_answer.assert_awaited_once()
+
+
+async def test_a_failing_post_answer_hook_after_a_give_up_is_contained() -> None:
+    redis, entry_id = await _pending()
+    engine = _engine()
+    engine.process_request.side_effect = ModelHTTPError(400, "m")
+
+    await _run(
+        redis, entry_id, engine, delivery=1, after_answer=AsyncMock(side_effect=RuntimeError("x"))
+    )
+
+    assert [r.text for r in await _responses(redis)] == [FAILED_REPLY]
+    assert await _pending_count(redis) == 0
+
+
+async def test_an_unanswered_give_up_does_not_run_the_post_answer_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    redis, entry_id = await _pending()
+    engine = _engine()
+    engine.process_request.side_effect = ModelHTTPError(400, "m")
+    monkeypatch.setattr(redis, "pipeline", MagicMock(side_effect=ConnectionError("gone")))
+    after_answer = AsyncMock()
+
+    await _run(redis, entry_id, engine, delivery=1, after_answer=after_answer)
+
+    after_answer.assert_not_awaited()

@@ -18,7 +18,9 @@ from pydantic_ai_harness.spend import SpendEntry
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.agent import REQUEST_LIMIT, build_system2_agent, system2_toolsets
 from core.conscious.context_assembler import ContextAssembler
+from core.conscious.effects import Effect, EffectLedger, ledger_reply
 from core.conscious.engine import (
+    BUDGET_AFTER_ACTING,
     BUDGET_REPLY,
     DELIBERATING_REPLY,
     NOT_CONFIGURED_REPLY,
@@ -762,3 +764,41 @@ async def test_record_partial_turn_logs_rather_than_raises_a_session_failure() -
     deps.session_mgr.append_turn.side_effect = ConnectionError("gone")  # type: ignore[attr-defined]
 
     await ConsciousEngine(deps=deps).record_partial_turn(_request(), "partial")
+
+
+@pytest.mark.asyncio
+async def test_every_reply_names_the_request_it_answers() -> None:
+    """A channel matches a response to its own request by ``in_reply_to`` (I3)."""
+    request = _request()
+    answered = await ConsciousEngine(deps=_deps(Script("Hi, sir."))).process_request(request)
+    unconfigured = await ConsciousEngine(deps=_deps()).process_request(request)
+    refused = await ConsciousEngine(deps=_deps(Script("x"), spend=_limits(0))).process_request(
+        request
+    )
+    failed = ConsciousEngine.failure_reply(request, "sorry")
+
+    assert {r.in_reply_to for r in (answered, unconfigured, refused, failed)} == {request.event_id}
+
+
+@pytest.mark.asyncio
+async def test_a_budget_spent_after_acting_says_what_was_done() -> None:
+    """m5: the light went on, then the budget ran out; the reply must say both."""
+    redis = fakeredis.FakeAsyncRedis()
+    registry = AsyncMock()
+    registry.get_tools.return_value = [_info("home.light_turn_on")]
+    costly = tool_call("home_light_turn_on", {"entity_id": "light.porch"})
+    costly.usage = RequestUsage(input_tokens=2_000_000)  # $6 at the fallback rate
+    script = Script(costly, "never sent")
+    deps = _deps(script, redis=redis, tool_registry=registry, domain_router=_router())
+    request = _request()
+
+    response = await ConsciousEngine(deps=deps).process_request(request)
+
+    effects = await EffectLedger(redis).read(request.event_id)
+    assert effects == [Effect("home.light_turn_on", {"entity_id": "light.porch"}, "ok")]
+    assert response.text == f"{ledger_reply(effects)} {BUDGET_AFTER_ACTING}"
+    assert BUDGET_AFTER_ACTING == (
+        "We've reached the daily budget, so I'll need to defer complex requests until tomorrow."
+    )
+    assert response.mood == "concerned"
+    assert response.actions_taken == ["home.light_turn_on"]

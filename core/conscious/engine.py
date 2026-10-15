@@ -4,10 +4,10 @@ A request is answered in one agent run (``core.conscious.agent``): the engine re
 identity, checks the budget, gathers the turn's context into ``TurnDeps`` and runs the
 agent over the session's history. The agent's ``SpendLimits`` counts every model response,
 including those of a run that fails, and refuses a request once the day's budget is gone;
-the turn then gets the budget reply. A model that runs out of requests or retries gets
-the deliberating reply, because replaying the request would spend again and repeat its
-tool calls; a provider or transport failure raises, so the request stays pending and is
-retried.
+the turn then gets the budget reply, after what it already did if it acted. A model that
+runs out of requests or retries gets the deliberating reply, because replaying the request
+would spend again and repeat its tool calls; a provider or transport failure raises, so
+the request stays pending and is retried.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from pydantic_ai_harness.spend import SpendLimitExceeded
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.agent import REQUEST_LIMIT
 from core.conscious.deps import TurnDeps, TurnServices
+from core.conscious.effects import EffectLedger, ledger_reply
 from core.conscious.tools.integrations import fetch_integration_tools
 from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 from shared.otel import langfuse_attributes
@@ -66,6 +67,10 @@ BUDGET_REPLY: Final = (
     "I'm afraid we've reached the daily budget, sir. "
     "I'm operating in reduced capacity — ambient actions continue, "
     "but I'll need to defer complex requests until tomorrow."
+)
+# Follows the ledger's reply when the budget ran out after the turn acted.
+BUDGET_AFTER_ACTING: Final = (
+    "We've reached the daily budget, so I'll need to defer complex requests until tomorrow."
 )
 DELIBERATING_REPLY: Final = (
     "I apologize, sir — I've been deliberating too long. Let me try a more direct approach."
@@ -373,7 +378,7 @@ class ConsciousEngine:
             # A UsageLimitExceeded too, so it is caught first. Raised before a request,
             # once an earlier response in this run (or another process) spent the day.
             logger.warning("Daily budget spent during the run — returning the budget reply")
-            return BUDGET_REPLY, "concerned"
+            return await self._budget_reply(request), "concerned"
         except UsageLimitExceeded:
             logger.warning("System 2 used its %d model requests without answering", REQUEST_LIMIT)
             return DELIBERATING_REPLY, "neutral"
@@ -383,6 +388,19 @@ class ConsciousEngine:
             # provider failure still raises and the request is retried.
             logger.warning("System 2 gave up on the model's replies: %s", exc)
             return DELIBERATING_REPLY, "neutral"
+
+    async def _budget_reply(self, request: UserRequest) -> str:
+        """The budget reply for a run the budget stopped partway. If the turn already
+        acted, say what it did first (``ledger_reply``), so a light that went on is never
+        answered as though nothing happened; an unreadable ledger gets the plain reply."""
+        try:
+            effects = await EffectLedger(self._redis).read(request.event_id)
+        except Exception:
+            logger.warning("Could not read the ledger for the budget reply", exc_info=True)
+            return BUDGET_REPLY
+        if not effects:
+            return BUDGET_REPLY
+        return f"{ledger_reply(effects)} {BUDGET_AFTER_ACTING}"
 
     async def _note(
         self, now: datetime, content: str, text: str, actions: list[str], usage: RunUsage
@@ -412,8 +430,8 @@ class ConsciousEngine:
 
     @staticmethod
     def failure_reply(request: UserRequest, text: str) -> AlfredResponse:
-        """The answer to a turn that could not finish: a normal reply's channel, session
-        and source, no actions, concerned."""
+        """The answer to a turn that could not finish: a normal reply's channel, session,
+        source and ``in_reply_to``, no actions, concerned."""
         return ConsciousEngine._reply(request, text, [], mood="concerned")
 
     @staticmethod
@@ -431,4 +449,5 @@ class ConsciousEngine:
             text=text,
             actions_taken=actions,
             mood=mood,
+            in_reply_to=request.event_id,
         )
