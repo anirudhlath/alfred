@@ -83,7 +83,7 @@ async def diff_prompts(
         if remote.text == text:
             continue
         drifted = True
-        lines.extend(
+        changes = list(
             difflib.unified_diff(
                 text.splitlines(),
                 remote.text.splitlines(),
@@ -92,6 +92,8 @@ async def diff_prompts(
                 lineterm="",
             )
         )
+        # A trailing newline or CRLF is invisible to splitlines(); say so, not nothing.
+        lines.extend(changes or [f"{name}: differs only in whitespace or line endings"])
     return lines, drifted
 
 

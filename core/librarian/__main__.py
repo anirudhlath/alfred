@@ -48,6 +48,7 @@ async def run() -> None:
 
     r: AioRedis = create_redis(config.redis_url)
     prompts = PromptStore.from_config(config, redis=r)
+    log.info("Prompts: {}", prompts.describe())
 
     embedder = None
     context_index = None

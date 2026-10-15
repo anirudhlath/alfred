@@ -12,7 +12,7 @@ import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -78,7 +78,7 @@ class LangfuseAccess:
 
     host: str
     public_key: str
-    secret_key: str
+    secret_key: str = field(repr=False)
     label: str
 
 

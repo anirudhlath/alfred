@@ -16,6 +16,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import httpx
+
 from shared.config import DEFAULT_PROMPT_CACHE_TTL_S, DEFAULT_PROMPT_LABEL
 from shared.prompts.langfuse import LangfuseClient
 from shared.prompts.template import (
@@ -99,11 +101,16 @@ class PromptStore:
                 " and ".join(missing),
             )
             return cls()
-        client = LangfuseClient(
-            config.langfuse_host,
-            public_key=config.langfuse_public_key,
-            secret_key=config.langfuse_secret_key,
-        )
+        try:
+            client = LangfuseClient(
+                config.langfuse_host,
+                public_key=config.langfuse_public_key,
+                secret_key=config.langfuse_secret_key,
+            )
+        except httpx.InvalidURL:
+            # The value is not echoed: a host may carry userinfo.
+            logger.warning("LANGFUSE_HOST is not a valid URL; serving the repo prompts")
+            return cls()
         return cls(
             langfuse=client, redis=redis, label=config.prompt_label, ttl_s=config.prompt_cache_ttl_s
         )

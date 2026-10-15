@@ -70,6 +70,13 @@ def test_container_env_points_prompts_at_langfuse_with_a_label(tmp_path: Path) -
     assert env["ALFRED_PROMPT_LABEL"] == "latest"
 
 
+def test_langfuse_access_keeps_the_secret_out_of_its_repr() -> None:
+    access = LangfuseAccess(
+        host="http://langfuse.test", public_key="pk", secret_key="s3cret-value", label="latest"
+    )
+    assert "s3cret-value" not in repr(access)
+
+
 def test_a_loopback_langfuse_is_spelled_for_the_container(tmp_path: Path) -> None:
     access = LangfuseAccess(
         host="http://localhost:3300", public_key="pk", secret_key="sk", label="latest"

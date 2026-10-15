@@ -48,6 +48,20 @@ def test_a_host_without_keys_serves_repo_defaults_with_a_warning(
     assert any("LANGFUSE_PUBLIC_KEY" in r.getMessage() for r in caplog.records)
 
 
+def test_a_malformed_host_serves_repo_defaults_with_a_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("LANGFUSE_HOST", "http://user:hunter2@langfuse-web:30o0")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+    with caplog.at_level(logging.WARNING, logger="shared.prompts.store"):
+        store = PromptStore.from_config(AlfredConfig.from_env(), redis=None)
+    assert store.describe() == "repo defaults"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "LANGFUSE_HOST" in warnings[0]
+    assert "hunter2" not in warnings[0]
+
+
 def test_a_bad_ttl_names_the_variable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PROMPT_CACHE_TTL_S", "soon")
     with pytest.raises(RuntimeError, match="PROMPT_CACHE_TTL_S"):

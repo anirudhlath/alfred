@@ -26,7 +26,8 @@ if TYPE_CHECKING:
 # The container's own ports: the web channel, and Redis (published only for eval stacks).
 CONTAINER_WEB_PORT = 8081
 CONTAINER_REDIS_PORT = 6379
-# `alfred evals` stacks: throwaway, driven from the host, never holding a real secret.
+# `alfred evals` stacks: throwaway, driven from the host. The only real secret one can
+# hold is the Langfuse key, passed in only when `--prompt-label` asks for it.
 EVAL_SECRETS_PASSPHRASE = "alfred-eval-not-a-secret"
 # A paid model the price registry does not know is charged the fallback rate
 # (shared/spend.py), so a model under eval could trip the $5 default cap mid-run.

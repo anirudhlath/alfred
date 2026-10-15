@@ -56,6 +56,15 @@ async def test_diff_reports_drift_and_unseeded_prompts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_diff_names_a_prompt_that_differs_only_in_whitespace() -> None:
+    fake = FakeLangfuse({P: repo_text(P) + "\n"})
+    lines, drifted = await diff_prompts(fake, [P], label="production")
+
+    assert drifted
+    assert lines == [f"{P}: differs only in whitespace or line endings"]
+
+
+@pytest.mark.asyncio
 async def test_diff_is_clean_when_langfuse_matches() -> None:
     fake = FakeLangfuse({P: repo_text(P)})
     assert await diff_prompts(fake, [P], label="production") == ([], False)

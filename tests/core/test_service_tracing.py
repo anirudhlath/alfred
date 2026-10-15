@@ -125,3 +125,25 @@ async def test_librarian_initialises_tracing(
     await librarian_main.run()
 
     init_tracing.assert_called_once_with(service_name="librarian", endpoint=expected_endpoint)
+
+
+@pytest.mark.usefixtures("otel_env")
+async def test_librarian_logs_where_its_prompts_come_from(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import core.librarian.__main__ as librarian_main
+
+    monkeypatch.delenv("LANGFUSE_HOST", raising=False)
+    log = MagicMock()
+
+    def _no_memory(_config: AlfredConfig) -> None:
+        raise RuntimeError("no embedding backend")
+
+    monkeypatch.setattr(librarian_main, "configure_logging", lambda **_kw: log)
+    monkeypatch.setattr(librarian_main, "init_tracing", MagicMock())
+    monkeypatch.setattr(librarian_main, "create_redis", lambda _url: FakeRedis())
+    monkeypatch.setattr(librarian_main, "build_embedding_provider", _no_memory)
+
+    await librarian_main.run()
+
+    log.info.assert_any_call("Prompts: {}", "repo defaults")
