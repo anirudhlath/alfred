@@ -239,7 +239,8 @@ the failure:
   got out, is answered the same way without running the turn.
 - Expiry. An entry older than the 300 s replay window is not run: it is answered with
   `FAILED_REPLY` and dead-lettered `expired`, because an unlock that arrives five minutes
-  late is worse than none. One older than the answered marker's 3600 s TTL is ACKed and
+  late is worse than none. An entry that already acted is answered from its ledger
+  instead (`partial`). One older than the answered marker's 3600 s TTL is ACKed and
   dead-lettered `stale` without an answer; an hours-late reply is noise.
 - An unparseable entry is ACKed and dropped, as everywhere else.
 

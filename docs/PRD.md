@@ -80,7 +80,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Physical wake-word satellites ("Hey Alfred" devices per room, room-aware context) | In review | spec `2026-07-15-voice-satellite-design.md`, PR #29 |
 | Speaker identification (who is talking, voice enrollment) | In review | PR #29 |
 | Multi-step conversations with session continuity (30-min sessions, any channel) | Shipped | `docs/architecture.md` |
-| A failed request is answered once, and never repeats what it already did: a model hiccup is retried with backoff, one that cannot be completed gets a plain apology instead of silence, and one that failed after acting is answered with what was and was not done, so a light is never switched, or a door unlocked, twice. Requests more than five minutes old are not run | Shipped | `docs/llm.md` |
+| A failed request is answered once, and never repeats what it already did: a model hiccup is retried with backoff, one that cannot be completed gets a plain apology instead of silence, and one that failed after acting is answered with what was and was not done, so a light is never switched, or a door unlocked, twice. Requests more than five minutes old are not run (one that already acted is answered with what it did) | Shipped | `docs/llm.md` |
 
 ### 4.2 Proactivity & triggers
 
