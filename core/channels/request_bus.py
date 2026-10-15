@@ -71,5 +71,14 @@ def _answers(resp: AlfredResponse, request: UserRequest, session_id: str) -> boo
     late answer to an earlier request in the same session is skipped; else, for a producer
     that does not set it, by session as before."""
     if resp.in_reply_to is not None:
-        return resp.in_reply_to == request.event_id
+        if resp.in_reply_to == request.event_id:
+            return True
+        if resp.session_id == session_id:
+            logger.info(
+                "Skipping a late answer to request {} while waiting on {} (session {})",
+                resp.in_reply_to,
+                request.event_id,
+                session_id,
+            )
+        return False
     return resp.session_id == session_id
