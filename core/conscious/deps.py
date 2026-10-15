@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from core.conscious.system2_prompts import System2Prompts
     from core.conscious.tools.integrations import IntegrationTool
     from core.identity.schemas import IdentityResult
     from core.memory.context_index import ContextIndexManager
@@ -45,6 +46,8 @@ class TurnDeps:
     ``UserRequest.timestamp``, which the producing channel stamps on its own clock, because
     the runner's replay window reads the entry id too, so both checks agree.
     ``RecordEffects`` refuses a side-effecting call once it is past the window.
+
+    ``prompts`` is the turn's prose sections, rendered from the prompt store before the run.
     """
 
     identity: IdentityResult
@@ -55,6 +58,7 @@ class TurnDeps:
     now: datetime
     services: TurnServices
     received_ms: int
+    prompts: System2Prompts
     content_type: str = "text"
     area: str | None = None
     recall: list[SearchResult] = field(default_factory=list)

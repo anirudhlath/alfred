@@ -94,13 +94,13 @@ def build_services() -> list[ServiceSpec]:
             name="conscious",
             module="core.conscious",
             delay=2.0,
-            watch_dirs=["core/conscious/prompts"],
+            watch_dirs=["shared/prompts/defaults"],
         ),
         ServiceSpec(
             name="channels",
             module="core.channels",
             delay=2.0,
-            watch_dirs=["core/voice", "core/conscious/prompts"],
+            watch_dirs=["core/voice", "shared/prompts/defaults"],
         ),
         ServiceSpec(name="memory-ingestor", module="core.memory.ingestor_main", delay=1.5),
     ]

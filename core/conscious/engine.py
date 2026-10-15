@@ -32,9 +32,12 @@ from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.agent import REQUEST_LIMIT
 from core.conscious.deps import TurnDeps, TurnServices
 from core.conscious.effects import EffectLedger, ledger_reply
+from core.conscious.system2_prompts import fetch_system2_prompts
 from core.conscious.tools.integrations import fetch_integration_tools
 from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 from shared.otel import langfuse_attributes
+from shared.prompts.link import linked_prompts
+from shared.prompts.store import PromptStore
 from shared.streams import SCRATCHPAD_QUEUE
 from shared.traced import traced
 from shared.usertime import (
@@ -113,6 +116,7 @@ class ConsciousDeps:
     ``model`` is None when ``SYSTEM2_MODEL`` resolved to nothing at startup; every request
     then gets the not-configured reply. ``spend`` is the daily budget the agent carries as
     a capability; the engine reads it before a turn starts.
+    ``prompts`` serves the turn's prose; the default serves the repo defaults.
     """
 
     redis: AioRedis
@@ -127,6 +131,7 @@ class ConsciousDeps:
     routine_store: RoutineStore | None = None
     context_index: ContextIndexManager | None = None
     config: ConsciousConfig = field(default_factory=ConsciousConfig)
+    prompts: PromptStore = field(default_factory=PromptStore)
 
 
 class ConsciousEngine:
@@ -142,6 +147,7 @@ class ConsciousEngine:
         self._model = deps.model
         self._routines = deps.routine_store
         self._context_index = deps.context_index
+        self._prompts = deps.prompts
         self._recall_limit = deps.config.involuntary_recall_limit
         self._recall_threshold = deps.config.involuntary_recall_threshold
         self._services = TurnServices(
@@ -285,6 +291,15 @@ class ConsciousEngine:
             return self._reply(request, BUDGET_REPLY, [], mood="concerned")
 
         session = await self._session_mgr.get_or_create(request.session_id, request.channel)
+        integration_tools = await self._integration_tools(identity.identity)
+        prompts = await fetch_system2_prompts(
+            self._prompts,
+            who=identity.identity,
+            channel=request.channel,
+            content_type=request.content_type,
+            area=request.area,
+            integrations_available=bool(integration_tools),
+        )
         deps = TurnDeps(
             identity=identity,
             session_id=request.session_id,
@@ -299,7 +314,8 @@ class ConsciousEngine:
             recall=await self._recall(request.content),
             routine_hint=self._routine_hint(now, tz_name),
             registry_tools=await self._tool_registry.get_tools(),
-            integration_tools=await self._integration_tools(identity.identity),
+            prompts=prompts,
+            integration_tools=integration_tools,
         )
 
         usage = RunUsage()
@@ -362,8 +378,11 @@ class ConsciousEngine:
         if model is None:
             return NOT_CONFIGURED_REPLY, "neutral"
         try:
-            with langfuse_attributes(
-                session_id=request.session_id, user_id=deps.who, tags=[request.channel]
+            with (
+                langfuse_attributes(
+                    session_id=request.session_id, user_id=deps.who, tags=[request.channel]
+                ),
+                linked_prompts(*deps.prompts.refs()),
             ):
                 result = await self._agent.run(
                     request.content,

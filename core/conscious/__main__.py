@@ -19,7 +19,6 @@ import core.integrations.weather
 import core.triggers.types  # noqa: F401  # trigger type registrations
 from bus.schemas.events import ActionRequest
 from core.conscious.agent import build_system2_agent, system2_toolsets
-from core.conscious.context_assembler import ContextAssembler
 from core.conscious.engine import ConsciousConfig, ConsciousDeps, ConsciousEngine
 from core.conscious.identity import IdentityGate
 from core.conscious.runner import process_request_entry
@@ -52,6 +51,7 @@ from shared.agents import resolve_model
 from shared.config import AlfredConfig, apply_model_env
 from shared.logging import configure_logging
 from shared.otel import init_tracing
+from shared.prompts.store import PromptStore
 from shared.redis_streams import create_redis, read_group, reclaim_due
 from shared.spend import ALERT_SOURCE, alert_if_needed, build_spend_limits, local_clock
 from shared.streams import (
@@ -154,6 +154,8 @@ async def run(config: AlfredConfig) -> None:
         loop.add_signal_handler(sig, _handle_signal)
 
     r: AioRedis = create_redis(config.redis_url)
+    prompts = PromptStore.from_config(config, redis=r)
+    log.info("Prompts: {}", prompts.describe())
 
     stream = USER_REQUESTS_STREAM
     group = "conscious-engine"
@@ -279,7 +281,6 @@ async def run(config: AlfredConfig) -> None:
     apply_model_env(config)
     system2 = build_system2_agent(
         toolsets=system2_toolsets(trigger_feature),
-        assembler=ContextAssembler(),
         max_tokens=config.system2_max_tokens,
         timeout_s=config.system2_timeout_s,
         spend=spend,
@@ -301,6 +302,7 @@ async def run(config: AlfredConfig) -> None:
                 involuntary_recall_limit=config.involuntary_recall_limit,
                 involuntary_recall_threshold=config.involuntary_recall_threshold,
             ),
+            prompts=prompts,
         )
     )
 
@@ -454,6 +456,7 @@ async def run(config: AlfredConfig) -> None:
             closers={
                 "trigger store sync": trigger_store.stop_sync,
                 "embedding provider": embedder.aclose if embedder is not None else None,
+                "prompt store": prompts.aclose,
                 "redis": r.aclose,
             },
         )

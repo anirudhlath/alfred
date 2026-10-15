@@ -17,7 +17,6 @@ from pydantic_ai_harness.spend import SpendEntry
 
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.agent import REQUEST_LIMIT, build_system2_agent, system2_toolsets
-from core.conscious.context_assembler import ContextAssembler
 from core.conscious.effects import Effect, EffectLedger, ledger_reply
 from core.conscious.engine import (
     BUDGET_AFTER_ACTING,
@@ -34,9 +33,13 @@ from core.memory.schemas import RoutineSpec
 from core.memory.vector_store import ContextMetadata, SearchResult
 from core.reflex.tool_registry import ToolInfo
 from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
+from shared.prompts.names import SYSTEM2_PERSONALITY
+from shared.prompts.store import PromptStore
+from shared.prompts.template import PromptRef
 from shared.spend import build_spend_limits
 from tests.core.conscious.helpers import identity, mock_redis
 from tests.llm_fakes import Script, tool_call
+from tests.shared.prompts.fakes import FakeLangfuse
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -87,7 +90,6 @@ def _deps(script: Script | None = None, *, who: str = "sir", **overrides: Any) -
         "context_reader": AsyncMock(),
         "agent": build_system2_agent(
             toolsets=system2_toolsets(None),
-            assembler=ContextAssembler(),
             max_tokens=256,
             timeout_s=5.0,
             spend=spend,
@@ -802,3 +804,31 @@ async def test_a_budget_spent_after_acting_says_what_was_done() -> None:
     )
     assert response.mood == "concerned"
     assert response.actions_taken == ["home.light_turn_on"]
+
+
+@pytest.mark.asyncio
+async def test_the_turns_instructions_come_from_the_prompt_store() -> None:
+    script = Script("ok")
+    store = PromptStore(langfuse=FakeLangfuse({SYSTEM2_PERSONALITY: "You are Jeeves."}))
+
+    await ConsciousEngine(deps=_deps(script, prompts=store)).process_request(_request())
+
+    assert script.instructions().startswith("You are Jeeves.")
+
+
+@pytest.mark.asyncio
+async def test_the_run_is_linked_to_the_turns_prompts(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[PromptRef, ...]] = []
+
+    @contextmanager
+    def _linked(*refs: PromptRef) -> Iterator[None]:
+        seen.append(refs)
+        yield
+
+    monkeypatch.setattr("core.conscious.engine.linked_prompts", _linked)
+    store = PromptStore(langfuse=FakeLangfuse({SYSTEM2_PERSONALITY: "You are Jeeves."}))
+
+    await ConsciousEngine(deps=_deps(Script("hi"), prompts=store)).process_request(_request())
+
+    (refs,) = seen
+    assert refs[0] == PromptRef(SYSTEM2_PERSONALITY, 7, "langfuse")

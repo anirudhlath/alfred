@@ -12,6 +12,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
 from core.conscious.deps import TurnDeps, TurnServices
+from core.conscious.system2_prompts import repo_system2_prompts
 from core.conscious.tools.catalog import CatalogToolset
 from core.identity.schemas import IdentityResult
 
@@ -69,6 +70,13 @@ def make_deps(who: Literal["sir", "guest"] = "sir", **overrides: Any) -> TurnDep
         "now": datetime(2026, 10, 13, 12, 0, tzinfo=UTC),
         "services": make_services(),
         "received_ms": int(time.time() * 1000),
+        "prompts": repo_system2_prompts(
+            who=who,
+            channel="web_pwa",
+            content_type="text",
+            area=None,
+            integrations_available=False,
+        ),
     }
     fields.update(overrides)
     return TurnDeps(**fields)
