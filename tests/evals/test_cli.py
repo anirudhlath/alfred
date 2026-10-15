@@ -279,6 +279,53 @@ def test_evals_run_binds_the_fakes_on_fixed_ports_unless_told_otherwise(
     assert [(o.fake_ha_port, o.proxy_port) for o in seen] == [(18123, 18100), (0, 28100)]
 
 
+def test_evals_run_prompt_label_needs_langfuse_settings_before_anything_boots(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    booted: list[object] = []
+
+    async def fake_run_suites(opts: object) -> None:
+        booted.append(opts)
+
+    monkeypatch.setattr("evals.harness.orchestrate.run_suites", fake_run_suites)
+    for name in ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    result = runner.invoke(
+        app,
+        ["evals", "run", "--prompt-label", "latest", "--no-build", "--home-service", str(tmp_path)],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "LANGFUSE_HOST" in result.stderr
+    assert booted == []
+
+
+def test_evals_run_prompt_label_hands_the_run_its_langfuse_access(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from evals.harness.orchestrate import RunOptions, RunOutcome
+
+    seen: list[RunOptions] = []
+
+    async def fake_run_suites(opts: RunOptions) -> RunOutcome:
+        seen.append(opts)
+        return RunOutcome(run_dir=tmp_path, unstarted=[])
+
+    monkeypatch.setattr("evals.harness.orchestrate.run_suites", fake_run_suites)
+    monkeypatch.setenv("LANGFUSE_HOST", "http://langfuse.test")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+    base = ["evals", "run", "--no-build", "--home-service", str(tmp_path)]
+
+    assert runner.invoke(app, [*base, "--prompt-label", "latest"]).exit_code == 0
+    assert runner.invoke(app, base).exit_code == 0
+
+    labelled, plain = seen
+    assert labelled.langfuse is not None and labelled.langfuse.label == "latest"
+    assert plain.langfuse is None
+
+
 def _fake_judge_model(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[tuple[str, str]]:
     """Point ``make_judge_model`` at mockllm giving ``answers``; return the (model, url) it got."""
     from inspect_ai.model import ModelOutput, get_model

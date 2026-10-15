@@ -147,6 +147,15 @@ def run(
     display: DisplayOpt = "rich",
     fake_ha_port: FakeHaPortOpt = DEFAULT_FAKE_HA_PORT,
     proxy_port: ProxyPortOpt = DEFAULT_PROXY_PORT,
+    prompt_label: Annotated[
+        str | None,
+        typer.Option(
+            "--prompt-label",
+            help="Serve prompts from Langfuse at this label (needs LANGFUSE_HOST and the "
+            "project keys in the environment, reachable from the container); "
+            "default: the repo defaults",
+        ),
+    ] = None,
 ) -> None:
     """Boot throwaway stacks and score the goldens. Prints the scorecard."""
     import asyncio
@@ -156,11 +165,16 @@ def run(
     from evals.harness.orchestrate import LOG_ROOT, RunCancelled, RunOptions, run_suites
     from evals.harness.preflight import PreflightError
     from evals.harness.scenario import ScenarioError
-    from evals.harness.stack import StackError
+    from evals.harness.stack import StackError, langfuse_access
 
     hs = home_service or Path(
         os.environ.get("ALFRED_EVALS_HOME_SERVICE") or staging.home_service_dir()
     )
+    try:
+        langfuse = langfuse_access(os.environ, prompt_label) if prompt_label else None
+    except StackError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
     opts = RunOptions(
         suites=list(suites or []),
         tags=tag or [],
@@ -178,6 +192,7 @@ def run(
         display=display,
         fake_ha_port=fake_ha_port,
         proxy_port=proxy_port,
+        langfuse=langfuse,
     )
     try:
         outcome = asyncio.run(run_suites(opts))
