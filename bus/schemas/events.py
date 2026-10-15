@@ -136,6 +136,9 @@ class AlfredResponse(BaseEvent):
     voice_audio_ref: str | None = None
     actions_taken: list[str] = Field(default_factory=list)
     mood: Literal["neutral", "pleased", "concerned", "amused", "serious"] = "neutral"
+    # The answered UserRequest's event_id. A channel matches on it when it is set, so a
+    # late answer to an earlier request is never taken for the next one's.
+    in_reply_to: str | None = None
 
 
 class TriggerCreated(BaseEvent):

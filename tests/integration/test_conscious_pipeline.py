@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
+import fakeredis
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.usage import RequestUsage
@@ -12,10 +13,10 @@ from pydantic_ai.usage import RequestUsage
 from bus.schemas.events import UserRequest
 from core.conscious.agent import build_system2_agent, system2_toolsets
 from core.conscious.context_assembler import ContextAssembler
-from core.conscious.cost import CostTracker
 from core.conscious.engine import ConsciousDeps, ConsciousEngine
 from core.conscious.identity import IdentityGate
 from core.conscious.session import SessionManager
+from shared.spend import build_spend_limits, local_clock
 from tests.llm_fakes import Script
 
 if TYPE_CHECKING:
@@ -23,14 +24,13 @@ if TYPE_CHECKING:
 
 
 def _make_redis_mock() -> AsyncMock:
-    """Build an AsyncMock Redis that satisfies SessionManager + CostTracker."""
+    """Build an AsyncMock Redis that satisfies SessionManager."""
     redis = AsyncMock()
     # SessionManager.get_or_create calls hgetall → empty dict = new session
     redis.hgetall = AsyncMock(return_value={})
     redis.hset = AsyncMock(return_value=None)
     redis.hget = AsyncMock(return_value=None)
     redis.expire = AsyncMock(return_value=None)
-    # CostTracker._get_state calls redis.get → None = new day
     redis.get = AsyncMock(return_value=None)
     redis.set = AsyncMock(return_value=None)
     # Scratchpad write
@@ -64,14 +64,18 @@ def _no_integrations() -> AbstractContextManager[AsyncMock]:
 
 
 def _engine(script: Script) -> ConsciousEngine:
-    """A fully wired engine: real gate, sessions, cost tracker and assembler; mocked Redis."""
+    """A fully wired engine: real gate, sessions, budget and assembler; mocked Redis, with
+    the budget's counter on fakeredis (the mock cannot run its script)."""
     redis = _make_redis_mock()
+    spend = build_spend_limits(
+        fakeredis.FakeAsyncRedis(), cap_usd=5.0, clock=local_clock(lambda: "UTC")
+    )
     return ConsciousEngine(
         deps=ConsciousDeps(
             redis=redis,
             identity_gate=IdentityGate(registered_phone="+1234567890"),
             session_mgr=SessionManager(redis=redis, timeout_minutes=30),
-            cost_tracker=CostTracker(redis=redis, daily_cap_usd=5.0),
+            spend=spend,
             domain_router=AsyncMock(),
             tool_registry=AsyncMock(get_tools=AsyncMock(return_value=[])),
             context_reader=AsyncMock(get_rendered_context=AsyncMock(return_value="")),
@@ -80,6 +84,7 @@ def _engine(script: Script) -> ConsciousEngine:
                 assembler=ContextAssembler(),
                 max_tokens=256,
                 timeout_s=5.0,
+                spend=spend,
             ),
             model=script.model,
         )
@@ -120,11 +125,12 @@ async def test_full_pipeline_session_history_forwarded() -> None:
 
 
 @pytest.mark.asyncio
-async def test_full_pipeline_cost_recorded() -> None:
+async def test_full_pipeline_spend_counted() -> None:
     engine = _engine(Script(_reply("Hello, sir.")))
     with _no_integrations():
         await engine.process_request(_make_request(content="Hello"))
-    engine._redis.set.assert_called()  # type: ignore[attr-defined]
+    (status,) = await engine._spend.status()
+    assert status.spent.requests == 1
 
 
 @pytest.mark.asyncio

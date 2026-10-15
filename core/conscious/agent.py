@@ -2,18 +2,22 @@
 
 Built once per process, with no model: the engine passes the resolved model on every run.
 Its one toolset is the catalog, so every tool reaches the model under one name mapping
-(``tools.names.wire_name``) and is dispatched by that same name.
+(``tools.names.wire_name``) and is dispatched by that same name. ``RecordEffects`` writes
+each side-effecting call to the request's ledger (``core.conscious.effects``), and the
+process's ``SpendLimits`` (``shared.spend``) gates and counts every model request against
+the daily budget.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 
 from core.conscious.deps import TurnDeps
+from core.conscious.effects import RecordEffects
 from core.conscious.tools.attention import attention_toolset
 from core.conscious.tools.catalog import CatalogToolset
 from core.conscious.tools.integrations import integration_toolset
@@ -26,7 +30,9 @@ from shared.llm_roles import SYSTEM2
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from pydantic_ai.capabilities import AbstractCapability
     from pydantic_ai.toolsets import AbstractToolset
+    from pydantic_ai_harness.spend import SpendLimits
 
     from core.conscious.context_assembler import ContextAssembler
     from core.triggers.feature import TriggerFeature
@@ -53,8 +59,19 @@ def build_system2_agent(
     assembler: ContextAssembler,
     max_tokens: int,
     timeout_s: float,
+    spend: SpendLimits[Any] | None,
 ) -> Agent[TurnDeps, str]:
-    """The System 2 agent: *toolsets* in one catalog, instructions assembled per turn."""
+    """The System 2 agent: *toolsets* in one catalog, instructions assembled per turn.
+
+    *spend* is the process's daily budget; None only where nothing is billed (tests).
+    """
+    capabilities: list[AbstractCapability[TurnDeps]] = [
+        RepairToolArguments(),
+        RecordEffects(),
+        instrumentation(),
+    ]
+    if spend is not None:
+        capabilities.append(spend)
     agent: Agent[TurnDeps, str] = Agent(
         None,
         name=SYSTEM2_NAME,
@@ -65,7 +82,7 @@ def build_system2_agent(
         model_settings=ModelSettings(
             max_tokens=max_tokens, timeout=timeout_s, extra_headers=role_headers(SYSTEM2)
         ),
-        capabilities=[RepairToolArguments(), instrumentation()],
+        capabilities=capabilities,
         defer_model_check=True,
     )
 

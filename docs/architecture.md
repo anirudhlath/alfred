@@ -176,7 +176,7 @@ graph TB
         ConsEngine[ConsciousEngine]
         IdentityGate[IdentityGate]
         SessionMgr[SessionManager]
-        CostTracker[CostTracker]
+        Spend["SpendLimits<br/>(shared/spend.py)"]
         CtxAssembler[ContextAssembler]
         ActionTools["Action Tools<br/>confirm_pending_action +<br/>attention_* (sir-only)"]
     end
@@ -281,7 +281,7 @@ graph TB
     ConsMain --> ConsEngine
     ConsMain --> IdentityGate
     ConsMain --> SessionMgr
-    ConsMain --> CostTracker
+    ConsMain --> Spend
     ConsEngine --> CtxAssembler
     ConsEngine -->|POST /v1/messages| Claude["Claude API"]
     ConsEngine -->|XREAD requests| Redis
@@ -298,7 +298,7 @@ graph TB
     IntRegistry --> HealthInt
     IntRegistry --> RobinhoodInt
     SessionMgr -->|GET/SET sessions| Redis
-    CostTracker -->|GET/SET cost| Redis
+    Spend -->|"EVAL spend counter<br/>{alfred:spend}:*"| Redis
     IdentityGate -->|voiceprint lookup| Redis
     Ingestor -->|"XREADGROUP + reclaim_stale<br/>alfred:reflex:observations"| Redis
     Ingestor --> Scorer
@@ -580,8 +580,8 @@ because an omitted keyword silently produced exactly that contamination.
 
 **Delivery.** Entry ids are `obs.observation_id`, minted at publish time, so a redelivery
 overwrites the same `ctx:{id}` hash instead of writing a second copy. The loop ACKs only
-on success and therefore reclaims its PEL — with `reclaim_stale()`, the one deliberate
-exception to `reclaim_replayable()` in the codebase, because a ten-minute-old observation
+on success and therefore reclaims its PEL — with `reclaim_stale()`, a deliberate
+exception to `reclaim_replayable()` (the Conscious Engine's `reclaim_due()` is the other), because a ten-minute-old observation
 is still worth *remembering* even though it is too stale to *act on*. Unparseable payloads
 are ACKed and dropped; an entry that parses but fails deterministically downstream is
 retried at most `_MAX_DELIVERY_ATTEMPTS` (5) times, counted in
@@ -658,7 +658,7 @@ embeds the user's query inline in the reply path).
 
 ### 3.8 Conscious Engine (System 2)
 
-**Files:** `core/conscious/engine.py`, `core/conscious/agent.py`, `core/conscious/deps.py`, `core/conscious/tools/`, `core/conscious/identity.py`, `core/conscious/session.py`, `core/conscious/cost.py`, `core/conscious/context_assembler.py`
+**Files:** `core/conscious/engine.py`, `core/conscious/agent.py`, `core/conscious/deps.py`, `core/conscious/tools/`, `core/conscious/identity.py`, `core/conscious/session.py`, `core/conscious/context_assembler.py`, `shared/spend.py`
 
 The Conscious Engine handles complex user requests with a Pydantic AI agent; [docs/llm.md](llm.md) covers the model settings, the tool catalog and the retries.
 
@@ -666,7 +666,7 @@ The Conscious Engine handles complex user requests with a Pydantic AI agent; [do
 
 1. **IdentityGate** (`identity.py`) -- resolves `identity_claim` from a `UserRequest` to a verified identity (sir/guest). Supports Signal phone lookup, WebAuthn session verification, and voiceprint matching.
 2. **SessionManager** (`session.py`) -- manages conversation sessions in Redis (`alfred:sessions:{id}`). Maintains message history with a configurable window.
-3. **CostTracker** (`cost.py`) -- enforces daily Claude API budget via Redis key `alfred:cost:daily`. Tracks input/output tokens and maps to dollar cost.
+3. **SpendLimits** (`shared/spend.py`) -- the daily budget every agent carries, a $0 local one included, on one atomic counter shared by all processes (`{alfred:spend}:*`). It refuses a model request once the day's spend reaches `DAILY_COST_CAP_USD` and sends the 80% alert once a day. See [docs/llm.md](llm.md#spend).
 4. **ContextAssembler** (`context_assembler.py`) -- gathers context from integrations, episodic memory, and preferences. Builds the system prompt with Alfred's identity and available data.
 5. **ConsciousEngine** (`engine.py`) -- runs the `system2` agent once per request: the agent offers the catalog's tools, validates and dispatches each call, feeds results back, and returns the final text, within ten model requests. Returns an `AlfredResponse`.
 
@@ -704,8 +704,8 @@ The `DataSanitizer` (`sanitizer.py`) strips sensitive data from integration resp
 **Web Channel** (`core/channels/`):
 
 FastAPI + WebSocket server on port 8081. Receives user messages (text or audio) via
-WebSocket, publishes `UserRequest` to `alfred:user:requests`, waits for `AlfredResponse` on
-`alfred:user:responses`, and sends the response back. Supports voice input via the voice
+WebSocket, publishes `UserRequest` to `alfred:user:requests`, waits for the `AlfredResponse`
+on `alfred:user:responses` whose `in_reply_to` names that request, and sends it back. Supports voice input via the voice
 pipeline.
 
 **Admin API** (`core/channels/admin_api.py`):
@@ -847,7 +847,7 @@ graph LR
 | `ToolRegistration` | Microservices | Announces available tools | `service_name`, `service_endpoint`, `tools` |
 | `TriggerFired` | Trigger Engine | A trigger's conditions were met (no direct action) | `trigger_id`, `trigger_name`, `trigger_type`, `context` |
 | `UserRequest` | Interaction channels | Inbound user interaction (text/audio) | `channel`, `session_id`, `identity_claim`, `content_type`, `content` |
-| `AlfredResponse` | Conscious Engine | Outbound response to user | `channel`, `session_id`, `text`, `actions_taken`, `mood` |
+| `AlfredResponse` | Conscious Engine | Outbound response to user | `channel`, `session_id`, `text`, `actions_taken`, `mood`, `in_reply_to` (the answered request's `event_id`) |
 | `TriggerCreated` | Trigger Engine | A trigger was dynamically created | `trigger_type`, `name`, `conditions`, `action`, `one_shot` |
 | `ReflexObservation` | Reflex Runner, DomainRouter | Records what the reflex did — or saw and chose not to do (`action`/`result` are `None`) | `origin`, `trigger_event`, `action`, `result`, `decision_context` |
 
@@ -871,7 +871,10 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:user:requests` | Stream | Inbound user requests from channels |
 | `alfred:user:responses` | Stream | Outbound Alfred responses to channels |
 | `alfred:sessions:{id}` | String (JSON) | Conversation session state |
-| `alfred:cost:daily` | String (JSON) | Daily Claude API cost tracking |
+| `{alfred:spend}:*` | String + Hash (harness `RedisSpendStore`) | Daily spend counter; `alfred:spend:alert:{day}` marks the 80% alert as sent |
+| `alfred:conscious:dead_letters` | Stream | Turns the Conscious Engine gave up on — `entry_id`, `event`, `error_type`, `error`, `deliveries`, `reason` (`permanent`, `exhausted`, `expired`, `stale`, `partial`); `MAXLEN ~ 1000` |
+| `alfred:conscious:answered:{event_id}` | String | Set in the same transaction as a request's response (TTL 3600s), so a redelivery after a crash before the ACK answers nothing |
+| `alfred:conscious:effects:{event_id}` | List | The request's side-effecting tool calls as JSON `{tool, args, status}` (`started`/`ok`/`failed`/`parked`; TTL 3600s); a turn that fails or is redelivered after acting answers from it instead of acting again |
 | `alfred:memory:episodic` | Stream | Hot episodic memory entries |
 | `alfred:reflex:observations` | Stream | `ReflexObservation` feed — reflex actions *and* passive observations, drained by the `memory-ingestor` group |
 | `alfred:entity:freq` | Sorted Set | Entity sighting counts behind the novelty dimension of `SignificanceScorer` (novelty = `1/count`) |
@@ -902,9 +905,15 @@ delivers *new* messages only, so an entry left un-ACKed by a failure is never re
 own. The Memory Ingestor (`memory-ingestor` on `alfred:reflex:observations`) reclaims every ~60s
 via `reclaim_stale()` and caps redeliveries at 5 — see 3.7.1 and the rule in `CLAUDE.md`.
 Both Reflex loops (`reflex-engine` on `alfred:home:state_changed`, `reflex-trigger-fired` on
-`alfred:events`) and the Conscious Engine reclaim on the same cadence via `reclaim_replayable()`,
-which ACK-drops anything older than 5 minutes rather than act on it — that age limit is also what
-bounds their redeliveries. All of them ACK a payload that can never parse.
+`alfred:events`) reclaim on the same cadence via `reclaim_replayable()`, which ACK-drops anything
+older than 5 minutes rather than act on it — that age limit is also what bounds their
+redeliveries. The Conscious Engine reclaims on every pass of its loop via `reclaim_due()`: it
+counts each entry's deliveries, redelivers on a doubling backoff (15 s, then 30 s), and after
+`MAX_DELIVERIES` (3) answers the user with a fixed apology and writes the turn to the
+`alfred:conscious:dead_letters` stream instead of dropping it. An entry past the 5-minute replay
+window is answered and dead-lettered rather than run; an answered marker and a side-effect ledger
+keep a redelivery from answering or acting twice (see [llm.md](llm.md#retries)). All of them ACK a
+payload that can never parse.
 
 ## 6. Configuration
 

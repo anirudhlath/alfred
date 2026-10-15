@@ -102,14 +102,6 @@ def test_routine_spec_defaults() -> None:
     assert step.action is None
 
 
-def test_cost_state_defaults() -> None:
-    """CostState moved to core.conscious.cost — verify import still works."""
-    from core.conscious.cost import CostState
-
-    cost = CostState(date="2026-03-19", spend_usd=2.50, cap_usd=5.0)
-    assert cost.alert_sent is False
-
-
 def _routine(**overrides: object) -> RoutineSpec:
     """A minimal valid routine, with fields overridden per test."""
     base: dict[str, object] = {

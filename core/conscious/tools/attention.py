@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic_ai import RunContext, ToolFailed
+from pydantic_ai import RunContext, Tool, ToolFailed
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
 from core.conscious.deps import TurnDeps  # noqa: TC001 — Pydantic AI reads tool signatures
+from core.conscious.effects import SIDE_EFFECT
 from core.conscious.tools.catalog import TOOL_RETRIES
 from core.conscious.tools.sir_only import SirOnlyToolset
 from core.reflex import attention
@@ -64,7 +65,13 @@ async def attention_list(ctx: RunContext[TurnDeps], domain: str) -> dict[str, An
 
 
 ATTENTION_FUNCTIONS: FunctionToolset[TurnDeps] = FunctionToolset(
-    [confirm_pending_action, attention_add, attention_remove, attention_list],
+    [
+        # Confirming runs the parked action.
+        Tool(confirm_pending_action, metadata={SIDE_EFFECT: True}),
+        Tool(attention_add, metadata={SIDE_EFFECT: True}),
+        Tool(attention_remove, metadata={SIDE_EFFECT: True}),
+        attention_list,
+    ],
     max_retries=TOOL_RETRIES,
     id="attention",
 )

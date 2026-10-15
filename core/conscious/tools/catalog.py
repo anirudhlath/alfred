@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field, fields
 from typing import Any, Final
 
-from pydantic_ai import ModelRetry, RunContext, ToolFailed
+from pydantic_ai import ModelRetry, RunContext, ToolDefinition, ToolFailed
 from pydantic_ai.exceptions import ApprovalRequired, CallDeferred
 from pydantic_ai.toolsets import AbstractToolset, CombinedToolset
 from pydantic_ai.toolsets.abstract import ToolsetTool
@@ -37,11 +37,10 @@ class CatalogTool(ToolsetTool[TurnDeps]):
     source_tool: ToolsetTool[TurnDeps] = field(repr=False)
 
 
-def _identity(tool: ToolsetTool[TurnDeps], name: str) -> str:
+def tool_identity(tool_def: ToolDefinition) -> str:
     """The tool's registry name when it has one, else its wire name."""
-    metadata = tool.tool_def.metadata or {}
-    registry_name = metadata.get("registry_name")
-    return registry_name if isinstance(registry_name, str) else name
+    registry_name = (tool_def.metadata or {}).get("registry_name")
+    return registry_name if isinstance(registry_name, str) else tool_def.name
 
 
 @dataclass
@@ -57,8 +56,8 @@ class CatalogToolset(CombinedToolset[TurnDeps]):
         for toolset in self.toolsets:
             for name, tool in (await toolset.get_tools(ctx)).items():
                 if name in tools:
-                    kept = _identity(tools[name], name)
-                    report_collision(name, kept, _identity(tool, name))
+                    kept = tool_identity(tools[name].tool_def)
+                    report_collision(name, kept, tool_identity(tool.tool_def))
                     continue
                 base = {f.name: getattr(tool, f.name) for f in fields(ToolsetTool) if f.init}
                 tools[name] = CatalogTool(**base, source_toolset=toolset, source_tool=tool)
@@ -73,7 +72,7 @@ class CatalogToolset(CombinedToolset[TurnDeps]):
     ) -> Any:
         if not isinstance(tool, CatalogTool):
             raise TypeError(f"{name} was not listed by the catalog")
-        ctx.deps.actions_taken.append(_identity(tool, name))
+        ctx.deps.actions_taken.append(tool_identity(tool.tool_def))
         try:
             result = await tool.source_toolset.call_tool(name, tool_args, ctx, tool.source_tool)
         except _PASS_THROUGH:

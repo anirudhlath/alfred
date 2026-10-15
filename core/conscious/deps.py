@@ -39,6 +39,12 @@ class TurnDeps:
     ``registry_tools`` and ``integration_tools`` are read once per turn, before the run,
     so listing tools on each model request costs no I/O. ``actions_taken`` is filled by
     the catalog as it dispatches calls.
+
+    ``received_ms`` is when the request entered the requests stream: its entry id's
+    milliseconds, which Redis assigns on ``XADD``. It is authoritative over
+    ``UserRequest.timestamp``, which the producing channel stamps on its own clock, because
+    the runner's replay window reads the entry id too, so both checks agree.
+    ``RecordEffects`` refuses a side-effecting call once it is past the window.
     """
 
     identity: IdentityResult
@@ -48,6 +54,7 @@ class TurnDeps:
     tz_name: str
     now: datetime
     services: TurnServices
+    received_ms: int
     content_type: str = "text"
     area: str | None = None
     recall: list[SearchResult] = field(default_factory=list)

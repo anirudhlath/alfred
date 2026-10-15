@@ -41,6 +41,37 @@ Everything else in `.env.example` under **OPTIONAL** has a working default. In p
   `HA_HOST`, etc. may point at `localhost`; the container rewrites it to the host gateway
   automatically (both `alfredctl up` and plain `docker compose`).
 
+### Daily spend cap
+
+`DAILY_COST_CAP_USD` (default `5.0`) caps what System 2 and the Librarian spend on models
+in a day. One counter in Redis is shared by every process, and the day rolls over at
+midnight in the user's timezone (the one the web client reports, else `ALFRED_TIMEZONE`,
+else UTC). You get one URGENT notification when spend reaches 80%, once a day. At the cap,
+every model request is refused, a $0 vLLM one included, so System 2 answers with the
+budget message and the Librarian skips its passes until the day rolls over.
+
+- A model served by vLLM costs $0, so it never counts against the cap.
+- `0` or less is a kill switch: every model request is refused, vLLM's included, so System 2
+  answers every turn with the budget message and the Librarian does no work. It switches
+  the models off without touching `SYSTEM2_MODEL`; it is not a way to keep vLLM and drop
+  only paid models.
+- A value that is not a number, or is NaN or infinity, stops startup with an error naming
+  the variable.
+- Requests in flight together can overshoot the cap by their own cost, a few cents.
+
+### Failed turns
+
+A System 2 request that fails is retried and answered once; see [`llm.md`](llm.md#retries).
+When Alfred gives up on one, it answers the user and records the turn in the Redis stream
+`alfred:conscious:dead_letters` (about the last 1000). Read them with:
+
+```bash
+docker exec <alfred-container> redis-cli XRANGE alfred:conscious:dead_letters - +
+```
+
+`reason` says why: `permanent`, `exhausted`, `expired`, `stale` or `partial`. A steady
+trickle of `exhausted` means the model provider is unhealthy.
+
 ### Reasoning models
 
 System 2 and the Librarian take a Pydantic AI model string, `openrouter:<vendor>/<model>` or
@@ -286,6 +317,7 @@ the opposite of what you wanted.
 
 | Symptom | Cause / fix |
 |---------|-------------|
+| Alfred answers *"I'm afraid we've reached the daily budget, sir."* or *"my reasoning service isn't answering"* | The first: today's spend reached `DAILY_COST_CAP_USD` (or it is 0 or less); it resets at your local midnight. The second: the model provider failed three deliveries in a row, or the request was over five minutes old when it was picked up. Read why in `alfred:conscious:dead_letters` (see "Failed turns"). |
 | `alfredctl doctor` shows System 2 ✗ | `OPENROUTER_API_KEY` missing/placeholder — set it in `.env`. |
 | Memory recall disabled in logs | You set a gated `EMBEDDING_MODEL` without `HF_TOKEN`. Use the ungated default or provide the token + accept the license. |
 | `memory refuses to run` or `episodic recall refuses to run` in logs, naming two different `dim=` values | You changed `EMBEDDING_MODEL` or `EMBEDDING_BACKEND`, so the new vector width no longer matches the index the store was built at; both stores latch and refuse rather than write vectors search can never match. **Quickest undo:** put the previous model/backend back and restart — nothing has been lost. **To go forward:** follow the recovery in the error text itself; it is per-store, tells you whether Alfred has to stop, and one wrong flag (`FT.DROPINDEX … DD`) permanently deletes every episodic memory not yet decayed to cold. Expect to do it twice — hot (Redis) and cold (SQLite) were both built at the old width. Check widths *before* changing models with `docker exec <alfred-container> redis-cli FT.INFO idx:context`. |

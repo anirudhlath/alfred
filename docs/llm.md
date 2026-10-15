@@ -89,7 +89,7 @@ sequenceDiagram
     A->>M: tool results
     M-->>A: final text
     A-->>E: output (str) + usage
-    E->>E: record spend, store session text, scratchpad note
+    E->>E: store session text, scratchpad note
 ```
 
 **The agent** is built once per process by `build_system2_agent()`
@@ -108,9 +108,10 @@ tools read once before the run, so listing tools on each model request costs no 
 **Ending a turn.** The model has ten requests a turn. Using them all, or running out of
 retries, ends the turn with
 *"I apologize, sir — I've been deliberating too long. Let me try a more direct approach."*
-A provider or transport failure raises instead, so the request stays pending and is retried.
-Over the daily budget, the turn never starts and the reply is the budget message (mood
-`concerned`). Spend is recorded in `finally`, so a failed run is still paid for.
+A provider or transport failure raises instead, so the request stays pending and is
+redelivered (see [Retries](#retries)). Over the daily budget, the turn never starts and the
+reply is the budget message (mood `concerned`). The agent's `SpendLimits` counts each
+response as it arrives, so a failed run is still paid for.
 
 **Sessions** stay text-only in this PR: the stored user and assistant text becomes the
 run's message history, and only text is stored back. Tool calls and results within a
@@ -198,13 +199,140 @@ naming both numbers, and a second miss leaves every observation unscored rather 
 misaligned. Without a model, or when a
 call fails, each caller keeps its deterministic fallback.
 
+## Retries
+
+A failed System 2 request is retried in three layers, each with one owner, and answered
+exactly once.
+
+**Model requests** (`shared/llm_http.py`). `resolve_model` builds the `vllm:`,
+`openrouter:` and `openai:` providers on `retrying_http_client()` and turns the OpenAI
+SDK's own retries off (`max_retries=0`), so only `RetryingTransport` retries. Any other
+provider keeps its SDK's retries; resolving one logs a WARNING saying so.
+
+- 3 attempts, all within a 30 s budget of the first. A retry waits a full-jitter
+  `uniform(0, min(8 s, 0.5 s × 2^(attempt − 1)))`, or the server's `Retry-After`
+  (`retry-after-ms`, seconds or an HTTP date) when it names one.
+- Retried statuses: 408, 409, 429, 500, 502, 503, 504, 529. Retried transport errors:
+  connect, read, write and pool timeouts, a remote protocol error, a read error.
+- A wait that would pass the budget, a `Retry-After` included, ends the retrying at once, so
+  the 429 surfaces as `ModelHTTPError(429)` rather than sleeping past the web channel's
+  60 s wait. When attempts run out on a status, the last *response* is returned, so the
+  caller sees the real status.
+- Not retried: any other status (400, 401, 403, 404, 422...) and any other exception.
+- Each retry logs a WARNING (role, attempt, reason, wait) and adds an `llm.retry` event to
+  the current span.
+
+**Turns** (`core/conscious/runner.py`, `failures.py`, `shared/redis_streams.reclaim_due`).
+A turn that raises is left un-ACKed and the conscious loop redelivers it. `classify` sorts
+the failure:
+
+| Failure | Kind | Outcome |
+|---|---|---|
+| `SpendLimitExceeded`, `UserError`, a 4xx `ModelHTTPError` other than 408/409/429 | permanent | `FAILED_REPLY` at once, dead letter `permanent` |
+| any other exception, 408/409/429, 5xx, a transport error | transient | redelivered |
+
+- Redis counts each entry's deliveries. A pending entry is due once idle for
+  `15 s × 2^(deliveries − 1)`: 15 s after the first, 30 s after the second. A failure
+  restarts that idle clock, so a turn that ran 20 s is not due at once. `reclaim_due` runs on
+  every pass of the loop, which reads with a 5 s block.
+- `MAX_DELIVERIES = 3`. The third failure is answered with `FAILED_REPLY` and
+  dead-lettered `exhausted`. A fourth delivery, which only happens when that answer never
+  got out, is answered the same way without running the turn.
+- Expiry. An entry older than the 300 s replay window is not run: it is answered with
+  `FAILED_REPLY` and dead-lettered `expired`, because an unlock that arrives five minutes
+  late is worse than none. The window is checked again when a side-effecting call is
+  about to run, since a slow delivery that started in time can reach the call minutes
+  later: `RecordEffects` refuses it (`TooLate`, a `ToolFailed`), so it never runs and the
+  model is told why. Both checks measure the age from the request's stream entry id; the
+  runner hands the engine its milliseconds (`received_ms`, kept in `TurnDeps`). An entry that already acted is answered from its ledger
+  instead (`partial`). One older than the answered marker's 3600 s TTL is ACKed and
+  dead-lettered `stale` without an answer; an hours-late reply is noise.
+- An unparseable entry is ACKed and dropped, as everywhere else.
+
+`FAILED_REPLY` is *"I'm afraid I couldn't finish that, sir — my reasoning service isn't
+answering. Please try again in a moment."* A model that runs out of requests or output
+retries is not a failure: it gets the deliberating reply and is ACKed.
+
+**Home dispatch** (`domains/home/home_agent.py`). The `HomeAgent` retries a call to the
+home service 3 times, waiting `wait_random_exponential(0.2 s base, 2 s cap)`, on connect
+errors only (`ConnectError`, `ConnectTimeout`, `PoolTimeout`): a request that never left
+cannot have acted. Connecting, or waiting for a pooled connection, times out after 5 s, so
+a black-holed service costs under 20 s; reading the answer still has 30 s. A read timeout or a status error says nothing about whether it acted, so
+it is never retried.
+
+### Answered once
+
+- **Answered marker.** The response `XADD` and `SET alfred:conscious:answered:{event_id}`
+  (TTL 3600 s) are one transaction, then the entry is ACKed. A crash between publishing and
+  ACKing leaves the marker, so the redelivery only ACKs and never answers twice.
+- **Side-effect ledger** (`core/conscious/effects.py`). A toolset marks a side-effecting
+  tool with `SIDE_EFFECT` in its `ToolDefinition` metadata: every registry tool, the trigger
+  and attention mutations, `confirm_pending_action`, and every integration capability its
+  adapter does not mark a read (`IntegrationCapability.side_effect`, default True, so an
+  unmarked one counts as a write; the calendar's `create_event` and `delete_event` are
+  writes, the `get_*` and `list_*` capabilities reads). `RecordEffects` writes each such
+  call to the list `alfred:conscious:effects:{event_id}` (TTL 3600 s) before it runs and
+  settles it after as `ok` or `failed`. A call held for the user's confirmation settles as
+  `parked`: nothing happened yet. A call refused by identity scope never acted, so its entry
+  is struck out. If the `started` write fails the call does not run. If settling fails the
+  entry stays `started`, which reads as in doubt, never as not done.
+- **Answering from the ledger.** A turn that fails after acting, or a delivery that finds a
+  ledger a crashed one left, is not run again. `ledger_reply` answers from a fixed template,
+  with no model call: what was done, what may or may not have gone through ("please check
+  before asking again"), and what awaits confirmation. The entry is ACKed and dead-lettered
+  `partial`, and the turn is stored in the session once the answer is published. A run
+  the daily budget stops after it acted answers the same template plus one budget
+  sentence, never the bare budget reply.
+- **Each answer names its request.** Every `AlfredResponse` the engine publishes carries
+  `in_reply_to`, the request's `event_id`. `publish_and_wait` (`core/channels/request_bus.py`)
+  returns only the response to its own request, so a redelivered answer that lands after
+  the web channel's 60 s wait is skipped rather than shown as the user's next message's
+  answer. A response without `in_reply_to` is matched by session, as before.
+- **After every answer** — a success, a give-up or a ledger answer — the runner runs its
+  post-answer hook, the spend alert check; a hook failure is logged, never raised.
+
+### Dead letters
+
+Every turn Alfred gives up on is written to the stream `alfred:conscious:dead_letters`
+(trimmed to about 1000 entries) and logged at ERROR. Fields: `entry_id`, `event` (the
+request itself), `error_type`, `error`, `deliveries` and `reason`, one of `permanent`,
+`exhausted`, `expired`, `stale`, `partial`.
+
+```bash
+redis-cli XRANGE alfred:conscious:dead_letters - +
+```
+
 ## Spend
 
-`CostTracker` (`core/conscious/cost.py`) prices tokens by `model_key(model)`,
-`<provider>:<served name>`. Models under the `vllm` provider are free; unknown paid models
-use a $3/$15 per-million default. System 2 records each turn's usage. The Librarian records
-each call with `count_request=False`, so its calls count against the daily cap but not
-toward the request count. A per-request ledger replaces this in PR 6.
+Every agent that calls a model — System 2 and the five Librarian agents — carries the
+same `SpendLimits` capability from pydantic-ai-harness, built by `build_spend_limits`
+(`shared/spend.py`): one `day` budget of `DAILY_COST_CAP_USD`, `warn_at` 0.8.
+`DAILY_COST_CAP_USD` of 0 or less is the kill switch: every model request, a $0 vLLM one
+included, and every System 2 turn is refused, and the Librarian skips its passes. NaN or infinity is a startup
+error naming the variable (`shared.config.cost_cap_usd`).
+
+- **Gate.** Before each model request it reads today's counter and raises
+  `SpendLimitExceeded` once the cap is reached, for every model, local ones included. The
+  engine also checks before a turn starts. Either way the user gets the budget reply with
+  mood `concerned` (after what the turn already did, if it acted), and `classify`
+  (`core/conscious/failures.py`) treats it as permanent. A Librarian pass skips the rest
+  of its work when the budget runs out.
+- **Counter.** Each billed response is added to a `RedisSpendStore` under
+  `{alfred:spend}:*` in one Lua script, so the conscious and Librarian processes cannot lose
+  each other's updates. The day rolls over at midnight in the user's timezone
+  (`shared/usertime.last_user_timezone`).
+- **Price.** `price` charges a response from the `vllm` provider $0, a model genai-prices
+  knows its registry price, and any other model a $3/$15 per-million fallback with one
+  WARNING per model, so an unpriced model never counts as free.
+- **Failures.** A failed counter write logs a WARNING and leaves the response uncounted
+  (`TolerantSpendStore`); the turn still answers. A failed read refuses the request.
+- **Overshoot.** The check and the increment are separate round trips, so requests in
+  flight at once can each pass the check: the cap can be exceeded by their own cost, one
+  System 2 request plus up to `DECAY_MIGRATION_CONCURRENCY` (8) Librarian requests. Accepted.
+- **Alert.** After each answered System 2 turn (a failed or ledger-answered one included)
+  and each Librarian call, `alert_if_needed` sends the 80% notification (URGENT) if today's
+  spend has reached it, claiming `alfred:spend:alert:{day}` with `SET NX` so exactly one
+  process sends it.
 
 ## Tracing
 
@@ -240,7 +368,7 @@ one-toolset agent.
 | 3 | prompts move to the self-hosted Langfuse, with repo defaults |
 | 4 | full session history, tool calls and results included |
 | 5 | deferred tool approvals replace the critical intercept; late replies become follow-ups |
-| 6 | a per-request spend ledger replaces `CostTracker`'s daily counters |
+| 6 | retries, the turn ledger and spend on the harness's `SpendLimits` (done, see [Retries](#retries) and [Spend](#spend)) |
 | 7 | the judge uses Inspect's own OpenAI provider; `evals/harness/vllm_model.py` goes |
 | 8 | Reflex becomes an agent; Ollama is dropped |
 
@@ -249,7 +377,7 @@ one-toolset agent.
 | File | Contents |
 |---|---|
 | `shared/llm_roles.py` | `ROLE_HEADER`, the role values, `LLM_ROLES` |
-| `shared/agents.py` | `resolve_model`, `model_key`, `role_headers`, `instrumentation` |
+| `shared/agents.py` | `resolve_model` (providers on the retrying client), `model_key`, `role_headers`, `instrumentation` |
 | `shared/config.py` | `resolve_llm_settings`, the LLM fields on `AlfredConfig`, `apply_model_env` |
 | `shared/otel.py` | `langfuse_attributes`, `LangfuseBaggageProcessor` |
 | `core/conscious/agent.py` | `build_system2_agent`, `system2_toolsets`, `REQUEST_LIMIT` |
@@ -257,6 +385,10 @@ one-toolset agent.
 | `core/conscious/deps.py` | `TurnServices`, `TurnDeps` |
 | `core/conscious/tools/` | `names`, `scope`, `catalog`, `sir_only`, `validation`, `registry`, `triggers`, `memory`, `attention`, `integrations` |
 | `core/librarian/agents.py` | the five Librarian agents and their output models |
-| `core/conscious/cost.py` | `CostTracker`, the price table |
+| `shared/llm_http.py` | `RetryingTransport`, `RetryPolicy`, `retrying_http_client` |
+| `core/conscious/runner.py` | `process_request_entry`: delivery, answered marker, ledger answers, dead letters |
+| `core/conscious/failures.py` | `classify`, `dead_letter`, `FAILED_REPLY`, `MAX_DELIVERIES` |
+| `core/conscious/effects.py` | `RecordEffects`, `EffectLedger`, `ledger_reply` |
+| `shared/spend.py` | `build_spend_limits`, `price`, `alert_if_needed`, `spend_snapshot` |
 | `alfredctl/doctor.py` | `_check_conscious`: the settings above, checked before boot |
 | `tests/llm_fakes.py` | `Script`, `tool_call`, `tool_calls` |

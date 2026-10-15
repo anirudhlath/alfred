@@ -10,7 +10,7 @@ the dispatcher uses deterministic rules based on urgency and channel capabilitie
 
 ```mermaid
 graph TD
-    CE[Conscious Engine<br/>CostTracker, etc.] -->|publish| NP[NotificationPublisher]
+    CE[Conscious Engine<br/>spend alert, etc.] -->|publish| NP[NotificationPublisher]
     NP -->|Notification| ND[NotificationDispatcher]
     ND --> DND{DND Active?}
     DND -->|Yes + non-urgent| DEFER[Redis List<br/>alfred:notifications:deferred]
@@ -59,8 +59,8 @@ APNs delivers only when its credentials are configured, and Satellite only when
 ### NotificationPublisher
 
 Public API for sending notifications. Creates `Notification` objects and routes through
-the dispatcher. Used by CostTracker, Conscious Engine, and any component that needs
-to notify the user.
+the dispatcher. Used by the spend alert (through `urgent(source)`, a `send(title, body)`
+at URGENT), the Conscious Engine, and any component that needs to notify the user.
 
 ### NotificationDispatcher
 

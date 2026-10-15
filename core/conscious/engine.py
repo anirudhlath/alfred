@@ -2,10 +2,12 @@
 
 A request is answered in one agent run (``core.conscious.agent``): the engine resolves
 identity, checks the budget, gathers the turn's context into ``TurnDeps`` and runs the
-agent over the session's history. Spend is recorded for every run that starts, including
-one that fails. A model that runs out of requests or retries gets the deliberating reply,
-because replaying the request would spend again and repeat its tool calls; a provider or
-transport failure raises, so the request stays pending and is retried.
+agent over the session's history. The agent's ``SpendLimits`` counts every model response,
+including those of a run that fails, and refuses a request once the day's budget is gone;
+the turn then gets the budget reply, after what it already did if it acted. A model that
+runs out of requests or retries gets the deliberating reply, because replaying the request
+would spend again and repeat its tool calls; a provider or transport failure raises, so
+the request stays pending and is retried.
 """
 
 from __future__ import annotations
@@ -24,12 +26,13 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.usage import RunUsage, UsageLimits
+from pydantic_ai_harness.spend import SpendLimitExceeded
 
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.agent import REQUEST_LIMIT
 from core.conscious.deps import TurnDeps, TurnServices
+from core.conscious.effects import EffectLedger, ledger_reply
 from core.conscious.tools.integrations import fetch_integration_tools
-from shared.agents import model_key
 from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 from shared.otel import langfuse_attributes
 from shared.streams import SCRATCHPAD_QUEUE
@@ -43,8 +46,8 @@ from shared.usertime import (
 if TYPE_CHECKING:
     from pydantic_ai import Agent
     from pydantic_ai.models import Model
+    from pydantic_ai_harness.spend import SpendLimits
 
-    from core.conscious.cost import CostTracker
     from core.conscious.identity import IdentityGate
     from core.conscious.session import SessionManager
     from core.conscious.tools.integrations import IntegrationTool
@@ -65,12 +68,18 @@ BUDGET_REPLY: Final = (
     "I'm operating in reduced capacity — ambient actions continue, "
     "but I'll need to defer complex requests until tomorrow."
 )
+# Follows the ledger's reply when the budget ran out after the turn acted.
+BUDGET_AFTER_ACTING: Final = (
+    "We've reached the daily budget, so I'll need to defer complex requests until tomorrow."
+)
 DELIBERATING_REPLY: Final = (
     "I apologize, sir — I've been deliberating too long. Let me try a more direct approach."
 )
 NOT_CONFIGURED_REPLY: Final = (
     "I'm afraid my connection to the thinking engine is not configured, sir."
 )
+
+Mood = Literal["neutral", "concerned"]
 
 
 def session_messages(history: list[dict[str, str]]) -> list[ModelMessage]:
@@ -102,13 +111,14 @@ class ConsciousDeps:
     """The engine's services, its agent and the model the agent runs on.
 
     ``model`` is None when ``SYSTEM2_MODEL`` resolved to nothing at startup; every request
-    then gets the not-configured reply.
+    then gets the not-configured reply. ``spend`` is the daily budget the agent carries as
+    a capability; the engine reads it before a turn starts.
     """
 
     redis: AioRedis
     identity_gate: IdentityGate
     session_mgr: SessionManager
-    cost_tracker: CostTracker
+    spend: SpendLimits[Any]
     domain_router: DomainRouter
     tool_registry: ToolRegistry
     context_reader: ContextReader
@@ -126,7 +136,7 @@ class ConsciousEngine:
         self._redis = deps.redis
         self._identity_gate = deps.identity_gate
         self._session_mgr = deps.session_mgr
-        self._cost = deps.cost_tracker
+        self._spend = deps.spend
         self._tool_registry = deps.tool_registry
         self._agent = deps.agent
         self._model = deps.model
@@ -244,8 +254,15 @@ class ConsciousEngine:
     # No @track_latency (#308): its buffer was never flushed, and the agent run span
     # measures the same latency.
     @traced(name="conscious.process_request")
-    async def process_request(self, request: UserRequest) -> AlfredResponse:
-        """Answer one request: identity, budget, the turn's context, one agent run."""
+    async def process_request(
+        self, request: UserRequest, *, received_ms: int | None = None
+    ) -> AlfredResponse:
+        """Answer one request: identity, budget, the turn's context, one agent run.
+
+        *received_ms* is when the request entered the requests stream, its entry id's
+        milliseconds; the runner passes it, so a side-effecting call made past the replay
+        window is refused (``RecordEffects``). A direct caller omits it: the turn starts now.
+        """
         now = datetime.now(UTC)
         tz_name = await self._timezone(request)
 
@@ -262,7 +279,8 @@ class ConsciousEngine:
             identity.confidence,
         )
 
-        if await self._cost.is_budget_exceeded():
+        # The clock that picks the budget day reads the zone _timezone just resolved.
+        if await self._spend.exhausted():
             logger.warning("Daily budget exceeded — returning System 1 fallback")
             return self._reply(request, BUDGET_REPLY, [], mood="concerned")
 
@@ -275,6 +293,7 @@ class ConsciousEngine:
             tz_name=tz_name,
             now=now,
             services=self._services,
+            received_ms=received_ms if received_ms is not None else int(now.timestamp() * 1000),
             content_type=request.content_type,
             area=request.area,
             recall=await self._recall(request.content),
@@ -284,12 +303,12 @@ class ConsciousEngine:
         )
 
         usage = RunUsage()
-        text = await self._run(request, deps, session["history"], usage)
+        text, mood = await self._run(request, deps, session["history"], usage)
 
         await self._session_mgr.append_turn(request.session_id, "user", request.content)
         await self._session_mgr.append_turn(request.session_id, "assistant", text)
         await self._note(now, request.content, text, deps.actions_taken, usage)
-        return self._reply(request, text, deps.actions_taken)
+        return self._reply(request, text, deps.actions_taken, mood=mood)
 
     async def _timezone(self, request: UserRequest) -> str:
         """The client's zone when it sent a valid one, persisted; else the stored zone."""
@@ -337,11 +356,11 @@ class ConsciousEngine:
         deps: TurnDeps,
         history: list[dict[str, str]],
         usage: RunUsage,
-    ) -> str:
-        """One agent run. *usage* accumulates across it and is what spend is recorded from."""
+    ) -> tuple[str, Mood]:
+        """One agent run: its reply and mood. *usage* accumulates across it, for the note."""
         model = self._model
         if model is None:
-            return NOT_CONFIGURED_REPLY
+            return NOT_CONFIGURED_REPLY, "neutral"
         try:
             with langfuse_attributes(
                 session_id=request.session_id, user_id=deps.who, tags=[request.channel]
@@ -354,26 +373,34 @@ class ConsciousEngine:
                     usage=usage,
                     usage_limits=UsageLimits(request_limit=REQUEST_LIMIT),
                 )
-            return result.output
+            return result.output, "neutral"
+        except SpendLimitExceeded:
+            # A UsageLimitExceeded too, so it is caught first. Raised before a request,
+            # once an earlier response in this run (or another process) spent the day.
+            logger.warning("Daily budget spent during the run — returning the budget reply")
+            return await self._budget_reply(request), "concerned"
         except UsageLimitExceeded:
             logger.warning("System 2 used its %d model requests without answering", REQUEST_LIMIT)
-            return DELIBERATING_REPLY
+            return DELIBERATING_REPLY, "neutral"
         except UnexpectedModelBehavior as exc:
             # Retries exhausted, blank replies, or the token limit hit before any output.
             # ModelAPIError (HTTP, connection, timeout) is a sibling, not a subclass, so a
             # provider failure still raises and the request is retried.
             logger.warning("System 2 gave up on the model's replies: %s", exc)
-            return DELIBERATING_REPLY
-        finally:
-            await self._record_spend(usage, model)
+            return DELIBERATING_REPLY, "neutral"
 
-    async def _record_spend(self, usage: RunUsage, model: Model) -> None:
-        """Spend for one run. A failed write is logged, never raised: raising here would
-        replace the run's reply and replay the request, repeating its tool calls."""
+    async def _budget_reply(self, request: UserRequest) -> str:
+        """The budget reply for a run the budget stopped partway. If the turn already
+        acted, say what it did first (``ledger_reply``), so a light that went on is never
+        answered as though nothing happened; an unreadable ledger gets the plain reply."""
         try:
-            await self._cost.record_spend(usage.input_tokens, usage.output_tokens, model_key(model))
+            effects = await EffectLedger(self._redis).read(request.event_id)
         except Exception:
-            logger.warning("Failed to record System 2 spend", exc_info=True)
+            logger.warning("Could not read the ledger for the budget reply", exc_info=True)
+            return BUDGET_REPLY
+        if not effects:
+            return BUDGET_REPLY
+        return f"{ledger_reply(effects)} {BUDGET_AFTER_ACTING}"
 
     async def _note(
         self, now: datetime, content: str, text: str, actions: list[str], usage: RunUsage
@@ -391,13 +418,29 @@ class ConsciousEngine:
         except Exception as exc:
             logger.warning("Failed to write scratchpad observation: %s", exc)
 
+    async def record_partial_turn(self, request: UserRequest, text: str) -> None:
+        """Store a turn answered from its side-effect ledger (*text*) in the session, like
+        a normal turn, so the next turn knows what was done. Called once the answer is
+        published; a failed write is logged, not raised."""
+        try:
+            await self._session_mgr.append_turn(request.session_id, "user", request.content)
+            await self._session_mgr.append_turn(request.session_id, "assistant", text)
+        except Exception:
+            logger.warning("Failed to store a partial turn in the session", exc_info=True)
+
+    @staticmethod
+    def failure_reply(request: UserRequest, text: str) -> AlfredResponse:
+        """The answer to a turn that could not finish: a normal reply's channel, session,
+        source and ``in_reply_to``, no actions, concerned."""
+        return ConsciousEngine._reply(request, text, [], mood="concerned")
+
     @staticmethod
     def _reply(
         request: UserRequest,
         text: str,
         actions: list[str],
         *,
-        mood: Literal["neutral", "concerned"] = "neutral",
+        mood: Mood = "neutral",
     ) -> AlfredResponse:
         return AlfredResponse(
             source=SOURCE,
@@ -406,4 +449,5 @@ class ConsciousEngine:
             text=text,
             actions_taken=actions,
             mood=mood,
+            in_reply_to=request.event_id,
         )

@@ -31,6 +31,10 @@ async def publish_and_wait(
     caller's. Reading the stream's actual tail sidesteps both: "0-0" on an
     empty/nonexistent stream is correct here since there's no history to scan.
     Returns the full AlfredResponse so callers can forward actions_taken and mood.
+
+    A response that names its request (``in_reply_to``) matches only that request, so a
+    redelivered answer that lands after this channel stopped waiting for it is never
+    returned as the next request's answer. One without it matches by session.
     """
     tail = await revrange(redis, USER_RESPONSES_STREAM, count=1)
     tail_id = tail[0][0] if tail else None
@@ -47,7 +51,7 @@ async def publish_and_wait(
                 raw = entry_data.get(b"event") or entry_data.get("event")
                 if raw:
                     resp = AlfredResponse.model_validate_json(decode_stream_value(raw))
-                    if resp.session_id == session_id:
+                    if _answers(resp, request, session_id):
                         return resp
 
     logger.warning(
@@ -58,4 +62,23 @@ async def publish_and_wait(
         channel=request.channel,
         session_id=session_id,
         text="I apologize, sir — I seem to be taking longer than expected.",
+        in_reply_to=request.event_id,
     )
+
+
+def _answers(resp: AlfredResponse, request: UserRequest, session_id: str) -> bool:
+    """Whether *resp* answers *request*: by ``in_reply_to`` when the producer set it, so a
+    late answer to an earlier request in the same session is skipped; else, for a producer
+    that does not set it, by session as before."""
+    if resp.in_reply_to is not None:
+        if resp.in_reply_to == request.event_id:
+            return True
+        if resp.session_id == session_id:
+            logger.info(
+                "Skipping a late answer to request {} while waiting on {} (session {})",
+                resp.in_reply_to,
+                request.event_id,
+                session_id,
+            )
+        return False
+    return resp.session_id == session_id

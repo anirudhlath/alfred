@@ -9,12 +9,14 @@ Cross-cutting utilities used by multiple top-level packages (core, bus, domains)
 - `redis_streams.py` — `create_redis()` constructor (socket_timeout=None — see Gotchas) + `StreamBatch` type alias + typed `read_group()`/`read()`/`forward_range()`/`revrange()` wrappers around `xreadgroup`/`xread`/`xrange`/`xrevrange` (owns the one stub-gap `# type: ignore` per wrapper)
 - `usertime.py` — User timezone helpers: `is_valid_timezone()`, `get_user_timezone()` (stored → `ALFRED_TIMEZONE` → UTC), `set_user_timezone()` (write-on-change + coherence poke)
 - `secrets.py` — Keyring wrapper: `get_secret()` / `set_secret()` + async versions (`aget_secret()` etc.) via `asyncio.to_thread()`
+- `spend.py` — the daily budget on pydantic-ai-harness `SpendLimits` (`build_spend_limits`, `price`, `TolerantSpendStore`, `local_clock`, `spend_snapshot`, `alert_if_needed`); counter keys under `SPEND_PREFIX`
 - `types.py` — `AioRedis` type alias (canonical location for cross-package use)
 - `fs.py` — `atomic_write()` via mkstemp + rename (safe concurrent writes)
 - `logging.py` — Loguru setup with stdlib intercept (captures uvicorn, httpx, aiomqtt, etc.)
 - `traced.py` — `@traced` decorator for OTel span instrumentation (sync + async, optional name override)
 - `tracing.py` — `ReflexTraceRecord` / `ConsciousTraceRecord` dataclasses + `init_tracing()` with optional OTLP export
 - `otel.py` — TracerProvider init with Resource + optional OTLP BatchSpanProcessor
+- `llm_http.py` — `RetryingTransport` / `retrying_http_client()`: the one HTTP retry layer under every OpenAI-compatible model (`resolve_model` builds the SDK client with `max_retries=0`); a status that exhausts retries returns its last response so Pydantic AI raises `ModelHTTPError` with the real status (spec 6b)
 
 ## Key Stream Constants
 

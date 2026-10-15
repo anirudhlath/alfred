@@ -101,6 +101,10 @@ means removing litellm from every call site at once.
 | #304 | Record side-effecting tool calls per request; once one has run, answer once and ACK instead of retrying |
 | Guests | Toolsets are scoped by identity |
 | Session idle limit | Stays at 30 minutes; full history applies within a session |
+| Retries (2026-10-14) | Rebuilt to an industry-standard design (component 6b): one retry owner per layer, bounded attempts and time, full-jitter backoff, `Retry-After` honoured, transient and permanent failures told apart, a delivery cap with a dead-letter stream |
+| Spend (2026-10-14) | Spend writes and alerts are made safe across processes in the PR after PR 2; this PR moves ahead of PRs 3–5 |
+| Trigger listing (2026-10-14) | `list_triggers` is sir-only |
+| Final review (2026-10-14) | Integration capabilities are writes unless marked reads, so the ledger records them; a side-effecting call is refused past the replay window at the moment it acts; every answer names its request (`in_reply_to`) and channels match on it |
 
 ## Architecture
 
@@ -336,8 +340,17 @@ Typed `FunctionToolset`s; schemas come from the function signatures.
   it runs, in `alfred:conscious:effects:{request_id}` (a Redis list; its TTL outlives the
   replay window). The result is recorded after the call.
   - Side-effecting: every registry tool, trigger create/update/delete/toggle,
-    `attention_add`/`attention_remove`, carried as tool metadata.
-  - Reads are never recorded: memory recall, live state, listings, integrations.
+    `attention_add`/`attention_remove`, and every integration capability its adapter does
+    not mark a read (`IntegrationCapability.side_effect`, default True; the calendar's
+    `create_event` and `delete_event` are writes), carried as tool metadata.
+  - Reads are never recorded: memory recall, live state, listings, and the integration
+    capabilities marked `side_effect=False` (the `get_*` and `list_*` reads).
+  - **The replay window is checked again when a call acts** (amended 2026-10-14, final
+    review I2). `RecordEffects` refuses a side-effecting call once the request is older
+    than `MAX_REPLAY_AGE_MS` (300 s): it raises a `ToolFailed`, as an identity refusal
+    does, so the call never runs, nothing is recorded, and the model is told why. The age
+    is measured from the request's stream entry id (`TurnDeps.received_ms`), the clock the
+    runner's window reads, not `UserRequest.timestamp`, which the channel stamps.
 - `core/conscious/runner.py` `process_request_entry`:
   - **Before running:** if the request's ledger already exists, this is a redelivery
     after a crash. Answer from the ledger and ACK; do not run the turn.
@@ -347,6 +360,78 @@ Typed `FunctionToolset`s; schemas come from the function signatures.
 - The answer is a fixed template over the ledger, not a model call ("I turned on the
   porch light, then ran into a problem before I could finish, sir."). It is appended to
   the session.
+- The ledger is keyed by the request's `event_id`, which is the same on every delivery
+  (the redelivered entry carries the same event JSON).
+- **Exactly one answer.** After the response is published, the runner sets
+  `alfred:conscious:answered:{event_id}` before it ACKs. A delivery that finds the marker
+  ACKs without running, so a crash between publishing and ACKing does not answer twice.
+
+### 6b. Retries (owner, 2026-10-14)
+
+Each layer has one retry owner. Each retry is bounded by attempts *and* time. Each uses
+exponential backoff with full jitter, and honours `Retry-After` up to a cap. Each retries
+only failures that can succeed on a second try, and logs every retry.
+
+**Model requests (HTTP).**
+- Every OpenAI-compatible model (`vllm:`, `openrouter:`, `openai:`) is built on an
+  `AsyncOpenAI` client with `max_retries=0`. Any other provider keeps its SDK's retries,
+  and `resolve_model` logs one WARNING saying so. Its `httpx2` client uses a retrying transport in
+  `shared/llm_http.py`, built on `tenacity`, so the SDK and the transport never both
+  retry.
+- **Retried:** connection errors, connect, read and pool timeouts, a dropped connection,
+  and statuses 408, 409, 429, 500, 502, 503, 504 and 529.
+- **Not retried:** any other status.
+- **Bounds:** 3 attempts and a 30 s retry budget.
+- **Wait:** the server's `Retry-After` (seconds or HTTP date, also `retry-after-ms`),
+  else random-exponential between 0 and min(8 s, 0.5 s × 2ⁿ). A `Retry-After` beyond what
+  is left of the budget is not waited out: the response is surfaced.
+- **When retries run out on a status, the last response is returned, not an
+  exception.** The SDK then raises its normal `APIStatusError`, and Pydantic AI a
+  `ModelHTTPError` with the real status and headers, so the turn layer can classify it.
+  Pydantic AI's `AsyncHTTPX2TenacityTransport` re-raises an `HTTPStatusError` from inside
+  the transport, which the SDK reports as a connection error. That loses the status,
+  which is why we do not use it.
+- Each retry logs one WARNING (role, attempt, status or exception, wait) and adds an
+  `llm.retry` event to the current span.
+
+**Turns (Redis stream redelivery).** `core/conscious/failures.py` classifies a turn's
+exception:
+
+| Class | Examples | Outcome |
+|---|---|---|
+| side effects ran | the ledger holds a call | answer from the ledger, ACK |
+| permanent | `ModelHTTPError` 4xx other than 408/409/429; `UserError`; a configuration error | answer `FAILED_REPLY` at once, ACK, dead-letter |
+| transient | `ModelAPIError` without a status; `ModelHTTPError` 408/409/429/5xx; Redis connection and timeout errors; `TimeoutError` | leave un-ACKed for redelivery |
+| unknown | any other exception | treated as transient |
+
+- Redelivery uses the stream's own delivery counter. The pending-entry list's
+  `times_delivered` comes from `XPENDING`, and an entry is reclaimed with `XCLAIM`.
+- **Backoff:** delivery *n* + 1 is due once the entry has been idle 15 s × 2ⁿ⁻¹ (15 s,
+  then 30 s), counted from the failure. The third delivery starts at about
+  `d1 + d2 + 45..55 s`, so two failed deliveries that together take more than a few
+  seconds push its answer past the web channel's 60 s wait (amended 2026-10-14, final
+  review I3). Such a late answer is never taken for the next message's: every answer
+  names its request (`AlfredResponse.in_reply_to`, the request's `event_id`), and
+  `publish_and_wait` matches on it, falling back to the session only for a response
+  that carries none.
+- **Pass frequency:** the reclaim pass runs on every loop iteration (at most every 5 s).
+  It costs one `XPENDING` call when nothing is pending.
+- **Cap:** after the third delivery fails, or once an entry is older than the 5-minute
+  replay window, the runner answers `FAILED_REPLY`, ACKs and dead-letters.
+- **Dead letters** go to the stream `alfred:conscious:dead_letters` (MAXLEN ≈ 1000) with
+  the entry id, event, exception type and message, delivery count and reason, and are
+  logged at ERROR.
+- `FAILED_REPLY`: "I'm afraid I couldn't finish that, sir — my reasoning service isn't
+  answering. Please try again in a moment."
+
+**Domain dispatch.** `HomeAgent` retries only when the request provably never reached the
+service: connect errors, connect timeouts and pool timeouts. It makes 3 attempts with
+full-jitter backoff (0.2 s base, 2 s cap), each bounded by a 5 s connect and pool timeout,
+so a black-holed service costs under 20 s. A read timeout or a 5xx is not retried,
+because the action may already have happened.
+
+**Unchanged:** the Reflex clients (a 500 ms budget leaves no room to retry; PR 8 moves
+them), tool-argument retries (`TOOL_RETRIES`) and output retries.
 
 ### 7. Spend (#309)
 
@@ -360,10 +445,32 @@ Typed `FunctionToolset`s; schemas come from the function signatures.
 - `price` returns 0 for `vllm` responses. `on_unpriced="zero"` counts any other unpriced
   model at $0, and tokens still count.
 - `SpendLimitExceeded` is raised before a request. System 2 answers with today's budget
-  message; the Librarian logs it and skips the pass.
+  message, after what the turn already did when its ledger holds calls
+  (`ledger_reply` plus one budget sentence); the Librarian logs it and skips the pass.
+- The gate refuses every model request once the cap is reached, a $0 vLLM one included,
+  and a cap of 0 or less (the kill switch) refuses every one from the start.
 - The 80% alert stays a `NotificationPublisher` message, sent once per day.
 - The admin API reads `SpendLimits.status()`. `COST_DAILY_KEY` is retired.
 - PR 2 records Librarian spend through the existing `CostTracker` until this lands.
+- **Pricing.** `price` returns $0 for `vllm` and the genai-prices price for anything it
+  knows. A paid model genai-prices does not know is priced at the conservative fallback
+  of $3 per million input tokens and $15 per million output tokens, with one WARNING, so
+  an unpriced production model can never bypass the cap.
+- **Write failures.** The `RedisSpendStore` is wrapped so that a failed write after a
+  response logs and under-counts, instead of failing a turn that has already been
+  charged and replaying it. A failed read still refuses the request (fail closed).
+- **Exactly-once alert.** After each answered System 2 turn (a failed or ledger-answered
+  one included) and each Librarian call,
+  `SpendLimits.status()` is read. At or over 80% of the cap, the 80% alert is sent only
+  by the process that wins `SET alfred:spend:alert:{day} NX EX 172800`.
+- **Accepted bound.** The check before each request and the increment after it are not
+  one atomic step. Concurrent requests can overshoot the cap by at most the requests in
+  flight: one System 2 request plus up to `DECAY_MIGRATION_CONCURRENCY` (8) Librarian
+  requests, a few cents. A reservation ledger would
+  remove it; it is not worth its complexity at this scale.
+- The admin API keeps its JSON shape (`date`, `spend_usd`, `cap_usd`, `alert_sent`,
+  `request_count`, `avg_usd`), now built from `status()` and the alert marker.
+  `request_count` now counts model requests.
 
 ### 8. Confirmations and follow-up delivery (#306, #307)
 
@@ -581,7 +688,7 @@ what the PRs below it learned. Each PR:
 | 3 | `feat/langfuse-prompts` | component 9 (System 2, Librarian) | — | evals with repo defaults and with a Langfuse label |
 | 4 | `feat/session-history` | component 5 | — | evals; multi-turn tests |
 | 5 | `feat/deferred-approvals` | component 8 | #306, #307 | evals (lock goldens); approval tests |
-| 6 | `feat/turn-ledger-and-spend` | components 6, 7 | #304, #309 | failure-injection tests; evals |
+| 6 | `feat/turn-ledger-and-spend` | components 6, 6b, 7; lands right after PR 2 (owner, 2026-10-14) | #304, #309 | failure-injection tests; evals |
 | 7 | `chore/evals-inspect-provider` | component 13 (PR 7 part) | — | `alfred evals calibrate` agreement unchanged |
 | 8 | `feat/reflex-pydantic-ai` | component 12, Ollama removal | — | shadow replay comparison; after shadow week |
 

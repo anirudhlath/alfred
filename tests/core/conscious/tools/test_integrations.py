@@ -142,3 +142,27 @@ async def test_a_guest_is_offered_no_integration_tools() -> None:
     script = Script("hi")
     await _run(script, _adapter({}), who="guest")
     assert script.offered() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("side_effect", [True, False])
+async def test_a_tool_carries_its_capabilitys_side_effect_mark(side_effect: bool) -> None:
+    adapter = _adapter({})
+    adapter.get_capabilities.return_value = [
+        IntegrationCapability(
+            name="get_current",
+            description="Current weather",
+            params_schema=_WEATHER_SCHEMA,
+            side_effect=side_effect,
+        )
+    ]
+    with (
+        patch(
+            "core.conscious.tools.integrations.IntegrationRegistry.available",
+            return_value=["weather"],
+        ),
+        patch("core.conscious.tools.integrations.IntegrationRegistry.get", return_value=adapter),
+    ):
+        [tool] = await fetch_integration_tools()
+
+    assert tool.side_effect is side_effect

@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from core.conscious.cost import CostTracker
 from core.librarian.consolidator import Librarian
 from core.memory.context_index import ContextIndexManager
 from core.memory.embedding_backend import build_embedding_provider
@@ -21,12 +20,17 @@ from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.routines.store import RoutineStore
 from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
+from core.notifications.dispatcher import NotificationDispatcher
+from core.notifications.dnd import DNDChecker
+from core.notifications.publisher import NotificationPublisher
 from core.shutdown import teardown
 from shared.agents import resolve_model
 from shared.config import AlfredConfig, apply_model_env
 from shared.logging import configure_logging
 from shared.otel import init_tracing
 from shared.redis_streams import create_redis
+from shared.spend import build_spend_limits, local_clock
+from shared.usertime import last_user_timezone
 
 if TYPE_CHECKING:
     from shared.types import AioRedis
@@ -85,7 +89,15 @@ async def run() -> None:
             context_index=context_index,
             model=resolve_model("LIBRARIAN_MODEL", config.librarian_model),
             timeout_s=config.system2_timeout_s,
-            cost_tracker=CostTracker(redis=r, daily_cap_usd=config.daily_cost_cap_usd),
+            # The budget every process shares; the pass reads the user's zone first.
+            spend=build_spend_limits(
+                r, cap_usd=config.daily_cost_cap_usd, clock=local_clock(last_user_timezone)
+            ),
+            # The 80% alert is URGENT, so DND (and the calendar it would consult) never
+            # holds it back.
+            notifier=NotificationPublisher(
+                NotificationDispatcher(redis=r, dnd_checker=DNDChecker(r, calendar_adapter=None))
+            ),
             conflict_min_observations=config.conflict_min_observations,
             conflict_min_days=config.conflict_min_days,
             decay_migration_threshold=config.decay_migration_threshold,

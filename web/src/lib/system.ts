@@ -306,25 +306,25 @@ function capOf(cost: Overview["cost"]): number | null {
 /**
  * What the cap *does*, which is the only reason a cap is on screen at all:
  * `core/conscious/engine.py` returns the System-1 fallback saying precisely
- * this when `is_budget_exceeded()`. Copy, not data — it needs no field and it
+ * this when the daily budget is exhausted. Copy, not data — it needs no field and it
  * is true of every house — so it is dropped only when there is no cap for it
  * to be about.
  *
- * The handoff's `resets 00:00` is deliberately *not* here: `core/conscious/
- * cost.py` rolls the day on `datetime.now(UTC)`, so the window resets at UTC
- * midnight and `00:00` is false for every household that is not on it.
+ * The handoff's `resets 00:00` is deliberately *not* here. It was false while
+ * the day rolled at UTC midnight; `shared/spend.py` now rolls it at the user's
+ * own midnight, so the line could come back.
  */
 const AT_THE_CAP = "at the cap, the conscious mind declines and says so";
 
 /**
  * `$1.42 of $5.00` — the spend card's own line, and the money in one place.
- * `$1.42 · no cap set` when there is nothing to measure against, and the
- * server's own silence when it reported no spend at all: a house that has
- * spent nothing today sends `cost: null`, which is a fact about the day rather
- * than a missing read.
+ * `$1.42 · no cap set` when there is nothing to measure against, and
+ * `spend unavailable` when there is no amount to show: a house that has spent
+ * nothing today sends zeros, so `cost: null` means the server could not read
+ * the counter (and an overview never read has no cost either).
  */
 export function spendHeadline(cost: Overview["cost"]): string {
-  if (cost === null) return "no spend recorded today";
+  if (cost === null) return "spend unavailable";
   const spend = usd(finiteNumber(cost.spend_usd) ?? 0);
   const cap = capOf(cost);
   return cap === null ? `$${spend} · no cap set` : `$${spend} of $${usd(cap)}`;

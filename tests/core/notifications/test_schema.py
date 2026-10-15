@@ -46,7 +46,7 @@ class TestNotification:
             title="Budget",
             body="80% used",
             urgency=Urgency.URGENT,
-            source="cost_tracker",
+            source="spend",
             timestamp=datetime(2026, 3, 20, 12, 0, tzinfo=UTC),
         )
         data = n.model_dump_json()

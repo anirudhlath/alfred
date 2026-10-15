@@ -158,8 +158,9 @@ the harness's `DIR` and supports Docker and Podman only.
   which `up` forwards in every mode.
 - It sets `ALFRED_EVAL=1`. Redis then listens on the container interface with protected
   mode off and no persistence, which is how the published port reaches it. It also sets
-  `DAILY_COST_CAP_USD=1000000`, because a local model is priced at the default rate and
-  would trip the $5 cap mid-run. `--env` overrides either value.
+  `DAILY_COST_CAP_USD=1000000`. A vLLM response costs $0, but a run against a paid model,
+  or one the price registry does not know (charged the fallback rate), would otherwise
+  trip the $5 cap mid-run. `--env` overrides either value.
 - `ALFRED_HOME_SERVICE_DIR` picks which home-service checkout a build copies, in place of
   the sibling `../home-service`. The harness sets it to pin the version production runs. A
   path that does not exist is an error, never a clone.

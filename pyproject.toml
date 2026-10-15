@@ -29,6 +29,7 @@ dependencies = [
     "pydantic-ai-slim[openai,openrouter]==2.55.0",
     "pydantic-ai-harness==0.55.0",
     "jsonschema>=4.26",
+    "tenacity>=9.1,<10",
 ]
 
 [project.optional-dependencies]
@@ -40,7 +41,7 @@ dev = [
     "mypy>=2.3.1",
     "types-PyYAML>=6.0",
     "watchfiles>=1.0",
-    "fakeredis>=2.39.0",
+    "fakeredis[lua]>=2.39.0",
     "types-jsonschema>=4.26.0.20261006",
 ]
 integrations = [
@@ -70,7 +71,6 @@ evals = [
     "inspect-ai>=0.3.277,<0.4",
     "aiohttp>=3.14",
     "websockets>=16.0",
-    "tenacity>=9.1",  # evals/harness/judge.py catches its RetryError
 ]
 
 [project.scripts]

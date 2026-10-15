@@ -12,9 +12,11 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 
 from shared.agents import instrumentation, model_key, resolve_model, role_headers
 from shared.config import AlfredConfig, apply_model_env
+from shared.llm_http import RetryingTransport
 from shared.llm_roles import LIBRARIAN, LLM_ROLES, ROLE_HEADER, SYSTEM1, SYSTEM2
 from tests.llm_fakes import Script
 
@@ -123,6 +125,25 @@ def test_an_openrouter_string_resolves_with_its_key(no_provider_env: pytest.Monk
 
 
 @pytest.mark.parametrize(
+    ("env", "value"),
+    [
+        ("VLLM_BASE_URL", "vllm:gemma-x"),
+        ("OPENROUTER_API_KEY", "openrouter:vendor/model"),
+        ("OPENAI_API_KEY", "openai:model-x"),
+    ],
+)
+def test_an_openai_compatible_model_retries_in_the_transport_not_the_sdk(
+    no_provider_env: pytest.MonkeyPatch, env: str, value: str
+) -> None:
+    no_provider_env.setenv(env, "http://vllm.test:8000/v1" if env == "VLLM_BASE_URL" else "k")
+    model = resolve_model("SYSTEM2_MODEL", value)
+    # `openai:` resolves to the Responses API model; both carry the same AsyncOpenAI client.
+    assert isinstance(model, OpenAIChatModel | OpenAIResponsesModel)
+    assert model.client.max_retries == 0
+    assert isinstance(model.client._client._transport, RetryingTransport)
+
+
+@pytest.mark.parametrize(
     ("value", "missing"),
     [("vllm:gemma-x", "VLLM_BASE_URL"), ("openrouter:vendor/model", "OPENROUTER_API_KEY")],
 )
@@ -154,3 +175,24 @@ def test_the_legacy_fields_are_gone() -> None:
     config = AlfredConfig.from_env()
     gone = ("claude_api_key", "claude_model", "claude_max_tokens")
     assert not [f for f in gone if hasattr(config, f)]
+
+
+def test_another_provider_warns_once_that_it_keeps_the_sdks_retries(
+    no_provider_env: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    no_provider_env.setenv("OLLAMA_BASE_URL", "http://ollama.test:11434/v1")
+    with caplog.at_level(logging.WARNING, logger="shared.agents"):
+        model = resolve_model("SYSTEM2_MODEL", "ollama:model-x")
+    assert model is not None
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "ollama" in warnings[0] and "SDK's own retries" in warnings[0]
+
+
+def test_the_openai_compatible_providers_do_not_warn(
+    no_provider_env: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    no_provider_env.setenv("OPENAI_API_KEY", "k")
+    with caplog.at_level(logging.WARNING, logger="shared.agents"):
+        assert resolve_model("SYSTEM2_MODEL", "openai:model-x") is not None
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []

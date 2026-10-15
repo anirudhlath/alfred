@@ -38,11 +38,13 @@ class AppleHealthAdapter(Integration):
         return [
             IntegrationCapability(
                 name="get_sleep",
+                side_effect=False,
                 description="Get last night's sleep data",
                 params_schema={"type": "object", "properties": {}},
             ),
             IntegrationCapability(
                 name="get_activity",
+                side_effect=False,
                 description="Get today's activity data",
                 params_schema={"type": "object", "properties": {}},
             ),

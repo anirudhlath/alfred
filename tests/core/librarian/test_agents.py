@@ -1,11 +1,15 @@
-"""The Librarian's agents: typed output, the role header, retries and spend."""
+"""The Librarian's agents: typed output, the role header, retries and the budget."""
 
 from __future__ import annotations
 
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
+import fakeredis
 import pytest
 from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai_harness.spend import SpendEntry, SpendLimitExceeded
 
 from core.librarian.agents import (
     OUTPUT_RETRIES,
@@ -15,9 +19,12 @@ from core.librarian.agents import (
     pattern_instructions,
     resolve_instructions,
 )
-from shared.agents import model_key
 from shared.config import DEFAULT_SYSTEM2_TIMEOUT_S
+from shared.spend import build_spend_limits, local_clock
 from tests.llm_fakes import Script
+
+if TYPE_CHECKING:
+    from pydantic_ai_harness.spend import SpendLimits
 
 _ANALYSIS = {
     "entities": ["light.kitchen"],
@@ -51,7 +58,6 @@ async def test_a_request_carries_the_role_header_the_cap_and_the_instructions() 
         "1. kitchen on",
         LibrarianTask("ANALYSE", expected_items=1),
         max_tokens=300,
-        cost=None,
     )
 
     assert out == [ObservationAnalysis.model_validate(_ANALYSIS)]
@@ -69,7 +75,7 @@ async def test_output_mode_follows_the_model_profile(native: bool, mode: str) ->
     agents = build_librarian_agents(script.model)
 
     out = await agents.ask(
-        agents.analyse, "1. x", LibrarianTask("I", expected_items=1), max_tokens=300, cost=None
+        agents.analyse, "1. x", LibrarianTask("I", expected_items=1), max_tokens=300
     )
 
     assert out[0].semantic_key == "kitchen light on"
@@ -86,7 +92,6 @@ async def test_a_wrong_count_is_retried_once_with_the_expected_count() -> None:
         "1. a\n2. b",
         LibrarianTask("I", expected_items=2),
         max_tokens=300,
-        cost=None,
     )
 
     assert len(out) == 2
@@ -96,38 +101,35 @@ async def test_a_wrong_count_is_retried_once_with_the_expected_count() -> None:
     )
 
 
+def _limits(cap_usd: float = 5.0) -> SpendLimits[Any]:
+    return build_spend_limits(
+        fakeredis.FakeAsyncRedis(), cap_usd=cap_usd, clock=local_clock(lambda: "UTC")
+    )
+
+
+async def _counted(spend: SpendLimits[Any]) -> int:
+    (status,) = await spend.status()
+    return status.spent.requests
+
+
 @pytest.mark.asyncio
-async def test_spend_is_recorded_without_counting_a_request() -> None:
+async def test_every_model_request_is_counted_against_the_budget() -> None:
     script = Script([])
-    agents = build_librarian_agents(script.model)
-    cost = AsyncMock()
+    spend = _limits()
+    agents = build_librarian_agents(script.model, spend=spend)
 
-    await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500, cost=cost)
+    await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500)
 
-    cost.record_spend.assert_awaited_once()
-    args, kwargs = cost.record_spend.await_args
-    assert args[0] > 0 and args[1] > 0  # FunctionModel estimates usage when none is given
-    assert args[2] == model_key(script.model)
-    assert kwargs == {"count_request": False}
+    (status,) = await spend.status()
+    assert status.spent.requests == 1
+    assert status.spent.tokens > 0  # FunctionModel estimates usage when none is given
 
 
 @pytest.mark.asyncio
-async def test_a_failed_run_still_records_its_spend() -> None:
-    script = Script(RuntimeError("gateway down"))
-    agents = build_librarian_agents(script.model)
-    cost = AsyncMock()
-
-    with pytest.raises(RuntimeError, match="gateway down"):
-        await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500, cost=cost)
-
-    cost.record_spend.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_a_run_that_exhausts_its_retries_still_records_its_spend() -> None:
+async def test_a_run_that_exhausts_its_retries_counts_each_request() -> None:
     script = Script([_ANALYSIS], [_ANALYSIS])
-    agents = build_librarian_agents(script.model)
-    cost = AsyncMock()
+    spend = _limits()
+    agents = build_librarian_agents(script.model, spend=spend)
 
     with pytest.raises(UnexpectedModelBehavior):
         await agents.ask(
@@ -135,38 +137,58 @@ async def test_a_run_that_exhausts_its_retries_still_records_its_spend() -> None
             "1. a\n2. b",
             LibrarianTask("I", expected_items=2),
             max_tokens=300,
-            cost=cost,
         )
 
     assert script.call_count == 2
-    cost.record_spend.assert_awaited_once()
-    args, kwargs = cost.record_spend.await_args
-    assert args[0] > 0 and args[1] > 0
-    assert kwargs == {"count_request": False}
+    assert await _counted(spend) == 2
 
 
 @pytest.mark.asyncio
-async def test_a_failed_spend_write_keeps_the_result() -> None:
+async def test_a_spent_budget_refuses_the_request() -> None:
     script = Script([])
-    agents = build_librarian_agents(script.model)
-    cost = AsyncMock()
-    cost.record_spend.side_effect = ConnectionError("redis blip")
+    spend = _limits(cap_usd=1.0)
+    (status,) = await spend.status()
+    await spend.store.add_many(  # type: ignore[union-attr]
+        [SpendEntry(key=status.key, usd=Decimal(1), requests=1)]
+    )
+    agents = build_librarian_agents(script.model, spend=spend)
 
-    out = await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500, cost=cost)
+    with pytest.raises(SpendLimitExceeded):
+        await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500)
+
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_the_hook_runs_after_every_ask_even_a_failed_one() -> None:
+    hook = AsyncMock()
+    agents = build_librarian_agents(Script([], RuntimeError("gateway down")).model, after_ask=hook)
+
+    await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500)
+    with pytest.raises(RuntimeError, match="gateway down"):
+        await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500)
+
+    assert hook.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_failed_hook_keeps_the_result() -> None:
+    hook = AsyncMock(side_effect=ConnectionError("redis blip"))
+    agents = build_librarian_agents(Script([]).model, after_ask=hook)
+
+    out = await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500)
 
     assert out == []
-    cost.record_spend.assert_awaited_once()
+    hook.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_a_failed_spend_write_keeps_the_runs_own_exception() -> None:
-    script = Script(RuntimeError("gateway down"))
-    agents = build_librarian_agents(script.model)
-    cost = AsyncMock()
-    cost.record_spend.side_effect = ConnectionError("redis blip")
+async def test_a_failed_hook_keeps_the_runs_own_exception() -> None:
+    hook = AsyncMock(side_effect=ConnectionError("redis blip"))
+    agents = build_librarian_agents(Script(RuntimeError("gateway down")).model, after_ask=hook)
 
     with pytest.raises(RuntimeError, match="gateway down"):
-        await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500, cost=cost)
+        await agents.ask(agents.extract, "- obs", LibrarianTask("I"), max_tokens=500)
 
 
 def test_resolve_instructions_state_the_contradiction_threshold() -> None:
@@ -189,7 +211,7 @@ async def test_a_request_carries_the_configured_timeout() -> None:
     agents = build_librarian_agents(script.model, timeout_s=12.5)
 
     await agents.ask(
-        agents.analyse, "1. on", LibrarianTask("ANALYSE", expected_items=1), max_tokens=9, cost=None
+        agents.analyse, "1. on", LibrarianTask("ANALYSE", expected_items=1), max_tokens=9
     )
 
     assert script.settings()["timeout"] == 12.5

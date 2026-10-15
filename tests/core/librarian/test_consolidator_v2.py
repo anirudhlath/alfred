@@ -5,15 +5,21 @@ from __future__ import annotations
 import asyncio
 import datetime
 import itertools
+import logging
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-import pytest
+    from pydantic_ai_harness.spend import SpendLimits
 
-from core.librarian.agents import ConflictItem
+import fakeredis
+import pytest
+from pydantic_ai_harness.spend import SpendEntry, SpendLimitExceeded
+
+from core.librarian.agents import ConflictItem, build_librarian_agents
 from core.librarian.consolidator import (
     Librarian,
     _group_by_entity_date,
@@ -22,7 +28,10 @@ from core.librarian.consolidator import (
 )
 from core.memory.schemas import EpisodicEntry, SignificanceScore
 from core.memory.vector_store import ContextMetadata, Range, SearchResult
+from core.notifications.publisher import NotificationPublisher
+from core.notifications.schema import Urgency
 from shared.config import DEFAULT_DECAY_MIGRATION_THRESHOLD, AlfredConfig
+from shared.spend import build_spend_limits, local_clock
 from tests.llm_fakes import Script
 
 _UTC = datetime.UTC
@@ -108,16 +117,108 @@ async def test_analyse_batch_fallback_on_llm_error() -> None:
     assert results == [{}, {}]
 
 
+def _budget(redis: Any, cap_usd: float = 10.0) -> SpendLimits[Any]:
+    """Today's budget on *redis*."""
+    return build_spend_limits(redis, cap_usd=cap_usd, clock=local_clock(lambda: "UTC"))
+
+
+async def _spend(spend: SpendLimits[Any], usd: str) -> None:
+    (status,) = await spend.status()
+    await spend.store.add_many(  # type: ignore[union-attr]
+        [SpendEntry(key=status.key, usd=Decimal(usd), requests=1)]
+    )
+
+
 @pytest.mark.asyncio
-async def test_librarian_spend_is_recorded_without_counting_requests() -> None:
-    script = Script([{"entities": [], "significance": {}, "semantic_key": "k"}])
+async def test_a_spent_budget_skips_the_pass_before_it_drains_anything(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    script = Script()
     librarian = _make_librarian(script=script)
-    librarian._cost = AsyncMock()
+    librarian._spend = _budget(fakeredis.FakeAsyncRedis())
+    await _spend(librarian._spend, "10")
+
+    with caplog.at_level(logging.WARNING, logger="core.librarian.consolidator"):
+        result = await librarian.consolidate()
+
+    assert result["skipped"] == "daily budget exhausted"
+    assert any("budget" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+    librarian._redis.rename.assert_not_awaited()  # type: ignore[attr-defined]
+    librarian._redis.lrange.assert_not_awaited()  # type: ignore[attr-defined]
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_cap_of_zero_skips_the_pass() -> None:
+    script = Script()
+    librarian = _make_librarian(script=script)
+    librarian._spend = _budget(fakeredis.FakeAsyncRedis(), cap_usd=0.0)
+
+    result = await librarian.consolidate()
+
+    assert result["skipped"] == "daily budget exhausted"
+    librarian._redis.lrange.assert_not_awaited()  # type: ignore[attr-defined]
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_budget_spent_mid_pass_skips_the_rest_and_keeps_the_scratchpad(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    librarian = _make_librarian(script=Script())
+    librarian._reindex_routines = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    librarian._drain_scratchpad = AsyncMock(return_value=["obs"])  # type: ignore[method-assign]
+    librarian._extract_episodic_entries = AsyncMock(  # type: ignore[method-assign]
+        side_effect=SpendLimitExceeded("Budget 'daily' exhausted for this day")
+    )
+
+    with caplog.at_level(logging.WARNING, logger="core.librarian.consolidator"):
+        result = await librarian.consolidate()
+
+    assert result["skipped"] == "daily budget exhausted"
+    assert any("budget" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+    # The processing key survives, so the next pass picks the observations up again.
+    librarian._redis.delete.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_a_spent_budget_is_not_swallowed_by_a_steps_fallback() -> None:
+    script = Script()
+    librarian = _make_librarian(script=script)
+    spend = _budget(fakeredis.FakeAsyncRedis())
+    await _spend(spend, "10")
+    librarian._agents = build_librarian_agents(script.model, spend=spend)
+
+    with pytest.raises(SpendLimitExceeded):
+        await librarian._analyse_batch(["event"])
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_each_librarian_call_checks_the_alert() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    spend = _budget(redis)
+    await _spend(spend, "8.5")
+    dispatcher = AsyncMock()
+    notifier = NotificationPublisher(dispatcher)
+    script = Script([{"entities": [], "significance": {}, "semantic_key": "k"}])
+    librarian = Librarian(
+        redis=redis,
+        episodic_memory=AsyncMock(),
+        routine_store=MagicMock(),
+        significance_scorer=AsyncMock(),
+        context_index=AsyncMock(),
+        model=script.model,
+        spend=spend,
+        notifier=notifier,
+    )
 
     await librarian._analyse_batch(["event"])
 
-    librarian._cost.record_spend.assert_awaited_once()
-    assert librarian._cost.record_spend.await_args.kwargs == {"count_request": False}
+    dispatcher.dispatch.assert_awaited_once()
+    (notification,) = dispatcher.dispatch.await_args.args
+    assert notification.title == "Budget Warning"
+    assert notification.urgency is Urgency.URGENT
 
 
 @pytest.mark.asyncio
@@ -2103,6 +2204,55 @@ async def test_compression_summarises_only_the_originals_that_moved() -> None:
     assert "kitchen light on" in summary
     assert "kitchen light dimmed" in summary
     assert "kitchen light off" not in summary
+
+
+@pytest.mark.asyncio
+async def test_a_budget_spent_at_compression_still_writes_the_fallback_summary() -> None:
+    """The originals have already left hot, so a refused summary call must not lose the
+    summary: no later pass would ever see them again."""
+    script = Script()
+    episodic_memory = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory)
+    spend = _budget(fakeredis.FakeAsyncRedis())
+    await _spend(spend, "10")
+    librarian._agents = build_librarian_agents(script.model, spend=spend)
+
+    migrated = await librarian._compress_and_migrate(
+        _kitchen_group("kitchen light on", "kitchen light off")
+    )
+
+    assert migrated == 2
+    assert episodic_memory.copy_to_cold_and_remove.await_count == 2
+    librarian._cold_store.add.assert_awaited_once()
+    summary = librarian._cold_store.add.await_args.kwargs["content"]
+    assert summary == "kitchen light on | kitchen light off"
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_budget_spent_during_decay_summarises_every_group_it_moved() -> None:
+    script = Script()
+    grouped = []
+    for i in range(3):
+        for half in ("a", "b"):
+            entry = _make_decay_search_result(
+                entry_id=f"group-{i}-{half}", age_days=31, significance=0.05
+            )
+            entry.metadata.entities = f"light.l{i}"
+            grouped.append(entry)
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.select = AsyncMock(return_value=grouped)
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    spend = _budget(fakeredis.FakeAsyncRedis())
+    await _spend(spend, "10")
+    librarian._agents = build_librarian_agents(script.model, spend=spend)
+
+    migrated = await librarian._apply_decay()
+
+    assert migrated == 6
+    assert librarian._cold_store.add.await_count == 3
+    assert script.call_count == 0
 
 
 @pytest.mark.asyncio

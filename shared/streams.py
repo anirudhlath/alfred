@@ -31,6 +31,16 @@ DND_STATE_KEY = "alfred:memory:dnd"
 DEFERRED_NOTIFICATIONS_KEY = "alfred:notifications:deferred"
 NOTIFICATION_DISPATCH_STREAM = "alfred:notifications:dispatch"
 DEVICE_TOKENS_KEY = "alfred:push:devices"
+# Turns the Conscious Engine gave up on (permanent failure, deliveries exhausted, or
+# redelivered past the replay window): entry id, event, error, deliveries, reason.
+DEAD_LETTER_STREAM = "alfred:conscious:dead_letters"
+# + UserRequest.event_id -> set (with a TTL) once that request's answer is published and
+# before its entry is ACKed, so a redelivery after a crash in between answers nothing.
+ANSWERED_KEY = "alfred:conscious:answered:{}"
+# + UserRequest.event_id -> LIST of JSON {tool, args, status}, one per side-effecting
+# tool call the turn made, written before the call and updated after it (with a TTL), so
+# a turn that fails or is redelivered after acting answers from it instead of acting twice.
+EFFECTS_KEY = "alfred:conscious:effects:{}"
 
 # Phase 3: Memory
 VOICEPRINT_KEY = "alfred:identity:voiceprint"
@@ -65,9 +75,15 @@ OBSERVED_ENTITY_PREFIX = "alfred:observer:seen:"
 LAST_KNOWN_STATE_KEY = "alfred:reflex:last_known_state"
 AVAILABILITY_DECISION_PREFIX = "alfred:reflex:returned:"
 
-# Phase 3: Runtime config + cost
+# Phase 3: Runtime config
 RUNTIME_CONFIG_KEY = "alfred:config:runtime"
-COST_DAILY_KEY = "alfred:cost:daily"
+
+# Spend (shared.spend). RedisSpendStore keeps one hash per budget window under
+# `{SPEND_PREFIX}:<budget>|<window>|<scope>|<bucket>` — the braces are a hash tag the store
+# adds itself, so the prefix carries none. The alert marker (+ the budget day, SET NX
+# EX 172800) makes the 80% alert fire once a day across every process.
+SPEND_PREFIX = "alfred:spend"
+SPEND_ALERT_KEY = "alfred:spend:alert:{}"
 
 # Phase 3: Integration registry
 INTEGRATION_REGISTRY_KEY = "alfred:integration_registry"

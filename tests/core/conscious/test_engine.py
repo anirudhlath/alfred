@@ -4,18 +4,23 @@ from __future__ import annotations
 
 import datetime as _dt
 from contextlib import contextmanager
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
+import fakeredis
 import pytest
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.usage import RequestUsage
+from pydantic_ai_harness.spend import SpendEntry
 
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.agent import REQUEST_LIMIT, build_system2_agent, system2_toolsets
 from core.conscious.context_assembler import ContextAssembler
+from core.conscious.effects import Effect, EffectLedger, ledger_reply
 from core.conscious.engine import (
+    BUDGET_AFTER_ACTING,
     BUDGET_REPLY,
     DELIBERATING_REPLY,
     NOT_CONFIGURED_REPLY,
@@ -28,13 +33,15 @@ from core.conscious.tools.catalog import TOOL_RETRIES
 from core.memory.schemas import RoutineSpec
 from core.memory.vector_store import ContextMetadata, SearchResult
 from core.reflex.tool_registry import ToolInfo
-from shared.agents import model_key
 from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
-from tests.core.conscious.helpers import identity
+from shared.spend import build_spend_limits
+from tests.core.conscious.helpers import identity, mock_redis
 from tests.llm_fakes import Script, tool_call
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from pydantic_ai_harness.spend import SpendLimits
 
 
 @pytest.fixture(autouse=True)
@@ -61,21 +68,20 @@ def _request(**overrides: Any) -> UserRequest:
 
 def _deps(script: Script | None = None, *, who: str = "sir", **overrides: Any) -> ConsciousDeps:
     """Mocked services around a real System 2 agent; no script means no model."""
-    redis = AsyncMock()
+    redis = mock_redis()
     redis.get = AsyncMock(return_value=None)
     identity_gate = MagicMock()
     identity_gate.resolve.return_value = identity(who)  # type: ignore[arg-type]
     session_mgr = AsyncMock()
     session_mgr.get_or_create.return_value = {"channel": "web_pwa", "history": []}
-    cost = AsyncMock()
-    cost.is_budget_exceeded.return_value = False
     registry = AsyncMock()
     registry.get_tools.return_value = []
+    spend = overrides.pop("spend", None) or _limits()
     fields: dict[str, Any] = {
         "redis": redis,
         "identity_gate": identity_gate,
         "session_mgr": session_mgr,
-        "cost_tracker": cost,
+        "spend": spend,
         "domain_router": AsyncMock(),
         "tool_registry": registry,
         "context_reader": AsyncMock(),
@@ -84,11 +90,32 @@ def _deps(script: Script | None = None, *, who: str = "sir", **overrides: Any) -
             assembler=ContextAssembler(),
             max_tokens=256,
             timeout_s=5.0,
+            spend=spend,
         ),
         "model": script.model if script is not None else None,
     }
     fields.update(overrides)
     return ConsciousDeps(**fields)
+
+
+def _limits(cap_usd: float = 5.0) -> SpendLimits[Any]:
+    """Today's budget on its own fakeredis, as every process builds it."""
+    noon = _dt.datetime(2026, 10, 14, 12, tzinfo=_dt.UTC)
+    return build_spend_limits(fakeredis.FakeAsyncRedis(), cap_usd=cap_usd, clock=lambda: noon)
+
+
+async def _spend(deps: ConsciousDeps, usd: str) -> None:
+    """Put *usd* on today's counter, as an earlier turn would have."""
+    (status,) = await deps.spend.status()
+    await deps.spend.store.add_many(  # type: ignore[union-attr]
+        [SpendEntry(key=status.key, usd=Decimal(usd), requests=1)]
+    )
+
+
+async def _counted(deps: ConsciousDeps) -> tuple[int, int]:
+    """Today's model requests and tokens."""
+    (status,) = await deps.spend.status()
+    return status.spent.requests, status.spent.tokens
 
 
 def _info(name: str) -> ToolInfo:
@@ -187,20 +214,51 @@ async def test_no_model_answers_not_configured() -> None:
     response = await ConsciousEngine(deps=deps).process_request(_request())
 
     assert response.text == NOT_CONFIGURED_REPLY
-    deps.cost_tracker.record_spend.assert_not_awaited()  # type: ignore[attr-defined]
+    assert await _counted(deps) == (0, 0)
 
 
 @pytest.mark.asyncio
 async def test_an_exceeded_budget_answers_without_a_run() -> None:
     script = Script("never sent")
     deps = _deps(script)
-    deps.cost_tracker.is_budget_exceeded.return_value = True  # type: ignore[attr-defined]
+    await _spend(deps, "5")
 
     response = await ConsciousEngine(deps=deps).process_request(_request())
 
     assert (response.text, response.mood) == (BUDGET_REPLY, "concerned")
     assert script.call_count == 0
     deps.session_mgr.get_or_create.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cap", [0.0, -1.0])
+async def test_a_cap_of_zero_or_less_refuses_every_turn(cap: float) -> None:
+    script = Script("never sent")
+    deps = _deps(script, spend=_limits(cap))
+
+    response = await ConsciousEngine(deps=deps).process_request(_request())
+
+    assert (response.text, response.mood) == (BUDGET_REPLY, "concerned")
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_budget_spent_mid_run_ends_the_turn_with_the_budget_reply() -> None:
+    """The first response spends past the cap, so the next request is refused."""
+    registry = AsyncMock()
+    registry.get_tools.return_value = [_info("home.get_lights")]
+    costly = tool_call("home_get_lights", {"entity_id": "light.desk"})
+    costly.usage = RequestUsage(input_tokens=2_000_000)  # $6 at the fallback rate
+    script = Script(costly, "never sent")
+    deps = _deps(script, tool_registry=registry, domain_router=_router())
+
+    response = await ConsciousEngine(deps=deps).process_request(_request())
+
+    assert (response.text, response.mood) == (BUDGET_REPLY, "concerned")
+    assert script.call_count == 1
+    assert response.actions_taken == ["home.get_lights"]
+    assert await _counted(deps) == (1, 2_000_000)
+    deps.session_mgr.append_turn.assert_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -218,7 +276,7 @@ async def test_the_request_limit_ends_the_turn_with_the_deliberating_reply() -> 
     assert response.text == DELIBERATING_REPLY
     assert script.call_count == REQUEST_LIMIT
     assert response.actions_taken == ["home.get_lights"] * REQUEST_LIMIT
-    deps.cost_tracker.record_spend.assert_awaited_once()  # type: ignore[attr-defined]
+    assert (await _counted(deps))[0] == REQUEST_LIMIT
 
 
 @pytest.mark.asyncio
@@ -230,7 +288,7 @@ async def test_blank_replies_past_the_output_retries_end_with_the_deliberating_r
 
     assert response.text == DELIBERATING_REPLY
     assert script.call_count == 3
-    deps.cost_tracker.record_spend.assert_awaited_once()  # type: ignore[attr-defined]
+    assert (await _counted(deps))[0] == 3
     deps.session_mgr.append_turn.assert_awaited()  # type: ignore[attr-defined]
 
 
@@ -247,7 +305,7 @@ async def test_a_tool_call_failing_past_its_retries_ends_with_the_deliberating_r
     assert script.call_count == TOOL_RETRIES + 1
     assert response.actions_taken == []
     deps.domain_router.route.assert_not_awaited()  # type: ignore[attr-defined]
-    deps.cost_tracker.record_spend.assert_awaited_once()  # type: ignore[attr-defined]
+    assert (await _counted(deps))[0] == TOOL_RETRIES + 1
 
 
 @pytest.mark.asyncio
@@ -257,29 +315,46 @@ async def test_a_provider_error_still_raises_so_the_request_is_retried() -> None
     with pytest.raises(ModelHTTPError):
         await ConsciousEngine(deps=deps).process_request(_request())
 
-    deps.cost_tracker.record_spend.assert_awaited_once()  # type: ignore[attr-defined]
     deps.session_mgr.append_turn.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
-async def test_a_failed_spend_write_still_returns_the_reply() -> None:
+async def test_a_failed_spend_write_still_returns_the_reply(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     deps = _deps(Script("Hello, sir."))
-    deps.cost_tracker.record_spend.side_effect = ConnectionError("redis blip")  # type: ignore[attr-defined]
+    store = deps.spend.store.inner  # type: ignore[union-attr]
+    store.add_many = AsyncMock(side_effect=ConnectionError("redis blip"))
 
-    response = await ConsciousEngine(deps=deps).process_request(_request())
+    with caplog.at_level("WARNING", logger="shared.spend"):
+        response = await ConsciousEngine(deps=deps).process_request(_request())
 
     assert response.text == "Hello, sir."
     deps.session_mgr.append_turn.assert_awaited()  # type: ignore[attr-defined]
+    assert any("Spend write failed" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_a_failed_run_records_its_spend_and_stores_no_turn() -> None:
+async def test_an_unreadable_budget_refuses_the_turn() -> None:
+    """Fail closed: a read that cannot answer raises, so the request is retried."""
+    script = Script("never sent")
+    deps = _deps(script)
+    store = deps.spend.store.inner  # type: ignore[union-attr]
+    store.get_many = AsyncMock(side_effect=ConnectionError("redis down"))
+
+    with pytest.raises(ConnectionError):
+        await ConsciousEngine(deps=deps).process_request(_request())
+
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_failed_run_stores_no_turn() -> None:
     deps = _deps(Script(RuntimeError("provider down")))
 
     with pytest.raises(RuntimeError, match="provider down"):
         await ConsciousEngine(deps=deps).process_request(_request())
 
-    deps.cost_tracker.record_spend.assert_awaited_once()  # type: ignore[attr-defined]
     deps.session_mgr.append_turn.assert_not_awaited()  # type: ignore[attr-defined]
 
 
@@ -345,9 +420,7 @@ async def test_spend_and_the_scratchpad_note_use_the_runs_token_counts() -> None
 
     await ConsciousEngine(deps=deps).process_request(_request(content="Turn on the lights"))
 
-    deps.cost_tracker.record_spend.assert_awaited_once_with(  # type: ignore[attr-defined]
-        100, 20, model_key(script.model)
-    )
+    assert await _counted(deps) == (1, 120)
     note = deps.redis.lpush.await_args.args[1]  # type: ignore[attr-defined]
     assert "[conscious] user='Turn on the lights' → 10 chars" in note
     assert note.endswith("(actions=none, tokens=100+20)")
@@ -668,3 +741,64 @@ async def test_process_request_injects_routine_hint() -> None:
 
     assert "[routine-suggestion]" in script.instructions()
     assert "evening_dim" in script.instructions()
+
+
+# ── a turn answered from its side-effect ledger (#304) ───────────────────────
+
+
+async def test_record_partial_turn_appends_the_turn_to_the_session() -> None:
+    deps = _deps()
+    engine = ConsciousEngine(deps=deps)
+    request = _request(content="turn on the porch light")
+
+    await engine.record_partial_turn(request, "I did some of it, sir.")
+
+    assert deps.session_mgr.append_turn.await_args_list == [  # type: ignore[attr-defined]
+        call("sess-1", "user", "turn on the porch light"),
+        call("sess-1", "assistant", "I did some of it, sir."),
+    ]
+
+
+async def test_record_partial_turn_logs_rather_than_raises_a_session_failure() -> None:
+    deps = _deps()
+    deps.session_mgr.append_turn.side_effect = ConnectionError("gone")  # type: ignore[attr-defined]
+
+    await ConsciousEngine(deps=deps).record_partial_turn(_request(), "partial")
+
+
+@pytest.mark.asyncio
+async def test_every_reply_names_the_request_it_answers() -> None:
+    """A channel matches a response to its own request by ``in_reply_to`` (I3)."""
+    request = _request()
+    answered = await ConsciousEngine(deps=_deps(Script("Hi, sir."))).process_request(request)
+    unconfigured = await ConsciousEngine(deps=_deps()).process_request(request)
+    refused = await ConsciousEngine(deps=_deps(Script("x"), spend=_limits(0))).process_request(
+        request
+    )
+    failed = ConsciousEngine.failure_reply(request, "sorry")
+
+    assert {r.in_reply_to for r in (answered, unconfigured, refused, failed)} == {request.event_id}
+
+
+@pytest.mark.asyncio
+async def test_a_budget_spent_after_acting_says_what_was_done() -> None:
+    """m5: the light went on, then the budget ran out; the reply must say both."""
+    redis = fakeredis.FakeAsyncRedis()
+    registry = AsyncMock()
+    registry.get_tools.return_value = [_info("home.light_turn_on")]
+    costly = tool_call("home_light_turn_on", {"entity_id": "light.porch"})
+    costly.usage = RequestUsage(input_tokens=2_000_000)  # $6 at the fallback rate
+    script = Script(costly, "never sent")
+    deps = _deps(script, redis=redis, tool_registry=registry, domain_router=_router())
+    request = _request()
+
+    response = await ConsciousEngine(deps=deps).process_request(request)
+
+    effects = await EffectLedger(redis).read(request.event_id)
+    assert effects == [Effect("home.light_turn_on", {"entity_id": "light.porch"}, "ok")]
+    assert response.text == f"{ledger_reply(effects)} {BUDGET_AFTER_ACTING}"
+    assert BUDGET_AFTER_ACTING == (
+        "We've reached the daily budget, so I'll need to defer complex requests until tomorrow."
+    )
+    assert response.mood == "concerned"
+    assert response.actions_taken == ["home.light_turn_on"]

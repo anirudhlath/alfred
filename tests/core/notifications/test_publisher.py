@@ -29,7 +29,7 @@ class TestPublish:
             title="Budget Warning",
             body="80% consumed",
             urgency=Urgency.URGENT,
-            source="cost_tracker",
+            source="spend",
         )
         dispatcher.dispatch.assert_called_once()
         notification = dispatcher.dispatch.call_args[0][0]

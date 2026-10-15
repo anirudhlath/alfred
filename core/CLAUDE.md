@@ -71,12 +71,14 @@ graph LR
 
 One Pydantic AI agent per request (`agent.py`); see `docs/llm.md`.
 
-- `engine.py` — one turn: budget check → identity/session → involuntary recall → `TurnDeps` → agent run → spend, session, scratchpad note
+- `engine.py` — one turn: budget check → identity/session → involuntary recall → `TurnDeps` → agent run → session, scratchpad note (the agent's `SpendLimits` counts spend)
+- `runner.py` — `process_request_entry()`: one delivery of one request, live or redelivered (`reclaim_due`); answers once (answered marker), caps at `MAX_DELIVERIES`, answers expired and exhausted turns with `FAILED_REPLY` and dead-letters them
+- `failures.py` — `classify()` (permanent vs transient), `dead_letter()`, `FAILED_REPLY`, `MAX_DELIVERIES`
+- `effects.py` — the side-effect ledger: `RecordEffects` capability, `EffectLedger`, `ledger_reply()`; a toolset marks a side-effecting tool with `SIDE_EFFECT` in its `ToolDefinition` metadata
 - `agent.py` — `build_system2_agent()`, `system2_toolsets()` (priority order), `REQUEST_LIMIT`
 - `tools/` — the catalog and its toolsets; every tool is named by `tools/names.wire_name`
 - `memory_tools.py` — `recall_memories()`, `get_live_state()`: the memory toolset's bodies
 - `context_assembler.py` — the instructions: identity, involuntary recall, integrations available, routine hint (no tool list)
-- `cost.py` — Daily cap tracking, 80% alert via NotificationPublisher
 - `identity.py` — Signal phone + local-claim trust (confidence=0.7) for web_pwa, voice, and ios channels
 - `session.py` — Redis-backed sessions, 30min timeout
 - `prompts/` — System prompt templates

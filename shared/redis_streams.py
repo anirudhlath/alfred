@@ -14,6 +14,7 @@ used by blocking stream readers — see ``create_redis`` below.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 import redis.asyncio as aioredis
@@ -154,12 +155,19 @@ def is_replayable(
     answering a question asked hours ago, is worse than missing it. An id we cannot
     parse is treated as too old (fail closed).
     """
-    raw = entry_id.decode() if isinstance(entry_id, bytes) else entry_id
-    try:
-        created_ms = int(raw.split("-", 1)[0])
-    except ValueError:
+    created_ms = entry_ms(entry_id)
+    if created_ms is None:
         return False
     return now_ms - created_ms <= max_age_ms
+
+
+def entry_ms(entry_id: bytes | str) -> int | None:
+    """When Redis added the entry: the ``<unix-ms>`` half of its id, or None if unparseable."""
+    raw = entry_id.decode() if isinstance(entry_id, bytes) else entry_id
+    try:
+        return int(raw.split("-", 1)[0])
+    except ValueError:
+        return None
 
 
 async def reclaim_replayable(
@@ -197,3 +205,70 @@ async def reclaim_replayable(
     if replayable:
         logger.info("Reclaimed {} pending entries on '{}'", len(replayable), stream)
     return replayable
+
+
+@dataclass(frozen=True)
+class Redelivery:
+    """A pending entry claimed for another try."""
+
+    entry_id: bytes | str
+    fields: dict[bytes | str, bytes | str]
+    delivery: int  # deliveries including this one
+
+
+async def reclaim_due(
+    redis: AioRedis,
+    stream: str,
+    group: str,
+    consumer: str,
+    *,
+    base_idle_ms: int = 15_000,
+    count: int = 10,
+) -> list[Redelivery]:
+    """Claim the pending entries whose backoff has elapsed, counting their deliveries.
+
+    Redis keeps each pending entry's ``times_delivered``; an entry delivered *n* times is
+    due once it has been idle ``base_idle_ms * 2 ** (n - 1)`` (15 s, then 30 s). Each due
+    entry is ``XCLAIM``ed with that same threshold as ``min_idle_time``, so a concurrent
+    claimer cannot take it twice, and the claim itself counts the new delivery.
+
+    An entry trimmed from the stream leaves the pending list: Redis 7 drops it inside
+    ``XCLAIM``; an older server hands back a nil entry, which is ACKed here. A Redis
+    error is logged and answered with ``[]``, like ``reclaim_stale``.
+    """
+    try:
+        # count=10 is enough for one user: the single sequential consumer holds at most the
+        # requests that failed in the last few minutes, and a person rarely has more than a
+        # few unanswered at once. Beyond 10, XPENDING reads from the head, so the newer
+        # entries wait until older ones leave; by then they may be past the replay window
+        # and get FAILED_REPLY rather than a retry, which still answers each one once.
+        pending: Any = await redis.xpending_range(stream, group, min="-", max="+", count=count)
+    except Exception as exc:
+        logger.warning("XPENDING failed on '{}' ({}) — skipping redelivery", stream, exc)
+        return []
+    due: list[Redelivery] = []
+    for item in pending:
+        entry_id = item["message_id"]
+        delivered = int(item["times_delivered"])
+        threshold = base_idle_ms * 2 ** max(delivered - 1, 0)
+        if int(item["time_since_delivered"]) < threshold:
+            continue
+        try:
+            claimed: Any = await redis.xclaim(
+                stream, group, consumer, min_idle_time=threshold, message_ids=[entry_id]
+            )
+            if not claimed:
+                continue  # another consumer claimed it first, or Redis dropped it
+            fields = claimed[0][1]
+            if not fields:
+                await redis.xack(stream, group, entry_id)
+                continue
+        except Exception as exc:
+            # Whatever was claimed already is still returned, or it would wait out a
+            # longer backoff for nothing.
+            logger.warning("XCLAIM failed on '{}' ({}) — retrying next pass", stream, exc)
+            break
+        due.append(Redelivery(entry_id=entry_id, fields=fields, delivery=delivered + 1))
+    if due:
+        logger.info("Reclaimed {} pending entries on '{}' for redelivery", len(due), stream)
+    return due

@@ -4,7 +4,9 @@ The Librarian replays the scratchpad, extracts episodic entries,
 updates semantic memory (preferences + profile), detects patterns
 for procedural memory, and applies decay to old entries.
 
-LLM calls go through the agents in core/librarian/agents.py, on LIBRARIAN_MODEL.
+LLM calls go through the agents in core/librarian/agents.py, on LIBRARIAN_MODEL, under
+the process's daily budget: a spent budget skips the pass (``SpendLimitExceeded`` is never
+taken by a step's fallback), and the scratchpad waits for the next one.
 Atomic file writes: write to .tmp then os.rename() for memory files.
 On failure, the scratchpad accumulates — memory files never left partial.
 """
@@ -12,12 +14,15 @@ On failure, the scratchpad accumulates — memory files never left partial.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
+
+from pydantic_ai_harness.spend import SpendLimitExceeded
 
 from core.librarian.agents import (
     ANALYSE_INSTRUCTIONS,
@@ -39,24 +44,27 @@ from core.memory.schemas import (
 )
 from core.memory.vector_store import Range
 from shared.config import DEFAULT_DECAY_MIGRATION_THRESHOLD, DEFAULT_SYSTEM2_TIMEOUT_S
+from shared.spend import ALERT_SOURCE, alert_if_needed
 from shared.streams import LIBRARIAN_QUEUE, LIBRARIAN_STATUS_KEY
 from shared.usertime import get_user_timezone
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
+    from pydantic_ai_harness.spend import SpendLimits
 
-    from core.conscious.cost import CostTracker
     from core.librarian.agents import ConflictItem
     from core.memory.context_index import ContextIndexManager
     from core.memory.episodic.memory import EpisodicMemory
     from core.memory.routines.store import RoutineStore
     from core.memory.significance import SignificanceScorer
     from core.memory.vector_store import SearchResult
+    from core.notifications.publisher import NotificationPublisher
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PREFERENCES_DIR = str(_preferences_dir())
+_BUDGET_SKIPPED: dict[str, Any] = {"entries_processed": 0, "skipped": "daily budget exhausted"}
 _DEFAULT_PROFILE_DIR = str(_profile_dir())
 
 # migration_pressure()'s ceiling: its age factor caps here and every other term subtracts.
@@ -208,7 +216,8 @@ class Librarian:
         profile_dir: str = _DEFAULT_PROFILE_DIR,
         model: Model | None = None,
         timeout_s: float = DEFAULT_SYSTEM2_TIMEOUT_S,
-        cost_tracker: CostTracker | None = None,
+        spend: SpendLimits[Any] | None = None,
+        notifier: NotificationPublisher | None = None,
         conflict_min_observations: int = 5,
         conflict_min_days: int = 14,
         decay_migration_threshold: float = DEFAULT_DECAY_MIGRATION_THRESHOLD,
@@ -230,10 +239,18 @@ class Librarian:
         self._profile_dir = Path(profile_dir)
         # No model: every LLM step takes its fallback (heuristic significance,
         # concatenated summaries, no preferences or patterns).
+        self._spend = spend
         self._agents = (
-            build_librarian_agents(model, timeout_s=timeout_s) if model is not None else None
+            build_librarian_agents(
+                model,
+                timeout_s=timeout_s,
+                spend=spend,
+                after_ask=self._alert if spend is not None else None,
+            )
+            if model is not None
+            else None
         )
-        self._cost = cost_tracker
+        self._send_alert = notifier.urgent(ALERT_SOURCE) if notifier else None
         self._conflict_min_observations = conflict_min_observations
         self._conflict_min_days = conflict_min_days
         self._decay_migration_threshold = decay_migration_threshold
@@ -246,6 +263,20 @@ class Librarian:
         self._indexed_routine_content: dict[str, str] = {}
 
     _PROCESSING_KEY = f"{LIBRARIAN_QUEUE}:processing"
+
+    async def _alert(self) -> None:
+        """After each call: today's 80% alert, if this process is the one to send it."""
+        if self._spend is not None:
+            await alert_if_needed(self._spend, self._redis, self._send_alert)
+
+    async def _budget_spent(self) -> bool:
+        """Whether today's budget is gone, read before a pass starts (fails closed)."""
+        if self._spend is None or self._agents is None:
+            return False
+        # The budget day is the user's: refresh the zone its clock reads.
+        with contextlib.suppress(Exception):
+            await get_user_timezone(self._redis)
+        return await self._spend.exhausted()
 
     async def _drain_scratchpad(self) -> list[str]:
         """Atomically drain the scratchpad queue.
@@ -293,8 +324,9 @@ class Librarian:
                 numbered,
                 LibrarianTask(ANALYSE_INSTRUCTIONS, expected_items=len(summaries)),
                 max_tokens=max(300, 150 * len(summaries)),
-                cost=self._cost,
             )
+        except SpendLimitExceeded:
+            raise
         except Exception as exc:
             logger.warning("Batch analysis failed: %s", exc)
             return [{} for _ in summaries]
@@ -379,8 +411,9 @@ class Librarian:
                 user_content,
                 LibrarianTask(resolve_instructions(conflict_min_observations, conflict_min_days)),
                 max_tokens=800,
-                cost=self._cost,
             )
+        except SpendLimitExceeded:
+            raise
         except Exception as exc:
             logger.warning("Conflict resolution failed: %s", exc)
             return []
@@ -456,7 +489,6 @@ class Librarian:
                 summaries,
                 LibrarianTask(EXTRACT_INSTRUCTIONS),
                 max_tokens=500,
-                cost=self._cost,
             )
             if not preferences:
                 return 0
@@ -496,6 +528,8 @@ class Librarian:
             self._write_semantic_file(learned_path, updated_content)
             return 1
 
+        except SpendLimitExceeded:
+            raise
         except Exception as exc:
             logger.warning("Semantic memory update failed: %s", exc)
         return 0
@@ -506,7 +540,8 @@ class Librarian:
         Originals move first, with a compressed="yes" marker. One that fails stays hot
         and is grouped again on the next pass, so the summary covers only the ones that
         moved — summarising it now would summarise it twice. Calls LLM to generate a
-        summary + semantic_key; falls back to concatenation with no model or on failure.
+        summary + semantic_key; falls back to concatenation with no model or on failure,
+        a spent budget included (the originals have moved; no later pass would see them).
         Writes the summary to cold store directly (not via EpisodicMemory). A summary
         that fails to write loses nothing: the originals are in cold with their own
         vectors.
@@ -553,11 +588,12 @@ class Librarian:
                     group_text,
                     LibrarianTask(COMPRESS_INSTRUCTIONS),
                     max_tokens=200,
-                    cost=self._cost,
                 )
                 summary_text = compressed.summary
                 semantic_key_text = compressed.semantic_key
             except Exception as exc:
+                # A spent budget included: the originals have already moved, so the free
+                # fallback below must still write their summary.
                 logger.warning("Compression: LLM summarization failed: %s", exc)
 
         # Fallback: concatenate contents
@@ -749,8 +785,9 @@ class Librarian:
                     )
                 ),
                 max_tokens=1000,
-                cost=self._cost,
             )
+        except SpendLimitExceeded:
+            raise
         except Exception as exc:
             logger.warning("Pattern detection LLM call failed: %s", exc)
             return []
@@ -978,10 +1015,22 @@ class Librarian:
         await self._redis.hset(LIBRARIAN_STATUS_KEY, mapping={"next_run_at": at.isoformat()})
 
     async def consolidate(self) -> dict[str, Any]:
-        """Run one consolidation cycle.
+        """Run one consolidation cycle, or skip it when today's budget is spent.
 
         Returns a summary dict for logging/telemetry.
         """
+        try:
+            if await self._budget_spent():
+                logger.warning("Daily budget exhausted — skipping this Librarian pass")
+                return dict(_BUDGET_SKIPPED)
+            return await self._consolidate()
+        except SpendLimitExceeded as exc:
+            # Before the episodic writes, the processing key survives and the next pass
+            # replays it; after them, only the later steps are lost.
+            logger.warning("Daily budget spent mid-pass — skipping the rest of it: %s", exc)
+            return dict(_BUDGET_SKIPPED)
+
+    async def _consolidate(self) -> dict[str, Any]:
         logger.info("Librarian consolidation started")
 
         # 0. Ensure routines from YAML store are indexed for involuntary recall
