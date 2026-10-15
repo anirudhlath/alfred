@@ -704,8 +704,8 @@ The `DataSanitizer` (`sanitizer.py`) strips sensitive data from integration resp
 **Web Channel** (`core/channels/`):
 
 FastAPI + WebSocket server on port 8081. Receives user messages (text or audio) via
-WebSocket, publishes `UserRequest` to `alfred:user:requests`, waits for `AlfredResponse` on
-`alfred:user:responses`, and sends the response back. Supports voice input via the voice
+WebSocket, publishes `UserRequest` to `alfred:user:requests`, waits for the `AlfredResponse`
+on `alfred:user:responses` whose `in_reply_to` names that request, and sends it back. Supports voice input via the voice
 pipeline.
 
 **Admin API** (`core/channels/admin_api.py`):
@@ -847,7 +847,7 @@ graph LR
 | `ToolRegistration` | Microservices | Announces available tools | `service_name`, `service_endpoint`, `tools` |
 | `TriggerFired` | Trigger Engine | A trigger's conditions were met (no direct action) | `trigger_id`, `trigger_name`, `trigger_type`, `context` |
 | `UserRequest` | Interaction channels | Inbound user interaction (text/audio) | `channel`, `session_id`, `identity_claim`, `content_type`, `content` |
-| `AlfredResponse` | Conscious Engine | Outbound response to user | `channel`, `session_id`, `text`, `actions_taken`, `mood` |
+| `AlfredResponse` | Conscious Engine | Outbound response to user | `channel`, `session_id`, `text`, `actions_taken`, `mood`, `in_reply_to` (the answered request's `event_id`) |
 | `TriggerCreated` | Trigger Engine | A trigger was dynamically created | `trigger_type`, `name`, `conditions`, `action`, `one_shot` |
 | `ReflexObservation` | Reflex Runner, DomainRouter | Records what the reflex did — or saw and chose not to do (`action`/`result` are `None`) | `origin`, `trigger_event`, `action`, `result`, `decision_context` |
 

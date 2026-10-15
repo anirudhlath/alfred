@@ -43,15 +43,18 @@ Everything else in `.env.example` under **OPTIONAL** has a working default. In p
 
 ### Daily spend cap
 
-`DAILY_COST_CAP_USD` (default `5.0`) caps what System 2 and the Librarian spend on paid
-models in a day. One counter in Redis is shared by every process, and the day rolls over at
+`DAILY_COST_CAP_USD` (default `5.0`) caps what System 2 and the Librarian spend on models
+in a day. One counter in Redis is shared by every process, and the day rolls over at
 midnight in the user's timezone (the one the web client reports, else `ALFRED_TIMEZONE`,
-else UTC). You get one URGENT notification when spend reaches 80%, once a day. At the cap, paid
-requests are refused and System 2 answers with the budget message.
+else UTC). You get one URGENT notification when spend reaches 80%, once a day. At the cap,
+every model request is refused, a $0 vLLM one included, so System 2 answers with the
+budget message and the Librarian skips its passes until the day rolls over.
 
 - A model served by vLLM costs $0, so it never counts against the cap.
-- `0` or less is a kill switch: every paid request is refused. Use it to switch paid models
-  off without touching `SYSTEM2_MODEL`.
+- `0` or less is a kill switch: every model request is refused, vLLM's included, so System 2
+  answers every turn with the budget message and the Librarian does no work. It switches
+  the models off without touching `SYSTEM2_MODEL`; it is not a way to keep vLLM and drop
+  only paid models.
 - A value that is not a number, or is NaN or infinity, stops startup with an error naming
   the variable.
 - Requests in flight together can overshoot the cap by their own cost, a few cents.
