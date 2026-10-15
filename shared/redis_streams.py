@@ -155,12 +155,19 @@ def is_replayable(
     answering a question asked hours ago, is worse than missing it. An id we cannot
     parse is treated as too old (fail closed).
     """
-    raw = entry_id.decode() if isinstance(entry_id, bytes) else entry_id
-    try:
-        created_ms = int(raw.split("-", 1)[0])
-    except ValueError:
+    created_ms = entry_ms(entry_id)
+    if created_ms is None:
         return False
     return now_ms - created_ms <= max_age_ms
+
+
+def entry_ms(entry_id: bytes | str) -> int | None:
+    """When Redis added the entry: the ``<unix-ms>`` half of its id, or None if unparseable."""
+    raw = entry_id.decode() if isinstance(entry_id, bytes) else entry_id
+    try:
+        return int(raw.split("-", 1)[0])
+    except ValueError:
+        return None
 
 
 async def reclaim_replayable(
@@ -230,7 +237,11 @@ async def reclaim_due(
     error is logged and answered with ``[]``, like ``reclaim_stale``.
     """
     try:
-        # count=10 is plenty: one sequential consumer leaves at most a few entries pending.
+        # count=10 is enough for one user: the single sequential consumer holds at most the
+        # requests that failed in the last few minutes, and a person rarely has more than a
+        # few unanswered at once. Beyond 10, XPENDING reads from the head, so the newer
+        # entries wait until older ones leave; by then they may be past the replay window
+        # and get FAILED_REPLY rather than a retry, which still answers each one once.
         pending: Any = await redis.xpending_range(stream, group, min="-", max="+", count=count)
     except Exception as exc:
         logger.warning("XPENDING failed on '{}' ({}) — skipping redelivery", stream, exc)

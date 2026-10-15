@@ -9,6 +9,8 @@ fixed template instead of running again.
 from __future__ import annotations
 
 import json
+import time
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -33,14 +35,16 @@ from core.conscious.runner import process_request_entry
 from core.conscious.session import SessionManager
 from core.conscious.tools.attention import attention_toolset
 from core.conscious.tools.catalog import CatalogToolset
+from core.conscious.tools.integrations import IntegrationTool, IntegrationToolset
 from core.conscious.tools.registry import RegistryToolset
 from core.conscious.tools.triggers import TriggerToolset
+from core.integrations.base import IntegrationResult
 from core.reflex.tool_registry import ToolInfo
 from core.routing.domain_router import CONFIRMATION_REQUIRED_PREFIX
 from core.routing.pending import store_pending_action
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
-from shared.redis_streams import forward_range
+from shared.redis_streams import MAX_REPLAY_AGE_MS, forward_range
 from shared.spend import build_spend_limits, local_clock
 from shared.streams import (
     DEAD_LETTER_STREAM,
@@ -370,6 +374,135 @@ async def test_a_guest_refused_call_is_not_recorded() -> None:
     assert await EffectLedger(redis).read("req-1") == []
 
 
+# ── integration capabilities ────────────────────────────────────────────────
+
+
+_CREATE_EVENT = IntegrationTool(
+    name="integration_apple_calendar_create_event",
+    integration="apple_calendar",
+    capability="create_event",
+    description="[apple_calendar] Create a new calendar event",
+    schema={
+        "type": "object",
+        "properties": {"summary": {"type": "string"}},
+        "required": ["summary"],
+    },
+)
+_GET_UPCOMING = IntegrationTool(
+    name="integration_apple_calendar_get_upcoming",
+    integration="apple_calendar",
+    capability="get_upcoming",
+    description="[apple_calendar] Get events for the next N days",
+    schema={"type": "object", "properties": {}, "required": []},
+    side_effect=False,
+)
+
+
+def _calendar(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    adapter = MagicMock()
+    adapter.execute = AsyncMock(
+        return_value=IntegrationResult(
+            data={"created": True}, freshness=datetime.now(UTC), confidence=1.0
+        )
+    )
+    monkeypatch.setattr(
+        "core.conscious.tools.integrations.IntegrationRegistry.get", lambda _name: adapter
+    )
+    return adapter
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "recorded"),
+    [(_CREATE_EVENT, {"summary": "dentist"}, True), (_GET_UPCOMING, {}, False)],
+)
+async def test_integration_writes_are_recorded_and_reads_are_not(
+    monkeypatch: pytest.MonkeyPatch, tool: IntegrationTool, args: dict[str, Any], recorded: bool
+) -> None:
+    adapter = _calendar(monkeypatch)
+    redis = fakeredis.FakeAsyncRedis()
+    deps = make_deps(services=make_services(redis=redis), integration_tools=[tool])
+    script = Script(tool_call(tool.name, args), "ok")
+
+    await _recording_agent(script, IntegrationToolset()).run("go", deps=deps)
+
+    adapter.execute.assert_awaited_once()
+    expected = [Effect(tool.name, args, "ok")] if recorded else []
+    assert await EffectLedger(redis).read("req-1") == expected
+
+
+# ── the replay window, at the moment of acting ──────────────────────────────
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+async def test_a_side_effect_inside_the_replay_window_acts() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    router = _router()
+    deps = make_deps(
+        services=make_services(redis=redis, router=router),
+        registry_tools=[_info("home.lock_unlock")],
+        received_ms=_now_ms() - MAX_REPLAY_AGE_MS + 5_000,
+    )
+    script = Script(tool_call("home_lock_unlock", {"entity_id": "lock.front"}), "done")
+
+    await _recording_agent(script, RegistryToolset()).run("go", deps=deps)
+
+    router.route.assert_awaited_once()
+    assert [e.status for e in await EffectLedger(redis).read("req-1")] == ["ok"]
+
+
+async def test_a_side_effect_past_the_replay_window_is_refused_and_never_acts() -> None:
+    """A slow turn that reaches "unlock the door" five minutes after it was asked must not
+    unlock it; the model is told why, and nothing is recorded, since nothing happened."""
+    redis = fakeredis.FakeAsyncRedis()
+    router = _router()
+    deps = make_deps(
+        services=make_services(redis=redis, router=router),
+        registry_tools=[_info("home.lock_unlock")],
+        received_ms=_now_ms() - MAX_REPLAY_AGE_MS - 1_000,
+    )
+    script = Script(tool_call("home_lock_unlock", {"entity_id": "lock.front"}), "sorry")
+
+    await _recording_agent(script, RegistryToolset()).run("go", deps=deps)
+
+    router.route.assert_not_awaited()
+    assert script.outcomes(1) == ["failed"]
+    assert "more than 5 minutes ago" in script.returns(1)[0]
+    assert await EffectLedger(redis).read("req-1") == []
+    assert deps.actions_taken == []
+
+
+async def test_a_read_past_the_replay_window_still_runs() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    toolset, store = _triggers()
+    deps = make_deps(services=make_services(redis=redis), received_ms=_now_ms() - 3_600_000)
+    script = Script(tool_call("triggers_list_triggers", {}), "none")
+
+    await _recording_agent(script, toolset).run("go", deps=deps)
+
+    store.list_all.assert_awaited_once()
+    assert script.outcomes(1) != ["failed"]
+
+
+async def test_a_past_window_integration_write_never_reaches_the_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _calendar(monkeypatch)
+    deps = make_deps(
+        services=make_services(redis=fakeredis.FakeAsyncRedis()),
+        integration_tools=[_CREATE_EVENT],
+        received_ms=_now_ms() - MAX_REPLAY_AGE_MS - 1_000,
+    )
+    script = Script(tool_call(_CREATE_EVENT.name, {"summary": "dentist"}), "sorry")
+
+    await _recording_agent(script, IntegrationToolset()).run("go", deps=deps)
+
+    adapter.execute.assert_not_awaited()
+    assert script.outcomes(1) == ["failed"]
+
+
 # ── #304's acceptance test: a turn that acted, then failed ───────────────────
 
 
@@ -526,3 +659,35 @@ async def test_a_turn_that_confirmed_an_action_and_then_failed_answers_from_its_
     ]
     letters = [f[b"reason"] for _id, f in await forward_range(redis, DEAD_LETTER_STREAM)]
     assert letters == [b"partial"]
+
+
+async def test_an_integration_write_then_a_transient_failure_is_never_repeated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The final review's I1: "book the dentist", the event is created, the next model
+    request fails, and the redelivery must not create a second event."""
+    monkeypatch.setattr(
+        "core.conscious.engine.fetch_integration_tools", AsyncMock(return_value=[_CREATE_EVENT])
+    )
+    adapter = _calendar(monkeypatch)
+    redis = fakeredis.FakeAsyncRedis()
+    call = tool_call(_CREATE_EVENT.name, {"summary": "dentist"})
+    script = Script(call, ModelHTTPError(503, "m"), call, "Booked, sir.")
+    request = _request()
+    entry_id = await _pending(redis, request)
+    engine = _engine(redis, script, _router())
+
+    await _deliver(redis, entry_id, engine, delivery=1)
+    await _deliver(redis, entry_id, engine, delivery=2)
+
+    adapter.execute.assert_awaited_once()
+    assert script.call_count == 2
+    assert await EffectLedger(redis).read(request.event_id) == [
+        Effect(_CREATE_EVENT.name, {"summary": "dentist"}, "ok")
+    ]
+    responses = await forward_range(redis, USER_RESPONSES_STREAM)
+    assert [json.loads(f[b"event"])["text"] for _id, f in responses] == [
+        "I'd started on that — I did: integration apple calendar create event — then ran "
+        "into a problem before I could finish, sir."
+    ]
+    assert int((await redis.xpending(USER_REQUESTS_STREAM, _GROUP))["pending"]) == 0

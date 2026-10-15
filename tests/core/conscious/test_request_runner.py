@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import fakeredis
 import pytest
@@ -305,7 +305,7 @@ async def test_backoff_counts_from_the_failure_not_the_delivery(
     redis, entry_id = await _pending()
     engine = _engine()
 
-    async def _slow_429(_request: object) -> AlfredResponse:
+    async def _slow_429(_request: object, **_: object) -> AlfredResponse:
         clock.advance(20_000)
         raise ModelHTTPError(429, "m")
 
@@ -436,7 +436,7 @@ async def test_a_turn_that_acted_then_failed_answers_from_its_ledger(status: int
     engine = _engine()
     texts: list[str] = []
 
-    async def _act_then_fail(_request: object) -> AlfredResponse:
+    async def _act_then_fail(_request: object, **_: object) -> AlfredResponse:
         texts.append(await _acted(redis, ok=False))
         raise ModelHTTPError(status, "m")
 
@@ -486,7 +486,7 @@ async def test_a_redis_error_reading_the_ledger_after_a_failure_leaves_it_pendin
     redis, entry_id = await _pending()
     engine = _engine()
 
-    async def _fail(_request: object) -> AlfredResponse:
+    async def _fail(_request: object, **_: object) -> AlfredResponse:
         monkeypatch.setattr(redis, "lrange", AsyncMock(side_effect=ConnectionError("gone")))
         raise ModelHTTPError(400, "m")
 
@@ -506,7 +506,7 @@ async def test_a_redis_error_reading_the_ledger_after_a_failure_restarts_the_bac
     engine = _engine()
     real_lrange = redis.lrange
 
-    async def _slow_failure(_request: object) -> AlfredResponse:
+    async def _slow_failure(_request: object, **_: object) -> AlfredResponse:
         clock.advance(20_000)
         monkeypatch.setattr(redis, "lrange", AsyncMock(side_effect=ConnectionError("gone")))
         raise ModelHTTPError(503, "m")
@@ -520,3 +520,15 @@ async def test_a_redis_error_reading_the_ledger_after_a_failure_restarts_the_bac
     clock.advance(15_000)
     [red] = await reclaim_due(redis, USER_REQUESTS_STREAM, _GROUP, _CONSUMER)
     assert red.delivery == 2
+
+
+async def test_the_turn_is_told_when_its_request_entered_the_stream() -> None:
+    """The replay window is measured from the entry id, at delivery and again when the
+    turn acts (``RecordEffects``), so the engine gets the entry's milliseconds."""
+    now = int(time.time() * 1000)
+    redis, entry_id = await _pending(entry_id=f"{now - 40_000}-0")
+    engine = _engine()
+
+    await _run(redis, entry_id, engine, delivery=2)
+
+    engine.process_request.assert_awaited_once_with(ANY, received_ms=now - 40_000)

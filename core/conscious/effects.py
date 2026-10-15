@@ -9,21 +9,30 @@ turn again and repeat what it did.
 A toolset marks a side-effecting tool with ``SIDE_EFFECT`` in its ``ToolDefinition``
 metadata, where it builds the definition; ``RecordEffects`` decides from that alone. A
 call refused by identity scope (``Refused``) never acted, so it leaves no entry.
+
+The replay window (``MAX_REPLAY_AGE_MS``, 300 s) is checked again when a side-effecting
+call is about to run, not only when a delivery starts: a slow turn that reaches "unlock
+the door" five minutes after it was asked is refused (``TooLate``), and the model is told
+why. The age is measured from ``TurnDeps.received_ms``, the request's stream entry id,
+the same clock the runner's window reads.
 """
 
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from loguru import logger
+from pydantic_ai import ToolFailed
 from pydantic_ai.capabilities import AbstractCapability
 
 from core.conscious.deps import TurnDeps
 from core.conscious.tools.catalog import tool_identity
 from core.conscious.tools.scope import Refused
 from core.routing.domain_router import CONFIRMATION_REQUIRED_PREFIX
+from shared.redis_streams import MAX_REPLAY_AGE_MS
 from shared.streams import EFFECTS_KEY
 
 if TYPE_CHECKING:
@@ -41,6 +50,7 @@ __all__ = [
     "Effect",
     "EffectLedger",
     "RecordEffects",
+    "TooLate",
     "ledger_reply",
 ]
 
@@ -148,6 +158,18 @@ def ledger_reply(effects: list[Effect]) -> str:
     return text
 
 
+class TooLate(ToolFailed):
+    """A side-effecting call refused because its request is older than the replay window:
+    it never ran, so it changed nothing."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(
+            f"{name} was not run: this request was made more than "
+            f"{MAX_REPLAY_AGE_MS // 60_000} minutes ago, and acting on it this late could be "
+            "unsafe. Tell the user it was not done; they can ask again if they still want it."
+        )
+
+
 def _refused(exc: BaseException) -> bool:
     """Whether *exc* is an identity-scope refusal, raised as itself or wrapped (Pydantic AI
     re-raises a tool's ``ToolFailed`` as ``ToolFailedError`` from it)."""
@@ -158,7 +180,9 @@ class RecordEffects(AbstractCapability[TurnDeps]):
     """Records each side-effecting tool call in the turn's ledger, around its execution.
 
     ``wrap_tool_execute`` runs after argument validation, so a schema retry never reaches
-    it. ``started`` is written before the call: if that write fails the call does not run.
+    it. A call whose request is older than the replay window is refused (``TooLate``)
+    before anything is written: it never runs, and reads are never refused.
+    ``started`` is written before the call: if that write fails the call does not run.
     A failure to settle the entry afterwards is logged and leaves it ``started``, which
     reads as in doubt — never as not done.
     """
@@ -174,9 +198,20 @@ class RecordEffects(AbstractCapability[TurnDeps]):
     ) -> Any:
         if not (tool_def.metadata or {}).get(SIDE_EFFECT):
             return await handler(args)
-        ledger = EffectLedger(ctx.deps.services.redis)
+        tool = tool_identity(tool_def)
         request_id = ctx.deps.request_id
-        index = await ledger.started(request_id, tool_identity(tool_def), args)
+        age_ms = int(time.time() * 1000) - ctx.deps.received_ms
+        if age_ms > MAX_REPLAY_AGE_MS:
+            logger.warning(
+                "Refused {} for request {}: it is {} s old, past the {} s replay window",
+                tool,
+                request_id,
+                age_ms // 1000,
+                MAX_REPLAY_AGE_MS // 1000,
+            )
+            raise TooLate(tool)
+        ledger = EffectLedger(ctx.deps.services.redis)
+        index = await ledger.started(request_id, tool, args)
         try:
             result = await handler(args)
         except BaseException as exc:

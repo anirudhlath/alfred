@@ -2,7 +2,8 @@
 
 The capabilities are read once per turn, before the run (``fetch_integration_tools``),
 and a call is executed by the integration and capability its tool was built from, never
-by parsing the tool's name.
+by parsing the tool's name. A capability that changes the world (``side_effect``, the
+default) carries ``SIDE_EFFECT`` in its tool metadata, so the turn's ledger records it.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai.toolsets.abstract import ToolsetTool
 
 from core.conscious.deps import TurnDeps
+from core.conscious.effects import SIDE_EFFECT
 from core.conscious.tools.catalog import TOOL_RETRIES
 from core.conscious.tools.names import WireNameError, error_once, report_collision, wire_name
 from core.conscious.tools.sir_only import SirOnlyToolset
@@ -31,13 +33,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class IntegrationTool:
-    """One capability as a tool: its wire name, where it runs, and its schema."""
+    """One capability as a tool: its wire name, where it runs, its schema, and whether
+    calling it changes the world (recorded in the turn's side-effect ledger)."""
 
     name: str
     integration: str
     capability: str
     description: str
     schema: dict[str, Any]
+    side_effect: bool = True
 
 
 async def fetch_integration_tools() -> list[IntegrationTool]:
@@ -65,7 +69,14 @@ async def fetch_integration_tools() -> list[IntegrationTool]:
                 ],
             }
             tools.append(
-                IntegrationTool(tool_name, name, cap.name, f"[{name}] {cap.description}", schema)
+                IntegrationTool(
+                    tool_name,
+                    name,
+                    cap.name,
+                    f"[{name}] {cap.description}",
+                    schema,
+                    side_effect=cap.side_effect,
+                )
             )
     return tools
 
@@ -100,7 +111,11 @@ class IntegrationToolset(AbstractToolset[TurnDeps]):
                     name=t.name,
                     description=t.description,
                     parameters_json_schema=t.schema,
-                    metadata={"integration": t.integration, "capability": t.capability},
+                    metadata={
+                        "integration": t.integration,
+                        "capability": t.capability,
+                        SIDE_EFFECT: t.side_effect,
+                    },
                 ),
                 max_retries=TOOL_RETRIES,
                 args_validator=ANY_OBJECT,

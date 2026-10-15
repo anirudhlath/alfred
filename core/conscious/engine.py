@@ -249,8 +249,15 @@ class ConsciousEngine:
     # No @track_latency (#308): its buffer was never flushed, and the agent run span
     # measures the same latency.
     @traced(name="conscious.process_request")
-    async def process_request(self, request: UserRequest) -> AlfredResponse:
-        """Answer one request: identity, budget, the turn's context, one agent run."""
+    async def process_request(
+        self, request: UserRequest, *, received_ms: int | None = None
+    ) -> AlfredResponse:
+        """Answer one request: identity, budget, the turn's context, one agent run.
+
+        *received_ms* is when the request entered the requests stream, its entry id's
+        milliseconds; the runner passes it, so a side-effecting call made past the replay
+        window is refused (``RecordEffects``). A direct caller omits it: the turn starts now.
+        """
         now = datetime.now(UTC)
         tz_name = await self._timezone(request)
 
@@ -281,6 +288,7 @@ class ConsciousEngine:
             tz_name=tz_name,
             now=now,
             services=self._services,
+            received_ms=received_ms if received_ms is not None else int(now.timestamp() * 1000),
             content_type=request.content_type,
             area=request.area,
             recall=await self._recall(request.content),

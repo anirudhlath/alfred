@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import AsyncMock, MagicMock
@@ -67,6 +68,7 @@ def make_deps(who: Literal["sir", "guest"] = "sir", **overrides: Any) -> TurnDep
         "tz_name": "UTC",
         "now": datetime(2026, 10, 13, 12, 0, tzinfo=UTC),
         "services": make_services(),
+        "received_ms": int(time.time() * 1000),
     }
     fields.update(overrides)
     return TurnDeps(**fields)

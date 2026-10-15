@@ -33,7 +33,7 @@ from core.conscious.failures import (
     classify,
     dead_letter,
 )
-from shared.redis_streams import is_replayable
+from shared.redis_streams import entry_ms, is_replayable
 from shared.streams import ANSWERED_KEY, USER_RESPONSES_STREAM, decode_stream_value
 
 if TYPE_CHECKING:
@@ -116,7 +116,8 @@ async def process_request_entry(
         return
 
     try:
-        response = await engine.process_request(request)
+        # The window is checked again when the turn acts (RecordEffects), on the same clock.
+        response = await engine.process_request(request, received_ms=entry_ms(entry_id))
     except Exception as exc:
         effects = await turn.effects()
         if effects is None:
