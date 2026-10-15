@@ -25,7 +25,13 @@ from functools import cache
 from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
-from pydantic_ai_harness.spend import Budget, RedisSpendStore, SpendLimits, Spent
+from pydantic_ai_harness.spend import (
+    Budget,
+    RedisSpendStore,
+    SpendLimitExceeded,
+    SpendLimits,
+    Spent,
+)
 
 from shared.streams import SPEND_ALERT_KEY, SPEND_PREFIX
 
@@ -33,6 +39,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from pydantic_ai.messages import ModelResponse
+    from pydantic_ai.models import ModelRequestContext
+    from pydantic_ai.tools import RunContext
     from pydantic_ai_harness.spend import BatchSpendStore, BudgetStatus, SpendEntry
 
     from shared.types import AioRedis
@@ -109,23 +117,54 @@ class TolerantSpendStore:
             return {entry.key: Spent() for entry in entries}
 
 
+class _SwitchedOff(SpendLimits[Any]):
+    """A cap of zero or less: the kill switch. Every request and every turn is refused.
+
+    The harness's ``Budget`` refuses a ceiling of zero or less, so this carries a plain
+    counter (no ceiling, no warning) and refuses on its own. The counter keeps the admin
+    overview's reads working and never fires the alert.
+    """
+
+    async def before_model_request(
+        self, ctx: RunContext[Any], request_context: ModelRequestContext
+    ) -> ModelRequestContext:
+        raise SpendLimitExceeded("DAILY_COST_CAP_USD is 0 or less: paid requests are off")
+
+    async def exhausted(
+        self, ctx: RunContext[Any] | None = None, *, scope: str | None = None
+    ) -> bool:
+        return True
+
+
 def build_spend_limits(
     redis: AioRedis, *, cap_usd: float, clock: Callable[[], datetime]
 ) -> SpendLimits[Any]:
     """The daily budget every agent in this process carries.
+
+    A cap of zero or less switches paid requests off (``_SwitchedOff``). A non-finite
+    cap never gets here: ``shared.config.cost_cap_usd`` refuses it at startup.
 
     The check before a request and the increment after it are separate round trips, so
     requests in flight at once can each pass the check and overshoot the cap by their
     own cost: one System 2 worker plus the Librarian, a few cents. Accepted (spec 7,
     "Accepted bound"); a reservation ledger would close it.
     """
+    store = TolerantSpendStore(RedisSpendStore(redis, prefix=SPEND_PREFIX))
+    if cap_usd <= 0:
+        return _SwitchedOff(
+            budgets=[Budget(window="day", name=BUDGET_NAME)],
+            store=store,
+            price=price,
+            on_unpriced="zero",
+            clock=clock,
+        )
     return SpendLimits(
         budgets=[
             Budget(
                 usd=Decimal(str(cap_usd)), window="day", warn_at=ALERT_FRACTION, name=BUDGET_NAME
             )
         ],
-        store=TolerantSpendStore(RedisSpendStore(redis, prefix=SPEND_PREFIX)),
+        store=store,
         price=price,
         on_unpriced="zero",
         clock=clock,

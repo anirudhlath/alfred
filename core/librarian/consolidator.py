@@ -540,7 +540,8 @@ class Librarian:
         Originals move first, with a compressed="yes" marker. One that fails stays hot
         and is grouped again on the next pass, so the summary covers only the ones that
         moved — summarising it now would summarise it twice. Calls LLM to generate a
-        summary + semantic_key; falls back to concatenation with no model or on failure.
+        summary + semantic_key; falls back to concatenation with no model or on failure,
+        a spent budget included (the originals have moved; no later pass would see them).
         Writes the summary to cold store directly (not via EpisodicMemory). A summary
         that fails to write loses nothing: the originals are in cold with their own
         vectors.
@@ -590,9 +591,9 @@ class Librarian:
                 )
                 summary_text = compressed.summary
                 semantic_key_text = compressed.semantic_key
-            except SpendLimitExceeded:
-                raise
             except Exception as exc:
+                # A spent budget included: the originals have already moved, so the free
+                # fallback below must still write their summary.
                 logger.warning("Compression: LLM summarization failed: %s", exc)
 
         # Fallback: concatenate contents
@@ -721,8 +722,6 @@ class Librarian:
             async with slots:
                 try:
                     return await self._compress_and_migrate(group)
-                except SpendLimitExceeded:
-                    raise
                 except Exception as exc:
                     logger.warning("Decay: compression failed for group: %s", exc)
                     return 0

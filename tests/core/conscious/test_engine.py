@@ -229,6 +229,18 @@ async def test_an_exceeded_budget_answers_without_a_run() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cap", [0.0, -1.0])
+async def test_a_cap_of_zero_or_less_refuses_every_turn(cap: float) -> None:
+    script = Script("never sent")
+    deps = _deps(script, spend=_limits(cap))
+
+    response = await ConsciousEngine(deps=deps).process_request(_request())
+
+    assert (response.text, response.mood) == (BUDGET_REPLY, "concerned")
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
 async def test_a_budget_spent_mid_run_ends_the_turn_with_the_budget_reply() -> None:
     """The first response spends past the cap, so the next request is refused."""
     registry = AsyncMock()

@@ -203,6 +203,9 @@ call fails, each caller keeps its deterministic fallback.
 Every agent that calls a paid model — System 2 and the five Librarian agents — carries the
 same `SpendLimits` capability from pydantic-ai-harness, built by `build_spend_limits`
 (`shared/spend.py`): one `day` budget of `DAILY_COST_CAP_USD`, `warn_at` 0.8.
+`DAILY_COST_CAP_USD` of 0 or less is the kill switch: every paid request and every
+System 2 turn is refused, and the Librarian skips its passes. NaN or infinity is a startup
+error naming the variable (`shared.config.cost_cap_usd`).
 
 - **Gate.** Before each model request it reads today's counter and raises
   `SpendLimitExceeded` once the cap is reached. The engine also checks before a turn

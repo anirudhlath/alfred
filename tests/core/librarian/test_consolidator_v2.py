@@ -149,6 +149,19 @@ async def test_a_spent_budget_skips_the_pass_before_it_drains_anything(
 
 
 @pytest.mark.asyncio
+async def test_a_cap_of_zero_skips_the_pass() -> None:
+    script = Script()
+    librarian = _make_librarian(script=script)
+    librarian._spend = _budget(fakeredis.FakeAsyncRedis(), cap_usd=0.0)
+
+    result = await librarian.consolidate()
+
+    assert result["skipped"] == "daily budget exhausted"
+    librarian._redis.lrange.assert_not_awaited()  # type: ignore[attr-defined]
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
 async def test_a_budget_spent_mid_pass_skips_the_rest_and_keeps_the_scratchpad(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -2191,6 +2204,55 @@ async def test_compression_summarises_only_the_originals_that_moved() -> None:
     assert "kitchen light on" in summary
     assert "kitchen light dimmed" in summary
     assert "kitchen light off" not in summary
+
+
+@pytest.mark.asyncio
+async def test_a_budget_spent_at_compression_still_writes_the_fallback_summary() -> None:
+    """The originals have already left hot, so a refused summary call must not lose the
+    summary: no later pass would ever see them again."""
+    script = Script()
+    episodic_memory = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory)
+    spend = _budget(fakeredis.FakeAsyncRedis())
+    await _spend(spend, "10")
+    librarian._agents = build_librarian_agents(script.model, spend=spend)
+
+    migrated = await librarian._compress_and_migrate(
+        _kitchen_group("kitchen light on", "kitchen light off")
+    )
+
+    assert migrated == 2
+    assert episodic_memory.copy_to_cold_and_remove.await_count == 2
+    librarian._cold_store.add.assert_awaited_once()
+    summary = librarian._cold_store.add.await_args.kwargs["content"]
+    assert summary == "kitchen light on | kitchen light off"
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_budget_spent_during_decay_summarises_every_group_it_moved() -> None:
+    script = Script()
+    grouped = []
+    for i in range(3):
+        for half in ("a", "b"):
+            entry = _make_decay_search_result(
+                entry_id=f"group-{i}-{half}", age_days=31, significance=0.05
+            )
+            entry.metadata.entities = f"light.l{i}"
+            grouped.append(entry)
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.select = AsyncMock(return_value=grouped)
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    spend = _budget(fakeredis.FakeAsyncRedis())
+    await _spend(spend, "10")
+    librarian._agents = build_librarian_agents(script.model, spend=spend)
+
+    migrated = await librarian._apply_decay()
+
+    assert migrated == 6
+    assert librarian._cold_store.add.await_count == 3
+    assert script.call_count == 0
 
 
 @pytest.mark.asyncio

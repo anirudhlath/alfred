@@ -318,13 +318,13 @@ const AT_THE_CAP = "at the cap, the conscious mind declines and says so";
 
 /**
  * `$1.42 of $5.00` — the spend card's own line, and the money in one place.
- * `$1.42 · no cap set` when there is nothing to measure against, and the
- * server's own silence when it reported no spend at all. A house that has
- * spent nothing today sends zeros; `cost: null` now means the server could not
- * read the counter.
+ * `$1.42 · no cap set` when there is nothing to measure against, and
+ * `spend unavailable` when there is no amount to show: a house that has spent
+ * nothing today sends zeros, so `cost: null` means the server could not read
+ * the counter (and an overview never read has no cost either).
  */
 export function spendHeadline(cost: Overview["cost"]): string {
-  if (cost === null) return "no spend recorded today";
+  if (cost === null) return "spend unavailable";
   const spend = usd(finiteNumber(cost.spend_usd) ?? 0);
   const cap = capOf(cost);
   return cap === null ? `$${spend} · no cap set` : `$${spend} of $${usd(cap)}`;

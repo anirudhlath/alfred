@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import math
 import os
 import re
 import sys
@@ -198,6 +199,31 @@ def positive_seconds(name: str, raw: str, default: float) -> float:
         raise RuntimeError(f"{name} must be a number of seconds, got {text!r}") from None
     if value <= 0:
         raise RuntimeError(f"{name} must be greater than 0, got {text!r}")
+    return value
+
+
+def cost_cap_usd(raw: str, default: float) -> float:
+    """Parse ``DAILY_COST_CAP_USD``, naming it in every failure.
+
+    Blank means the default. Zero or less is allowed and is the kill switch: every paid
+    model request is refused (``shared/spend.py``). NaN and infinity are refused here, at
+    startup, rather than by the budget inside each service, where the supervisor would
+    restart it until it gave up on the whole runner.
+    """
+    text = raw.strip()
+    if not text:
+        return default
+    try:
+        value = float(text)
+    except ValueError:
+        raise RuntimeError(
+            f"DAILY_COST_CAP_USD must be an amount of dollars, got {text!r}"
+        ) from None
+    if not math.isfinite(value):
+        raise RuntimeError(
+            f"DAILY_COST_CAP_USD must be a finite amount of dollars, got {text!r} "
+            "(0 or less refuses every paid request)"
+        )
     return value
 
 
@@ -511,7 +537,7 @@ class AlfredConfig:
             session_timeout_minutes=int(os.getenv("SESSION_TIMEOUT_MINUTES", "30")),
             proactivity_level=os.getenv("PROACTIVITY_LEVEL", "opinionated"),
             # Phase 3: Cost
-            daily_cost_cap_usd=float(os.getenv("DAILY_COST_CAP_USD", "5.0")),
+            daily_cost_cap_usd=cost_cap_usd(os.getenv("DAILY_COST_CAP_USD", ""), 5.0),
             # Memory: Embedding (env-configurable; see above for the dim default).
             embedding_backend=embedding_backend,
             embedding_host=embedding_host,

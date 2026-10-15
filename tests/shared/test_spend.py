@@ -11,11 +11,12 @@ from unittest.mock import AsyncMock
 
 import fakeredis
 import pytest
+from genai_prices import Usage, calc_price
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.usage import RequestUsage
-from pydantic_ai_harness.spend import RedisSpendStore, SpendEntry, Spent
+from pydantic_ai_harness.spend import RedisSpendStore, SpendEntry, SpendLimitExceeded, Spent
 
 from core.notifications.publisher import NotificationPublisher
 from core.notifications.schema import Urgency
@@ -70,8 +71,12 @@ def test_a_vllm_response_is_free() -> None:
 def test_a_known_openrouter_model_is_priced_by_genai_prices() -> None:
     response = _response("anthropic/claude-sonnet-4", "openrouter", inp=1_000, out=1_000)
 
-    assert price(response) == response.cost().total_price
-    assert price(response) == Decimal("0.018")
+    expected = calc_price(
+        Usage(input_tokens=1_000, output_tokens=1_000),
+        model_ref="anthropic/claude-sonnet-4",
+        provider_id="openrouter",
+    ).total_price
+    assert price(response) == response.cost().total_price == expected
 
 
 def test_an_unknown_paid_model_is_priced_at_the_fallback_rates_and_warned_once(
@@ -102,6 +107,27 @@ def _billing_agent(limits: SpendLimits[Any]) -> Agent[None, str]:
         )
 
     return Agent(FunctionModel(answer), capabilities=[limits])
+
+
+@pytest.mark.parametrize("cap", [0.0, -1.0])
+async def test_a_cap_of_zero_or_less_refuses_every_request(cap: float) -> None:
+    """``DAILY_COST_CAP_USD`` <= 0 is the kill switch: nothing paid runs, nothing alerts."""
+    redis = fakeredis.FakeAsyncRedis()
+    limits = build_spend_limits(redis, cap_usd=cap, clock=_fixed(_NOON))
+    calls = 0
+
+    async def answer(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        return ModelResponse(parts=[TextPart("never")])
+
+    assert await limits.exhausted()
+    with pytest.raises(SpendLimitExceeded):
+        await Agent(FunctionModel(answer), capabilities=[limits]).run("hello")
+    assert calls == 0
+    snapshot = await spend_snapshot(limits, redis)
+    assert (snapshot["spend_usd"], snapshot["cap_usd"]) == (0.0, 0.0)
+    assert await alert_if_needed(limits, redis, AsyncMock()) is False
 
 
 async def test_two_processes_accruing_concurrently_lose_no_update() -> None:

@@ -260,8 +260,8 @@ describe("spendHeadline", () => {
     expect(spendHeadline({ ...COST, cap_usd: 1 })).toBe("$0.42 of $1.00");
   });
 
-  it("says no spend recorded today for a null cost", () => {
-    expect(spendHeadline(null)).toBe("no spend recorded today");
+  it("says spend unavailable for a null cost", () => {
+    expect(spendHeadline(null)).toBe("spend unavailable");
   });
 
   it("reads a missing spend as nothing spent rather than as no figure", () => {
