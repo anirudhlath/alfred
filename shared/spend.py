@@ -1,13 +1,14 @@
 """Daily spend on the harness's ``SpendLimits``: one budget, shared by every process.
 
 Each process builds one ``SpendLimits`` with ``build_spend_limits`` and hands it to every
-agent that calls a paid model (System 2 and the Librarian's agents). Its counter is a
+agent that calls a model (System 2 and the Librarian's agents). Its counter is a
 ``RedisSpendStore``, which applies each response in one Lua script, so concurrent
 writers in different processes cannot lose an update. See "7. Spend" in
 docs/superpowers/specs/2026-10-08-pydantic-ai-adoption-design.md.
 
 - ``price`` makes a self-hosted response free and a paid model the registry does not
-  know expensive, so an unpriced model can never slip under the cap.
+  know expensive, so an unpriced model can never slip under the cap. Free is not exempt:
+  at the cap, or with the kill switch, every model request is refused, vLLM's included.
 - ``TolerantSpendStore`` turns a failed write into a WARNING. The response was already
   billed; failing the turn would replay it, and its tool calls, for a bookkeeping error.
   A failed read still raises, so the gate fails closed.
@@ -128,7 +129,7 @@ class _SwitchedOff(SpendLimits[Any]):
     async def before_model_request(
         self, ctx: RunContext[Any], request_context: ModelRequestContext
     ) -> ModelRequestContext:
-        raise SpendLimitExceeded("DAILY_COST_CAP_USD is 0 or less: paid requests are off")
+        raise SpendLimitExceeded("DAILY_COST_CAP_USD is 0 or less: every model request is off")
 
     async def exhausted(
         self, ctx: RunContext[Any] | None = None, *, scope: str | None = None
@@ -141,13 +142,16 @@ def build_spend_limits(
 ) -> SpendLimits[Any]:
     """The daily budget every agent in this process carries.
 
-    A cap of zero or less switches paid requests off (``_SwitchedOff``). A non-finite
-    cap never gets here: ``shared.config.cost_cap_usd`` refuses it at startup.
+    The cap refuses every model request once reached, a $0 self-hosted one included, and a
+    cap of zero or less refuses every one from the start (``_SwitchedOff``, the kill
+    switch). A non-finite cap never gets here: ``shared.config.cost_cap_usd`` refuses it at
+    startup.
 
     The check before a request and the increment after it are separate round trips, so
     requests in flight at once can each pass the check and overshoot the cap by their
-    own cost: one System 2 worker plus the Librarian, a few cents. Accepted (spec 7,
-    "Accepted bound"); a reservation ledger would close it.
+    own cost: one System 2 request plus up to ``DECAY_MIGRATION_CONCURRENCY`` (8)
+    Librarian requests, a few cents. Accepted (spec 7, "Accepted bound"); a reservation
+    ledger would close it.
     """
     store = TolerantSpendStore(RedisSpendStore(redis, prefix=SPEND_PREFIX))
     if cap_usd <= 0:

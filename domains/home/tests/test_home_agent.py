@@ -226,3 +226,21 @@ async def test_home_agent_does_not_retry_a_status_error() -> None:
     assert result.status == "error"
     assert mock_post.call_count == 1
     assert slept == []
+
+
+@pytest.mark.asyncio
+async def test_a_request_that_never_left_is_bounded_in_time() -> None:
+    """Spec 6b: every retry layer is bounded by attempts and time. A black-holed service
+    is given 5 s per connect (and per pool wait), so three attempts end within about
+    3 x 5 s plus at most 0.2 + 0.4 s of backoff, not 3 x 30 s; a slow action still has
+    30 s to answer, and a read timeout is never retried."""
+    agent, action, _ = _retry_agent_and_action()
+
+    with patch("httpx.AsyncClient.post") as mock_post:
+        mock_post.return_value = _ok_response()
+        await agent.execute_action(action)
+
+    assert agent._http_client is not None
+    timeout = agent._http_client.timeout
+    assert (timeout.connect, timeout.pool) == (5.0, 5.0)
+    assert (timeout.read, timeout.write) == (30.0, 30.0)

@@ -36,6 +36,12 @@ _NEVER_LEFT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 _MAX_ATTEMPTS = 3
 _BACKOFF_BASE_S = 0.2
 _BACKOFF_CAP_S = 2.0
+# Bounds the retries in time as well as attempts (spec 6b). A connect or a wait for a pooled
+# connection gets 5 s, so a black-holed service costs at most 3 x 5 s plus the backoff
+# (under 20 s), not 3 x 30 s. A timeout bounds the attempt itself; tenacity's
+# stop_after_delay could only skip the next attempt, never cut a hung connect short. A
+# slow action still has 30 s to answer, and a read timeout is never retried.
+_TIMEOUT = httpx.Timeout(30.0, connect=5.0, pool=5.0)
 
 
 def _log_retry(retry_state: RetryCallState) -> None:
@@ -101,7 +107,7 @@ class HomeAgent:
 
         try:
             if self._http_client is None or self._http_client.is_closed:
-                self._http_client = httpx.AsyncClient(timeout=30.0)
+                self._http_client = httpx.AsyncClient(timeout=_TIMEOUT)
             client = self._http_client
             payload = {
                 "method": action.tool_name,
