@@ -71,3 +71,26 @@ def test_init_tracing_copies_langfuse_baggage_onto_spans() -> None:
     span.end()
 
     assert (span.attributes or {})[LANGFUSE_USER_ID] == "guest"
+
+
+def test_init_tracing_registers_the_prompt_link_processor() -> None:
+    from shared.prompts.link import PROMPTS_ATTR, linked_prompts
+    from shared.prompts.template import PromptRef
+
+    with (
+        patch("shared.otel.turn_off_env_exporters"),
+        patch("shared.otel.trace.set_tracer_provider") as set_provider,
+    ):
+        init_tracing("svc", endpoint=None)
+    provider = set_provider.call_args.args[0]
+
+    with linked_prompts(PromptRef("librarian-analyse", None, "repo")):
+        chat = provider.get_tracer("t").start_span(
+            "chat m", attributes={"gen_ai.operation.name": "chat"}
+        )
+        other = provider.get_tracer("t").start_span("agent run")
+    chat.end()
+    other.end()
+
+    assert (chat.attributes or {})[PROMPTS_ATTR] == ("librarian-analyse@repo",)
+    assert PROMPTS_ATTR not in (other.attributes or {})
