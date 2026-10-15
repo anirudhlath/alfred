@@ -17,6 +17,7 @@ from core.channels.admin_api import (
 )
 from core.channels.web_server import create_app, require_trusted_network
 from core.reflex.inference import REFLEX_BACKENDS
+from shared.streams import SPEND_PREFIX
 from tests.core.channels.conftest import _TEST_SESSION_ID, session_hgetall
 from tests.helpers import aiter_values, attention_redis
 
@@ -44,6 +45,7 @@ def _overview_redis() -> AsyncMock:
     r.scan_iter = MagicMock(return_value=aiter_values([]))
     r.xinfo_stream = AsyncMock(side_effect=Exception("missing"))
     r.xrevrange = AsyncMock(return_value=[])
+    r.exists = AsyncMock(return_value=0)
     return r
 
 
@@ -80,27 +82,50 @@ def test_admin_reads_and_controls_need_only_a_session() -> None:
     assert client.post("/api/admin/dnd", json={"active": True}).status_code == 200
 
 
+def _spend_hgetall(fields: dict[bytes, bytes] | Exception) -> AsyncMock:
+    """HGETALL serving today's spend counter (any key under the spend prefix) and the
+    auth session; *fields* as an exception makes the counter unreadable."""
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if key.startswith(f"{{{SPEND_PREFIX}}}:"):
+            if isinstance(fields, Exception):
+                raise fields
+            return fields
+        result: dict[bytes, bytes] = await session(key)
+        return result
+
+    return AsyncMock(side_effect=_hgetall)
+
+
 def test_overview_shape() -> None:
     r = _overview_redis()
-    r.get = AsyncMock(
-        side_effect=lambda key: (
-            json.dumps({"date": "2026-06-10", "spend_usd": 1.24, "cap_usd": 5.0}).encode()
-            if key == "alfred:cost:daily"
-            else None
-        )
-    )
+    r.hgetall = _spend_hgetall({b"usd_nanos": b"1240000000", b"requests": b"2"})
+    r.exists = AsyncMock(return_value=1)
     client = make_admin_client(r)
     # No httpx client on app.state → inference checks report False, not errors.
     resp = client.get("/api/admin/overview")
     assert resp.status_code == 200
     data = resp.json()
     assert data["redis"]["connected"] is True
-    assert data["cost"]["spend_usd"] == 1.24
+    cost = data["cost"]
+    assert set(cost) == {"date", "spend_usd", "cap_usd", "alert_sent", "request_count", "avg_usd"}
+    assert (cost["spend_usd"], cost["cap_usd"], cost["request_count"]) == (1.24, 5.0, 2)
+    assert (cost["avg_usd"], cost["alert_sent"]) == (0.62, True)
     assert data["dnd"] == {"active": False}
     assert data["counts"] == {"sessions": 0, "devices": 0, "deferred": 0, "triggers": 0}
     assert data["streams"]["events"]["length"] == 0
     assert data["inference"] == {"ollama": False, "lmstudio": False}
     assert data["session"] == {"idle_minutes": 30}
+
+
+def test_overview_reports_an_unreadable_spend_counter_as_no_cost() -> None:
+    r = _overview_redis()
+    r.hgetall = _spend_hgetall(ConnectionError("blip"))
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/overview")
+    assert resp.status_code == 200
+    assert resp.json()["cost"] is None
 
 
 def test_overview_reports_redis_down() -> None:
@@ -138,15 +163,15 @@ def test_overview_session_idle_follows_config(monkeypatch: Any, redis_up: bool) 
     assert resp.json()["session"] == {"idle_minutes": 10}
 
 
-def test_overview_survives_corrupt_cost_and_dnd() -> None:
-    """One corrupt cost/dnd value must not 500 the whole dashboard overview."""
+def test_overview_survives_a_corrupt_dnd_value() -> None:
+    """One corrupt value must not 500 the whole dashboard overview."""
     r = _overview_redis()
     r.get = AsyncMock(return_value=b"{not valid json")
     client = make_admin_client(r)
     resp = client.get("/api/admin/overview")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["cost"] is None
+    assert data["cost"]["spend_usd"] == 0.0
     assert data["dnd"] == {"active": False}
 
 

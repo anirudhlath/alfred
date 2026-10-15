@@ -200,11 +200,29 @@ call fails, each caller keeps its deterministic fallback.
 
 ## Spend
 
-`CostTracker` (`core/conscious/cost.py`) prices tokens by `model_key(model)`,
-`<provider>:<served name>`. Models under the `vllm` provider are free; unknown paid models
-use a $3/$15 per-million default. System 2 records each turn's usage. The Librarian records
-each call with `count_request=False`, so its calls count against the daily cap but not
-toward the request count. A per-request ledger replaces this in PR 6.
+Every agent that calls a paid model — System 2 and the five Librarian agents — carries the
+same `SpendLimits` capability from pydantic-ai-harness, built by `build_spend_limits`
+(`shared/spend.py`): one `day` budget of `DAILY_COST_CAP_USD`, `warn_at` 0.8.
+
+- **Gate.** Before each model request it reads today's counter and raises
+  `SpendLimitExceeded` once the cap is reached. The engine also checks before a turn
+  starts. Either way the user gets the budget reply with mood `concerned`, and
+  `classify` (`core/conscious/failures.py`) treats it as permanent. A Librarian pass skips
+  the rest of its work when the budget runs out.
+- **Counter.** Each billed response is added to a `RedisSpendStore` under
+  `alfred:spend:*` in one Lua script, so the conscious and Librarian processes cannot lose
+  each other's updates. The day rolls over at midnight in the user's timezone
+  (`shared/usertime.last_user_timezone`).
+- **Price.** `price` charges a response from the `vllm` provider $0, a model genai-prices
+  knows its registry price, and any other model a $3/$15 per-million fallback with one
+  WARNING per model, so an unpriced model never counts as free.
+- **Failures.** A failed counter write logs a WARNING and leaves the response uncounted
+  (`TolerantSpendStore`); the turn still answers. A failed read refuses the request.
+- **Overshoot.** The check and the increment are separate round trips, so requests in
+  flight at once can each pass the check: the cap can be exceeded by their own cost. Accepted.
+- **Alert.** After each System 2 turn and each Librarian call, `alert_if_needed` sends the
+  80% notification (URGENT) if today's spend has reached it, claiming
+  `alfred:spend:alert:{day}` with `SET NX` so exactly one process sends it.
 
 ## Tracing
 
@@ -240,7 +258,7 @@ one-toolset agent.
 | 3 | prompts move to the self-hosted Langfuse, with repo defaults |
 | 4 | full session history, tool calls and results included |
 | 5 | deferred tool approvals replace the critical intercept; late replies become follow-ups |
-| 6 | a per-request spend ledger replaces `CostTracker`'s daily counters |
+| 6 | spend moves onto the harness's `SpendLimits` (done, see [Spend](#spend)) |
 | 7 | the judge uses Inspect's own OpenAI provider; `evals/harness/vllm_model.py` goes |
 | 8 | Reflex becomes an agent; Ollama is dropped |
 
@@ -257,6 +275,6 @@ one-toolset agent.
 | `core/conscious/deps.py` | `TurnServices`, `TurnDeps` |
 | `core/conscious/tools/` | `names`, `scope`, `catalog`, `sir_only`, `validation`, `registry`, `triggers`, `memory`, `attention`, `integrations` |
 | `core/librarian/agents.py` | the five Librarian agents and their output models |
-| `core/conscious/cost.py` | `CostTracker`, the price table |
+| `shared/spend.py` | `build_spend_limits`, `price`, `alert_if_needed`, `spend_snapshot` |
 | `alfredctl/doctor.py` | `_check_conscious`: the settings above, checked before boot |
 | `tests/llm_fakes.py` | `Script`, `tool_call`, `tool_calls` |

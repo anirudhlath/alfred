@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
+import fakeredis
 import pytest
+from pydantic_ai_harness.spend import SpendEntry, SpendLimitExceeded
 
 from core.conscious.agent import (
     OUTPUT_RETRIES,
@@ -21,6 +24,7 @@ from core.memory.vector_store import ContextMetadata, SearchResult
 from core.reflex.tool_registry import ToolInfo
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
+from shared.spend import build_spend_limits, local_clock
 from tests.core.conscious.helpers import make_deps, make_services, mock_redis
 from tests.llm_fakes import Script, tool_call
 
@@ -60,6 +64,7 @@ def _agent(
         assembler=_assembler(tmp_path),
         max_tokens=max_tokens,
         timeout_s=timeout_s,
+        spend=None,
     )
 
 
@@ -222,7 +227,33 @@ async def test_no_trigger_feature_means_no_trigger_tools(tmp_path: Path) -> None
         assembler=_assembler(tmp_path),
         max_tokens=512,
         timeout_s=15.0,
+        spend=None,
     )
     script = Script("hi")
     await agent.run("hi", deps=make_deps(), model=script.model)
     assert not [name for name in script.offered() if name.startswith("triggers_")]
+
+
+@pytest.mark.asyncio
+async def test_the_budget_gates_every_model_request(tmp_path: Path) -> None:
+    """The spend capability is on the agent: a spent budget refuses the request."""
+    spend = build_spend_limits(
+        fakeredis.FakeAsyncRedis(), cap_usd=1.0, clock=local_clock(lambda: "UTC")
+    )
+    (status,) = await spend.status()
+    await spend.store.add_many(  # type: ignore[union-attr]
+        [SpendEntry(key=status.key, usd=Decimal(1), requests=1)]
+    )
+    agent = build_system2_agent(
+        toolsets=system2_toolsets(None),
+        assembler=_assembler(tmp_path),
+        max_tokens=512,
+        timeout_s=15.0,
+        spend=spend,
+    )
+    script = Script("never sent")
+
+    with pytest.raises(SpendLimitExceeded):
+        await agent.run("hi", deps=make_deps(), model=script.model)
+
+    assert script.call_count == 0

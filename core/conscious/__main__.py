@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 # Import modules to trigger @register decorators
@@ -19,7 +20,6 @@ import core.triggers.types  # noqa: F401  # trigger type registrations
 from bus.schemas.events import ActionRequest
 from core.conscious.agent import build_system2_agent, system2_toolsets
 from core.conscious.context_assembler import ContextAssembler
-from core.conscious.cost import CostTracker
 from core.conscious.engine import ConsciousConfig, ConsciousDeps, ConsciousEngine
 from core.conscious.identity import IdentityGate
 from core.conscious.runner import process_request_entry
@@ -53,11 +53,13 @@ from shared.config import AlfredConfig, apply_model_env
 from shared.logging import configure_logging
 from shared.otel import init_tracing
 from shared.redis_streams import create_redis, read_group, reclaim_due
+from shared.spend import ALERT_SOURCE, alert_if_needed, build_spend_limits, local_clock
 from shared.streams import (
     ACTIONS_STREAM,
     USER_REQUESTS_STREAM,
     decode_stream_value,
 )
+from shared.usertime import last_user_timezone
 
 if TYPE_CHECKING:
     from shared.types import AioRedis
@@ -261,7 +263,13 @@ async def run(config: AlfredConfig) -> None:
     # Register internal action handlers for ACTIONS_STREAM consumption
     _INTERNAL_HANDLERS["drain_deferred_notifications"] = dispatcher.drain_deferred
 
-    cost_tracker = CostTracker(redis=r, daily_cap_usd=config.daily_cost_cap_usd, notifier=notifier)
+    # One budget for the process: System 2 and the in-process Librarian share it, and
+    # its Redis counter is shared with every other process. The day is the user's: the
+    # zone the engine last resolved for a request (shared.usertime).
+    spend = build_spend_limits(
+        r, cap_usd=config.daily_cost_cap_usd, clock=local_clock(last_user_timezone)
+    )
+    alert = partial(alert_if_needed, spend, r, notifier.urgent(ALERT_SOURCE))
 
     # Trigger feature — system-level, called directly (not via HTTP)
     trigger_feature = TriggerFeature(TriggerFeatureContext(store=trigger_store, redis=r))
@@ -274,13 +282,14 @@ async def run(config: AlfredConfig) -> None:
         assembler=ContextAssembler(),
         max_tokens=config.system2_max_tokens,
         timeout_s=config.system2_timeout_s,
+        spend=spend,
     )
     engine = ConsciousEngine(
         deps=ConsciousDeps(
             redis=r,
             identity_gate=IdentityGate(registered_phone=config.signal_phone_number),
             session_mgr=SessionManager(redis=r, timeout_minutes=config.session_timeout_minutes),
-            cost_tracker=cost_tracker,
+            spend=spend,
             domain_router=router,
             tool_registry=ToolRegistry(r),
             context_reader=ContextReader(redis=r),
@@ -319,7 +328,8 @@ async def run(config: AlfredConfig) -> None:
                 significance_scorer=significance_scorer,
                 context_index=context_index,
                 model=resolve_model("LIBRARIAN_MODEL", config.librarian_model),
-                cost_tracker=cost_tracker,
+                spend=spend,
+                notifier=notifier,
                 conflict_min_observations=config.conflict_min_observations,
                 conflict_min_days=config.conflict_min_days,
                 decay_migration_threshold=config.decay_migration_threshold,
@@ -421,7 +431,7 @@ async def run(config: AlfredConfig) -> None:
                     group=group,
                     consumer=consumer,
                     delivery=delivery,
-                    after_answer=cost_tracker.send_alert_if_needed,
+                    after_answer=alert,
                 )
     finally:
         log.info("Shutting down Conscious Engine...")

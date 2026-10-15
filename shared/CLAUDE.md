@@ -9,6 +9,7 @@ Cross-cutting utilities used by multiple top-level packages (core, bus, domains)
 - `redis_streams.py` — `create_redis()` constructor (socket_timeout=None — see Gotchas) + `StreamBatch` type alias + typed `read_group()`/`read()`/`forward_range()`/`revrange()` wrappers around `xreadgroup`/`xread`/`xrange`/`xrevrange` (owns the one stub-gap `# type: ignore` per wrapper)
 - `usertime.py` — User timezone helpers: `is_valid_timezone()`, `get_user_timezone()` (stored → `ALFRED_TIMEZONE` → UTC), `set_user_timezone()` (write-on-change + coherence poke)
 - `secrets.py` — Keyring wrapper: `get_secret()` / `set_secret()` + async versions (`aget_secret()` etc.) via `asyncio.to_thread()`
+- `spend.py` — the daily budget on pydantic-ai-harness `SpendLimits` (`build_spend_limits`, `price`, `TolerantSpendStore`, `local_clock`, `spend_snapshot`, `alert_if_needed`); counter keys under `SPEND_PREFIX`
 - `types.py` — `AioRedis` type alias (canonical location for cross-package use)
 - `fs.py` — `atomic_write()` via mkstemp + rename (safe concurrent writes)
 - `logging.py` — Loguru setup with stdlib intercept (captures uvicorn, httpx, aiomqtt, etc.)

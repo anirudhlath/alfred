@@ -76,7 +76,6 @@ One Pydantic AI agent per request (`agent.py`); see `docs/llm.md`.
 - `tools/` — the catalog and its toolsets; every tool is named by `tools/names.wire_name`
 - `memory_tools.py` — `recall_memories()`, `get_live_state()`: the memory toolset's bodies
 - `context_assembler.py` — the instructions: identity, involuntary recall, integrations available, routine hint (no tool list)
-- `cost.py` — Daily cap tracking, 80% alert via NotificationPublisher
 - `identity.py` — Signal phone + local-claim trust (confidence=0.7) for web_pwa, voice, and ios channels
 - `session.py` — Redis-backed sessions, 30min timeout
 - `prompts/` — System prompt templates

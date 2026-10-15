@@ -40,10 +40,10 @@ from core.reflex.inference import REFLEX_BACKENDS
 from core.triggers.models import TRIGGER_ENGINE_SOURCE
 from shared.config import AlfredConfig
 from shared.redis_streams import revrange
+from shared.spend import build_spend_limits, local_clock, spend_snapshot
 from shared.streams import (
     ACTIONS_STREAM,
     CONTEXT_PREFIX,
-    COST_DAILY_KEY,
     DEFERRED_NOTIFICATIONS_KEY,
     DEVICE_TOKENS_KEY,
     DND_STATE_KEY,
@@ -54,6 +54,7 @@ from shared.streams import (
     TRIGGERS_KEY,
     decode_stream_value,
 )
+from shared.usertime import get_user_timezone
 
 if TYPE_CHECKING:
     import httpx
@@ -221,6 +222,18 @@ def _safe_json(raw: Any, *, default: Any) -> Any:
         return default
 
 
+async def _spend_today(r: AioRedis, cap_usd: float) -> dict[str, Any] | None:
+    """Today's spend, read through the same budget the agents carry; ``None`` when the
+    counter cannot be read (admin reads never 500)."""
+    try:
+        tz = await get_user_timezone(r)
+        limits = build_spend_limits(r, cap_usd=cap_usd, clock=local_clock(lambda: tz))
+        return await spend_snapshot(limits, r)
+    except Exception:
+        logger.opt(exception=True).warning("Admin overview could not read today's spend")
+        return None
+
+
 def _decode_hash(fields: dict[bytes | str, Any]) -> dict[str, Any]:
     """Decode a Redis hash, dropping binary embedding fields."""
     out: dict[str, Any] = {}
@@ -349,8 +362,7 @@ def create_admin_router() -> APIRouter:
             return out  # degraded: full shape, all placeholders
 
         out["redis"]["connected"] = True
-        raw_cost = await r.get(COST_DAILY_KEY)
-        out["cost"] = _safe_json(raw_cost, default=None)
+        out["cost"] = await _spend_today(r, cfg.daily_cost_cap_usd)
         raw_dnd = await r.get(DND_STATE_KEY)
         out["dnd"] = _safe_json(raw_dnd, default={"active": False})
 

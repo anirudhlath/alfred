@@ -41,6 +41,7 @@ from core.routing.pending import store_pending_action
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
 from shared.redis_streams import forward_range
+from shared.spend import build_spend_limits, local_clock
 from shared.streams import (
     DEAD_LETTER_STREAM,
     EFFECTS_KEY,
@@ -388,16 +389,15 @@ def _engine(redis: fakeredis.FakeAsyncRedis, script: Script, router: AsyncMock) 
     """A real engine and System 2 agent over fakeredis, with one registry tool."""
     identity_gate = MagicMock()
     identity_gate.resolve.return_value = identity("sir")
-    cost = AsyncMock()
-    cost.is_budget_exceeded.return_value = False
     registry = AsyncMock()
     registry.get_tools.return_value = [_info("home.light_turn_on")]
+    spend = build_spend_limits(redis, cap_usd=5.0, clock=local_clock(lambda: "UTC"))
     return ConsciousEngine(
         deps=ConsciousDeps(
             redis=redis,
             identity_gate=identity_gate,
             session_mgr=SessionManager(redis),
-            cost_tracker=cost,
+            spend=spend,
             domain_router=router,
             tool_registry=registry,
             context_reader=AsyncMock(),
@@ -406,6 +406,7 @@ def _engine(redis: fakeredis.FakeAsyncRedis, script: Script, router: AsyncMock) 
                 assembler=ContextAssembler(),
                 max_tokens=256,
                 timeout_s=5.0,
+                spend=spend,
             ),
             model=script.model,
         )

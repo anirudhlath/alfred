@@ -59,7 +59,7 @@ def _provider(name: str) -> Provider[Any]:
 
 
 def model_key(model: Model) -> str:
-    """``<provider>:<served name>``, the key ``CostTracker`` prices a model by."""
+    """``<provider>:<served name>``, the one string that names a resolved model."""
     return f"{model.system}:{model.model_name}"
 
 

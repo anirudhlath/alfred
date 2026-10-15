@@ -28,8 +28,8 @@ CONTAINER_WEB_PORT = 8081
 CONTAINER_REDIS_PORT = 6379
 # `alfred evals` stacks: throwaway, driven from the host, never holding a real secret.
 EVAL_SECRETS_PASSPHRASE = "alfred-eval-not-a-secret"
-# Unknown models are priced at the default rate (core/conscious/cost.py), so a local
-# model under eval would trip the $5 default cap mid-run.
+# A paid model the price registry does not know is charged the fallback rate
+# (shared/spend.py), so a model under eval could trip the $5 default cap mid-run.
 EVAL_ENV: dict[str, str] = {"ALFRED_EVAL": "1", "DAILY_COST_CAP_USD": "1000000"}
 
 

@@ -176,7 +176,7 @@ graph TB
         ConsEngine[ConsciousEngine]
         IdentityGate[IdentityGate]
         SessionMgr[SessionManager]
-        CostTracker[CostTracker]
+        Spend["SpendLimits<br/>(shared/spend.py)"]
         CtxAssembler[ContextAssembler]
         ActionTools["Action Tools<br/>confirm_pending_action +<br/>attention_* (sir-only)"]
     end
@@ -281,7 +281,7 @@ graph TB
     ConsMain --> ConsEngine
     ConsMain --> IdentityGate
     ConsMain --> SessionMgr
-    ConsMain --> CostTracker
+    ConsMain --> Spend
     ConsEngine --> CtxAssembler
     ConsEngine -->|POST /v1/messages| Claude["Claude API"]
     ConsEngine -->|XREAD requests| Redis
@@ -298,7 +298,7 @@ graph TB
     IntRegistry --> HealthInt
     IntRegistry --> RobinhoodInt
     SessionMgr -->|GET/SET sessions| Redis
-    CostTracker -->|GET/SET cost| Redis
+    Spend -->|"EVAL spend counter<br/>alfred:spend:*"| Redis
     IdentityGate -->|voiceprint lookup| Redis
     Ingestor -->|"XREADGROUP + reclaim_stale<br/>alfred:reflex:observations"| Redis
     Ingestor --> Scorer
@@ -658,7 +658,7 @@ embeds the user's query inline in the reply path).
 
 ### 3.8 Conscious Engine (System 2)
 
-**Files:** `core/conscious/engine.py`, `core/conscious/agent.py`, `core/conscious/deps.py`, `core/conscious/tools/`, `core/conscious/identity.py`, `core/conscious/session.py`, `core/conscious/cost.py`, `core/conscious/context_assembler.py`
+**Files:** `core/conscious/engine.py`, `core/conscious/agent.py`, `core/conscious/deps.py`, `core/conscious/tools/`, `core/conscious/identity.py`, `core/conscious/session.py`, `core/conscious/context_assembler.py`, `shared/spend.py`
 
 The Conscious Engine handles complex user requests with a Pydantic AI agent; [docs/llm.md](llm.md) covers the model settings, the tool catalog and the retries.
 
@@ -666,7 +666,7 @@ The Conscious Engine handles complex user requests with a Pydantic AI agent; [do
 
 1. **IdentityGate** (`identity.py`) -- resolves `identity_claim` from a `UserRequest` to a verified identity (sir/guest). Supports Signal phone lookup, WebAuthn session verification, and voiceprint matching.
 2. **SessionManager** (`session.py`) -- manages conversation sessions in Redis (`alfred:sessions:{id}`). Maintains message history with a configurable window.
-3. **CostTracker** (`cost.py`) -- enforces daily Claude API budget via Redis key `alfred:cost:daily`. Tracks input/output tokens and maps to dollar cost.
+3. **SpendLimits** (`shared/spend.py`) -- the daily budget every paid agent carries, on one atomic counter shared by all processes (`alfred:spend:*`). It refuses a model request once the day's spend reaches `DAILY_COST_CAP_USD` and sends the 80% alert once a day. See [docs/llm.md](llm.md#spend).
 4. **ContextAssembler** (`context_assembler.py`) -- gathers context from integrations, episodic memory, and preferences. Builds the system prompt with Alfred's identity and available data.
 5. **ConsciousEngine** (`engine.py`) -- runs the `system2` agent once per request: the agent offers the catalog's tools, validates and dispatches each call, feeds results back, and returns the final text, within ten model requests. Returns an `AlfredResponse`.
 
@@ -871,7 +871,7 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:user:requests` | Stream | Inbound user requests from channels |
 | `alfred:user:responses` | Stream | Outbound Alfred responses to channels |
 | `alfred:sessions:{id}` | String (JSON) | Conversation session state |
-| `alfred:cost:daily` | String (JSON) | Daily Claude API cost tracking |
+| `alfred:spend:*` | String + Hash (harness `RedisSpendStore`) | Daily spend counter; `alfred:spend:alert:{day}` marks the 80% alert as sent |
 | `alfred:memory:episodic` | Stream | Hot episodic memory entries |
 | `alfred:reflex:observations` | Stream | `ReflexObservation` feed — reflex actions *and* passive observations, drained by the `memory-ingestor` group |
 | `alfred:entity:freq` | Sorted Set | Entity sighting counts behind the novelty dimension of `SignificanceScorer` (novelty = `1/count`) |

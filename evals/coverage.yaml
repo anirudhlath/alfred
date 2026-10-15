@@ -62,7 +62,7 @@ rows:
   - {id: 4.6.guest-choices, section: "4.6", prd: "Guest access choices captured at onboarding", not_llm: "capture-only onboarding settings; enforcement remains planned", tests: [tests/core/channels/test_onboarding_defaults.py]}
   - {id: 4.6.guest-tool-scoping, section: "4.6", prd: "Guest tool scoping in conversation", not_llm: "deterministic toolset scoping: the tool list and the call-time refusal, with no model judgment", tests: [tests/core/conscious/tools/test_sir_only.py, tests/core/conscious/tools/test_registry.py, tests/core/conscious/tools/test_catalog.py]}
   - {id: 4.6.guest-enforcement, section: "4.6", prd: "Guest boundary enforcement", pending_suites: [guest_boundary]}
-  - {id: 4.6.cost-cap, section: "4.6", prd: "Daily cloud-spend cap", not_llm: "budget accounting", tests: [tests/core/conscious/test_cost.py]}
+  - {id: 4.6.cost-cap, section: "4.6", prd: "Daily cloud-spend cap", not_llm: "budget accounting", tests: [tests/shared/test_spend.py]}
   # §4.7 Operations & quality
   - {id: 4.7.runner, section: "4.7", prd: "Unified runner", not_llm: "process supervision", tests: [tests/runner/test_supervisor.py]}
   - {id: 4.7.admin-api, section: "4.7", prd: "Admin API", not_llm: "HTTP API", tests: [tests/core/channels/test_admin_api.py]}
@@ -76,7 +76,7 @@ rows:
   - {id: 7.reminder-latency, section: "7", prd: "Reminder latency", suites: [triggers]}
   - {id: 7.onboarding, section: "7", prd: "Onboarding", not_llm: "credential flow", tests: [tests/core/channels/test_service_credentials.py]}
   - {id: 7.proactivity-quality, section: "7", prd: "Proactivity quality", pending_suites: [memory]}
-  - {id: 7.cost, section: "7", prd: "Cost", not_llm: "budget accounting", tests: [tests/core/conscious/test_cost.py]}
+  - {id: 7.cost, section: "7", prd: "Cost", not_llm: "budget accounting", tests: [tests/shared/test_spend.py]}
   - {id: 7.memory-quality, section: "7", prd: "Memory quality", pending_suites: [memory], tests: [tests/evals/test_memory_runner.py]}
   - {id: 7.sovereignty, section: "7", prd: "Sovereignty", not_llm: "process isolation via the SDK", tests: [sdk/tests]}
 headings:

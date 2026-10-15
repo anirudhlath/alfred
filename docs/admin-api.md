@@ -97,7 +97,7 @@ upgrades — and checks the `alfred:auth:{session_id}` hash in Redis.
 Returns a single JSON object with:
 
 - `redis.connected` — bool, from a `PING` probe
-- `cost` — current `alfred:cost:daily` value (JSON object) or `null` if unset. The blob is written only on spend, so before the day's first `record_spend` it is the previous day's state (check `date`); `request_count` (user requests handled today; the Librarian's calls add spend but are not counted, and a request replayed after a provider error is counted once per attempt) and `avg_usd` (the day's spend divided by `request_count`, so it includes the Librarian's spend) are absent entirely from state written before the upgrade — treat both as optional
+- `cost` — today's spend, read from the shared budget counter (`alfred:spend:*`, see [docs/llm.md](llm.md#spend)): `date` (the day in the user's timezone), `spend_usd`, `cap_usd`, `alert_sent` (whether today's 80% alert went out), `request_count` (billed model requests today, System 2's and the Librarian's alike) and `avg_usd` (`spend_usd / request_count`). Before the day's first billed request every number is `0`. `null` when the counter cannot be read
 - `dnd` — current `alfred:memory:dnd` value, defaulting to `{"active": false}`
 - `counts.sessions` — number of active `alfred:sessions:*` keys (scan-based)
 - `counts.devices` — `HLEN alfred:push:devices`

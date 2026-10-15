@@ -75,9 +75,15 @@ OBSERVED_ENTITY_PREFIX = "alfred:observer:seen:"
 LAST_KNOWN_STATE_KEY = "alfred:reflex:last_known_state"
 AVAILABILITY_DECISION_PREFIX = "alfred:reflex:returned:"
 
-# Phase 3: Runtime config + cost
+# Phase 3: Runtime config
 RUNTIME_CONFIG_KEY = "alfred:config:runtime"
-COST_DAILY_KEY = "alfred:cost:daily"
+
+# Spend (shared.spend). RedisSpendStore keeps one hash per budget window under
+# `{SPEND_PREFIX}:<budget>|<window>|<scope>|<bucket>` — the braces are a hash tag the store
+# adds itself, so the prefix carries none. The alert marker (+ the budget day, SET NX
+# EX 172800) makes the 80% alert fire once a day across every process.
+SPEND_PREFIX = "alfred:spend"
+SPEND_ALERT_KEY = "alfred:spend:alert:{}"
 
 # Phase 3: Integration registry
 INTEGRATION_REGISTRY_KEY = "alfred:integration_registry"

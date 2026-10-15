@@ -6,6 +6,7 @@ import fakeredis
 import pytest
 import redis.exceptions
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UserError
+from pydantic_ai_harness.spend import SpendLimitExceeded
 
 from core.conscious.failures import (
     FAILED_REPLY,
@@ -54,6 +55,12 @@ def test_everything_else_is_transient(exc: BaseException) -> None:
 def test_a_usage_mistake_is_permanent() -> None:
     # UserError subclasses RuntimeError, which is otherwise transient.
     assert classify(UserError("bad tool schema")) is FailureKind.PERMANENT
+
+
+def test_a_spent_budget_is_permanent() -> None:
+    # The engine answers it with the budget reply; should one reach the runner, a
+    # redelivery would only be refused again.
+    assert classify(SpendLimitExceeded("Budget 'daily' exhausted")) is FailureKind.PERMANENT
 
 
 @pytest.mark.asyncio

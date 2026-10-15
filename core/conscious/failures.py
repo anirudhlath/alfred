@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Final
 
 from loguru import logger
 from pydantic_ai.exceptions import ModelHTTPError, UserError
+from pydantic_ai_harness.spend import SpendLimitExceeded
 
 from shared.streams import DEAD_LETTER_STREAM
 
@@ -48,7 +49,11 @@ class FailureKind(StrEnum):
 
 
 def classify(exc: BaseException) -> FailureKind:
-    """PERMANENT only for a usage mistake or a non-retryable 4xx; everything else waits."""
+    """PERMANENT for a usage mistake, a spent budget or a non-retryable 4xx; everything
+    else waits. The engine answers a spent budget itself, so one reaching here is a stray:
+    a redelivery would only be refused again."""
+    if isinstance(exc, SpendLimitExceeded):
+        return FailureKind.PERMANENT
     if isinstance(exc, ModelHTTPError):
         status = exc.status_code
         if 400 <= status < 500 and status not in _RETRYABLE_CLIENT_STATUSES:
