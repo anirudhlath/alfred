@@ -20,6 +20,7 @@ rows:
   - {id: 4.1.satellites, section: "4.1", prd: "Physical wake-word satellites", pending_suites: [voice]}
   - {id: 4.1.speaker-id, section: "4.1", prd: "Speaker identification", pending_suites: [voice]}
   - {id: 4.1.sessions, section: "4.1", prd: "Multi-step conversations with session continuity", suites: [conversation]}
+  - {id: 4.1.answered-once, section: "4.1", prd: "A failed request is answered once", not_llm: "turn redelivery, the answered marker and the side-effect ledger", tests: [tests/core/conscious/test_request_runner.py, tests/core/conscious/test_effects.py, tests/core/conscious/test_failures.py, tests/shared/test_llm_http.py]}
   # §4.2 Proactivity & triggers
   - {id: 4.2.dynamic-triggers, section: "4.2", prd: "Dynamic triggers created by conversation", suites: [triggers]}
   - {id: 4.2.sensor-triggers, section: "4.2", prd: "Sensor-driven triggers on live home state", suites: [triggers]}

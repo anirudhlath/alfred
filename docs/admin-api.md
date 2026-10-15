@@ -97,7 +97,7 @@ upgrades — and checks the `alfred:auth:{session_id}` hash in Redis.
 Returns a single JSON object with:
 
 - `redis.connected` — bool, from a `PING` probe
-- `cost` — today's spend, read from the shared budget counter (`alfred:spend:*`, see [docs/llm.md](llm.md#spend)): `date` (the day in the user's timezone), `spend_usd`, `cap_usd`, `alert_sent` (whether today's 80% alert went out), `request_count` (billed model requests today, System 2's and the Librarian's alike) and `avg_usd` (`spend_usd / request_count`). Before the day's first billed request every number is `0`. `null` when the counter cannot be read
+- `cost` — today's spend, read from the shared budget counter (`alfred:spend:*`, see [docs/llm.md](llm.md#spend)): `date` (the day in the user's timezone), `spend_usd`, `cap_usd` (`0` when `DAILY_COST_CAP_USD` is 0 or less, which refuses every paid request), `alert_sent` (whether today's 80% alert went out), `request_count` (billed model requests today, System 2's and the Librarian's alike: model requests, not turns, and one turn can make several) and `avg_usd` (`spend_usd / request_count`, per model request). Before the day's first billed request every number is `0`. `null` when the counter cannot be read
 - `dnd` — current `alfred:memory:dnd` value, defaulting to `{"active": false}`
 - `counts.sessions` — number of active `alfred:sessions:*` keys (scan-based)
 - `counts.devices` — `HLEN alfred:push:devices`

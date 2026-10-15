@@ -140,7 +140,7 @@ Behaviour (spec 6b, "Model requests"):
       delivery: int  # deliveries including this one
   async def reclaim_due(redis, stream: str, group: str, consumer: str, *, base_idle_ms: int = 15_000, count: int = 10) -> list[Redelivery]
   # core/conscious/runner.py
-  async def process_request_entry(entry_id, entry_data, *, engine, redis, stream, group, delivery: int = 1, now_ms: int | None = None, after_answer: Callable[[], Awaitable[None]] | None = None) -> None
+  async def process_request_entry(entry_id, entry_data, *, engine, redis, stream, group, consumer, delivery: int = 1, now_ms: int | None = None, after_answer: Callable[[], Awaitable[None]] | None = None) -> None
   ```
   `after_answer` replaces `cost_tracker`, so Task 5 can hang the spend alert on it without touching the runner again. Today's caller passes `cost_tracker.send_alert_if_needed`.
 

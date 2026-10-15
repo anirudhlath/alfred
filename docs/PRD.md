@@ -80,6 +80,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Physical wake-word satellites ("Hey Alfred" devices per room, room-aware context) | In review | spec `2026-07-15-voice-satellite-design.md`, PR #29 |
 | Speaker identification (who is talking, voice enrollment) | In review | PR #29 |
 | Multi-step conversations with session continuity (30-min sessions, any channel) | Shipped | `docs/architecture.md` |
+| A failed request is answered once, and never repeats what it already did: a model hiccup is retried with backoff, one that cannot be completed gets a plain apology instead of silence, and one that failed after acting is answered with what was and was not done, so a light is never switched, or a door unlocked, twice. Requests more than five minutes old are not run | Shipped | `docs/llm.md` |
 
 ### 4.2 Proactivity & triggers
 
@@ -156,7 +157,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Guest access choices captured at onboarding (which controls guests may use) | Shipped | onboarding wizard |
 | Guest tool scoping in conversation: a guest is offered only everyday (benign) controls; risky controls, integrations, and Alfred's own memory and attention tools stay with the verified user, and are refused if named anyway. A guest may create a trigger whose action is an everyday control (or a plain reminder), but cannot list, change, disable or delete triggers | Shipped | `docs/llm.md` |
 | Guest boundary enforcement via tiered autonomy | Planned | HA integration spec, Plan 3 |
-| Daily cloud-spend cap with alerting before the ceiling | Shipped | `docs/architecture.md` |
+| Daily cloud-spend cap with alerting before the ceiling: one budget shared by every process, rolling over at the user's midnight; a cap of 0 or less switches paid requests off | Shipped | `docs/llm.md` |
 
 ### 4.7 Operations & quality
 

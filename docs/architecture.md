@@ -580,8 +580,8 @@ because an omitted keyword silently produced exactly that contamination.
 
 **Delivery.** Entry ids are `obs.observation_id`, minted at publish time, so a redelivery
 overwrites the same `ctx:{id}` hash instead of writing a second copy. The loop ACKs only
-on success and therefore reclaims its PEL — with `reclaim_stale()`, the one deliberate
-exception to `reclaim_replayable()` in the codebase, because a ten-minute-old observation
+on success and therefore reclaims its PEL — with `reclaim_stale()`, a deliberate
+exception to `reclaim_replayable()` (the Conscious Engine's `reclaim_due()` is the other), because a ten-minute-old observation
 is still worth *remembering* even though it is too stale to *act on*. Unparseable payloads
 are ACKed and dropped; an entry that parses but fails deterministically downstream is
 retried at most `_MAX_DELIVERY_ATTEMPTS` (5) times, counted in
@@ -872,6 +872,9 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:user:responses` | Stream | Outbound Alfred responses to channels |
 | `alfred:sessions:{id}` | String (JSON) | Conversation session state |
 | `alfred:spend:*` | String + Hash (harness `RedisSpendStore`) | Daily spend counter; `alfred:spend:alert:{day}` marks the 80% alert as sent |
+| `alfred:conscious:dead_letters` | Stream | Turns the Conscious Engine gave up on — `entry_id`, `event`, `error_type`, `error`, `deliveries`, `reason` (`permanent`, `exhausted`, `expired`, `stale`, `partial`); `MAXLEN ~ 1000` |
+| `alfred:conscious:answered:{event_id}` | String | Set in the same transaction as a request's response (TTL 3600s), so a redelivery after a crash before the ACK answers nothing |
+| `alfred:conscious:effects:{event_id}` | List | The request's side-effecting tool calls as JSON `{tool, args, status}` (`started`/`ok`/`failed`/`parked`; TTL 3600s); a turn that fails or is redelivered after acting answers from it instead of acting again |
 | `alfred:memory:episodic` | Stream | Hot episodic memory entries |
 | `alfred:reflex:observations` | Stream | `ReflexObservation` feed — reflex actions *and* passive observations, drained by the `memory-ingestor` group |
 | `alfred:entity:freq` | Sorted Set | Entity sighting counts behind the novelty dimension of `SignificanceScorer` (novelty = `1/count`) |
@@ -902,9 +905,15 @@ delivers *new* messages only, so an entry left un-ACKed by a failure is never re
 own. The Memory Ingestor (`memory-ingestor` on `alfred:reflex:observations`) reclaims every ~60s
 via `reclaim_stale()` and caps redeliveries at 5 — see 3.7.1 and the rule in `CLAUDE.md`.
 Both Reflex loops (`reflex-engine` on `alfred:home:state_changed`, `reflex-trigger-fired` on
-`alfred:events`) and the Conscious Engine reclaim on the same cadence via `reclaim_replayable()`,
-which ACK-drops anything older than 5 minutes rather than act on it — that age limit is also what
-bounds their redeliveries. All of them ACK a payload that can never parse.
+`alfred:events`) reclaim on the same cadence via `reclaim_replayable()`, which ACK-drops anything
+older than 5 minutes rather than act on it — that age limit is also what bounds their
+redeliveries. The Conscious Engine reclaims on every pass of its loop via `reclaim_due()`: it
+counts each entry's deliveries, redelivers on a doubling backoff (15 s, then 30 s), and after
+`MAX_DELIVERIES` (3) answers the user with a fixed apology and writes the turn to the
+`alfred:conscious:dead_letters` stream instead of dropping it. An entry past the 5-minute replay
+window is answered and dead-lettered rather than run; an answered marker and a side-effect ledger
+keep a redelivery from answering or acting twice (see [llm.md](llm.md#retries)). All of them ACK a
+payload that can never parse.
 
 ## 6. Configuration
 
