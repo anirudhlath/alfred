@@ -81,7 +81,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 
 ### Tool Dispatch (4 categories)
 1. Integration tools (prefix `integration_`) → `IntegrationRegistry.execute()`
-2. Trigger tools → in-process `TriggerFeature` methods
+2. Trigger tools → in-process `TriggerFeature` methods, arguments validated and coerced first by the tool's `ToolMeta.validate_arguments` (metas cached once when the engine is built); a `ToolArgumentError` becomes the tool result, naming each field
 3. Memory tools (prefix `memory_`) → in-process `dispatch_memory_tool()`
 4. Domain tools → `DomainRouter` to external services
 - `__main__.py` runs a 15-min background loop (`asyncio.wait_for`) for proactive routine suggestions; ignored suggestions have confidence decremented over time
