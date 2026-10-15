@@ -18,6 +18,7 @@ import core.integrations.robinhood
 import core.integrations.weather
 import core.triggers.types  # noqa: F401  # trigger type registrations
 from bus.schemas.events import ActionRequest
+from core.conscious.agent import build_system2_agent, system2_toolsets
 from core.conscious.context_assembler import ContextAssembler
 from core.conscious.cost import CostTracker
 from core.conscious.engine import ConsciousConfig, ConsciousDeps, ConsciousEngine
@@ -48,7 +49,8 @@ from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
 from core.warmup import start_warmup
 from domains.home.home_agent import HomeAgent
-from shared.config import AlfredConfig
+from shared.agents import resolve_model
+from shared.config import AlfredConfig, apply_model_env
 from shared.logging import configure_logging
 from shared.otel import init_tracing
 from shared.redis_streams import create_redis, read_group, reclaim_replayable
@@ -269,24 +271,29 @@ async def run(config: AlfredConfig) -> None:
     # Trigger feature — system-level, called directly (not via HTTP)
     trigger_feature = TriggerFeature(TriggerFeatureContext(store=trigger_store, redis=r))
 
+    # Resolved once: a missing key or base URL logs one ERROR here, and every request
+    # then gets the not-configured reply rather than a crash.
+    apply_model_env(config)
+    system2 = build_system2_agent(
+        toolsets=system2_toolsets(trigger_feature),
+        assembler=ContextAssembler(),
+        max_tokens=config.system2_max_tokens,
+        timeout_s=config.system2_timeout_s,
+    )
     engine = ConsciousEngine(
         deps=ConsciousDeps(
             redis=r,
             identity_gate=IdentityGate(registered_phone=config.signal_phone_number),
             session_mgr=SessionManager(redis=r, timeout_minutes=config.session_timeout_minutes),
             cost_tracker=cost_tracker,
-            context_assembler=ContextAssembler(),
             domain_router=router,
             tool_registry=ToolRegistry(r),
             context_reader=ContextReader(redis=r),
+            agent=system2,
+            model=resolve_model("SYSTEM2_MODEL", config.system2_model),
             routine_store=routine_store,
-            trigger_feature=trigger_feature,
-            embedder=embedder,
             context_index=context_index,
             config=ConsciousConfig(
-                model=config.claude_model,
-                api_key=config.claude_api_key,
-                max_tokens=config.claude_max_tokens,
                 involuntary_recall_limit=config.involuntary_recall_limit,
                 involuntary_recall_threshold=config.involuntary_recall_threshold,
             ),
@@ -316,8 +323,8 @@ async def run(config: AlfredConfig) -> None:
                 routine_store=routine_store,
                 significance_scorer=significance_scorer,
                 context_index=context_index,
-                claude_api_key=config.claude_api_key,
-                claude_model=config.claude_model,
+                model=resolve_model("LIBRARIAN_MODEL", config.librarian_model),
+                cost_tracker=cost_tracker,
                 conflict_min_observations=config.conflict_min_observations,
                 conflict_min_days=config.conflict_min_days,
                 decay_migration_threshold=config.decay_migration_threshold,

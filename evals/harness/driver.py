@@ -17,7 +17,7 @@ from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.identity import IDENTITY_GUEST, IDENTITY_SIR
 from evals.harness.bus import zone_for_hour
 from evals.harness.checks.home import satisfies
-from evals.harness.checks.llm import normalize_tool
+from evals.harness.checks.llm import same_tool
 from evals.harness.collect import (
     deferred_records,
     is_fire_of,
@@ -377,11 +377,7 @@ def _user_text(ev: Evidence, index: int, step: UserStep) -> str:
     actions = (
         []
         if snapshot is None
-        else [
-            a
-            for a in snapshot.actions
-            if normalize_tool(a.tool_name) == normalize_tool(selector.tool)
-        ]
+        else [a for a in snapshot.actions if same_tool(a.tool_name, selector.tool)]
     )
     request_id = actions[0].request_id if len(actions) == 1 else MISSING_PENDING_ACTION_ID
     ev.transcript.append(

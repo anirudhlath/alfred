@@ -249,6 +249,6 @@ def test_conscious_config_has_recall_fields() -> None:
     from core.conscious.engine import ConsciousConfig
     from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 
-    config = ConsciousConfig(model="test")
+    config = ConsciousConfig()
     assert config.involuntary_recall_limit == 10
     assert config.involuntary_recall_threshold == DEFAULT_INVOLUNTARY_RECALL_THRESHOLD

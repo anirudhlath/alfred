@@ -27,6 +27,7 @@ from evals.harness.fake_ha import FakeHA
 from evals.harness.proxy import LlmProxy
 from evals.harness.scenario import Actor, Scenario, expand_variants
 from evals.harness.world import load_world
+from shared.llm_roles import ROLE_HEADER, SYSTEM1, SYSTEM2
 from tests.evals.harness.factories import FakeBus, evidence, reflex_prompt
 
 if TYPE_CHECKING:
@@ -304,7 +305,11 @@ async def background_llm_call(
 
         async def send(request: UserRequest, timeout: float) -> AlfredResponse:
             url = f"{proxy.url}/v1/chat/completions"
-            calls.append(asyncio.create_task(client.post(url, json=SYSTEM1_CALL)))
+            calls.append(
+                asyncio.create_task(
+                    client.post(url, json=SYSTEM1_CALL, headers={ROLE_HEADER: SYSTEM1})
+                )
+            )
             while not proxy.in_flight:
                 await asyncio.sleep(0.005)
             return AlfredResponse(
@@ -368,7 +373,11 @@ async def hung_vllm() -> AsyncIterator[tuple[LlmProxy, Callable[[], Awaitable[No
         async def call() -> None:
             before = len(proxy.in_flight_since(0.0))
             url = f"{proxy.url}/v1/chat/completions"
-            calls.append(asyncio.create_task(client.post(url, json=SYSTEM1_CALL)))
+            calls.append(
+                asyncio.create_task(
+                    client.post(url, json=SYSTEM1_CALL, headers={ROLE_HEADER: SYSTEM1})
+                )
+            )
             while len(proxy.in_flight_since(0.0)) == before:
                 await asyncio.sleep(0.005)
 
@@ -573,7 +582,9 @@ async def test_reflex_settle_waits_for_a_system1_call_in_flight() -> None:
         await asyncio.sleep(0.1)
         async with httpx.AsyncClient() as client:
             body = {"model": "m", "messages": reflex_prompt("Bedroom Lamp: on → off")}
-            await client.post(f"{proxy.url}/v1/chat/completions", json=body)
+            await client.post(
+                f"{proxy.url}/v1/chat/completions", json=body, headers={ROLE_HEADER: SYSTEM1}
+            )
 
     try:
         asking = asyncio.create_task(reflex_asks())
@@ -607,7 +618,9 @@ async def test_reflex_settle_is_not_held_by_a_system2_call_in_flight() -> None:
     async def conscious_asks() -> httpx.Response:
         await asyncio.sleep(0.05)  # after the restore: inside the settle's window
         async with httpx.AsyncClient() as client:
-            return await client.post(f"{proxy.url}/v1/chat/completions", json=body)
+            return await client.post(
+                f"{proxy.url}/v1/chat/completions", json=body, headers={ROLE_HEADER: SYSTEM2}
+            )
 
     try:
         asking = asyncio.create_task(conscious_asks())

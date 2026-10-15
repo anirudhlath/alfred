@@ -1,8 +1,10 @@
 """An OpenAI-compatible pass-through to vLLM that records every chat completion.
 
 System 2 sends its tool calls to the model and to home-service, never onto a stream, so
-this is the only place their arguments can be seen. Roles are told apart by the first
-message's text (``ROLE_FINGERPRINTS``); a test pins those strings to the prompt sources.
+this is the only place their arguments can be seen. A call's role is its ``X-Alfred-Role``
+header (``shared/llm_roles.py``), which every LLM request Alfred makes carries; a call
+without a recognised one is ``unknown``. The prompt's text plays no part, so a prompt
+edit cannot break attribution.
 
 The recorder never changes a reply: a chat request goes upstream as the bytes Alfred sent,
 and the reply comes back as upstream sent it, whether or not the recorder could read it.
@@ -22,21 +24,19 @@ import httpx
 from aiohttp import web
 
 from evals.harness.evidence import LlmCall, Role, ToolCall
+from shared.llm_roles import LIBRARIAN, ROLE_HEADER, SYSTEM1, SYSTEM2
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
-ROLE_FINGERPRINTS: tuple[tuple[Role, str], ...] = (
-    ("system1", "You are Alfred's Reflex Engine"),
-    ("system2", "You are Alfred — personal butler"),
-    ("librarian", "You are a memory analyst"),
-    ("librarian", "You are a memory conflict resolver"),
-    ("librarian", "Analyze these home assistant observations"),
-    ("librarian", "You are a memory compressor"),
-    ("librarian", "You are a pattern analyst"),
-)
+# Alfred's roles, by the X-Alfred-Role value each sends. A test pins it to LLM_ROLES.
+ROLES_BY_HEADER: dict[str, Role] = {
+    SYSTEM1: "system1",
+    SYSTEM2: "system2",
+    LIBRARIAN: "librarian",
+}
 _DROP_HEADERS = {"host", "content-length", "transfer-encoding", "connection"}
 # Requests upstream at once, chat and passthrough alike. vLLM is shared with production:
 # with the judge's JUDGE_CONNECTIONS, an eval run never has more than 4 there at once.
@@ -51,18 +51,9 @@ def _list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def _text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    return "".join(text for p in _list(content) if isinstance(text := _obj(p).get("text"), str))
-
-
-def classify_role(messages: list[dict[str, Any]]) -> Role:
-    first = _text(messages[0].get("content")) if messages else ""
-    for role, fingerprint in ROLE_FINGERPRINTS:
-        if fingerprint in first:
-            return role
-    return "unknown"
+def role_of(header: str | None) -> Role:
+    """The role an ``X-Alfred-Role`` value names; anything else, or none, is unknown."""
+    return ROLES_BY_HEADER.get(header or "", "unknown")
 
 
 def _reject_constant(name: str) -> NoReturn:
@@ -275,7 +266,7 @@ class LlmProxy:
             for tool in _list(body.get("tools"))
             if isinstance(name := _obj(_obj(tool).get("function")).get("name"), str)
         ]
-        flight.role = classify_role(messages)
+        flight.role = role_of(request.headers.get(ROLE_HEADER))
         self._wake()  # a waiter on another role's calls need not wait on this one
         call_for = partial(
             LlmCall,

@@ -95,9 +95,10 @@ pushed, so goldens do not inherit each other's lights.
 in front of vLLM. System 2's tool calls go to the model and to home-service, never onto a
 stream, so the proxy is the only place their arguments can be seen. It records every
 `POST /v1/chat/completions`: the role (System 1, System 2 or the Librarian, told apart by
-the first message's text, `ROLE_FINGERPRINTS`; anything else is `unknown`), the messages,
-the tools offered, the reply text, the tool calls with their arguments, token counts and
-latency. It never changes a request or a reply. Other paths pass through unrecorded, and
+the request's `X-Alfred-Role` header, `ROLES_BY_HEADER`; a request without a recognised one
+is `unknown`), the messages, the tools offered, the reply text, the tool calls with their
+arguments, token counts and latency. It never changes a request or a reply. Other paths
+pass through unrecorded, and
 streaming requests are refused. At most 2 requests are upstream at once, recorded or passed
 through (`MAX_UPSTREAM`), because the vLLM server is shared with production.
 
@@ -112,10 +113,10 @@ could count a call from that step and that no call so far in its range satisfies
 30 s, then the 2 s settle; any other call does not end the wait. With no check outstanding
 it waits a 5 s window. A golden that watches Reflex (see [One sample](#one-sample)) waits
 instead for System 1's answer to that event, up to 15 s: a System 1 call about any other
-change does not end the wait. When the steps are done it waits
-for every LLM call sent since the sample started and still upstream to be recorded (a call
-is recorded when vLLM answers, stamped with when it reached
-the proxy; up to 120 s, then a harness error). A call from before the sample started, such
+change does not end the wait. When the steps are done it waits for every LLM call sent
+since the sample started and still upstream to be recorded (a call is recorded when vLLM
+answers, stamped with when it reached the proxy; up to 120 s, then a harness error).
+A call from before the sample started, such
 as one a restarted container left upstream, never enters its window and is not waited on.
 Then it collects the **evidence** (`evals/harness/evidence.py`): the transcript, every
 reply with its latency, the fake HA's calls and the proxy's LLM calls inside the sample's
@@ -134,11 +135,11 @@ fallback when its LLM call fails, so the proxy must have recorded a System 2 cal
 request was sent, and vLLM must have answered at least one with a 2xx. With no such call the
 boot fails "without reaching the LLM proxy"; when every one came back with an error it fails
 because "the LLM upstream failed", with the statuses. A System 1 or Librarian call does not
-count. When none was classed as System 2 but some were classed `unknown`, the boot fails
-saying so: System 2's prompt has probably changed, and `ROLE_FINGERPRINTS` in
-`evals/harness/proxy.py` needs updating (`tests/evals/harness/test_role_fingerprints.py` pins
-each fingerprint to the first message its role sends). The stack records the suite's first
-boot time and that first reply's latency for the scorecard. Teardown removes the container
+count. When none was classed as System 2 but some were `unknown`, the boot fails saying
+so: some LLM request went out without the `X-Alfred-Role` header (`shared/llm_roles.py`),
+which every chat request to an OpenAI-compatible server must carry (the eval stack runs
+Reflex on that backend). The stack records the suite's first boot time and that first
+reply's latency for the scorecard. Teardown removes the container
 and wipes the data dir (the container writes it as root).
 
 **Recovery.** Before each sample the task restarts the stack when the container has died,
@@ -748,6 +749,7 @@ scored separately. Params are validated at load and unknown keys are rejected.
 | `tool_called` | `tool` (required); `role` (default `system2`); `at_step` (optional) | That role's recorded LLM replies include a call to the tool |
 | `tool_offered` | `tool` (required); `role` (default `system2`); `at_step` (optional) | At least one recorded request in scope offers the tool; fails without a role call |
 | `tool_not_offered` | same | Every recorded request in scope withholds the tool; fails without a role call |
+| `tool_calls_offered` | `role` (default `system2`) | Every tool call of that role names, exactly, a tool offered in the same request. Runs on its own, last, on every scenario with a System 2 tool call |
 | `pending_action` | `at_step`, `tool` (required); `target_service`; `parameters` (mapping); `count` (default 1) | Exactly `count` matching parked actions exist in the settled snapshot; a missing snapshot fails |
 | `pending_action_absent` | same, but `count` must be 0 | No matching pending action exists in that snapshot; a missing snapshot fails |
 | `tool_not_called` | `tool` (required); `role` (default `system2`); `at_step` (optional) | No such call |
@@ -826,9 +828,12 @@ how it compares.
 - `{regex: p}` must match the whole trimmed string, case-insensitively. A regex that does
   not compile fails at load.
 
-**Tool names.** System 2 sees home-service's `home.light_turn_on` as `home_light_turn_on`;
-the checks treat dots and underscores alike, so either spelling works. `role` is `system1`,
-`system2`, `librarian` or `unknown`, the proxy's classification.
+**Tool names.** System 2 is offered each tool by its wire name
+(`core/conscious/tools/names.wire_name`: `home.light_turn_on` is `home_light_turn_on`). The
+checks compare names through the same mapping, so a golden may give either; only
+`tool_calls_offered` is exact, because a call by any other spelling is refused, never
+dispatched. `role` is `system1`, `system2`, `librarian` or `unknown`, read off the request's
+header.
 
 **A check that raises scores `error`, never `fail`**: a bug in the harness must not read as
 Alfred failing.
@@ -860,7 +865,8 @@ wins.
 The judge is the same vLLM model as every other role, reached through the harness's own
 Inspect model provider, `alfred-vllm` (`evals/harness/vllm_model.py`): a plain httpx
 `POST <base_url>/chat/completions`, text in and text out. Inspect's own `openai-api` provider
-needs `openai>=3.4`, and litellm, a base dependency, pins `openai<3`, so it cannot load here.
+could not load beside the old LLM client's `openai<3` pin; PR 7 of the Pydantic AI adoption
+moves the judge onto it and deletes `alfred-vllm`.
 
 | Setting | Value |
 |---|---|
@@ -1036,7 +1042,7 @@ goldens are public. Everything about it is fake or fenced.
 | `evals/harness/fake_ha.py` | `FakeHA`: the Home Assistant WebSocket double |
 | `evals/harness/world.py` | `World` schema and `load_world()` |
 | `evals/harness/worlds/` | World fixtures (`apartment.yaml`) |
-| `evals/harness/proxy.py` | `LlmProxy`: the recording pass-through to vLLM; `ROLE_FINGERPRINTS` |
+| `evals/harness/proxy.py` | `LlmProxy`: the recording pass-through to vLLM; `ROLES_BY_HEADER` |
 | `evals/harness/scenario.py` | The golden schema, the loader, variants and selection |
 | `evals/harness/driver.py` | `play()`: one variant against a running stack; `build_request()` |
 | `evals/harness/bus.py` | `ContainerBus`: what the driver reads from the container and does through it (see [The bus](#the-bus)) |

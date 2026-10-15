@@ -15,10 +15,14 @@ class _StubAsyncClient:
         self.payload = payload
         self.status_code = status_code
         self.requests: list[tuple[str, dict[str, Any]]] = []
+        self.headers: list[dict[str, str] | None] = []
         self.is_closed = False
 
-    async def post(self, url: str, json: dict[str, Any]) -> httpx.Response:
+    async def post(
+        self, url: str, json: dict[str, Any], headers: dict[str, str] | None = None
+    ) -> httpx.Response:
         self.requests.append((url, json))
+        self.headers.append(headers)
         return httpx.Response(
             self.status_code, json=self.payload, request=httpx.Request("POST", url)
         )
@@ -94,6 +98,8 @@ async def test_openai_infer_request_shape_and_parse(monkeypatch: pytest.MonkeyPa
     result = await openai_client.infer("decide")
 
     url, body = stub.requests[0]
+    # The eval proxy attributes the call by this header, never by the prompt's text.
+    assert stub.headers[0] == {"X-Alfred-Role": "system1"}
     assert url == "http://vllm:8000/v1/chat/completions"
     assert body["model"] == "gemma-27b"
     assert body["response_format"] == {"type": "json_object"}

@@ -271,8 +271,8 @@ class SimEnv:
     routine_store: RoutineStore
 
     def librarian(self, context_index: ContextIndexManager | None = None) -> Librarian:
-        """A Librarian with no LLM key: no analysis calls, and compression falls back to
-        its own deterministic concatenation summary (the "stub" summarizer)."""
+        """A Librarian with no model: no analysis calls, and compression falls back to its
+        own deterministic concatenation summary (the "stub" summarizer)."""
         return Librarian(
             redis=self.redis,
             episodic_memory=self.episodic,
@@ -281,7 +281,6 @@ class SimEnv:
             context_index=context_index or self.context_index,
             preferences_dir=str(self.workdir / "preferences"),
             profile_dir=str(self.workdir / "profile"),
-            claude_api_key="",
         )
 
     async def close(self) -> None:

@@ -121,12 +121,14 @@ def test_container_env_points_every_llm_at_the_proxy_and_ha_at_the_fake(tmp_path
     assert env["HA_HOST"] == "http://host.docker.internal:9200"
     assert env["HA_TOKEN"] == "alfred-eval-ha-token"
     assert env["OPENAI_COMPAT_HOST"] == "http://host.docker.internal:9100"
-    assert env["OPENAI_API_BASE"] == env["OPENAI_BASE_URL"] == "http://host.docker.internal:9100/v1"
-    assert env["CLAUDE_MODEL"] == "openai/gemma-4-26b-a4b"
+    assert env["VLLM_BASE_URL"] == "http://host.docker.internal:9100/v1"
+    assert env["SYSTEM2_MODEL"] == env["LIBRARIAN_MODEL"] == "vllm:gemma-4-26b-a4b"
     assert env["EMBEDDING_HOST"] == "http://host.docker.internal:8001"
     assert env["OPENROUTER_API_KEY"] == "alfred-eval-not-a-key"
     assert env["REFLEX_BACKEND"] == env["EMBEDDING_BACKEND"] == "openai"
     assert env["OPENAI_COMPAT_MODEL"] == "gemma-4-26b-a4b"
+    # The legacy settings would be translated over the new ones; none is sent.
+    assert not {"CLAUDE_MODEL", "OPENAI_API_BASE", "OPENAI_BASE_URL"} & set(env)
 
 
 def test_up_command_is_eval_mode_with_every_env_pair(tmp_path: Path) -> None:
@@ -541,13 +543,13 @@ _NOT_REACHED = (
             "readiness request, but the LLM upstream failed (400, 503) — check http://x",
         ),
         # System 1 calls from the fake HA's initial states land in this window even when
-        # System 2 never reached the proxy, so only `unknown` points at the fingerprints.
+        # System 2 never reached the proxy, so only `unknown` points at the role header.
         (
             [("unknown", 200)],
             [("system1", 200), ("unknown", 200), ("unknown", 502)],
-            "System 2 answered the readiness request, but the LLM proxy saw 2 call(s) it could "
-            "not classify (role unknown) and none recognised as System 2 — if System 2's prompt "
-            "changed, update ROLE_FINGERPRINTS in evals/harness/proxy.py",
+            "System 2 answered the readiness request, but the LLM proxy saw 2 call(s) with "
+            "no recognised X-Alfred-Role header and none from System 2 — every LLM request "
+            "Alfred makes must carry the header (shared/llm_roles.py)",
         ),
     ],
     ids=[
@@ -555,7 +557,7 @@ _NOT_REACHED = (
         "other-roles-only",
         "upstream-failed",
         "every-system2-call-failed",
-        "unclassified-calls",
+        "calls-without-a-role-header",
     ],
 )
 async def test_readiness_needs_a_successful_system2_llm_call_since_the_request(

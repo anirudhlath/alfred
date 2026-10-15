@@ -17,7 +17,6 @@ def _sir() -> IdentityResult:
 def test_area_injects_location_section() -> None:
     prompt = ContextAssembler().assemble(
         identity=_sir(),
-        tools_section="",
         channel="satellite",
         content_type="audio",
         area="Kitchen",
@@ -27,9 +26,7 @@ def test_area_injects_location_section() -> None:
 
 
 def test_no_area_no_location_section() -> None:
-    prompt = ContextAssembler().assemble(
-        identity=_sir(), tools_section="", channel="web_pwa", content_type="text"
-    )
+    prompt = ContextAssembler().assemble(identity=_sir(), channel="web_pwa", content_type="text")
     assert "## Location" not in prompt
 
 

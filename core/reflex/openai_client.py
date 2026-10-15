@@ -14,6 +14,7 @@ import httpx
 
 from sdk.alfred_sdk.telemetry import track_tokens
 from shared.config import AlfredConfig
+from shared.llm_roles import ROLE_HEADER, SYSTEM1
 
 # Long-lived client reuses TCP connections across inference calls (hot path)
 _http_client: httpx.AsyncClient | None = None
@@ -73,6 +74,7 @@ async def infer(prompt: str, model: str | None = None) -> dict[str, object]:
             "max_tokens": MAX_OUTPUT_TOKENS,
             "response_format": {"type": "json_object"},
         },
+        headers={ROLE_HEADER: SYSTEM1},
     )
     resp.raise_for_status()
     data = resp.json()

@@ -424,3 +424,73 @@ def test_probe_detail_redacts_credentials() -> None:
     # Redacted where it is printed, intact where it is sent.
     assert "hunter2" not in detail
     assert "hunter2" in seen["url"]
+
+
+@pytest.fixture
+def _clean_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``load_env`` merges ``os.environ``, so a stray variable would leak into the checks."""
+    for name in (
+        "SYSTEM2_MODEL",
+        "LIBRARIAN_MODEL",
+        "VLLM_BASE_URL",
+        "OPENAI_BASE_URL",
+        "OPENAI_COMPAT_HOST",
+        "CLAUDE_MODEL",
+        "OPENROUTER_API_KEY",
+        "CLAUDE_API_KEY",
+        "SYSTEM2_MAX_TOKENS",
+        "SYSTEM2_TIMEOUT_S",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_vllm_model_with_a_known_family_passes(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(
+        tmp_path, "SYSTEM2_MODEL=vllm:gemma-4-26b-a4b\nOPENAI_COMPAT_HOST=http://localhost:8000\n"
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "pass"
+    assert "http://localhost:8000/v1" in _detail(checks, "conscious (System 2)")
+
+
+def test_vllm_model_with_no_known_family_warns(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(tmp_path, "SYSTEM2_MODEL=vllm:house-brain\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "warn"
+    assert "house-brain" in _detail(checks, "conscious (System 2)")
+
+
+def test_direct_claude_string_fails(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(tmp_path, "OPENROUTER_API_KEY=sk-or-v1-abc\nCLAUDE_MODEL=claude-sonnet-4-6\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "fail"
+    assert "not a model string Alfred can use" in _detail(checks, "conscious (System 2)")
+
+
+def test_librarian_model_is_checked_when_it_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _clean_llm_env: None
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("CLAUDE_API_KEY", raising=False)
+    env = _write_env(
+        tmp_path,
+        "SYSTEM2_MODEL=vllm:gemma-x\nLIBRARIAN_MODEL=openrouter:anthropic/claude-sonnet-4\n",
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "fail"
+    assert "LIBRARIAN_MODEL" in _detail(checks, "conscious (System 2)")
+
+
+def test_bad_max_tokens_fails_naming_it(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(tmp_path, "OPENROUTER_API_KEY=sk-or-v1-abc\nSYSTEM2_MAX_TOKENS=many\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "fail"
+    assert "SYSTEM2_MAX_TOKENS" in _detail(checks, "conscious (System 2)")
+
+
+def test_legacy_openai_model_with_a_base_url_passes(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(
+        tmp_path, "CLAUDE_MODEL=openai/gemma-x\nOPENAI_BASE_URL=http://localhost:9/v1\n"
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "pass"

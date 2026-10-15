@@ -14,6 +14,7 @@ from redis.exceptions import RedisError
 
 from evals.harness.checks import run_check
 from evals.harness.checks.judge_spec import JudgeSpec
+from evals.harness.checks.llm import RoleParams
 from evals.harness.driver import HarnessError, play
 from evals.harness.evidence import Evidence
 from evals.harness.judge import judge_check
@@ -30,6 +31,8 @@ if TYPE_CHECKING:
     from evals.harness.judge import Judge
     from evals.harness.scenario import Scenario, ScenarioVariant
 
+# Runs on every scenario with a System 2 tool call, after the golden's own checks (R12).
+TOOL_CALLS_OFFERED = "tool_calls_offered"
 
 # Recovery restarts a suite gets (of a dead container, or of a stack a failed sample left
 # dirty) before every later sample that needs one errors at once.
@@ -103,6 +106,11 @@ async def score_evidence(
             results.append(await judge_check(judge, evidence, check.params, trusted))
         else:
             results.append(run_check(check.name, check.params, evidence))
+    # Last, so the golden's own checks keep their indices; only with a System 2 tool call,
+    # so a scenario without one keeps its verdict; and once, if the golden declares it.
+    declared = any(check.name == TOOL_CALLS_OFFERED for check in scenario.expect)
+    if not declared and any(c.role == "system2" and c.tool_calls for c in evidence.llm_calls):
+        results.append(run_check(TOOL_CALLS_OFFERED, RoleParams(), evidence))
     return verdict(results), results
 
 

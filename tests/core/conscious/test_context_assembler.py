@@ -67,12 +67,11 @@ def assembler(tmp_path: Path) -> ContextAssembler:
 def test_assemble_for_sir(assembler: ContextAssembler) -> None:
     prompt = assembler.assemble(
         identity=_sir(),
-        tools_section="- smart_home.dim_lights(room, level)",
-        integrations_section="available",
+        integrations_available=True,
         proactivity_level="opinionated",
     )
     assert "Alfred" in prompt
-    assert "smart_home.dim_lights" in prompt
+    assert "Available Tools" not in prompt
     assert "calendar" in prompt  # integration hint
     assert "opinionated" in prompt
 
@@ -80,8 +79,7 @@ def test_assemble_for_sir(assembler: ContextAssembler) -> None:
 def test_assemble_for_guest_excludes_personal(assembler: ContextAssembler) -> None:
     prompt = assembler.assemble(
         identity=_guest(),
-        tools_section="- smart_home.dim_lights(room, level)",
-        integrations_section="available",
+        integrations_available=True,
         proactivity_level="moderate",
     )
     assert "Alfred" in prompt
@@ -98,7 +96,6 @@ def test_assemble_includes_relevant_context_for_sir(assembler: ContextAssembler)
     ]
     prompt = assembler.assemble(
         identity=_sir(),
-        tools_section="",
         relevant_context=results,
     )
     assert "## Relevant Context" in prompt
@@ -113,7 +110,6 @@ def test_assemble_guest_excludes_relevant_context(assembler: ContextAssembler) -
     results = [_make_search_result(content="Sir's secret preference")]
     prompt = assembler.assemble(
         identity=_guest(),
-        tools_section="",
         relevant_context=results,
     )
     assert "Relevant Context" not in prompt
@@ -124,8 +120,7 @@ def test_assemble_empty_sections_omitted(assembler: ContextAssembler) -> None:
     """Empty optional sections don't produce headers in the prompt."""
     prompt = assembler.assemble(
         identity=_sir(),
-        tools_section="",
-        integrations_section="",
+        integrations_available=False,
     )
     assert "## Available Tools" not in prompt
     assert "## Integrations" not in prompt
@@ -136,14 +131,12 @@ def test_assemble_no_relevant_context_omits_section(assembler: ContextAssembler)
     """When relevant_context is None or empty, no section is added."""
     prompt = assembler.assemble(
         identity=_sir(),
-        tools_section="",
         relevant_context=None,
     )
     assert "## Relevant Context" not in prompt
 
     prompt2 = assembler.assemble(
         identity=_sir(),
-        tools_section="",
         relevant_context=[],
     )
     assert "## Relevant Context" not in prompt2
@@ -153,7 +146,6 @@ def test_current_time_rendered_in_user_timezone(assembler: ContextAssembler) -> 
     """Current Time is rendered as local wall-clock in the requested tz."""
     prompt = assembler.assemble(
         identity=_sir(),
-        tools_section="- t: tool",
         now=datetime(2026, 7, 16, 20, 5, 32, tzinfo=UTC),
         tz_name="America/Denver",
     )
@@ -165,9 +157,19 @@ def test_current_time_utc_fallback(assembler: ContextAssembler) -> None:
     """Default tz_name of UTC renders the current time unchanged."""
     prompt = assembler.assemble(
         identity=_sir(),
-        tools_section="- t: tool",
         now=datetime(2026, 7, 16, 20, 5, 32, tzinfo=UTC),
         tz_name="UTC",
     )
     assert "## Current Time" in prompt
     assert "Thursday 2026-07-16T20:05:32+00:00 (UTC)" in prompt
+
+
+def test_routine_hint_ends_the_prompt(assembler: ContextAssembler) -> None:
+    prompt = assembler.assemble(identity=_sir(), routine_hint="[routine-suggestion] Dim.")
+    assert prompt.endswith("\n\n[routine-suggestion] Dim.")
+
+
+def test_no_routine_hint_adds_nothing(assembler: ContextAssembler) -> None:
+    assert assembler.assemble(identity=_sir()) == assembler.assemble(
+        identity=_sir(), routine_hint=""
+    )

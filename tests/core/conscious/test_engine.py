@@ -1,29 +1,52 @@
-"""Tests for ConsciousEngine."""
+"""The Conscious Engine: one request in, one reply out, the System 2 agent in between."""
 
 from __future__ import annotations
 
 import datetime as _dt
-import enum
-import json
-from typing import Any, Literal
-from unittest.mock import AsyncMock, MagicMock, patch
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from pydantic import BaseModel
+from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.usage import RequestUsage
 
 from bus.schemas.events import AlfredResponse, UserRequest
-from core.conscious.engine import MAX_ITERATIONS, ConsciousEngine
-from core.identity.schemas import IdentityResult
+from core.conscious.agent import REQUEST_LIMIT, build_system2_agent, system2_toolsets
+from core.conscious.context_assembler import ContextAssembler
+from core.conscious.engine import (
+    BUDGET_REPLY,
+    DELIBERATING_REPLY,
+    NOT_CONFIGURED_REPLY,
+    ConsciousConfig,
+    ConsciousDeps,
+    ConsciousEngine,
+    session_messages,
+)
+from core.conscious.tools.catalog import TOOL_RETRIES
 from core.memory.schemas import RoutineSpec
-from core.reflex.tool_registry import ToolInfo, ToolRegistry
-from core.triggers.feature import TriggerFeature, TriggerFeatureContext
-from core.triggers.store import TriggerStore
-from sdk.alfred_sdk.client import AlfredClient
-from sdk.alfred_sdk.feature import BaseFeature, tool
+from core.memory.vector_store import ContextMetadata, SearchResult
+from core.reflex.tool_registry import ToolInfo
+from shared.agents import model_key
+from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
+from tests.core.conscious.helpers import identity
+from tests.llm_fakes import Script, tool_call
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
-def _make_request(**overrides: object) -> UserRequest:
-    defaults = {
+@pytest.fixture(autouse=True)
+def integrations(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """No real adapter is asked for its capabilities."""
+    fetch = AsyncMock(return_value=[])
+    monkeypatch.setattr("core.conscious.engine.fetch_integration_tools", fetch)
+    return fetch
+
+
+def _request(**overrides: Any) -> UserRequest:
+    fields: dict[str, Any] = {
         "source": "web-pwa",
         "channel": "web_pwa",
         "session_id": "sess-1",
@@ -32,382 +55,407 @@ def _make_request(**overrides: object) -> UserRequest:
         "content_type": "text",
         "content": "Hello",
     }
-    defaults.update(overrides)
-    return UserRequest(**defaults)
+    fields.update(overrides)
+    return UserRequest(**fields)
 
 
-def _sir_identity() -> IdentityResult:
-    return IdentityResult(
-        identity="sir",
-        confidence=0.99,
-        method="webauthn",
-        factors=["webauthn"],
-        risk_clearance="high",
-    )
-
-
-@pytest.fixture
-def mock_deps() -> dict[str, AsyncMock | MagicMock]:
-    deps: dict[str, AsyncMock | MagicMock] = {
-        "redis": AsyncMock(),
-        "identity_gate": MagicMock(),
-        "session_mgr": AsyncMock(),
-        "cost_tracker": AsyncMock(),
-        "context_assembler": MagicMock(),
-        "domain_router": AsyncMock(),
-        "tool_registry": AsyncMock(),
-        "context_reader": AsyncMock(),
-    }
-    # Common defaults
-    deps["identity_gate"].resolve.return_value = _sir_identity()
-    deps["session_mgr"].get_or_create.return_value = {"channel": "web_pwa", "history": []}
-    deps["cost_tracker"].is_budget_exceeded.return_value = False
-    deps["context_assembler"].assemble.return_value = "You are Alfred."
-    deps["tool_registry"].get_tools.return_value = []
-    deps["context_reader"].get_rendered_context.return_value = ""
-    return deps
-
-
-@pytest.mark.asyncio
-async def test_process_request_basic(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
-    engine = ConsciousEngine(**mock_deps)
-
-    with patch.object(engine, "_call_llm", new_callable=AsyncMock) as mock_llm:
-        mock_llm.return_value = ("Good evening, sir.", [], 100, 50)
-        response = await engine.process_request(_make_request())
-
-    assert isinstance(response, AlfredResponse)
-    assert response.text == "Good evening, sir."
-
-
-@pytest.mark.asyncio
-async def test_process_request_persists_valid_timezone(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """A request carrying a valid timezone is persisted at the domain boundary."""
-    from shared.streams import USER_TIMEZONE_KEY
-
-    # get() → None so set_user_timezone's change-guard always writes.
-    mock_deps["redis"].get = AsyncMock(return_value=None)
-    engine = ConsciousEngine(**mock_deps)
-
-    with patch.object(engine, "_call_llm", new_callable=AsyncMock) as mock_llm:
-        mock_llm.return_value = ("Good evening, sir.", [], 100, 50)
-        await engine.process_request(_make_request(timezone="America/Denver"))
-
-    mock_deps["redis"].set.assert_any_await(USER_TIMEZONE_KEY, "America/Denver")
-
-
-@pytest.mark.asyncio
-async def test_budget_exceeded_returns_fallback(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    mock_deps["cost_tracker"].is_budget_exceeded.return_value = True
-    engine = ConsciousEngine(**mock_deps)
-
-    response = await engine.process_request(_make_request(content="Good morning"))
-    assert isinstance(response, AlfredResponse)
-    assert "budget" in response.text.lower() or "reduced" in response.text.lower()
-
-
-@pytest.mark.asyncio
-async def test_multi_turn_tool_use(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
-    """Agentic loop: LLM calls a tool, gets result, then responds."""
-    tool = ToolInfo(
-        name="smart_home.get_lights",
-        description="Get light state",
-        feature_name="home",
-        feature_description="Home control",
-        target_service="home-service",
-    )
-    mock_deps["tool_registry"].get_tools.return_value = [tool]
-
-    action_result = MagicMock()
-    action_result.status = "success"
-    action_result.result = {"lights": "on"}
-    mock_deps["domain_router"].route.return_value = action_result
-
-    engine = ConsciousEngine(**mock_deps)
-
-    tool_call = [{"id": "tc-1", "name": "smart_home.get_lights", "input": {}}]
-
-    with patch.object(engine, "_call_llm", new_callable=AsyncMock) as mock_llm:
-        # First call: LLM uses a tool. Second call: LLM responds with text.
-        mock_llm.side_effect = [
-            ("Let me check...", tool_call, 100, 50),
-            ("The lights are on, sir.", [], 150, 60),
-        ]
-        response = await engine.process_request(_make_request(content="Are the lights on?"))
-
-    assert response.text == "The lights are on, sir."
-    assert "smart_home.get_lights" in response.actions_taken
-    assert mock_llm.call_count == 2
-
-
-@pytest.mark.asyncio
-async def test_tool_not_found_in_registry(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
-    """Tool call for a tool not in registry returns error result."""
-    mock_deps["tool_registry"].get_tools.return_value = []  # empty registry
-    engine = ConsciousEngine(**mock_deps)
-
-    results = await engine._execute_tool_calls(
-        [{"id": "tc-1", "name": "nonexistent.tool", "input": {}}], tools=[]
-    )
-
-    assert len(results) == 1
-    assert results[0]["type"] == "tool_result"
-    assert "not found" in results[0]["content"]
-
-
-@pytest.mark.asyncio
-async def test_dispatch_tool_call_refuses_action_tool_for_non_sir(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """Dispatch-side gate (defense-in-depth): a guest-identity turn dispatching an
-    action tool (confirm_pending_action/attention_*) is refused even though the
-    manifest that offers these tools is already sir-only — a guest-turn model that
-    hallucinates the call must not reach the underlying pending-action helper."""
-    engine = ConsciousEngine(**mock_deps)
-
-    with patch(
-        "core.conscious.engine.dispatch_action_tool", new_callable=AsyncMock
-    ) as mock_dispatch:
-        result = await engine._dispatch_tool_call(
-            {"id": "tc-1", "name": "confirm_pending_action", "input": {"request_id": "req-1"}},
-            tools=[],
-            is_sir=False,
-        )
-
-    mock_dispatch.assert_not_called()
-    assert result["type"] == "tool_result"
-    assert "verified user" in result["content"]
-
-
-@pytest.mark.asyncio
-async def test_dispatch_tool_call_allows_action_tool_for_sir(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """A sir turn (is_sir=True, the default) still dispatches action tools normally."""
-    engine = ConsciousEngine(**mock_deps)
-
-    with patch(
-        "core.conscious.engine.dispatch_action_tool", new_callable=AsyncMock
-    ) as mock_dispatch:
-        mock_dispatch.return_value = '{"status": "confirmed"}'
-        result = await engine._dispatch_tool_call(
-            {"id": "tc-1", "name": "confirm_pending_action", "input": {"request_id": "req-1"}},
-            tools=[],
-        )
-
-    mock_dispatch.assert_awaited_once()
-    assert result["content"] == '{"status": "confirmed"}'
-
-
-@pytest.mark.asyncio
-async def test_max_iterations_fallback(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
-    """When tool calls never resolve, engine hits MAX_ITERATIONS and returns fallback."""
-    tool = ToolInfo(
-        name="some.tool",
-        description="A tool",
-        feature_name="test",
-        feature_description="Test",
-        target_service="test-service",
-    )
-    mock_deps["tool_registry"].get_tools.return_value = [tool]
-
-    action_result = MagicMock()
-    action_result.status = "success"
-    action_result.result = {"ok": True}
-    mock_deps["domain_router"].route.return_value = action_result
-
-    engine = ConsciousEngine(**mock_deps)
-
-    # LLM always returns a tool call, never a final text-only response
-    tool_call = [{"id": "tc-1", "name": "some.tool", "input": {}}]
-    with patch.object(engine, "_call_llm", new_callable=AsyncMock) as mock_llm:
-        mock_llm.return_value = ("", tool_call, 100, 50)
-        response = await engine.process_request(_make_request())
-
-    assert mock_llm.call_count == MAX_ITERATIONS
-    assert "apologize" in response.text.lower() or "deliberating" in response.text.lower()
-
-
-def test_tools_to_openai_format(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
-    """Verify ToolInfo → OpenAI function-calling format conversion."""
-    engine = ConsciousEngine(**mock_deps)
-    schema = {
-        "type": "object",
-        "properties": {
-            "room": {"type": "string", "description": "Room name"},
-            "level": {"type": "integer", "description": "Brightness", "default": 100},
-        },
-        "required": ["room"],
-    }
-    tools = [
-        ToolInfo(
-            name="smart_home.set_light",
-            description="Set light brightness",
-            feature_name="home",
-            feature_description="Home",
-            target_service="home-service",
-            input_schema=schema,
-        ),
-    ]
-
-    result = engine._tools_to_openai_format(tools)
-
-    assert len(result) == 1
-    assert result[0]["type"] == "function"
-    func = result[0]["function"]
-    # Dots sanitized to underscores for OpenAI compatibility
-    assert func["name"] == "smart_home_set_light"
-    # The tool's input_schema is offered as is (an old manifest's is derived at parse time).
-    assert func["parameters"] == schema
-
-
-def test_tool_name_sanitization(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
-    """Tool names with dots are sanitized for OpenAI and reversed back."""
-    engine = ConsciousEngine(**mock_deps)
-    assert engine._sanitize_tool_name("lighting.dim_lights") == "lighting_dim_lights"
-
-    tools = [
-        ToolInfo(
-            name="lighting.dim_lights",
-            description="Dim",
-            feature_name="home",
-            feature_description="Home",
-            target_service="home-service",
-        ),
-    ]
-    assert engine._unsanitize_tool_name("lighting_dim_lights", tools) == "lighting.dim_lights"
-
-
-class _Mode(enum.Enum):
-    HEAT = "heat"
-    COOL = "cool"
-
-
-class _Window(BaseModel):
-    start: _dt.datetime
-    end: _dt.datetime
-
-
-class _ClimateFeature(BaseFeature):
-    """Climate controls."""
-
-    feature_name = "climate"
-
-    @tool(risk="critical")
-    async def set_schedule(
-        self,
-        zone: str,
-        days: list[Literal["mon", "tue"]],
-        at: _dt.datetime,
-        mode: _Mode,
-        window: _Window | None = None,
-        note: str = "",
-    ) -> dict[str, Any]:
-        """Schedule heating.
-
-        Args:
-            zone: Which zone.
-            days: Days to run.
-            at: When to start.
-        """
-        return {}
-
-
-async def _offered(
-    features: list[type[BaseFeature]], engine: ConsciousEngine
-) -> dict[str, dict[str, Any]]:
-    """The real path: SDK manifest → registry JSON → ToolRegistry → what System 2 sends."""
-    client = AlfredClient(service_name="svc", service_endpoint="http://svc/mcp")
-    for cls in features:
-        # TriggerFeature touches its store while listing its tools, so it needs a context.
-        # spec_set: a bare mock answers `_tool_marker` and would be listed as a tool.
-        ctx = (
-            TriggerFeatureContext(store=AsyncMock(spec_set=TriggerStore))
-            if cls is TriggerFeature
-            else None
-        )
-        client.discover_features_from_classes([cls], ctx)
+def _deps(script: Script | None = None, *, who: str = "sir", **overrides: Any) -> ConsciousDeps:
+    """Mocked services around a real System 2 agent; no script means no model."""
     redis = AsyncMock()
-    redis.hgetall.return_value = {b"svc": json.dumps(client.get_registration_manifest()).encode()}
-    tools = await ToolRegistry(redis).get_tools()
-    return {
-        d["function"]["name"]: d["function"]["parameters"]
-        for d in engine._tools_to_openai_format(tools)
+    redis.get = AsyncMock(return_value=None)
+    identity_gate = MagicMock()
+    identity_gate.resolve.return_value = identity(who)  # type: ignore[arg-type]
+    session_mgr = AsyncMock()
+    session_mgr.get_or_create.return_value = {"channel": "web_pwa", "history": []}
+    cost = AsyncMock()
+    cost.is_budget_exceeded.return_value = False
+    registry = AsyncMock()
+    registry.get_tools.return_value = []
+    fields: dict[str, Any] = {
+        "redis": redis,
+        "identity_gate": identity_gate,
+        "session_mgr": session_mgr,
+        "cost_tracker": cost,
+        "domain_router": AsyncMock(),
+        "tool_registry": registry,
+        "context_reader": AsyncMock(),
+        "agent": build_system2_agent(
+            toolsets=system2_toolsets(None),
+            assembler=ContextAssembler(),
+            max_tokens=256,
+            timeout_s=5.0,
+        ),
+        "model": script.model if script is not None else None,
     }
+    fields.update(overrides)
+    return ConsciousDeps(**fields)
 
 
-@pytest.mark.asyncio
-async def test_required_lists_exactly_the_parameters_without_defaults(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """#300: a real BaseFeature manifest, through the registry, to the model."""
-    offered = await _offered([TriggerFeature, _ClimateFeature], ConsciousEngine(**mock_deps))
-    assert offered["triggers_delete_trigger"]["required"] == ["trigger_id"]
-    assert offered["triggers_toggle_trigger"]["required"] == ["trigger_id", "enabled"]
-    assert offered["triggers_create_trigger"]["required"] == ["name", "trigger_type", "conditions"]
-    assert offered["triggers_list_triggers"]["required"] == []
-    assert offered["climate_set_schedule"]["required"] == ["zone", "days", "at", "mode"]
-
-
-@pytest.mark.asyncio
-async def test_rich_types_reach_the_model(mock_deps: dict[str, AsyncMock | MagicMock]) -> None:
-    """#301: list items, enums, dates and nested models survive to the tool definition."""
-    schema = (await _offered([_ClimateFeature], ConsciousEngine(**mock_deps)))[
-        "climate_set_schedule"
-    ]
-    props = schema["properties"]
-    assert props["days"] == {
-        "type": "array",
-        "items": {"type": "string", "enum": ["mon", "tue"]},
-        "description": "Days to run.",
-    }
-    assert props["at"] == {"type": "string", "format": "date-time", "description": "When to start."}
-    assert props["mode"] == {"$ref": "#/$defs/_Mode"}
-    assert schema["$defs"]["_Mode"] == {"type": "string", "enum": ["heat", "cool"]}
-    assert props["window"]["anyOf"][0] == {"$ref": "#/$defs/_Window"}
-    assert schema["$defs"]["_Window"]["properties"]["start"] == {
-        "type": "string",
-        "format": "date-time",
-    }
-    # Critical tools are still offered the optional `reason`.
-    assert props["reason"]["type"] == "string"
-    assert "reason" not in schema["required"]
-
-
-def test_reason_injection_leaves_the_registry_schema_untouched(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    engine = ConsciousEngine(**mock_deps)
-    tool_info = _critical_tool()
-    first = engine._tools_to_openai_format([tool_info])
-    second = engine._tools_to_openai_format([tool_info])
-    assert first == second
-    assert "reason" not in tool_info.input_schema["properties"]
-
-
-def test_reason_is_offered_on_a_schema_without_properties(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """A critical tool whose schema has no `properties` still gets `reason`, on a copy."""
-    engine = ConsciousEngine(**mock_deps)
-    tool_info = ToolInfo(
-        name="home.sound_alarm",
-        description="Sound the alarm",
-        feature_name="home",
+def _info(name: str) -> ToolInfo:
+    return ToolInfo(
+        name=name,
+        description=f"{name} does a thing",
+        feature_name=name.split(".")[0],
         feature_description="Home control",
         target_service="home-service",
-        risk="critical",
-        input_schema={"type": "object"},
+        risk="benign",
+        input_schema={
+            "type": "object",
+            "properties": {"entity_id": {"type": "string"}},
+            "required": ["entity_id"],
+        },
     )
 
-    schema = engine._tools_to_openai_format([tool_info])[0]["function"]["parameters"]
 
-    assert schema["properties"]["reason"]["type"] == "string"
-    assert tool_info.input_schema == {"type": "object"}
+def _router() -> AsyncMock:
+    router = AsyncMock()
+    router.route.return_value = MagicMock(status="success", result={"ok": True}, error=None)
+    return router
+
+
+def _memory(content: str) -> SearchResult:
+    return SearchResult(
+        id="m1",
+        score=0.8,
+        content=content,
+        semantic_key=content,
+        metadata=ContextMetadata(
+            type="semantic",
+            source="preferences.md",
+            entities="",
+            timestamp=0.0,
+            significance=1.0,
+            retrieval_count=0,
+        ),
+    )
+
+
+def _user_text(message: ModelRequest) -> str:
+    return next(p.content for p in message.parts if isinstance(p, UserPromptPart))
+
+
+def test_the_replies_are_verbatim() -> None:
+    assert BUDGET_REPLY == (
+        "I'm afraid we've reached the daily budget, sir. I'm operating in reduced capacity"
+        " — ambient actions continue, but I'll need to defer complex requests until tomorrow."
+    )
+    assert DELIBERATING_REPLY == (
+        "I apologize, sir — I've been deliberating too long. Let me try a more direct approach."
+    )
+    assert NOT_CONFIGURED_REPLY == (
+        "I'm afraid my connection to the thinking engine is not configured, sir."
+    )
+
+
+def test_session_messages_keep_user_and_assistant_text_only() -> None:
+    messages = session_messages(
+        [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Good evening, sir."},
+            {"role": "system", "content": "not a turn"},
+        ]
+    )
+    assert len(messages) == 2
+    assert isinstance(messages[0], ModelRequest) and _user_text(messages[0]) == "Hi"
+    assert isinstance(messages[1], ModelResponse)
+    assert messages[1].parts == [TextPart("Good evening, sir.")]
+
+
+@pytest.mark.asyncio
+async def test_a_turn_returns_the_agents_reply_and_stores_both_sides() -> None:
+    script = Script("Good morning, sir.")
+    deps = _deps(script)
+
+    response = await ConsciousEngine(deps=deps).process_request(_request(content="Good morning"))
+
+    assert isinstance(response, AlfredResponse)
+    assert (response.text, response.source, response.mood, response.actions_taken) == (
+        "Good morning, sir.",
+        "conscious-engine",
+        "neutral",
+        [],
+    )
+    deps.session_mgr.append_turn.assert_has_awaits(  # type: ignore[attr-defined]
+        [call("sess-1", "user", "Good morning"), call("sess-1", "assistant", "Good morning, sir.")]
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_model_answers_not_configured() -> None:
+    deps = _deps()
+
+    response = await ConsciousEngine(deps=deps).process_request(_request())
+
+    assert response.text == NOT_CONFIGURED_REPLY
+    deps.cost_tracker.record_spend.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_an_exceeded_budget_answers_without_a_run() -> None:
+    script = Script("never sent")
+    deps = _deps(script)
+    deps.cost_tracker.is_budget_exceeded.return_value = True  # type: ignore[attr-defined]
+
+    response = await ConsciousEngine(deps=deps).process_request(_request())
+
+    assert (response.text, response.mood) == (BUDGET_REPLY, "concerned")
+    assert script.call_count == 0
+    deps.session_mgr.get_or_create.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_the_request_limit_ends_the_turn_with_the_deliberating_reply() -> None:
+    registry = AsyncMock()
+    registry.get_tools.return_value = [_info("home.get_lights")]
+    calls = [
+        tool_call("home_get_lights", {"entity_id": "light.desk"}) for _ in range(REQUEST_LIMIT)
+    ]
+    script = Script(*calls)
+    deps = _deps(script, tool_registry=registry, domain_router=_router())
+
+    response = await ConsciousEngine(deps=deps).process_request(_request())
+
+    assert response.text == DELIBERATING_REPLY
+    assert script.call_count == REQUEST_LIMIT
+    assert response.actions_taken == ["home.get_lights"] * REQUEST_LIMIT
+    deps.cost_tracker.record_spend.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_blank_replies_past_the_output_retries_end_with_the_deliberating_reply() -> None:
+    script = Script("", "", "")
+    deps = _deps(script)
+
+    response = await ConsciousEngine(deps=deps).process_request(_request())
+
+    assert response.text == DELIBERATING_REPLY
+    assert script.call_count == 3
+    deps.cost_tracker.record_spend.assert_awaited_once()  # type: ignore[attr-defined]
+    deps.session_mgr.append_turn.assert_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_failing_past_its_retries_ends_with_the_deliberating_reply() -> None:
+    registry = AsyncMock()
+    registry.get_tools.return_value = [_info("home.get_lights")]
+    script = Script(*[tool_call("home_get_lights", {}) for _ in range(TOOL_RETRIES + 1)])
+    deps = _deps(script, tool_registry=registry, domain_router=_router())
+
+    response = await ConsciousEngine(deps=deps).process_request(_request())
+
+    assert response.text == DELIBERATING_REPLY
+    assert script.call_count == TOOL_RETRIES + 1
+    assert response.actions_taken == []
+    deps.domain_router.route.assert_not_awaited()  # type: ignore[attr-defined]
+    deps.cost_tracker.record_spend.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_a_provider_error_still_raises_so_the_request_is_retried() -> None:
+    deps = _deps(Script(ModelHTTPError(status_code=503, model_name="test")))
+
+    with pytest.raises(ModelHTTPError):
+        await ConsciousEngine(deps=deps).process_request(_request())
+
+    deps.cost_tracker.record_spend.assert_awaited_once()  # type: ignore[attr-defined]
+    deps.session_mgr.append_turn.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_spend_write_still_returns_the_reply() -> None:
+    deps = _deps(Script("Hello, sir."))
+    deps.cost_tracker.record_spend.side_effect = ConnectionError("redis blip")  # type: ignore[attr-defined]
+
+    response = await ConsciousEngine(deps=deps).process_request(_request())
+
+    assert response.text == "Hello, sir."
+    deps.session_mgr.append_turn.assert_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_run_records_its_spend_and_stores_no_turn() -> None:
+    deps = _deps(Script(RuntimeError("provider down")))
+
+    with pytest.raises(RuntimeError, match="provider down"):
+        await ConsciousEngine(deps=deps).process_request(_request())
+
+    deps.cost_tracker.record_spend.assert_awaited_once()  # type: ignore[attr-defined]
+    deps.session_mgr.append_turn.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_a_valid_client_timezone_is_persisted_and_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    saved = AsyncMock()
+    monkeypatch.setattr("core.conscious.engine.set_user_timezone", saved)
+    script = Script("ok")
+    deps = _deps(script)
+
+    await ConsciousEngine(deps=deps).process_request(_request(timezone="America/Denver"))
+
+    saved.assert_awaited_once_with(deps.redis, "America/Denver")
+    assert "(America/Denver)" in script.instructions()
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_timezone_falls_back_to_the_stored_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    saved = AsyncMock()
+    monkeypatch.setattr("core.conscious.engine.set_user_timezone", saved)
+    script = Script("ok")
+    deps = _deps(script)
+    deps.redis.get = AsyncMock(return_value=b"Europe/Paris")  # type: ignore[method-assign]
+
+    await ConsciousEngine(deps=deps).process_request(_request(timezone="Not/AZone"))
+
+    saved.assert_not_awaited()
+    assert "(Europe/Paris)" in script.instructions()
+
+
+@pytest.mark.asyncio
+async def test_the_session_history_is_the_runs_message_history() -> None:
+    script = Script("It is 3pm, sir.")
+    deps = _deps(script)
+    deps.session_mgr.get_or_create.return_value = {  # type: ignore[attr-defined]
+        "channel": "web_pwa",
+        "history": [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Good evening, sir."},
+        ],
+    }
+
+    await ConsciousEngine(deps=deps).process_request(_request(content="What time is it?"))
+
+    sent = script.requests[0][0]
+    assert [type(m) for m in sent] == [ModelRequest, ModelResponse, ModelRequest]
+    assert _user_text(sent[0]) == "Hi"
+    assert sent[1].parts == [TextPart("Good evening, sir.")]
+    assert _user_text(sent[2]) == "What time is it?"
+
+
+@pytest.mark.asyncio
+async def test_spend_and_the_scratchpad_note_use_the_runs_token_counts() -> None:
+    reply = ModelResponse(
+        parts=[TextPart("Done, sir.")], usage=RequestUsage(input_tokens=100, output_tokens=20)
+    )
+    script = Script(reply)
+    deps = _deps(script)
+
+    await ConsciousEngine(deps=deps).process_request(_request(content="Turn on the lights"))
+
+    deps.cost_tracker.record_spend.assert_awaited_once_with(  # type: ignore[attr-defined]
+        100, 20, model_key(script.model)
+    )
+    note = deps.redis.lpush.await_args.args[1]  # type: ignore[attr-defined]
+    assert "[conscious] user='Turn on the lights' → 10 chars" in note
+    assert note.endswith("(actions=none, tokens=100+20)")
+
+
+@pytest.mark.asyncio
+async def test_the_calls_the_catalog_dispatched_are_the_responses_actions() -> None:
+    registry = AsyncMock()
+    registry.get_tools.return_value = [_info("home.light_on")]
+    script = Script(tool_call("home_light_on", {"entity_id": "light.desk"}), "Done, sir.")
+    deps = _deps(script, tool_registry=registry, domain_router=_router())
+
+    response = await ConsciousEngine(deps=deps).process_request(_request())
+
+    assert response.actions_taken == ["home.light_on"]
+    assert "(actions=home.light_on, tokens=" in deps.redis.lpush.await_args.args[1]  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_the_run_carries_langfuse_session_user_and_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    @contextmanager
+    def _attributes(**kwargs: Any) -> Iterator[None]:
+        seen.update(kwargs)
+        yield
+
+    monkeypatch.setattr("core.conscious.engine.langfuse_attributes", _attributes)
+
+    await ConsciousEngine(deps=_deps(Script("hi"))).process_request(
+        _request(session_id="s9", channel="signal")
+    )
+
+    assert seen == {"session_id": "s9", "user_id": "sir", "tags": ["signal"]}
+
+
+@pytest.mark.asyncio
+async def test_involuntary_recall_reaches_the_instructions() -> None:
+    index = AsyncMock()
+    index.search_text.return_value = [_memory("Sir prefers dim lighting after 8pm")]
+    script = Script("ok")
+    deps = _deps(script, context_index=index)
+
+    await ConsciousEngine(deps=deps).process_request(_request(content="Lights?"))
+
+    index.search_text.assert_awaited_once_with(
+        "Lights?", limit=10, min_similarity=DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
+    )
+    assert "Sir prefers dim lighting after 8pm" in script.instructions()
+
+
+@pytest.mark.asyncio
+async def test_involuntary_recall_uses_the_configured_limit_and_floor() -> None:
+    index = AsyncMock()
+    index.search_text.return_value = []
+    config = ConsciousConfig(involuntary_recall_limit=3, involuntary_recall_threshold=0.7)
+    deps = _deps(Script("ok"), context_index=index, config=config)
+
+    await ConsciousEngine(deps=deps).process_request(_request(content="Lights?"))
+
+    index.search_text.assert_awaited_once_with("Lights?", limit=3, min_similarity=0.7)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_recall_still_answers() -> None:
+    index = AsyncMock()
+    index.search_text.side_effect = RuntimeError("embedding service down")
+    script = Script("Hello, sir.")
+
+    response = await ConsciousEngine(deps=_deps(script, context_index=index)).process_request(
+        _request()
+    )
+
+    assert response.text == "Hello, sir."
+    assert "## Relevant" not in script.instructions()
+
+
+@pytest.mark.asyncio
+async def test_memory_tools_are_offered_to_sir_only_with_an_index() -> None:
+    with_index, without = Script("hi"), Script("hi")
+
+    await ConsciousEngine(deps=_deps(with_index, context_index=AsyncMock())).process_request(
+        _request()
+    )
+    await ConsciousEngine(deps=_deps(without)).process_request(_request())
+
+    assert {"memory_recall_memories", "memory_get_live_state"} <= set(with_index.offered())
+    assert not [name for name in without.offered() if name.startswith("memory_")]
+
+
+@pytest.mark.asyncio
+async def test_integration_tools_are_listed_for_sir_only(integrations: AsyncMock) -> None:
+    await ConsciousEngine(deps=_deps(Script("hi"), who="guest")).process_request(_request())
+    integrations.assert_not_awaited()
+
+    await ConsciousEngine(deps=_deps(Script("hi"))).process_request(_request())
+    integrations.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_integration_listing_still_answers(integrations: AsyncMock) -> None:
+    integrations.side_effect = RuntimeError("registry broken")
+
+    response = await ConsciousEngine(deps=_deps(Script("Hello, sir."))).process_request(_request())
+
+    assert response.text == "Hello, sir."
 
 
 # ---------------------------------------------------------------------------
@@ -432,25 +480,21 @@ def _make_routine(
     )
 
 
-def test_build_routine_hint_returns_empty_without_routines(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
+def test_build_routine_hint_returns_empty_without_routines() -> None:
     """When routine_store is None, _build_routine_hint returns empty string."""
-    engine = ConsciousEngine(**mock_deps)
+    engine = ConsciousEngine(deps=_deps())
     # routine_store not set → _routines is None
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
     result = engine._build_routine_hint(now, "UTC")
     assert result == ""
 
 
-def test_build_routine_hint_matches_time_pattern(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
+def test_build_routine_hint_matches_time_pattern() -> None:
     """Candidate routine with matching time pattern should produce a hint."""
     routine_store = MagicMock()
     routine_store.list_by_state.return_value = [_make_routine(trigger_pattern="20:00 daily")]
 
-    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    engine = ConsciousEngine(deps=_deps(routine_store=routine_store))
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
     result = engine._build_routine_hint(now, "UTC")
 
@@ -459,9 +503,7 @@ def test_build_routine_hint_matches_time_pattern(
     routine_store.save.assert_called_once()
 
 
-def test_build_routine_hint_skips_within_cooldown(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
+def test_build_routine_hint_skips_within_cooldown() -> None:
     """Routine suggested 2 hours ago (within 24h cooldown) should be skipped."""
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
     recent_suggestion = now - _dt.timedelta(hours=2)
@@ -470,16 +512,14 @@ def test_build_routine_hint_skips_within_cooldown(
         _make_routine(trigger_pattern="20:00 daily", last_suggested=recent_suggestion)
     ]
 
-    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    engine = ConsciousEngine(deps=_deps(routine_store=routine_store))
     result = engine._build_routine_hint(now, "UTC")
 
     assert result == ""
     routine_store.save.assert_not_called()
 
 
-def test_build_routine_hint_suggests_after_cooldown(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
+def test_build_routine_hint_suggests_after_cooldown() -> None:
     """Routine suggested 25 hours ago (outside cooldown) should be suggested again."""
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
     old_suggestion = now - _dt.timedelta(hours=25)
@@ -488,21 +528,19 @@ def test_build_routine_hint_suggests_after_cooldown(
         _make_routine(trigger_pattern="20:00 daily", last_suggested=old_suggestion)
     ]
 
-    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    engine = ConsciousEngine(deps=_deps(routine_store=routine_store))
     result = engine._build_routine_hint(now, "UTC")
 
     assert "evening_dim" in result
     routine_store.save.assert_called_once()
 
 
-def test_build_routine_hint_no_match_for_wrong_time(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
+def test_build_routine_hint_no_match_for_wrong_time() -> None:
     """Evening pattern should not match when it is morning."""
     routine_store = MagicMock()
     routine_store.list_by_state.return_value = [_make_routine(trigger_pattern="evening")]
 
-    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    engine = ConsciousEngine(deps=_deps(routine_store=routine_store))
     # 8am → not evening
     now = _dt.datetime(2026, 3, 24, 8, 0, 0, tzinfo=_dt.UTC)
     result = engine._build_routine_hint(now, "UTC")
@@ -510,14 +548,12 @@ def test_build_routine_hint_no_match_for_wrong_time(
     assert result == ""
 
 
-def test_build_routine_hint_morning_pattern_matches_morning(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
+def test_build_routine_hint_morning_pattern_matches_morning() -> None:
     """Morning pattern should match when it is morning."""
     routine_store = MagicMock()
     routine_store.list_by_state.return_value = [_make_routine(trigger_pattern="weekday morning")]
 
-    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    engine = ConsciousEngine(deps=_deps(routine_store=routine_store))
     # 9am Monday
     now = _dt.datetime(2026, 3, 23, 9, 0, 0, tzinfo=_dt.UTC)  # Monday
     result = engine._build_routine_hint(now, "UTC")
@@ -525,36 +561,7 @@ def test_build_routine_hint_morning_pattern_matches_morning(
     assert "evening_dim" in result  # routine name
 
 
-@pytest.mark.asyncio
-async def test_process_request_injects_routine_hint(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """process_request should append routine hint to system prompt when a candidate matches."""
-    routine_store = MagicMock()
-    routine_store.list_by_state.return_value = [_make_routine(trigger_pattern="20:00 daily")]
-
-    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
-
-    with patch.object(engine, "_call_llm", new_callable=AsyncMock) as mock_llm:
-        mock_llm.return_value = ("Good evening, sir.", [], 100, 50)
-
-        # 8pm → matches "20:00 daily"
-        fixed_now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
-        with patch("core.conscious.engine.datetime") as mock_dt:
-            mock_dt.now.return_value = fixed_now
-
-            await engine.process_request(_make_request())
-
-    # The system_prompt passed to _call_llm should contain the routine hint
-    call_kwargs = mock_llm.call_args
-    system_prompt_arg = call_kwargs[0][0]  # first positional arg
-    assert "[routine-suggestion]" in system_prompt_arg
-    assert "evening_dim" in system_prompt_arg
-
-
-def test_build_routine_hint_includes_steps_and_confidence(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
+def test_build_routine_hint_includes_steps_and_confidence() -> None:
     """Hint should include step descriptions and confidence percentage."""
     from core.memory.schemas import RoutineStep
 
@@ -569,7 +576,7 @@ def test_build_routine_hint_includes_steps_and_confidence(
     )
     routine_store.list_by_state.return_value = [routine_with_steps]
 
-    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    engine = ConsciousEngine(deps=_deps(routine_store=routine_store))
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
     result = engine._build_routine_hint(now, "UTC")
 
@@ -577,14 +584,12 @@ def test_build_routine_hint_includes_steps_and_confidence(
     assert "75%" in result
 
 
-def test_build_routine_hint_empty_steps_shows_na(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
+def test_build_routine_hint_empty_steps_shows_na() -> None:
     """Hint should show N/A for steps when the routine has no steps defined."""
     routine_store = MagicMock()
     routine_store.list_by_state.return_value = [_make_routine(trigger_pattern="20:00 daily")]
 
-    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    engine = ConsciousEngine(deps=_deps(routine_store=routine_store))
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
     result = engine._build_routine_hint(now, "UTC")
 
@@ -598,9 +603,7 @@ def test_build_routine_hint_empty_steps_shows_na(
 
 
 @pytest.mark.asyncio
-async def test_check_routine_suggestions_publishes_notification(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
+async def test_check_routine_suggestions_publishes_notification() -> None:
     """check_routine_suggestions should publish NORMAL notification for matching candidates."""
     routine_store = MagicMock()
     routine_store.list_by_state.return_value = [_make_routine(trigger_pattern="20:00 daily")]
@@ -608,7 +611,7 @@ async def test_check_routine_suggestions_publishes_notification(
     notifier = AsyncMock()
     notifier.publish = AsyncMock()
 
-    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    engine = ConsciousEngine(deps=_deps(routine_store=routine_store))
 
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
     await engine.check_routine_suggestions(now=now, notifier=notifier)
@@ -625,9 +628,7 @@ async def test_check_routine_suggestions_publishes_notification(
 
 
 @pytest.mark.asyncio
-async def test_check_routine_suggestions_respects_cooldown(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
+async def test_check_routine_suggestions_respects_cooldown() -> None:
     """check_routine_suggestions should skip routines within cooldown."""
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
     recent = now - _dt.timedelta(hours=2)
@@ -637,7 +638,7 @@ async def test_check_routine_suggestions_respects_cooldown(
     ]
 
     notifier = AsyncMock()
-    engine = ConsciousEngine(**mock_deps, routine_store=routine_store)
+    engine = ConsciousEngine(deps=_deps(routine_store=routine_store))
 
     await engine.check_routine_suggestions(now=now, notifier=notifier)
 
@@ -645,291 +646,25 @@ async def test_check_routine_suggestions_respects_cooldown(
 
 
 @pytest.mark.asyncio
-async def test_check_routine_suggestions_no_routines(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
+async def test_check_routine_suggestions_no_routines() -> None:
     """check_routine_suggestions should be a no-op without a routine store."""
-    engine = ConsciousEngine(**mock_deps)
+    engine = ConsciousEngine(deps=_deps())
     notifier = AsyncMock()
     now = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
     await engine.check_routine_suggestions(now=now, notifier=notifier)
     notifier.publish.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# Critical-action reason tests
-# ---------------------------------------------------------------------------
-
-
-def _critical_tool() -> ToolInfo:
-    return ToolInfo(
-        name="home.unlock_door",
-        description="Unlock a door",
-        feature_name="home",
-        feature_description="Home control",
-        target_service="home-service",
-        risk="critical",
-        input_schema={
-            "type": "object",
-            "properties": {"entity_id": {"type": "string", "description": "Lock entity"}},
-            "required": ["entity_id"],
-        },
-    )
-
-
-def test_critical_tools_get_a_reason_parameter(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """Critical tools are offered an optional `reason` argument; benign tools are not."""
-    engine = ConsciousEngine(**mock_deps)
-    benign = ToolInfo(
-        name="home.get_lights",
-        description="Get light state",
-        feature_name="home",
-        feature_description="Home control",
-        target_service="home-service",
-    )
-
-    result = engine._tools_to_openai_format([_critical_tool(), benign])
-
-    critical_schema = result[0]["function"]["parameters"]
-    assert critical_schema["properties"]["reason"]["type"] == "string"
-    assert "reason" not in critical_schema["required"]
-    assert "entity_id" in critical_schema["required"]
-    benign_schema = result[1]["function"]["parameters"]
-    assert "reason" not in benign_schema["properties"]
-
-
 @pytest.mark.asyncio
-async def test_dispatch_moves_reason_onto_the_action(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """`reason` leaves `parameters` (the domain service never sees it) and lands on the action."""
-    action_result = MagicMock()
-    action_result.status = "success"
-    action_result.result = {"ok": True}
-    mock_deps["domain_router"].route.return_value = action_result
-    engine = ConsciousEngine(**mock_deps)
+async def test_process_request_injects_routine_hint() -> None:
+    routine_store = MagicMock()
+    routine_store.list_by_state.return_value = [_make_routine(trigger_pattern="20:00 daily")]
+    script = Script("Good evening, sir.")
+    deps = _deps(script, routine_store=routine_store)
 
-    tool_call = {
-        "id": "tc-1",
-        "name": "home.unlock_door",
-        "input": {"entity_id": "lock.front_door", "reason": "The dog walker is here."},
-    }
-    await engine._dispatch_tool_call(tool_call, tools=[_critical_tool()])
+    with patch("core.conscious.engine.datetime") as mock_dt:
+        mock_dt.now.return_value = _dt.datetime(2026, 3, 24, 20, 0, 0, tzinfo=_dt.UTC)
+        await ConsciousEngine(deps=deps).process_request(_request())
 
-    routed = mock_deps["domain_router"].route.call_args[0][0]
-    assert routed.reason == "The dog walker is here."
-    assert routed.parameters == {"entity_id": "lock.front_door"}
-    # The caller's dict is not mutated
-    assert tool_call["input"] == {
-        "entity_id": "lock.front_door",
-        "reason": "The dog walker is here.",
-    }
-
-
-def _critical_tool_with_own_reason() -> ToolInfo:
-    """A critical tool that declares `reason` as its own domain parameter."""
-    return ToolInfo(
-        name="home.log_incident",
-        description="Log an incident",
-        feature_name="home",
-        feature_description="Home control",
-        target_service="home-service",
-        risk="critical",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "reason": {"type": "string", "description": "Incident reason for the audit log"}
-            },
-            "required": ["reason"],
-        },
-    )
-
-
-def test_tool_declaring_its_own_reason_keeps_its_schema(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """The injected `reason` never overwrites a tool's own `reason` parameter."""
-    engine = ConsciousEngine(**mock_deps)
-
-    schema = engine._tools_to_openai_format([_critical_tool_with_own_reason()])[0]["function"][
-        "parameters"
-    ]
-
-    assert schema["properties"]["reason"]["description"] == "Incident reason for the audit log"
-    assert "reason" in schema["required"]  # the tool's own required parameter
-
-
-@pytest.mark.asyncio
-async def test_dispatch_preserves_a_tools_own_reason_parameter(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """A critical tool declaring its own `reason` still receives it in `parameters`."""
-    mock_deps["domain_router"].route.return_value = MagicMock(status="success", result={"ok": True})
-    engine = ConsciousEngine(**mock_deps)
-
-    await engine._dispatch_tool_call(
-        {"id": "tc-1", "name": "home.log_incident", "input": {"reason": "Smoke alarm tripped."}},
-        tools=[_critical_tool_with_own_reason()],
-    )
-
-    routed = mock_deps["domain_router"].route.call_args[0][0]
-    assert routed.parameters == {"reason": "Smoke alarm tripped."}
-    assert routed.reason is None
-
-
-@pytest.mark.asyncio
-async def test_dispatch_leaves_reason_alone_for_benign_tools(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """Only critical tools are offered `reason`, so benign tools keep theirs verbatim."""
-    mock_deps["domain_router"].route.return_value = MagicMock(status="success", result={"ok": True})
-    engine = ConsciousEngine(**mock_deps)
-    benign = ToolInfo(
-        name="home.log_note",
-        description="Log a note",
-        feature_name="home",
-        feature_description="Home control",
-        target_service="home-service",
-        input_schema={
-            "type": "object",
-            "properties": {"reason": {"type": "string", "description": "Why"}},
-            "required": ["reason"],
-        },
-    )
-
-    await engine._dispatch_tool_call(
-        {"id": "tc-1", "name": "home.log_note", "input": {"reason": "Just because."}},
-        tools=[benign],
-    )
-
-    routed = mock_deps["domain_router"].route.call_args[0][0]
-    assert routed.parameters == {"reason": "Just because."}
-    assert routed.reason is None
-
-
-@pytest.mark.asyncio
-async def test_dispatch_tolerates_null_tool_input(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """`input: null` (a model emitting the JSON literal) must not raise — `json.loads("null")`."""
-    engine = ConsciousEngine(**mock_deps)
-
-    result = await engine._dispatch_tool_call(
-        {"id": "tc-1", "name": "integration_weather_get_current", "input": None}, tools=[]
-    )
-
-    assert result["tool_use_id"] == "tc-1"
-    # It reached the integration call (unregistered here) rather than being rejected
-    # as malformed — `null` means "no arguments", not "bad arguments".
-    assert result["content"] == "Error: unknown integration tool 'integration_weather_get_current'"
-
-
-@pytest.mark.asyncio
-async def test_dispatch_ignores_non_string_and_blank_reasons(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """A non-string or whitespace-only `reason` is dropped, never str()-repr'd onto the action."""
-    mock_deps["domain_router"].route.return_value = MagicMock(status="success", result={"ok": True})
-    engine = ConsciousEngine(**mock_deps)
-
-    for bad_reason in ({"why": "nested"}, "   "):
-        await engine._dispatch_tool_call(
-            {
-                "id": "tc-1",
-                "name": "home.unlock_door",
-                "input": {"entity_id": "lock.front_door", "reason": bad_reason},
-            },
-            tools=[_critical_tool()],
-        )
-        routed = mock_deps["domain_router"].route.call_args[0][0]
-        assert routed.reason is None, bad_reason
-        assert routed.parameters == {"entity_id": "lock.front_door"}
-
-
-@pytest.mark.asyncio
-async def test_dispatch_rejects_malformed_tool_arguments(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    """A non-null, non-object `input` is an error — never a zero-argument call."""
-    engine = ConsciousEngine(**mock_deps)
-    expected = "Error: malformed tool arguments (expected a JSON object)"
-
-    with patch.object(engine, "_execute_integration_call", new=AsyncMock()) as integration_call:
-        for bad_input in ([], "x", 5):
-            domain = await engine._dispatch_tool_call(
-                {"id": "tc-1", "name": "home.unlock_door", "input": bad_input},
-                tools=[_critical_tool()],
-            )
-            integration = await engine._dispatch_tool_call(
-                {"id": "tc-2", "name": "integration_weather_get_current", "input": bad_input},
-                tools=[],
-            )
-            assert domain["content"] == expected, bad_input
-            assert integration["content"] == expected, bad_input
-
-        # Nothing was dispatched anywhere on the malformed path.
-        integration_call.assert_not_called()
-    mock_deps["domain_router"].route.assert_not_called()
-
-
-# ── trigger tools: dispatched in-process, validated like SDK dispatch (issue #324)
-
-
-def _engine_with_triggers(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> tuple[ConsciousEngine, AsyncMock]:
-    store = AsyncMock(spec_set=TriggerStore)
-    store.list_all = AsyncMock(return_value=[])
-    feature = TriggerFeature(TriggerFeatureContext(store=store))
-    return ConsciousEngine(**mock_deps, trigger_feature=feature), store
-
-
-@pytest.mark.asyncio
-async def test_trigger_tool_with_bad_arguments_names_each_field_and_never_runs(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    engine, store = _engine_with_triggers(mock_deps)
-    result = await engine._dispatch_tool_call(
-        {
-            "id": "tc-1",
-            "name": "triggers.create_trigger",
-            "input": {"name": "wake", "conditions": "daily", "colour": "red"},
-        },
-        tools=[],
-    )
-    content = result["content"]
-    assert content.startswith(
-        "Error executing trigger: Tool 'triggers.create_trigger' got invalid arguments: "
-    )
-    for field_name in ("trigger_type:", "conditions:", "colour:"):
-        assert field_name in content
-    store.save.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_trigger_tool_arguments_are_coerced_to_the_signature(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    engine, store = _engine_with_triggers(mock_deps)
-    result = await engine._dispatch_tool_call(
-        {"id": "tc-1", "name": "triggers.list_triggers", "input": {"enabled_only": "false"}},
-        tools=[],
-    )
-    assert result["content"] == "[]"
-    store.list_all.assert_awaited_once_with(enabled_only=False)
-
-
-def test_trigger_tools_are_discovered_once_when_the_engine_is_built(
-    mock_deps: dict[str, AsyncMock | MagicMock],
-) -> None:
-    engine, _ = _engine_with_triggers(mock_deps)
-    assert engine._triggers is not None
-    with patch.object(
-        type(engine._triggers), "get_tools", side_effect=AssertionError("rebuilt per call")
-    ):
-        meta = engine._resolve_trigger_tool("triggers.delete_trigger")
-    assert meta is not None
-    assert meta.arguments_model is not None
-    assert engine._resolve_trigger_tool("smart_home.get_lights") is None
+    assert "[routine-suggestion]" in script.instructions()
+    assert "evening_dim" in script.instructions()

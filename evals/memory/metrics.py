@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from core.conscious.memory_tools import dispatch_memory_tool
+from core.conscious.memory_tools import recall_memories
 from core.librarian.consolidator import decay_candidate_ranges, migration_pressure
 from evals.memory.dataset import NOISE, Category
 from evals.memory.env import StoredVectors, scan_hot, stored_vectors
@@ -20,7 +19,7 @@ if TYPE_CHECKING:
     from evals.memory.dataset import Dataset, SimMemory
     from evals.memory.env import SimEnv
 
-# memory_recall_memories' own default (core/conscious/memory_tools.py).
+# recall_memories' own default (core/conscious/memory_tools.py).
 TOOL_DEFAULT_LIMIT = 10
 # The source _compress_and_migrate stamps on the summary it writes to cold.
 COMPRESSED_SOURCE = "librarian_compressed"
@@ -127,11 +126,7 @@ async def probe(
     open_results = await env.context_index.search_text(
         question, limit=config.involuntary_recall_limit, min_similarity=0.0
     )
-    tool_reply = json.loads(
-        await dispatch_memory_tool(
-            "memory_recall_memories", {"query": question}, env.recall_view, env.context_reader
-        )
-    )
+    tool_reply = await recall_memories(env.recall_view, question)
     recalled = await env.episodic.recall(question, limit=TOOL_DEFAULT_LIMIT, update_stats=False)
 
     involuntary_ids = [r.id for r in involuntary]

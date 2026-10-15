@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 
     import httpx
 
+    from shared.config import LlmSettings
+
 Status = Literal["pass", "warn", "fail"]
 
 
@@ -167,33 +169,57 @@ def _probe_embedding_dim(
     return width, "pass", f"HTTP {resp.status_code}"
 
 
+_CONSCIOUS = "conscious (System 2)"
+
+
+def _check_model(setting: str, model: str, llm: LlmSettings) -> tuple[str, str]:
+    """(status, detail) for one role's model string."""
+    from shared.config import vllm_family_known
+
+    provider, _, name = model.partition(":")
+    if provider == "openrouter" and name:
+        key = llm.openrouter_api_key
+        if not key or key.startswith("__"):
+            return "fail", f"{setting}={model} needs OPENROUTER_API_KEY (or CLAUDE_API_KEY)"
+        return "pass", f"{setting}={model}"
+    if provider == "vllm" and name:
+        if not vllm_family_known(name):
+            return "warn", (
+                f"{setting}={model}: {name!r} names no known model family, so Pydantic AI "
+                "uses its default profile — serve the model under its own name (gemma…, qwen…)"
+            )
+        return "pass", f"{setting}={model} at {redact_userinfo(llm.vllm_base_url)}"
+    return "fail", (
+        f"{setting}={model} is not a model string Alfred can use "
+        "(want vllm:<served-name> or openrouter:<vendor>/<model>)"
+    )
+
+
 def _check_conscious(env: dict[str, str], online: bool) -> DoctorCheck:
-    model = env.get("CLAUDE_MODEL", "openrouter/anthropic/claude-sonnet-4")
-    openrouter = env.get("OPENROUTER_API_KEY", "").strip()
-    anthropic = env.get("CLAUDE_API_KEY", "").strip()
-    key = openrouter or anthropic
-    if not key or key.startswith("__"):
-        return DoctorCheck(
-            "conscious (System 2)",
-            "fail",
-            "no OPENROUTER_API_KEY / CLAUDE_API_KEY — cloud reasoning disabled",
-        )
-    if model.startswith("openrouter/") and not openrouter:
-        return DoctorCheck(
-            "conscious (System 2)",
-            "warn",
-            f"CLAUDE_MODEL={model} needs OPENROUTER_API_KEY, only CLAUDE_API_KEY set",
-        )
-    if online and openrouter:
-        ok, detail = _probe(
-            "https://openrouter.ai/api/v1/key", headers={"Authorization": f"Bearer {openrouter}"}
+    from shared.config import resolve_llm_settings
+
+    try:
+        llm = resolve_llm_settings(env)
+    except RuntimeError as exc:
+        return DoctorCheck(_CONSCIOUS, "fail", str(exc))
+    roles = [("SYSTEM2_MODEL", llm.system2_model)]
+    if llm.librarian_model != llm.system2_model:
+        roles.append(("LIBRARIAN_MODEL", llm.librarian_model))
+    results = [_check_model(setting, model, llm) for setting, model in roles]
+    for status in ("fail", "warn"):
+        bad = [detail for st, detail in results if st == status]
+        if bad:
+            return DoctorCheck(_CONSCIOUS, status, "; ".join(bad))
+    detail = "; ".join(d for _, d in results)
+    if online and any(model.startswith("openrouter:") for _, model in roles):
+        ok, probe = _probe(
+            "https://openrouter.ai/api/v1/key",
+            headers={"Authorization": f"Bearer {llm.openrouter_api_key}"},
         )
         if not ok:
-            return DoctorCheck(
-                "conscious (System 2)", "warn", f"key set but probe failed: {detail}"
-            )
-        return DoctorCheck("conscious (System 2)", "pass", f"OpenRouter key valid ({detail})")
-    return DoctorCheck("conscious (System 2)", "pass", f"key set, model={model}")
+            return DoctorCheck(_CONSCIOUS, "warn", f"key set but probe failed: {probe}")
+        return DoctorCheck(_CONSCIOUS, "pass", f"{detail}; OpenRouter key valid ({probe})")
+    return DoctorCheck(_CONSCIOUS, "pass", detail)
 
 
 def _check_reflex(env: dict[str, str], online: bool) -> DoctorCheck:

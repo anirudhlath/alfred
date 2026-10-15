@@ -7,7 +7,7 @@ Alfred is an ambient, voice-first multi-agent system for smart environments. It 
 The system uses a **dual-process cognitive model**:
 
 - **System 1 (Reflex Engine)** -- a local Small Language Model (Ollama, default `gpt-oss:20b`) handles the fast path. Every state-change event passes through the SLM, which decides in sub-500ms whether an action is needed and, if so, which tool to call.
-- **System 2 (Conscious Engine)** -- a cloud LLM (Claude) handles complex reasoning, multi-step planning, and ambiguous user requests. Receives `UserRequest` events, assembles context from integrations and memory, runs an agentic tool-use loop, and returns `AlfredResponse` events.
+- **System 2 (Conscious Engine)** -- a cloud LLM (Claude) handles complex reasoning, multi-step planning, and ambiguous user requests. Receives `UserRequest` events, assembles context from integrations and memory, runs one Pydantic AI agent per request, with every tool in one catalog ([docs/llm.md](llm.md)), and returns `AlfredResponse` events.
 
 The system is governed by four non-negotiable architectural pillars:
 
@@ -658,9 +658,9 @@ embeds the user's query inline in the reply path).
 
 ### 3.8 Conscious Engine (System 2)
 
-**Files:** `core/conscious/engine.py`, `core/conscious/identity.py`, `core/conscious/session.py`, `core/conscious/cost.py`, `core/conscious/context_assembler.py`
+**Files:** `core/conscious/engine.py`, `core/conscious/agent.py`, `core/conscious/deps.py`, `core/conscious/tools/`, `core/conscious/identity.py`, `core/conscious/session.py`, `core/conscious/cost.py`, `core/conscious/context_assembler.py`
 
-The Conscious Engine handles complex user requests via the Claude API with an agentic tool-use loop.
+The Conscious Engine handles complex user requests with a Pydantic AI agent; [docs/llm.md](llm.md) covers the model settings, the tool catalog and the retries.
 
 **Pipeline:**
 
@@ -668,16 +668,16 @@ The Conscious Engine handles complex user requests via the Claude API with an ag
 2. **SessionManager** (`session.py`) -- manages conversation sessions in Redis (`alfred:sessions:{id}`). Maintains message history with a configurable window.
 3. **CostTracker** (`cost.py`) -- enforces daily Claude API budget via Redis key `alfred:cost:daily`. Tracks input/output tokens and maps to dollar cost.
 4. **ContextAssembler** (`context_assembler.py`) -- gathers context from integrations, episodic memory, and preferences. Builds the system prompt with Alfred's identity and available data.
-5. **ConsciousEngine** (`engine.py`) -- runs the agentic loop: sends the request to Claude with tools, executes tool calls, feeds results back, repeats until Claude produces a final text response. Returns an `AlfredResponse`.
+5. **ConsciousEngine** (`engine.py`) -- runs the `system2` agent once per request: the agent offers the catalog's tools, validates and dispatches each call, feeds results back, and returns the final text, within ten model requests. Returns an `AlfredResponse`.
 
 **Identity prompts** are in `core/conscious/prompts/` -- separate system prompts for sir vs guest interactions, enforcing the privacy boundary.
 
-**Action tools** (`core/conscious/action_tools.py`) -- `confirm_pending_action` (republishes a
-parked critical action once the user approves) and `attention_add`/`attention_remove`/`attention_list`
-(reshape the Reflex `AttentionSet`, see 3.2.1), dispatched in-process like memory tools. Offered
-in the tool manifest only when `identity.identity == "sir"`, and re-checked at dispatch time in
-`_dispatch_tool_call()` -- a guest turn that somehow emits one of these calls is refused rather
-than executed (defense-in-depth). See [docs/autonomy.md](autonomy.md).
+**Attention and confirm tools** (`core/conscious/tools/attention.py`) -- `confirm_pending_action`
+(republishes a parked critical action once the user approves) and
+`attention_add`/`attention_remove`/`attention_list` (reshape the Reflex `AttentionSet`, see
+3.2.1). They form a sir-only toolset: never offered on a guest turn, and refused at call time
+if a guest turn names one anyway (defense-in-depth). See [docs/autonomy.md](autonomy.md) and
+[docs/llm.md](llm.md).
 
 ### 3.9 Integration Registry
 

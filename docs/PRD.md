@@ -1,6 +1,6 @@
 # Alfred — Product Requirements Document
 
-**Status:** Living document. Capability statuses current as of **2026-10-07**.
+**Status:** Living document. Capability statuses current as of **2026-10-13**.
 **Maintenance rule:** any PR that adds or changes a user-facing capability updates the
 relevant row(s) in the [Capability Catalog](#4-capability-catalog) in the same branch.
 
@@ -154,6 +154,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Session and passkey management: list/end sessions, log out everywhere, remove a passkey (never the last). The phone's System bench lists and ends sessions, signs out of the device in hand and lists passkeys; **removal is API-only** until there is a confirmation design for taking away the passkey you are holding | Shipped | PR #235, [#258](https://github.com/anirudhlath/alfred/issues/258) §11 |
 | Identity confidence levels per channel (Signal-verified vs local claim) | Shipped | `docs/architecture.md` |
 | Guest access choices captured at onboarding (which controls guests may use) | Shipped | onboarding wizard |
+| Guest tool scoping in conversation: a guest is offered only everyday (benign) controls; risky controls, integrations, and Alfred's own memory and attention tools stay with the verified user, and are refused if named anyway. A guest may create a trigger whose action is an everyday control (or a plain reminder), but cannot list, change, disable or delete triggers | Shipped | `docs/llm.md` |
 | Guest boundary enforcement via tiered autonomy | Planned | HA integration spec, Plan 3 |
 | Daily cloud-spend cap with alerting before the ceiling | Shipped | `docs/architecture.md` |
 

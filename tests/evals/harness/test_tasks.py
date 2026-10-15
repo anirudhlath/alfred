@@ -19,9 +19,15 @@ from evals.harness.proxy import LlmProxy
 from evals.harness.report import runs_from_logs
 from evals.harness.scenario import Scenario, expand_variants
 from evals.harness.stack import StackError
-from evals.harness.tasks import RunContext, build_task, verdict
+from evals.harness.tasks import (
+    TOOL_CALLS_OFFERED,
+    RunContext,
+    build_task,
+    score_evidence,
+    verdict,
+)
 from evals.harness.world import load_world
-from tests.evals.harness.factories import FakeBus
+from tests.evals.harness.factories import FakeBus, evidence, llm
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -373,3 +379,53 @@ async def test_a_bus_failure_late_in_play_dirties_the_stack(tmp_path: Path, stag
 def test_the_test_package_pins_inspect_display_none() -> None:
     # eval_async pins "plain" unless a display was set first; the package sets "none".
     assert display_type_initialized() and display_type() == "none"
+
+
+def _reply_only(*also: dict[str, Any]) -> Scenario:
+    return Scenario.model_validate(
+        {
+            "id": "conversation.persona.greeting",
+            "prd": ["1.butler"],
+            "status": "shipped",
+            "suite": "conversation",
+            "steps": [{"user": "Good evening, Alfred."}],
+            "expect": [{"reply_contains": {"text": "sir"}}, *also],
+        }
+    )
+
+
+def _unused_judge() -> Judge:
+    """Neither scenario has a judge check, so this judge is never asked."""
+    return Judge(get_model("mockllm/model", custom_outputs=[], memoize=False))
+
+
+async def test_the_offered_check_is_appended_last_when_system2_called_a_tool() -> None:
+    ev = evidence(
+        replies=["Of course, sir."],
+        llm_calls=[llm("system2", ("home.light_turn_on", {}))],  # offered nothing
+    )
+    outcome, results = await score_evidence(ev, _reply_only(), _unused_judge(), set())
+    assert [r.name for r in results] == ["reply_contains", TOOL_CALLS_OFFERED]
+    assert results[-1].status == "fail" and results[-1].counted
+    assert outcome == "I"
+
+
+async def test_the_offered_check_runs_once_when_the_golden_declares_it() -> None:
+    declared = _reply_only({TOOL_CALLS_OFFERED: {}})
+    ev = evidence(
+        replies=["Of course, sir."],
+        llm_calls=[llm("system2", ("home.light_turn_on", {}))],
+    )
+    _, results = await score_evidence(ev, declared, _unused_judge(), set())
+    assert [r.name for r in results] == ["reply_contains", TOOL_CALLS_OFFERED]
+
+
+async def test_the_offered_check_is_absent_without_a_system2_tool_call() -> None:
+    """R12: a scenario with no System 2 tool call keeps its check list and verdict."""
+    ev = evidence(
+        replies=["Good evening, sir."],
+        llm_calls=[llm("system2"), llm("system1", ("home.light_turn_on", {}))],
+    )
+    outcome, results = await score_evidence(ev, _reply_only(), _unused_judge(), set())
+    assert [r.name for r in results] == ["reply_contains"]
+    assert outcome == "C"

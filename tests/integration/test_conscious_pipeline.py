@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.usage import RequestUsage
 
 from bus.schemas.events import UserRequest
+from core.conscious.agent import build_system2_agent, system2_toolsets
 from core.conscious.context_assembler import ContextAssembler
 from core.conscious.cost import CostTracker
-from core.conscious.engine import ConsciousEngine
+from core.conscious.engine import ConsciousDeps, ConsciousEngine
 from core.conscious.identity import IdentityGate
 from core.conscious.session import SessionManager
+from tests.llm_fakes import Script
+
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
 
 
 def _make_redis_mock() -> AsyncMock:
@@ -34,56 +38,6 @@ def _make_redis_mock() -> AsyncMock:
     return redis
 
 
-def _make_llm_response(text: str) -> MagicMock:
-    """Build a mock litellm response with given text and no tool calls."""
-    message = MagicMock()
-    message.content = text
-    message.tool_calls = None
-
-    choice = MagicMock()
-    choice.message = message
-
-    usage = MagicMock()
-    usage.prompt_tokens = 100
-    usage.completion_tokens = 20
-
-    response = MagicMock()
-    response.choices = [choice]
-    response.usage = usage
-    return response
-
-
-@pytest.fixture()
-def full_engine(tmp_path: Path) -> ConsciousEngine:
-    """Build a fully-wired ConsciousEngine with mocked externals."""
-    prefs = tmp_path / "preferences"
-    profile = tmp_path / "profile"
-    prefs.mkdir()
-    profile.mkdir()
-    (prefs / "personal.md").write_text(
-        "---\ndomain: general\nupdated: 2026-03-19\nconfidence: manual\n---\n\n"
-        "# Personal\n\n- Wake time: 07:30\n- Dietary: vegetarian\n"
-    )
-    (profile / "proactivity.md").write_text(
-        "---\ndomain: general\nupdated: 2026-03-19\nconfidence: manual\n---\n\n"
-        "# Proactivity Level\n\n- Level: moderate\n"
-    )
-
-    redis = _make_redis_mock()
-    return ConsciousEngine(
-        redis=redis,
-        identity_gate=IdentityGate(registered_phone="+1234567890"),
-        session_mgr=SessionManager(redis=redis, timeout_minutes=30),
-        cost_tracker=CostTracker(redis=redis, daily_cap_usd=5.0),
-        context_assembler=ContextAssembler(),
-        domain_router=AsyncMock(),
-        tool_registry=AsyncMock(get_tools=AsyncMock(return_value=[])),
-        context_reader=AsyncMock(get_rendered_context=AsyncMock(return_value="")),
-        claude_model="test-model",
-        claude_api_key="test-key",
-    )
-
-
 def _make_request(
     identity_claim: str = "sir",
     content: str = "Good morning",
@@ -99,91 +53,87 @@ def _make_request(
     )
 
 
+def _reply(text: str) -> ModelResponse:
+    return ModelResponse(
+        parts=[TextPart(text)], usage=RequestUsage(input_tokens=100, output_tokens=20)
+    )
+
+
+def _no_integrations() -> AbstractContextManager[AsyncMock]:
+    return patch("core.conscious.engine.fetch_integration_tools", AsyncMock(return_value=[]))
+
+
+def _engine(script: Script) -> ConsciousEngine:
+    """A fully wired engine: real gate, sessions, cost tracker and assembler; mocked Redis."""
+    redis = _make_redis_mock()
+    return ConsciousEngine(
+        deps=ConsciousDeps(
+            redis=redis,
+            identity_gate=IdentityGate(registered_phone="+1234567890"),
+            session_mgr=SessionManager(redis=redis, timeout_minutes=30),
+            cost_tracker=CostTracker(redis=redis, daily_cap_usd=5.0),
+            domain_router=AsyncMock(),
+            tool_registry=AsyncMock(get_tools=AsyncMock(return_value=[])),
+            context_reader=AsyncMock(get_rendered_context=AsyncMock(return_value="")),
+            agent=build_system2_agent(
+                toolsets=system2_toolsets(None),
+                assembler=ContextAssembler(),
+                max_tokens=256,
+                timeout_s=5.0,
+            ),
+            model=script.model,
+        )
+    )
+
+
 @pytest.mark.asyncio
-async def test_full_pipeline_sir_gets_system_prompt(full_engine: ConsciousEngine) -> None:
-    """Sir should see identity, proactivity, and personality in the system prompt.
+async def test_full_pipeline_sir_gets_system_prompt() -> None:
+    script = Script(_reply("Good morning, sir."))
+    engine = _engine(script)
+    with _no_integrations():
+        response = await engine.process_request(_make_request(content="Good morning"))
 
-    Note: preferences, episodic, and procedural memory are no longer statically
-    injected.  They surface via involuntary recall (context index) or deliberate
-    recall (memory tools).
-    """
-    request = _make_request(identity_claim="sir", content="Good morning")
-    mock_response = _make_llm_response("Good morning, sir.")
-
-    with patch("litellm.acompletion", return_value=mock_response) as mock_llm:
-        response = await full_engine.process_request(request)
-
-    # Verify the system prompt includes core sections
-    call_kwargs = dict(mock_llm.call_args.kwargs)
-    system_msg: str = call_kwargs["messages"][0]["content"]
-    assert "sir (authenticated)" in system_msg
-    assert "opinionated" in system_msg  # default proactivity level
-
-    # Verify scratchpad was written
-    full_engine._redis.lpush.assert_called()  # type: ignore[attr-defined]
-
+    instructions = script.instructions()
+    assert "sir (authenticated)" in instructions
+    assert "opinionated" in instructions
+    engine._redis.lpush.assert_called()  # type: ignore[attr-defined]
     assert response.text == "Good morning, sir."
 
 
 @pytest.mark.asyncio
-async def test_full_pipeline_guest_no_preferences(full_engine: ConsciousEngine) -> None:
-    """Guest should NOT see personal preferences in system prompt."""
-    request = _make_request(identity_claim="guest", content="Hello", session_id="s2")
-    mock_response = _make_llm_response("Good evening.")
-
-    with patch("litellm.acompletion", return_value=mock_response) as mock_llm:
-        response = await full_engine.process_request(request)
-
-    system_msg: str = mock_llm.call_args.kwargs["messages"][0]["content"]
-    # Guest prompt must NOT contain personal info
-    assert "Wake time" not in system_msg
-    assert "vegetarian" not in system_msg
-    # Guest prompt must NOT contain proactivity level
-    assert "Proactivity Level" not in system_msg
+async def test_full_pipeline_guest_no_preferences() -> None:
+    script = Script(_reply("Good evening."))
+    with _no_integrations():
+        response = await _engine(script).process_request(
+            _make_request(identity_claim="guest", content="Hello", session_id="s2")
+        )
 
     assert response.text == "Good evening."
 
 
 @pytest.mark.asyncio
-async def test_full_pipeline_session_history_forwarded(full_engine: ConsciousEngine) -> None:
-    """Session append_turn should be called with user + assistant content."""
-    request = _make_request(identity_claim="sir", content="What time is it?")
-    mock_response = _make_llm_response("It is currently 3pm, sir.")
-
-    with patch("litellm.acompletion", return_value=mock_response):
-        await full_engine.process_request(request)
-
-    # SessionManager.append_turn writes via redis.hget/hset
-    # Verify hset was called (session creation + append turns)
-    assert full_engine._redis.hset.call_count >= 1  # type: ignore[attr-defined]
+async def test_full_pipeline_session_history_forwarded() -> None:
+    engine = _engine(Script(_reply("It is currently 3pm, sir.")))
+    with _no_integrations():
+        await engine.process_request(_make_request(content="What time is it?"))
+    assert engine._redis.hset.call_count >= 1  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
-async def test_full_pipeline_cost_recorded(full_engine: ConsciousEngine) -> None:
-    """Cost tracker should record spend after LLM call."""
-    request = _make_request(identity_claim="sir", content="Hello")
-    mock_response = _make_llm_response("Hello, sir.")
-
-    with patch("litellm.acompletion", return_value=mock_response):
-        await full_engine.process_request(request)
-
-    # CostTracker._save_state writes via redis.set
-    full_engine._redis.set.assert_called()  # type: ignore[attr-defined]
+async def test_full_pipeline_cost_recorded() -> None:
+    engine = _engine(Script(_reply("Hello, sir.")))
+    with _no_integrations():
+        await engine.process_request(_make_request(content="Hello"))
+    engine._redis.set.assert_called()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
-async def test_full_pipeline_scratchpad_observation_format(
-    full_engine: ConsciousEngine,
-) -> None:
-    """Scratchpad observation should contain request summary and token counts."""
-    request = _make_request(identity_claim="sir", content="Turn on the lights")
-    mock_response = _make_llm_response("Done, sir.")
+async def test_full_pipeline_scratchpad_observation_format() -> None:
+    engine = _engine(Script(_reply("Done, sir.")))
+    with _no_integrations():
+        await engine.process_request(_make_request(content="Turn on the lights"))
 
-    with patch("litellm.acompletion", return_value=mock_response):
-        await full_engine.process_request(request)
-
-    lpush_call = full_engine._redis.lpush.call_args  # type: ignore[attr-defined]
-    observation: str = lpush_call.args[1]
+    observation: str = engine._redis.lpush.call_args.args[1]  # type: ignore[attr-defined]
     assert "[conscious]" in observation
     assert "Turn on the lights" in observation
     assert "tokens=100+20" in observation

@@ -41,6 +41,26 @@ Everything else in `.env.example` under **OPTIONAL** has a working default. In p
   `HA_HOST`, etc. may point at `localhost`; the container rewrites it to the host gateway
   automatically (both `alfredctl up` and plain `docker compose`).
 
+### Reasoning models
+
+System 2 and the Librarian take a Pydantic AI model string, `openrouter:<vendor>/<model>` or
+`vllm:<served-name>`. The full rules are in [`docs/llm.md`](llm.md), "Settings and model
+resolution".
+
+| Setting | Default |
+|---------|---------|
+| `SYSTEM2_MODEL` | the translated `CLAUDE_MODEL`, else `DEFAULT_SYSTEM2_MODEL` in `shared/config.py` |
+| `LIBRARIAN_MODEL` | `SYSTEM2_MODEL` |
+| `VLLM_BASE_URL` | where `vllm:` models are served: the first set of `OPENAI_BASE_URL` (legacy `openai/` `CLAUDE_MODEL` only), `OPENAI_COMPAT_HOST`, `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended, `localhost` rewritten like the other host variables |
+
+> **Upgrading a deploy that still sets `CLAUDE_MODEL`:** it keeps working. Each process
+> reads the old LiteLLM string as `SYSTEM2_MODEL` (`openrouter/<vendor>/<model>` becomes
+> `openrouter:<vendor>/<model>`; `openai/<model>` becomes `vllm:<model>` when
+> `OPENAI_BASE_URL` is set) and logs one warning saying so. Set `SYSTEM2_MODEL` in `.env`
+> to silence it. A bare `claude-*` string is **not** translated: `alfredctl doctor` fails
+> it, and System 2 starts without a model and answers that it is not configured. Run
+> `alfredctl doctor` after editing `.env`; it resolves the models by the same rule.
+
 ## `alfredctl doctor` — preflight
 
 Run before starting to catch config gaps early instead of discovering them in the logs:
