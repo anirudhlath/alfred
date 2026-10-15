@@ -71,7 +71,7 @@ def live_channels_client(dist: Path | None = None) -> Iterator[TestClient]:
     # Minimal mock Redis — handles auth-session lookup and any other calls.
     mock_redis = AsyncMock()
     mock_redis.hgetall = AsyncMock(return_value={})
-    mock_redis.close = AsyncMock()
+    mock_redis.aclose = AsyncMock()
 
     # Minimal mock CredentialStore — initialize/close are no-ops; reports no credentials.
     mock_store = AsyncMock()

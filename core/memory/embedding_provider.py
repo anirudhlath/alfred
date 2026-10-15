@@ -74,7 +74,7 @@ class SentenceTransformerProvider(EmbeddingProvider):
             logger.info(
                 "Loaded embedding model: %s (dim=%s)",
                 self._model_name,
-                model.get_sentence_embedding_dimension(),
+                model.get_embedding_dimension(),
             )
         except Exception as exc:
             # Expected when a gated model (e.g. google/embeddinggemma-300m) is
@@ -113,7 +113,7 @@ class SentenceTransformerProvider(EmbeddingProvider):
 
     def dimension(self) -> int:
         model = self._model.get()
-        dim: int | None = model.get_sentence_embedding_dimension()
+        dim: int | None = model.get_embedding_dimension()
         if dim is None:
             raise RuntimeError(
                 f"Embedding model {self._model_name!r} did not report an embedding dimension"

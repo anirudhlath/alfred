@@ -426,7 +426,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
             # (it must outlive any single request), so this hook is its only close.
             "admin episodic provider": aclose_episodic,
             "http client": app.state.http.aclose,
-            "redis pool": pool.close,
+            "redis pool": pool.aclose,
         },
     )
 
