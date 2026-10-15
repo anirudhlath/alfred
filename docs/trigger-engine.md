@@ -12,7 +12,7 @@ Triggers are created dynamically by the Reflex Engine's SLM (via the `triggers.c
 uv run python -m core.triggers  # starts the Trigger Engine
 ```
 
-Minimum dependencies: `pydantic>=2.0`, `redis>=5.0`, `croniter>=1.0`, `pyyaml>=6.0`, Python 3.13+.
+Minimum dependencies: `pydantic>=2.11`, `redis>=8.0`, `croniter>=3.0`, `pyyaml>=6.0`, Python 3.13+.
 
 ---
 

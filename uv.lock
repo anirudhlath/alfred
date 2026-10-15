@@ -267,7 +267,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", specifier = ">=1.44.0" },
     { name = "phonemizer-fork", marker = "extra == 'voice'", specifier = ">=3.3,<3.4" },
     { name = "piper-tts", marker = "extra == 'voice'", specifier = ">=1.8.0" },
-    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pydantic", specifier = ">=2.11" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.0" },
     { name = "pysilero-vad", marker = "extra == 'voice'", specifier = ">=3.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },

@@ -63,6 +63,67 @@ jobs:
       - run: uv sync --all-extras
       - run: uv run pytest tests/core/channels/test_spa_ci.py -q
 
+  # The SDK installs into other services' environments, which resolve their own pydantic,
+  # so its tests also run against the oldest release sdk/pyproject.toml allows (#327). The
+  # floor is read from that file at run time. The root pyproject.toml repeats it, because the
+  # alfred package ships the SDK in-tree, so the step also fails if the root's floor is lower.
+  # Everything else is pinned from uv.lock. `--noconftest`: the root conftest imports
+  # `keyring`, which this venv does not install, and the SDK tests use none of its fixtures.
+  sdk-floor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          # setup-uv's cache key ignores the job, so without a suffix this small job would
+          # save under the key the full `uv sync` jobs restore from.
+          cache-suffix: sdk-floor
+      - name: SDK tests at the pydantic floor
+        # An explicit `shell: bash` runs with pipefail, so a failing `uv export` cannot leave
+        # a truncated pins file behind.
+        shell: bash
+        run: |
+          uv export --frozen --all-extras --no-hashes --no-emit-project --no-header --no-annotate \
+            | grep -vE '^(pydantic|pydantic-core)==' > "$RUNNER_TEMP/pins.txt"
+          packaging_pin=$(grep -E '^packaging==' "$RUNNER_TEMP/pins.txt")
+          floor=$(uv run --no-project --with "$packaging_pin" python - <<'EOF'
+          import tomllib
+
+          from packaging.requirements import Requirement
+          from packaging.utils import canonicalize_name
+          from packaging.version import Version
+
+
+          def pydantic_floor(path: str) -> Version:
+              with open(path, "rb") as f:
+                  deps = tomllib.load(f)["project"]["dependencies"]
+              floors = [
+                  Version(spec.version)
+                  for dep in deps
+                  if canonicalize_name((req := Requirement(dep)).name) == "pydantic"
+                  for spec in req.specifier
+                  if spec.operator == ">="
+              ]
+              if len(floors) != 1:
+                  raise SystemExit(f"{path}: expected one pydantic `>=` floor, got {deps}")
+              return floors[0]
+
+
+          sdk, root = pydantic_floor("sdk/pyproject.toml"), pydantic_floor("pyproject.toml")
+          if root < sdk:
+              raise SystemExit(f"pyproject.toml: pydantic>={root} is below the SDK's >={sdk}")
+          print(sdk)
+          EOF
+          )
+          echo "pydantic floor: $floor"
+          venv="$RUNNER_TEMP/sdk-floor"
+          uv venv --python 3.13 "$venv"
+          uv pip install --python "$venv/bin/python" -c "$RUNNER_TEMP/pins.txt" -e "sdk/[dev]" "pydantic==$floor"
+          "$venv/bin/python" -m pytest --noconftest -p no:cacheprovider sdk/ -q
+
   pr-title:
     runs-on: ubuntu-latest
     steps:
@@ -110,7 +171,7 @@ jobs:
   gate:
     name: ci-ok
     if: always()
-    needs: [python, web, spa, pr-title, artifact-guard]
+    needs: [python, web, spa, sdk-floor, pr-title, artifact-guard]
     runs-on: ubuntu-latest
     steps:
       - name: All gates green?

@@ -3,7 +3,8 @@
 Publishable Python package. The ONLY coupling between Alfred and external apps.
 
 - Must work standalone — no imports from alfred core, bus, or domains
-- Keep dependencies minimal: only `pydantic>=2.0` and `redis>=5.0` (telemetry optional)
+- Keep dependencies minimal: only `pydantic>=2.11` and `redis>=5.0` (telemetry optional)
+- `pydantic>=2.11` is the floor ([#327](https://github.com/anirudhlath/alfred/issues/327)) because 2.11.0 is the oldest release the SDK's tests pass on: 2.10 leaves `additionalProperties: true` off a `dict[str, Any]` schema, 2.8–2.9 also drop a dict's key constraints (`propertyNames`) without a warning, and nothing older has Python 3.13 wheels. CI's `sdk-floor` job runs the `sdk/` tests at whatever floor `sdk/pyproject.toml` states. The root `pyproject.toml` repeats the floor (the alfred package ships the SDK in-tree), and the same job fails if the root's is lower
 - Not published to PyPI — container builds install from source path
 
 ## Files

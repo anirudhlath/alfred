@@ -129,7 +129,7 @@ cd web && npm run lint && npm run test && npm run build   # build emits web/dist
   never commit from it. One worktree per topic branch, created inside this repo; delete
   the worktree as soon as its PR merges.
 - Never emit `[skip ci]`/`[no ci]` on PR branches.
-- CI gate is the single `ci-ok` aggregate check (python, web, spa, pr-title,
+- CI gate is the single `ci-ok` aggregate check (python, web, spa, sdk-floor, pr-title,
   artifact-guard). See `docs/superpowers/specs/2026-07-18-branching-strategy-design.md`.
 - **Merging to `master` deploys.** The `deploy to lath-server` job on the self-hosted
   `alfred-deploy` runner rebuilds the fat image on lath-server, restarts the stack from
