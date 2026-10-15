@@ -8,6 +8,8 @@ unseeded prompt is normal before the first ``alfred prompts push``.
 
 from __future__ import annotations
 
+import asyncio
+import base64
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Protocol
 from urllib.parse import quote
@@ -64,6 +66,10 @@ class LangfuseClient:
         timeout_s: float = DEFAULT_LANGFUSE_TIMEOUT_S,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        self._timeout_s = timeout_s
+        # Never let these into an error: the secret itself and the Basic token built from it.
+        token = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
+        self._redact = tuple(v for v in (token, secret_key) if v)
         self._http = httpx.AsyncClient(
             base_url=host.rstrip("/"),
             auth=(public_key, secret_key),
@@ -101,6 +107,12 @@ class LangfuseClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
+    def _scrub(self, exc: Exception) -> str:
+        text = str(exc)
+        for secret in self._redact:
+            text = text.replace(secret, "***")
+        return text
+
     async def _request(
         self,
         method: str,
@@ -110,9 +122,16 @@ class LangfuseClient:
         json: Mapping[str, Any] | None = None,
     ) -> httpx.Response:
         try:
-            response = await self._http.request(method, path, params=params, json=json)
-        except httpx.HTTPError as exc:
-            raise LangfuseError(f"{method} {path}: {type(exc).__name__}: {exc}") from exc
+            # httpx's timeout is per phase; this is the total deadline.
+            async with asyncio.timeout(self._timeout_s):
+                response = await self._http.request(method, path, params=params, json=json)
+        except TimeoutError as exc:
+            raise LangfuseError(f"{method} {path}: no answer within {self._timeout_s}s") from exc
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
+            # ``from None``: the original's text may carry request headers.
+            raise LangfuseError(
+                f"{method} {path}: {type(exc).__name__}: {self._scrub(exc)}"
+            ) from None
         if method == "GET" and response.status_code == httpx.codes.NOT_FOUND:
             return response
         if response.is_error:

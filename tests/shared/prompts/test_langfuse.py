@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import time
 from typing import Any
 
 import httpx
@@ -91,13 +93,62 @@ async def test_failures_are_langfuse_errors(response: httpx.Response) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_transport_error_is_a_langfuse_error_without_the_secret() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("refused", request=request)
+async def test_secrets_never_reach_the_error_text_or_its_cause() -> None:
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"refused {request.url} {dict(request.headers)}", request=request)
 
-    with pytest.raises(LangfuseError) as caught:
+    def unauthorized(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "Unauthorized"})
+
+    for handler in (refuse, unauthorized):
+        with pytest.raises(LangfuseError) as caught:
+            await _client(handler).get("system2-personality", label="production")
+        assert "sk-test" not in str(caught.value)
+        assert "sk-test" not in repr(caught.value.__cause__)
+        secret_b64 = base64.b64encode(b"pk-test:sk-test").decode()
+        assert secret_b64 not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_a_hanging_server_is_cut_off_by_a_total_deadline() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(5)
+        return httpx.Response(200, json=_body())
+
+    client = LangfuseClient(
+        "http://langfuse.test",
+        public_key="pk-test",
+        secret_key="sk-test",
+        timeout_s=0.05,
+        transport=httpx.MockTransport(handler),
+    )
+    started = time.monotonic()
+    with pytest.raises(LangfuseError):
+        await client.get("system2-personality", label="production")
+    assert time.monotonic() - started < 2
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_url_raised_in_transit_is_a_langfuse_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.InvalidURL("bad")
+
+    with pytest.raises(LangfuseError):
         await _client(handler).get("system2-personality", label="production")
-    assert "sk-test" not in str(caught.value)
+
+
+@pytest.mark.parametrize("call", ["create", "set_labels"])
+@pytest.mark.asyncio
+async def test_only_a_get_treats_404_as_absent(call: str) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"message": "Prompt not found"})
+
+    client = _client(handler)
+    with pytest.raises(LangfuseError):
+        if call == "create":
+            await client.create("p", "text", labels=[], commit_message="m")
+        else:
+            await client.set_labels("p", 1, ["production"])
 
 
 @pytest.mark.asyncio
