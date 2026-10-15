@@ -298,7 +298,7 @@ graph TB
     IntRegistry --> HealthInt
     IntRegistry --> RobinhoodInt
     SessionMgr -->|GET/SET sessions| Redis
-    Spend -->|"EVAL spend counter<br/>alfred:spend:*"| Redis
+    Spend -->|"EVAL spend counter<br/>{alfred:spend}:*"| Redis
     IdentityGate -->|voiceprint lookup| Redis
     Ingestor -->|"XREADGROUP + reclaim_stale<br/>alfred:reflex:observations"| Redis
     Ingestor --> Scorer
@@ -666,7 +666,7 @@ The Conscious Engine handles complex user requests with a Pydantic AI agent; [do
 
 1. **IdentityGate** (`identity.py`) -- resolves `identity_claim` from a `UserRequest` to a verified identity (sir/guest). Supports Signal phone lookup, WebAuthn session verification, and voiceprint matching.
 2. **SessionManager** (`session.py`) -- manages conversation sessions in Redis (`alfred:sessions:{id}`). Maintains message history with a configurable window.
-3. **SpendLimits** (`shared/spend.py`) -- the daily budget every paid agent carries, on one atomic counter shared by all processes (`alfred:spend:*`). It refuses a model request once the day's spend reaches `DAILY_COST_CAP_USD` and sends the 80% alert once a day. See [docs/llm.md](llm.md#spend).
+3. **SpendLimits** (`shared/spend.py`) -- the daily budget every paid agent carries, on one atomic counter shared by all processes (`{alfred:spend}:*`). It refuses a model request once the day's spend reaches `DAILY_COST_CAP_USD` and sends the 80% alert once a day. See [docs/llm.md](llm.md#spend).
 4. **ContextAssembler** (`context_assembler.py`) -- gathers context from integrations, episodic memory, and preferences. Builds the system prompt with Alfred's identity and available data.
 5. **ConsciousEngine** (`engine.py`) -- runs the `system2` agent once per request: the agent offers the catalog's tools, validates and dispatches each call, feeds results back, and returns the final text, within ten model requests. Returns an `AlfredResponse`.
 
@@ -871,7 +871,7 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:user:requests` | Stream | Inbound user requests from channels |
 | `alfred:user:responses` | Stream | Outbound Alfred responses to channels |
 | `alfred:sessions:{id}` | String (JSON) | Conversation session state |
-| `alfred:spend:*` | String + Hash (harness `RedisSpendStore`) | Daily spend counter; `alfred:spend:alert:{day}` marks the 80% alert as sent |
+| `{alfred:spend}:*` | String + Hash (harness `RedisSpendStore`) | Daily spend counter; `alfred:spend:alert:{day}` marks the 80% alert as sent |
 | `alfred:conscious:dead_letters` | Stream | Turns the Conscious Engine gave up on — `entry_id`, `event`, `error_type`, `error`, `deliveries`, `reason` (`permanent`, `exhausted`, `expired`, `stale`, `partial`); `MAXLEN ~ 1000` |
 | `alfred:conscious:answered:{event_id}` | String | Set in the same transaction as a request's response (TTL 3600s), so a redelivery after a crash before the ACK answers nothing |
 | `alfred:conscious:effects:{event_id}` | List | The request's side-effecting tool calls as JSON `{tool, args, status}` (`started`/`ok`/`failed`/`parked`; TTL 3600s); a turn that fails or is redelivered after acting answers from it instead of acting again |

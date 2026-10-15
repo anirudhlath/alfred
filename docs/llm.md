@@ -318,7 +318,7 @@ error naming the variable (`shared.config.cost_cap_usd`).
   (`core/conscious/failures.py`) treats it as permanent. A Librarian pass skips the rest
   of its work when the budget runs out.
 - **Counter.** Each billed response is added to a `RedisSpendStore` under
-  `alfred:spend:*` in one Lua script, so the conscious and Librarian processes cannot lose
+  `{alfred:spend}:*` in one Lua script, so the conscious and Librarian processes cannot lose
   each other's updates. The day rolls over at midnight in the user's timezone
   (`shared/usertime.last_user_timezone`).
 - **Price.** `price` charges a response from the `vllm` provider $0, a model genai-prices
