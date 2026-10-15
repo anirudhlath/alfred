@@ -332,6 +332,7 @@ async def run(config: AlfredConfig) -> None:
                 model=resolve_model("LIBRARIAN_MODEL", config.librarian_model),
                 spend=spend,
                 notifier=notifier,
+                prompts=prompts,
                 conflict_min_observations=config.conflict_min_observations,
                 conflict_min_days=config.conflict_min_days,
                 decay_migration_threshold=config.decay_migration_threshold,

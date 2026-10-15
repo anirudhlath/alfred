@@ -6,19 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from core.librarian.agents import (
-    ANALYSE_INSTRUCTIONS,
-    COMPRESS_INSTRUCTIONS,
-    EXTRACT_INSTRUCTIONS,
-    pattern_instructions,
-    resolve_instructions,
-)
 from shared.prompts.names import (
-    LIBRARIAN_ANALYSE,
-    LIBRARIAN_COMPRESS,
-    LIBRARIAN_EXTRACT,
-    LIBRARIAN_PATTERNS,
-    LIBRARIAN_RESOLVE,
     PROMPTS,
     SYSTEM2_LOCATION,
     SYSTEM2_PERSONALITY,
@@ -91,17 +79,3 @@ def test_refs_name_the_version_or_the_repo() -> None:
     assert str(PromptRef("p", 3, "langfuse")) == "p@3"
     assert str(PromptRef("p", None, "repo")) == "p@repo"
     assert RenderedPrompt("t", "p", 3, "redis").ref == PromptRef("p", 3, "redis")
-
-
-# Removed in Task 6, when the Librarian's builders are deleted and the defaults become
-# the only source.
-def test_librarian_defaults_match_todays_builders() -> None:
-    assert repo_prompt(LIBRARIAN_ANALYSE).text == ANALYSE_INSTRUCTIONS
-    assert repo_prompt(LIBRARIAN_EXTRACT).text == EXTRACT_INSTRUCTIONS
-    assert repo_prompt(LIBRARIAN_COMPRESS).text == COMPRESS_INSTRUCTIONS
-    resolve = repo_prompt(LIBRARIAN_RESOLVE, min_observations=5, min_days=14)
-    assert resolve.text == resolve_instructions(5, 14)
-    patterns = repo_prompt(
-        LIBRARIAN_PATTERNS, min_occurrences=3, min_days=7, tz_name="America/Los_Angeles"
-    )
-    assert patterns.text == pattern_instructions(3, 7, "America/Los_Angeles")

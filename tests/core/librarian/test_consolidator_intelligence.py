@@ -13,7 +13,10 @@ import pytest
 
 from core.librarian.consolidator import Librarian
 from core.memory.schemas import EpisodicEntry, SignificanceScore
+from shared.prompts.names import LIBRARIAN_EXTRACT
+from shared.prompts.store import PromptStore
 from tests.llm_fakes import Script
+from tests.shared.prompts.fakes import FakeLangfuse
 
 _UTC = datetime.UTC
 _TS = datetime.datetime(2026, 3, 19, tzinfo=_UTC)
@@ -100,6 +103,45 @@ async def test_update_semantic_memory_writes_learned_preferences(tmp_path: Path)
     assert count == 1
     learned = (tmp_path / "prefs" / "learned.md").read_text()
     assert "68F at night" in learned
+
+
+@pytest.mark.asyncio
+async def test_a_pass_uses_the_prompt_stores_text(tmp_path: Path) -> None:
+    """The extract step sends what the prompt store serves, not a baked-in constant."""
+    store = PromptStore(langfuse=FakeLangfuse({LIBRARIAN_EXTRACT: "Extract carefully."}))
+    script = Script([{"domain": "climate", "observation": "User prefers 68F at night"}], [])
+    context_index = AsyncMock()
+    context_index.reindex_semantic_files = AsyncMock()
+    librarian = Librarian(
+        redis=AsyncMock(),
+        episodic_memory=AsyncMock(),
+        routine_store=MagicMock(),
+        significance_scorer=_make_scorer_mock(),
+        context_index=context_index,
+        model=script.model,
+        prompts=store,
+    )
+    librarian._preferences_dir = tmp_path / "prefs"
+    librarian._preferences_dir.mkdir()
+
+    entries = [
+        EpisodicEntry(
+            id="test-1",
+            timestamp=_TS,
+            source="reflex",
+            summary="User set thermostat to 68F every night at 10pm",
+            entities=["thermostat"],
+            significance=SignificanceScore(overall=0.5),
+            valence="neutral",
+        )
+    ]
+
+    count = await librarian._update_semantic_memory(entries)
+
+    assert count == 1
+    learned = (tmp_path / "prefs" / "learned.md").read_text()
+    assert "68F at night" in learned
+    assert "Extract carefully." in script.instructions()
 
 
 @pytest.mark.asyncio
