@@ -93,7 +93,7 @@ Behaviour (spec 6b, "Model requests"):
   - Every other prefix still goes through plain `infer_model`.
   - The existing tests in `tests/shared/test_agents.py` (base_url, model_key, the missing-setting errors) must still pass unchanged.
 
-- [ ] **Step 1: Write the failing tests** in `tests/shared/test_llm_http.py`. Drive `RetryingTransport` over an `httpx2.MockTransport`, with a fake `sleep` that records waits (it does not sleep), a fake `clock` and a fixed `rng`:
+- [x] **Step 1: Write the failing tests** in `tests/shared/test_llm_http.py`. Drive `RetryingTransport` over an `httpx2.MockTransport`, with a fake `sleep` that records waits (it does not sleep), a fake `clock` and a fixed `rng`:
   1. 503 then 200 → returns 200; one wait equal to `rng` output; two requests sent; identical bodies.
   2. 429 with `retry-after: 2` then 200 → wait 2.0.
   3. 429 with `retry-after-ms: 1500` → wait 1.5. An HTTP-date `retry-after` 3 s ahead → wait ≈3.
@@ -105,10 +105,10 @@ Behaviour (spec 6b, "Model requests"):
   9. A WARNING per retry naming the `X-Alfred-Role` value (caplog on `shared.llm_http`).
   10. **End to end:** a Pydantic AI `Agent` on a `vllm:` model whose `retrying_http_client` wraps a MockTransport answering 429 (`retry-after: 999`) → `agent.run` raises `ModelHTTPError` with `status_code == 429`. This is the status-preservation guarantee. Build it by monkeypatching `retrying_http_client`'s wrapped transport, or by exposing a module-level hook for tests; pick the smaller seam and say which in the report.
   11. In `tests/shared/test_agents.py`: a resolved `vllm:` model's openai client has `max_retries == 0`, and its http client's transport is a `RetryingTransport`. The same for `openrouter:`.
-- [ ] **Step 2: Run them; they fail** (module missing).
-- [ ] **Step 3: Implement** `shared/llm_http.py` and the `resolve_model` change. Run `uv add 'tenacity>=9.1,<10'`, then remove tenacity from the evals extra if `uv add` leaves it duplicated.
-- [ ] **Step 4: Narrow tests pass**: `tests/shared/`, `tests/core/conscious/`, `tests/core/librarian/`.
-- [ ] **Step 5: Gate, then commit** `feat(shared): one bounded, status-preserving retry layer under every model request`.
+- [x] **Step 2: Run them; they fail** (module missing).
+- [x] **Step 3: Implement** `shared/llm_http.py` and the `resolve_model` change. Run `uv add 'tenacity>=9.1,<10'`, then remove tenacity from the evals extra if `uv add` leaves it duplicated.
+- [x] **Step 4: Narrow tests pass**: `tests/shared/`, `tests/core/conscious/`, `tests/core/librarian/`.
+- [x] **Step 5: Gate, then commit** `feat(shared): one bounded, status-preserving retry layer under every model request`.
 
 ---
 
@@ -182,7 +182,7 @@ Behaviour (spec 6b, "Model requests"):
 - Remove `_PEL_RECLAIM_EVERY` and the conscious use of `reclaim_replayable`.
 - Live entries get `delivery=1`.
 
-- [ ] **Step 1: Write the failing tests** (fakeredis supports XPENDING/XCLAIM; check the extended XPENDING works in fakeredis 2.39, and fall back to a `MagicMock` redis for that one call if not):
+- [x] **Step 1: Write the failing tests** (fakeredis supports XPENDING/XCLAIM; check the extended XPENDING works in fakeredis 2.39, and fall back to a `MagicMock` redis for that one call if not):
   - `classify` table-driven: 400, 401, 402, 404, 422 → PERMANENT. 408, 409, 429, 500, 503, 529 → TRANSIENT. `ModelAPIError`, redis `ConnectionError`, `TimeoutError`, `RuntimeError` → TRANSIENT. `UserError` → PERMANENT.
   - `reclaim_due`: a pending entry idle 10 s with times_delivered 1 → not due. Idle 16 s → claimed with delivery 2. Times_delivered 2 idle 20 s → not due; idle 31 s → due. A trimmed id → ACKed, not returned.
   - Runner:
@@ -194,10 +194,10 @@ Behaviour (spec 6b, "Model requests"):
     - a delivery-2 entry with an id 301 s old → engine not called, `FAILED_REPLY`, dead letter `expired`;
     - an `after_answer` that raises does not un-ACK or raise.
   - **Crash simulation (Review Focus 2):** an XACK that raises after XADD → the next delivery of the same entry finds the marker and ACKs without a second response.
-- [ ] **Step 2: Run them; they fail.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Narrow tests pass** (`tests/core/conscious/`, `tests/shared/`, plus `git grep -l reclaim_ tests` for anything touching reclaim).
-- [ ] **Step 5: Gate, then commit** `feat(conscious): redeliver failed turns with backoff and a cap, dead-letter, and answer exactly once`.
+- [x] **Step 2: Run them; they fail.**
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Narrow tests pass** (`tests/core/conscious/`, `tests/shared/`, plus `git grep -l reclaim_ tests` for anything touching reclaim).
+- [x] **Step 5: Gate, then commit** `feat(conscious): redeliver failed turns with backoff and a cap, dead-letter, and answer exactly once`.
 
 ---
 
@@ -250,17 +250,17 @@ Behaviour (spec component 6):
   - all ok: `I'd started on that — I did: light turn on, scene activate — then ran into a problem before I could finish, sir.`
   - any started or failed: append ` I'm not certain these went through: lock unlock. Please check before asking again.`, and list done ones only in the first clause; if none were done, open with `I ran into a problem partway through, sir.`
 
-- [ ] **Step 1: Write the failing tests:**
+- [x] **Step 1: Write the failing tests:**
   - ledger round trip; TTL set;
   - `ledger_reply` for: all ok, mixed ok/started, only failed;
   - a `FunctionModel` turn that calls a registry tool and then raises `ModelHTTPError(503)` on the next model request → the ledger holds one `ok` effect, and the runner publishes the ledger reply and ACKs, with no dead letter of reason `exhausted`. This is #304's acceptance test;
   - redelivery of that entry → the engine is not called and the domain router is not called again;
   - a read-only tool (`memory_recall_memories` or `triggers_list_triggers`) leaves the ledger empty;
   - a guest-refused call leaves it empty.
-- [ ] **Step 2: They fail.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Narrow tests pass.**
-- [ ] **Step 5: Gate, then commit** `feat(conscious): a turn that already acted answers from its ledger instead of running again (#304)`.
+- [x] **Step 2: They fail.**
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Narrow tests pass.**
+- [x] **Step 5: Gate, then commit** `feat(conscious): a turn that already acted answers from its ledger instead of running again (#304)`.
 
 ---
 
@@ -278,15 +278,15 @@ Behaviour (spec 6b, "Domain dispatch"):
 - One WARNING per retry.
 - `ReadTimeout`, any status error and any other exception keep today's single-attempt `ActionResult(status="error")` behaviour.
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - ConnectError, ConnectError, then success → success, 3 POSTs;
   - ConnectError × 3 → `status="error"`, 3 POSTs;
   - ReadTimeout → `status="error"`, 1 POST;
   - 500 → 1 POST.
-- [ ] **Step 2: They fail.**
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Pass.**
-- [ ] **Step 5: Gate, then commit** `feat(home): retry a dispatch only when it never reached the service`.
+- [x] **Step 2: They fail.**
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Pass.**
+- [x] **Step 5: Gate, then commit** `feat(home): retry a dispatch only when it never reached the service`.
 
 ---
 
@@ -336,7 +336,7 @@ Behaviour (spec component 7, as amended 2026-10-14):
 - **Admin API:** `/api/admin/overview`'s `cost` comes from `spend_snapshot`. `alert_sent` is the marker's existence, and `request_count` is the budget status's request count. Delete `COST_DAILY_KEY` and its readers.
 - **Write tolerance:** a `RedisSpendStore.add_many` that raises (simulate it by closing the fakeredis connection, or with a store double) → the turn still returns its answer and a WARNING is logged (Review Focus 4).
 
-- [ ] **Step 1: Failing tests:**
+- [x] **Step 1: Failing tests:**
   - `price`: vllm → 0; a genai-prices-known openrouter model → its price; an unknown openrouter model → the fallback rates; one WARNING across two calls;
   - **two `SpendLimits` instances on one fakeredis, 50 concurrent accruals each** (drive `store.add_many` through the capability, or call the store as the capability would) → the total equals the sum. No lost update. This is #309's acceptance test;
   - `alert_if_needed` from two instances concurrently at 85% → exactly one `publish`;
@@ -345,10 +345,10 @@ Behaviour (spec component 7, as amended 2026-10-14):
   - the Librarian over the cap → pass skipped, logged;
   - an admin overview shape test with the keys above;
   - a write failure → the answer still returned.
-- [ ] **Step 2: They fail.**
-- [ ] **Step 3: Implement**, deleting `core/conscious/cost.py`. `git grep -n "CostTracker\|COST_DAILY_KEY\|cost_tracker\|record_spend\|is_budget_exceeded"` must end empty outside docs/plans and docs/superpowers.
-- [ ] **Step 4: Narrow tests pass** (`tests/core/conscious tests/core/librarian tests/shared tests/core/channels`).
-- [ ] **Step 5: Gate, then commit** `feat(spend): atomic cross-process spend on SpendLimits, gated everywhere, alerted once (#309)`.
+- [x] **Step 2: They fail.**
+- [x] **Step 3: Implement**, deleting `core/conscious/cost.py`. `git grep -n "CostTracker\|COST_DAILY_KEY\|cost_tracker\|record_spend\|is_budget_exceeded"` must end empty outside docs/plans and docs/superpowers.
+- [x] **Step 4: Narrow tests pass** (`tests/core/conscious tests/core/librarian tests/shared tests/core/channels`).
+- [x] **Step 5: Gate, then commit** `feat(spend): atomic cross-process spend on SpendLimits, gated everywhere, alerted once (#309)`.
 
 ---
 
@@ -362,17 +362,17 @@ Behaviour (spec component 7, as amended 2026-10-14):
   - `CLAUDE.md`, `core/CLAUDE.md`: anywhere naming `cost.py` / `CostTracker` / the reclaim cadence;
   - `docs/admin-api.md`: the overview `cost` fields' meaning (`request_count` = model requests);
   - `evals/coverage.yaml`: if it lists PRD rows you change, keep it consistent.
-- [ ] **Step 1:** `git grep -n "CostTracker\|cost\.py\|COST_DAILY\|_PEL_RECLAIM\|reclaim_replayable" -- '*.md' ':!docs/superpowers'`. Fix every hit that describes the conscious engine.
-- [ ] **Step 2: Gate, then commit** `docs: retries, the turn ledger and spend`.
+- [x] **Step 1:** `git grep -n "CostTracker\|cost\.py\|COST_DAILY\|_PEL_RECLAIM\|reclaim_replayable" -- '*.md' ':!docs/superpowers'`. Fix every hit that describes the conscious engine.
+- [x] **Step 2: Gate, then commit** `docs: retries, the turn ledger and spend`.
 
 ---
 
 ### Task 7: Verify (controller, not a subagent)
 
-- [ ] Full gate; hygiene greps (runbook §Secret hygiene, never quoted in the repo) against `origin/master`; the commit-message model grep from PR 2's Task 11.
-- [ ] **Live:** one System 2 turn and one Librarian analysis against the local vLLM through `resolve_model` (adapt `verify_pr2.py` in the scratchpad). Then:
+- [x] Full gate; hygiene greps (runbook §Secret hygiene, never quoted in the repo) against `origin/master`; the commit-message model grep from PR 2's Task 11.
+- [x] **Live:** one System 2 turn and one Librarian analysis against the local vLLM through `resolve_model` (adapt `verify_pr2.py` in the scratchpad). Then:
   - confirm the `X-Alfred-Role` header still reaches vLLM;
   - confirm `alfred:spend:*` hashes appear in a scratch Redis DB, not prod's.
-- [ ] **Failure injection, live:** point `VLLM_BASE_URL` at a closed local port for one `agent.run` → three attempts logged, then `ModelAPIError`, all within the budget.
-- [ ] **Evals:** `alfred evals run home_control conversation --epochs 5` on this branch against PR 2's tip (`feat/pydantic-ai-system2`), one after the other, never at once. Acceptance: no golden down two or more.
-- [ ] Draft the PR description with the actual outputs and mark this plan done. Pushing and opening the PR wait for the owner's go; merging too.
+- [x] **Failure injection, live:** point `VLLM_BASE_URL` at a closed local port for one `agent.run` → three attempts logged, then `ModelAPIError`, all within the budget.
+- [x] **Evals:** `alfred evals run home_control conversation --epochs 5` on this branch against PR 2's tip (`feat/pydantic-ai-system2`), one after the other, never at once. Acceptance: no golden down two or more.
+- [x] Draft the PR description with the actual outputs and mark this plan done. Pushing and opening the PR wait for the owner's go; merging too.
