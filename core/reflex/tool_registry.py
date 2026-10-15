@@ -8,9 +8,16 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, get_args
 
+from sdk.alfred_sdk.feature import (
+    ToolAudience,
+    ToolParameter,
+    ToolRisk,
+    check_object_schema,
+    input_schema_from_parameters,
+)
 from shared.streams import TOOL_REGISTRY_KEY
 
 if TYPE_CHECKING:
@@ -20,6 +27,37 @@ logger = logging.getLogger(__name__)
 
 # The audience tag that puts a tool in Reflex's prompt; untagged tools are "conscious".
 REFLEX_AUDIENCE = "reflex"
+# The values the SDK allows, read from its Literal types, never restated here.
+_AUDIENCES: frozenset[str] = frozenset(get_args(ToolAudience))
+_RISKS: frozenset[str] = frozenset(get_args(ToolRisk))
+# ToolInfo fields that must be strings, possibly empty (`name` must also be non-empty).
+_STRING_FIELDS = ("description", "feature_name", "feature_description", "target_service")
+
+
+def legacy_input_schema(parameters: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Build a tool's input schema from a manifest written before ``input_schema``.
+
+    Such a manifest gives every parameter ``"default": null`` (#300), so this
+    reproduces what the model was offered before: a parameter is required when it
+    says so, or, lacking a ``required`` key, when it has no ``default`` key. One
+    difference is deliberate: a parameter without a description gets no
+    ``description`` keyword, where System 2 used to send ``"description": ""``,
+    which tells a model nothing.
+
+    Args:
+        parameters: The manifest's ``parameters``: name → that parameter's metadata.
+
+    Returns:
+        An object schema with ``properties`` and ``required``.
+    """
+    return input_schema_from_parameters(
+        {
+            name: ToolParameter.model_validate(
+                {"type": "str", **spec, "required": spec.get("required", "default" not in spec)}
+            )
+            for name, spec in parameters.items()
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -34,6 +72,46 @@ class ToolInfo:
     target_service: str
     audience: str = "conscious"
     risk: str = "benign"
+    # The tool's arguments as one JSON Schema object. Empty → derived from `parameters`.
+    input_schema: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # These reach prompts, tool-call payloads and dispatch, so a bad one fails here.
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError(f"tool name must be a non-empty string, not {self.name!r}")
+        for field_name in _STRING_FIELDS:
+            value = getattr(self, field_name)
+            if not isinstance(value, str):
+                raise ValueError(f"tool {field_name} must be a string, not {value!r}")
+        if not isinstance(self.audience, str) or self.audience not in _AUDIENCES:
+            raise ValueError(
+                f"tool audience must be one of {sorted(_AUDIENCES)}, not {self.audience!r}"
+            )
+        if not isinstance(self.risk, str) or self.risk not in _RISKS:
+            raise ValueError(f"tool risk must be one of {sorted(_RISKS)}, not {self.risk!r}")
+        # Derived even when a schema ships: that validates `parameters`, which Reflex
+        # renders, so a malformed one fails here rather than in a later prompt.
+        derived = legacy_input_schema(self.parameters)
+        if not self.input_schema:
+            object.__setattr__(self, "input_schema", derived)
+
+
+def _shipped_input_schema(schema: object) -> dict[str, Any]:
+    """Check the ``input_schema`` a manifest ships; ``{}`` when it ships none.
+
+    Args:
+        schema: The tool's ``input_schema`` value, as read from the manifest.
+
+    Returns:
+        The schema, or ``{}`` when it is absent, null or empty (derive it instead).
+
+    Raises:
+        ValueError: The schema is present but not an object schema, by the SDK's
+            ``check_object_schema``.
+    """
+    if schema is None or schema == {}:
+        return {}
+    return check_object_schema(schema)
 
 
 class ToolRegistry:
@@ -72,23 +150,61 @@ class ToolRegistry:
                 )
                 continue
 
-            # Parse features
-            for feature in manifest.get("features", []):
+            features = manifest.get("features", [])
+            if not isinstance(features, list):
+                logger.warning(
+                    "Skipping malformed manifest from service '%s': its features are not a list",
+                    service_name,
+                )
+                continue
+
+            # Parse features. A malformed feature is skipped whole; the rest still load.
+            for feature in features:
+                if not isinstance(feature, dict):
+                    logger.warning(
+                        "Skipping malformed feature %r from service '%s': not an object",
+                        feature,
+                        service_name,
+                    )
+                    continue
                 feature_name = feature.get("name", "")
                 feature_desc = feature.get("description", "")
-                for t in feature.get("tools", []):
-                    tools.append(
-                        ToolInfo(
-                            name=t["name"],
-                            description=t.get("description", ""),
-                            parameters=t.get("parameters", {}),
-                            feature_name=feature_name,
-                            feature_description=feature_desc,
-                            target_service=service_name,
-                            audience=t.get("audience", "conscious"),
-                            risk=t.get("risk", "benign"),
-                        )
+                feature_tools = feature.get("tools", [])
+                if not isinstance(feature_tools, list):
+                    logger.warning(
+                        "Skipping malformed feature %r from service '%s': its tools are not a list",
+                        feature_name,
+                        service_name,
                     )
+                    continue
+                for t in feature_tools:
+                    try:
+                        tools.append(
+                            ToolInfo(
+                                name=t["name"],
+                                description=t.get("description", ""),
+                                parameters=t.get("parameters", {}),
+                                feature_name=feature_name,
+                                feature_description=feature_desc,
+                                target_service=service_name,
+                                audience=t.get("audience", "conscious"),
+                                risk=t.get("risk", "benign"),
+                                input_schema=_shipped_input_schema(t.get("input_schema")),
+                            )
+                        )
+                    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                        # One bad tool (an entry that is not an object, a missing or empty
+                        # name, a description or feature name/description that is not a
+                        # string, an audience or risk the SDK does not allow, malformed
+                        # parameters, or a schema that is not an object schema) must not
+                        # take down every other tool. pydantic's ValidationError is a
+                        # ValueError.
+                        logger.warning(
+                            "Skipping malformed tool %r from service '%s': %s",
+                            t.get("name") if isinstance(t, dict) else t,
+                            service_name,
+                            exc,
+                        )
 
         return tools
 
