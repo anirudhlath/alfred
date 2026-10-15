@@ -235,7 +235,7 @@ trigger a duplicate load.
 ## Room-Aware Context
 
 The `area` field flows from `satellites.yaml` → `UserRequest.area` →
-`ConsciousEngine` → `ContextAssembler.assemble(area=...)`, which injects:
+`ConsciousEngine` → the `system2-location` prompt (`area`), which injects:
 
 ```
 ## Location
@@ -243,7 +243,7 @@ This request was spoken at the <area> satellite. When a device is referenced wit
 naming a room ("the lights"), assume the <area> area.
 ```
 
-Nothing is hardcoded — any area name from the config flows straight into the prompt.
+Nothing is hardcoded — any area name from the config flows straight into the prompt. The wording is the `system2-location` prompt ([docs/llm.md](llm.md#prompts)).
 
 ## Announcements
 

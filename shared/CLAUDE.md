@@ -17,6 +17,7 @@ Cross-cutting utilities used by multiple top-level packages (core, bus, domains)
 - `tracing.py` — `ReflexTraceRecord` / `ConsciousTraceRecord` dataclasses + `init_tracing()` with optional OTLP export
 - `otel.py` — TracerProvider init with Resource + optional OTLP BatchSpanProcessor
 - `llm_http.py` — `RetryingTransport` / `retrying_http_client()`: the one HTTP retry layer under every OpenAI-compatible model (`resolve_model` builds the SDK client with `max_retries=0`); a status that exhausts retries returns its last response so Pydantic AI raises `ModelHTTPError` with the real status (spec 6b)
+- `prompts/` — System 2's and the Librarian's prose: `PromptStore` (Langfuse, then the Redis copy, then `defaults/<name>.md`), `link` (puts the prompt version on `chat` spans), `cli` (`alfred prompts push|diff|pull`); see `docs/llm.md`
 
 ## Key Stream Constants
 

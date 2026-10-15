@@ -177,7 +177,7 @@ graph TB
         IdentityGate[IdentityGate]
         SessionMgr[SessionManager]
         Spend["SpendLimits<br/>(shared/spend.py)"]
-        CtxAssembler[ContextAssembler]
+        CtxAssembler["assemble()<br/>(context_assembler.py)"]
         ActionTools["Action Tools<br/>confirm_pending_action +<br/>attention_* (sir-only)"]
     end
 
@@ -667,10 +667,10 @@ The Conscious Engine handles complex user requests with a Pydantic AI agent; [do
 1. **IdentityGate** (`identity.py`) -- resolves `identity_claim` from a `UserRequest` to a verified identity (sir/guest). Supports Signal phone lookup, WebAuthn session verification, and voiceprint matching.
 2. **SessionManager** (`session.py`) -- manages conversation sessions in Redis (`alfred:sessions:{id}`). Maintains message history with a configurable window.
 3. **SpendLimits** (`shared/spend.py`) -- the daily budget every agent carries, a $0 local one included, on one atomic counter shared by all processes (`{alfred:spend}:*`). It refuses a model request once the day's spend reaches `DAILY_COST_CAP_USD` and sends the 80% alert once a day. See [docs/llm.md](llm.md#spend).
-4. **ContextAssembler** (`context_assembler.py`) -- gathers context from integrations, episodic memory, and preferences. Builds the system prompt with Alfred's identity and available data.
+4. **`assemble()`** (`context_assembler.py`) -- builds the system prompt for a turn from the rendered prose sections, with the current time, involuntary recall and the routine hint between them.
 5. **ConsciousEngine** (`engine.py`) -- runs the `system2` agent once per request: the agent offers the catalog's tools, validates and dispatches each call, feeds results back, and returns the final text, within ten model requests. Returns an `AlfredResponse`.
 
-**Identity prompts** are in `core/conscious/prompts/` -- separate system prompts for sir vs guest interactions, enforcing the privacy boundary.
+**System 2's prose** (personality, voice delivery, identity, location, integrations, proactivity) is served by the prompt store (`shared/prompts/`); the sir and guest identity sections are separate prompts, enforcing the privacy boundary.
 
 **Attention and confirm tools** (`core/conscious/tools/attention.py`) -- `confirm_pending_action`
 (republishes a parked critical action once the user approves) and

@@ -44,6 +44,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `alfredctl/` — container launcher CLI (`typer`): `main.py` (commands), `runtime.py` (runtime detection + per-runtime gateway/subnet knowledge), `launch.py` (`run` arg assembly), `staging.py` (git-tracked build context), `smoke.py` (containerized health checks). See `docs/containerization.md`.
 - `shared/` — cross-cutting utilities (config, streams, secrets, types, logging, tracing)
 - `shared/usertime.py` — `get_user_timezone()`/`set_user_timezone()` (Redis key `alfred:user:timezone`; resolution: stored → `ALFRED_TIMEZONE` env → UTC)
+- `shared/prompts/` — the prompt store and the repo defaults (`defaults/<name>.md`) for System 2 and the Librarian; Langfuse is optional; see `docs/llm.md`
 - `shared/gateway.py` — `GATEWAY_REWRITE_KEYS`: the host-pointing env vars both launch paths rewrite to the container→host gateway (dependency-free on purpose — `alfredctl/launch.py` needs it before `shared.config` loads `.env`)
 - `bus/schemas/events.py` — canonical event types (single source of truth)
 - `core/` — brain (reflex, conscious, triggers, memory, notifications, voice, channels, librarian, integrations)
