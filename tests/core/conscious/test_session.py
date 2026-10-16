@@ -140,6 +140,29 @@ async def test_a_legacy_text_history_is_converted_and_dropped_on_the_next_write(
     assert await redis.hget(KEY, "channel") == b"signal"
 
 
+async def test_messages_win_over_a_legacy_history_and_the_next_write_drops_it(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    """The rollback-then-forward case: a hash holding both fields reads from ``messages``."""
+    legacy = [{"role": "user", "content": "Old"}, {"role": "assistant", "content": "Stale."}]
+    stored = ModelMessagesTypeAdapter.dump_json(text_turn("New", "Fresh, sir.")).decode()
+    await redis.hset(
+        KEY,
+        mapping={
+            "channel": "web_pwa",
+            MESSAGES_FIELD: stored,
+            LEGACY_HISTORY_FIELD: json.dumps(legacy),
+        },
+    )
+    mgr = SessionManager(redis)
+
+    session = await mgr.load("sess-1", "web_pwa", "sir")
+    assert _texts(session.messages) == [("request", "New"), ("response", "Fresh, sir.")]
+
+    await mgr.store_run("sess-1", session.messages, "sir")
+    assert await redis.hget(KEY, LEGACY_HISTORY_FIELD) is None
+
+
 async def test_unreadable_messages_read_as_no_history(
     redis: fakeredis.FakeAsyncRedis, caplog: pytest.LogCaptureFixture
 ) -> None:

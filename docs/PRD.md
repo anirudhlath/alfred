@@ -1,6 +1,6 @@
 # Alfred — Product Requirements Document
 
-**Status:** Living document. Capability statuses current as of **2026-10-14**.
+**Status:** Living document. Capability statuses current as of **2026-10-15**.
 **Maintenance rule:** any PR that adds or changes a user-facing capability updates the
 relevant row(s) in the [Capability Catalog](#4-capability-catalog) in the same branch.
 
@@ -79,7 +79,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Voice in the browser/app (speech-to-text, neural spoken replies) | Shipped | `docs/voice.md` |
 | Physical wake-word satellites ("Hey Alfred" devices per room, room-aware context) | In review | spec `2026-07-15-voice-satellite-design.md`, PR #29 |
 | Speaker identification (who is talking, voice enrollment) | In review | PR #29 |
-| Multi-step conversations with session continuity (30-min sessions, any channel) | Shipped | `docs/architecture.md` |
+| Multi-step conversations with session continuity (30-min sessions, any channel): within a session Alfred carries the whole conversation, including what his tools did and returned, into the next turn; on a shared satellite session a change of speaker starts the conversation over | Shipped | `docs/llm.md` (Sessions) |
 | A failed request is answered once, and never repeats what it already did: a model hiccup is retried with backoff, one that cannot be completed gets a plain apology instead of silence, and one that failed after acting is answered with what was and was not done, so a light is never switched, a door unlocked or a calendar event booked twice. Requests more than five minutes old are not run, and a slow one stops acting once it passes five minutes (one that already acted is answered with what it did); a late answer is never shown as the answer to the next message | Shipped | `docs/llm.md` |
 
 ### 4.2 Proactivity & triggers

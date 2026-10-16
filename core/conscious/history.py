@@ -1,18 +1,30 @@
-"""System 2's history bounds (spec, component 5): what keeps a session's history, and any
-one tool result in it, inside the model's context window.
+"""System 2's history bounds (spec, component 5): what bounds a session's history, and any
+one tool result in it, by message count, old tool results and single-result size.
 
 Measured in production over a week of traces: a model request's input is about 18k tokens
 at the median and under 25k at most, nearly all of it tool definitions; a
-session holds one or two turns; the largest tool result is an unfiltered live-state read, a
-little under 80,000 characters. The smallest window an eval runs on is 32,768 tokens.
+session holds one or two turns; the largest traced tool result was 187 characters. The
+largest result possible, an unfiltered live-state read of about 77,700 characters, was
+measured by a probe in the production container, not seen in traces. The smallest window
+an eval runs on is 32,768 tokens.
 
 The capabilities run cheapest first. ``TruncateToolOutput`` clips a result as it is made, so
 the clipped copy is what the model sees and what the session stores. ``ClearToolResults``
-blanks old results once the context estimate (tool definitions included)
-passes its ceiling, never the most recent pairs. ``SlidingWindowCompaction`` drops the
+blanks old results once the context estimate
+passes its ceiling, never the most recent pairs. The estimate includes tool definitions only
+when the history holds a response with provider-reported usage (the harness's anchor); a
+converted legacy session or a text-only history is estimated from message text alone, so
+clearing can trigger later. And since stored requests carry no instructions, the anchored
+estimate counts the current instructions on top of an anchor that already included them
+(about 700 tokens high, so it clears slightly early). Both are harmless.
+``SlidingWindowCompaction`` drops the
 oldest messages past a count, keeping the first user message and tool call/return pairs
 together. Both compactions rewrite the run's messages, which is why a turn replaces the
 stored session rather than appending to it.
+
+Nothing bounds total tokens yet, so a history that outgrows the window fails until the
+session expires (issue #371). ``ThinkingPart``s are replayed and stored too, and nothing
+bounds them; that matters only if a reasoning model is configured (issue #371).
 """
 
 from __future__ import annotations

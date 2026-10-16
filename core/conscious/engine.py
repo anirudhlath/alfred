@@ -299,6 +299,9 @@ class ConsciousEngine:
         usage = RunUsage()
         text, mood, messages = await self._run(request, deps, session.messages, usage)
 
+        # Stored before the reply is published, as before. A crash between the two stores
+        # the turn, and a redelivery then runs again over a history that already holds it
+        # (or appends a ledger text turn): accepted, the same order as the text-only sessions.
         await self._session_mgr.store_run(request.session_id, messages, identity.identity)
         await self._note(now, request.content, text, deps.actions_taken, usage)
         return self._reply(request, text, deps.actions_taken, mood=mood)

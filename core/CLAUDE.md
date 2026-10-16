@@ -81,7 +81,8 @@ One Pydantic AI agent per request (`agent.py`); see `docs/llm.md`.
 - `system2_prompts.py` — `System2Prompts`, `fetch_system2_prompts()`: which prose sections a turn includes (personality, voice delivery, identity, location, integrations, proactivity), rendered from the prompt store (`shared/prompts/`) before the run
 - `context_assembler.py` — `assemble()`: the instructions, the rendered sections with the turn's data between them: time, involuntary recall, routine hint (no tool list)
 - `identity.py` — Signal phone + local-claim trust (confidence=0.7) for web_pwa, voice, and ios channels
-- `session.py` — Redis-backed sessions, 30min timeout
+- `session.py` — Redis-backed sessions, 30min timeout; stores the run's whole message history per session (tool calls and results included) and the speaker who wrote it: a different speaker reads no history
+- `history.py` — the history bounds: truncate-only `ToolOutputLimits` (`TOOL_RESULT_MAX_CHARS`), `ClearToolResults` (`CLEAR_TOOL_RESULTS_OVER_TOKENS`, `TOOL_RESULTS_KEPT`, `CLEAR_AT_LEAST_TOKENS`) and `SlidingWindowCompaction` (`SESSION_MAX_MESSAGES`, `SESSION_KEPT_MESSAGES`)
 
 ### Tools (one catalog, five toolsets in priority order)
 1. Trigger tools (`tools/triggers.py`) → in-process `TriggerFeature` methods, arguments validated and coerced first by the tool's `ToolMeta.validate_arguments`; a `ToolArgumentError` becomes a `ModelRetry` naming each field (a retry prompt, up to `TOOL_RETRIES`)
