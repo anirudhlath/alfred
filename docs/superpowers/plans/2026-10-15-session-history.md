@@ -53,7 +53,7 @@ Base: `master` at `5921523`. Branch: `feat/session-history`. Worktree: `~/code/.
    - Appending would undo compaction, so the method writes the run's whole history and is named `store_run`.
    - Cost if wrong: a rename.
 2. **Instructions are stripped before storing.**
-   - Every `ModelRequest` that `all_messages()` returns carries `instructions`. In production that is the full assembled prompt, about 18k tokens. The model adapter sends only the latest request's instructions.
+   - Every `ModelRequest` that `all_messages()` returns carries `instructions`. In production that is the assembled prompt, about 2,700 characters (roughly 700 tokens), and it goes stale every turn (the clock, recall). The model adapter sends only the latest request's instructions, so stored copies are dead weight that grows with the turn count.
    - Storing them would multiply the Redis value by the turn count for nothing, so `store_run` sets `instructions=None` on every request.
 3. **Speaker change.**
    - The session stores the identity that wrote it last. A turn by a different identity reads no history, and its `store_run` overwrites the session.
@@ -61,7 +61,7 @@ Base: `master` at `5921523`. Branch: `feat/session-history`. Worktree: `~/code/.
    - So legacy sessions convert as the spec says, for the 30 minutes they can live after deploy.
 4. **Thresholds, from production measurements over 7 days of Langfuse (2026-10-08 to 10-15).**
    - **What was measured:**
-     - System 2 input per model request: p50 17,944 tokens, max 24,623. Nearly all of it is instructions and tool definitions.
+     - System 2 input per model request: p50 17,944 tokens, max 24,623. Nearly all of it is the 121 tool definitions (about 60,000 characters, 99 of them home-service tools); the instructions are about 700 tokens.
      - Turns per session: 1–2.
      - Model requests per turn: 1–2.
      - Largest observed tool result: 187 characters.
@@ -72,7 +72,7 @@ Base: `master` at `5921523`. Branch: `feat/session-history`. Worktree: `~/code/.
      | constant | value | effect |
      |---|---|---|
      | `TOOL_RESULT_MAX_CHARS` | 100,000 | Above the largest real result, so current-turn behaviour is unchanged. It is a ceiling, not a trim. |
-     | `CLEAR_TOOL_RESULTS_OVER_TOKENS` | 28,000 | The estimate includes instructions and tool definitions. A session starts blanking old results once its history adds roughly 4–10k tokens, which leaves room for output on the 32k eval model. |
+     | `CLEAR_TOOL_RESULTS_OVER_TOKENS` | 28,000 | The estimate includes the tool definitions and instructions. A session starts blanking old results once its history adds roughly 4–10k tokens, which leaves room for output on the 32k eval model. |
      | `TOOL_RESULTS_KEPT` | 3 | The harness default. The three most recent tool call/return pairs are never blanked, so the result a follow-up refers to survives. |
      | `CLEAR_AT_LEAST_TOKENS` | 2,000 | Never blank for a trivial gain. |
      | `SESSION_MAX_MESSAGES` | 60 | |
@@ -1053,13 +1053,13 @@ Expected: an ImportError (`No module named 'core.conscious.history'`).
 one tool result in it, inside the model's context window.
 
 Measured in production over a week of traces: a model request's input is about 18k tokens
-at the median and under 25k at most, nearly all of it instructions and tool definitions; a
+at the median and under 25k at most, nearly all of it tool definitions; a
 session holds one or two turns; the largest tool result is an unfiltered live-state read, a
 little under 80,000 characters. The smallest window an eval runs on is 32,768 tokens.
 
 The capabilities run cheapest first. ``TruncateToolOutput`` clips a result as it is made, so
 the clipped copy is what the model sees and what the session stores. ``ClearToolResults``
-blanks old results once the context estimate (instructions and tool definitions included)
+blanks old results once the context estimate (tool definitions included)
 passes its ceiling, never the most recent pairs. ``SlidingWindowCompaction`` drops the
 oldest messages past a count, keeping the first user message and tool call/return pairs
 together. Both compactions rewrite the run's messages, which is why a turn replaces the
