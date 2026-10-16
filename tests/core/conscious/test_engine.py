@@ -16,6 +16,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     TextPart,
+    ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
 )
@@ -34,12 +35,19 @@ from core.conscious.engine import (
     ConsciousDeps,
     ConsciousEngine,
 )
+from core.conscious.history import (
+    CLEAR_TOOL_RESULTS_OVER_TOKENS,
+    SESSION_MAX_MESSAGES,
+    TOOL_RESULT_MAX_CHARS,
+    TOOL_RESULTS_KEPT,
+)
 from core.conscious.session import (
     LEGACY_HISTORY_FIELD,
     MESSAGES_FIELD,
     Session,
     SessionManager,
     stored_messages,
+    text_turn,
 )
 from core.conscious.tools.catalog import TOOL_RETRIES
 from core.memory.schemas import RoutineSpec
@@ -954,3 +962,81 @@ async def test_the_run_is_linked_to_the_turns_prompts(monkeypatch: pytest.Monkey
 
     (refs,) = seen
     assert refs[0] == PromptRef(SYSTEM2_PERSONALITY, 7, "langfuse")
+
+
+# ── history bounds (spec component 5) ──
+
+
+@pytest.mark.asyncio
+async def test_no_spilled_result_reader_is_offered() -> None:
+    script = Script("Hello, sir.")
+
+    await ConsciousEngine(deps=_deps(script)).process_request(_request())
+
+    assert "read_tool_result" not in script.offered(0)
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_tool_result_is_truncated_before_the_model_and_the_store() -> None:
+    registry = AsyncMock()
+    registry.get_tools.return_value = [_info("home.get_live_state")]
+    router = AsyncMock()
+    router.route.return_value = MagicMock(
+        status="success", result={"entities": "x" * 150_000}, error=None
+    )
+    script = Script(tool_call("home_get_live_state", {"entity_id": "all"}), "All quiet, sir.")
+    deps = _deps(script, tool_registry=registry, domain_router=router, session_mgr=_sessions())
+
+    await ConsciousEngine(deps=deps).process_request(_request(content="What's on?"))
+
+    [seen] = script.returns(1)
+    assert len(seen) <= TOOL_RESULT_MAX_CHARS
+    stored = await _stored(deps.session_mgr)
+    [kept] = [p for m in stored for p in m.parts if isinstance(p, ToolReturnPart)]
+    assert len(kept.model_response_str()) <= TOOL_RESULT_MAX_CHARS
+
+
+@pytest.mark.asyncio
+async def test_a_long_session_is_compacted_before_it_is_stored() -> None:
+    mgr = _sessions()
+    long_history = [m for i in range(40) for m in text_turn(f"question {i}", f"answer {i}")]
+    await mgr.store_run("sess-1", long_history, "sir")
+    script = Script("The latest answer, sir.")
+    deps = _deps(script, session_mgr=mgr)
+
+    await ConsciousEngine(deps=deps).process_request(_request(content="latest question"))
+
+    assert len(script.requests[0][0]) <= SESSION_MAX_MESSAGES
+    stored = await _stored(mgr)
+    assert len(stored) <= SESSION_MAX_MESSAGES
+    assert _user_text(stored[0]) == "question 0"  # the first user message is kept
+    assert stored[-1].parts == [TextPart("The latest answer, sir.")]
+
+
+@pytest.mark.asyncio
+async def test_old_tool_results_are_cleared_past_the_token_ceiling() -> None:
+    mgr = _sessions()
+    pairs = TOOL_RESULTS_KEPT + 1
+    # Each result alone is under the ceiling; together they are well over it (~4 chars/token).
+    size = CLEAR_TOOL_RESULTS_OVER_TOKENS * 4 // TOOL_RESULTS_KEPT
+    history = []
+    for i in range(pairs):
+        history += [
+            ModelRequest(parts=[UserPromptPart(f"check {i}")]),
+            ModelResponse(
+                parts=[ToolCallPart("home_get_lights", {"entity_id": "light.desk"}, f"c{i}")]
+            ),
+            ModelRequest(parts=[ToolReturnPart("home_get_lights", "y" * size, f"c{i}")]),
+            ModelResponse(parts=[TextPart(f"done {i}")]),
+        ]
+    await mgr.store_run("sess-1", history, "sir")
+    script = Script("Fine, sir.")
+    deps = _deps(script, session_mgr=mgr)
+
+    await ConsciousEngine(deps=deps).process_request(_request(content="and now?"))
+
+    sent = [
+        p.content for m in script.requests[0][0] for p in m.parts if isinstance(p, ToolReturnPart)
+    ]
+    assert sent[0] == "[tool result cleared]"
+    assert all(c == "y" * size for c in sent[1:])

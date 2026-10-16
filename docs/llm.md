@@ -123,6 +123,13 @@ satellite's shared session starts over when the speaker changes. A run that ends
 its own answer (the deliberating or budget reply) stores the turn as text. Sessions expire
 after `SESSION_TIMEOUT_MINUTES` (default 30) idle.
 
+**Compaction** (`core/conscious/history.py`) keeps that history inside the context window,
+cheapest first: one tool result is clipped at 100,000 characters as it is made; once the
+context estimate passes 28,000 tokens, tool results older than the three most recent are
+replaced by `[tool result cleared]`; past 60 messages, the oldest are dropped down to 40,
+keeping the first user message and tool call/return pairs together. The numbers come from
+a week of production traces and the 32k-token eval model; the module docstring has them.
+
 ### Tool names
 
 One mapping names every tool: `wire_name()` (`core/conscious/tools/names.py`). It maps each
