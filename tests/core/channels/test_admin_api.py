@@ -7,6 +7,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
+from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolReturnPart,
+)
 
 import core.channels.admin_api as admin_api
 from core.channels.admin_api import (
@@ -16,6 +23,7 @@ from core.channels.admin_api import (
     require_authenticated,
 )
 from core.channels.web_server import create_app, require_trusted_network
+from core.conscious.session import MESSAGES_FIELD, text_turn
 from core.reflex.inference import REFLEX_BACKENDS
 from shared.streams import SPEND_PREFIX
 from tests.core.channels.conftest import _TEST_SESSION_ID, session_hgetall
@@ -663,7 +671,8 @@ def test_sessions_list() -> None:
 
 
 def test_sessions_list_populated() -> None:
-    """Sessions list with a real session hash — channel, turns, created_at, and ttl populated."""
+    """Sessions list with a real session hash — channel, turns (user turns, from
+    legacy history), created_at, and ttl populated."""
     r = _overview_redis()
     r.scan_iter = MagicMock(return_value=aiter_values([b"alfred:sessions:s2"]))
 
@@ -691,9 +700,57 @@ def test_sessions_list_populated() -> None:
     entry = body[0]
     assert entry["session_id"] == "s2"
     assert entry["channel"] == "web_pwa"
-    assert entry["turns"] == 3
+    assert entry["turns"] == 2
     assert entry["created_at"] == "2026-06-10T10:00:00+00:00"
     assert entry["ttl_seconds"] == 900
+
+
+def test_sessions_list_counts_user_turns_from_messages() -> None:
+    r = _overview_redis()
+    r.scan_iter = MagicMock(return_value=aiter_values([b"alfred:sessions:s3"]))
+    messages = [
+        *text_turn("Is the lamp on?", "Checking."),
+        ModelRequest(parts=[ToolReturnPart("home_get_lights", {"state": "on"}, "c1")]),
+        ModelResponse(parts=[TextPart("It is on, sir.")]),
+        *text_turn("Thanks", "My pleasure, sir."),
+    ]
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        return {
+            b"channel": b"web_pwa",
+            MESSAGES_FIELD.encode(): ModelMessagesTypeAdapter.dump_json(messages),
+            b"created_at": b"2026-10-15T10:00:00+00:00",
+        }
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    r.ttl = AsyncMock(return_value=600)
+    client = make_admin_client(r)
+
+    [entry] = client.get("/api/admin/sessions").json()["sessions"]
+
+    assert entry["turns"] == 2
+
+
+def test_sessions_list_counts_unreadable_messages_as_zero_turns() -> None:
+    r = _overview_redis()
+    r.scan_iter = MagicMock(return_value=aiter_values([b"alfred:sessions:s4"]))
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        return {b"channel": b"signal", MESSAGES_FIELD.encode(): b"not json"}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    r.ttl = AsyncMock(return_value=600)
+    client = make_admin_client(r)
+
+    [entry] = client.get("/api/admin/sessions").json()["sessions"]
+
+    assert entry["turns"] == 0
 
 
 def test_devices_list() -> None:
