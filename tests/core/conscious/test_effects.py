@@ -31,7 +31,7 @@ from core.conscious.effects import (
 )
 from core.conscious.engine import ConsciousDeps, ConsciousEngine
 from core.conscious.runner import process_request_entry
-from core.conscious.session import SessionManager
+from core.conscious.session import SessionManager, stored_messages
 from core.conscious.tools.attention import attention_toolset
 from core.conscious.tools.catalog import CatalogToolset
 from core.conscious.tools.integrations import IntegrationTool, IntegrationToolset
@@ -48,6 +48,7 @@ from shared.spend import build_spend_limits, local_clock
 from shared.streams import (
     DEAD_LETTER_STREAM,
     EFFECTS_KEY,
+    SESSIONS_KEY_PREFIX,
     TOOL_REGISTRY_KEY,
     USER_REQUESTS_STREAM,
     USER_RESPONSES_STREAM,
@@ -598,11 +599,10 @@ async def test_a_turn_that_acted_and_then_failed_answers_from_its_ledger() -> No
     assert int((await redis.xpending(USER_REQUESTS_STREAM, _GROUP))["pending"]) == 0
     letters = [f[b"reason"] for _id, f in await forward_range(redis, DEAD_LETTER_STREAM)]
     assert letters == [b"partial"]
-    history = await SessionManager(redis).get_history("sess-1")
-    assert history == [
-        {"role": "user", "content": "turn on the porch light"},
-        {"role": "assistant", "content": _PORCH_REPLY},
-    ]
+    stored = stored_messages(await redis.hgetall(f"{SESSIONS_KEY_PREFIX}sess-1"))
+    assert [type(m).__name__ for m in stored] == ["ModelRequest", "ModelResponse"]
+    assert stored[0].parts[0].content == "turn on the porch light"
+    assert stored[1].parts[0].content == _PORCH_REPLY
 
 
 async def test_a_redelivery_after_a_crash_answers_from_the_ledger_without_running() -> None:

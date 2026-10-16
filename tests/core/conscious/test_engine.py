@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import datetime as _dt
+import json
 from contextlib import contextmanager
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import fakeredis
 import pytest
 from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.usage import RequestUsage
 from pydantic_ai_harness.spend import SpendEntry
 
@@ -26,7 +33,13 @@ from core.conscious.engine import (
     ConsciousConfig,
     ConsciousDeps,
     ConsciousEngine,
-    session_messages,
+)
+from core.conscious.session import (
+    LEGACY_HISTORY_FIELD,
+    MESSAGES_FIELD,
+    Session,
+    SessionManager,
+    stored_messages,
 )
 from core.conscious.tools.catalog import TOOL_RETRIES
 from core.memory.schemas import RoutineSpec
@@ -37,6 +50,7 @@ from shared.prompts.names import SYSTEM2_PERSONALITY
 from shared.prompts.store import PromptStore
 from shared.prompts.template import PromptRef
 from shared.spend import build_spend_limits
+from shared.streams import SESSIONS_KEY_PREFIX
 from tests.core.conscious.helpers import identity, mock_redis
 from tests.llm_fakes import Script, tool_call
 from tests.shared.prompts.fakes import FakeLangfuse
@@ -76,7 +90,7 @@ def _deps(script: Script | None = None, *, who: str = "sir", **overrides: Any) -
     identity_gate = MagicMock()
     identity_gate.resolve.return_value = identity(who)  # type: ignore[arg-type]
     session_mgr = AsyncMock()
-    session_mgr.get_or_create.return_value = {"channel": "web_pwa", "history": []}
+    session_mgr.load.return_value = Session(channel="web_pwa", messages=[])
     registry = AsyncMock()
     registry.get_tools.return_value = []
     spend = overrides.pop("spend", None) or _limits()
@@ -176,20 +190,6 @@ def test_the_replies_are_verbatim() -> None:
     )
 
 
-def test_session_messages_keep_user_and_assistant_text_only() -> None:
-    messages = session_messages(
-        [
-            {"role": "user", "content": "Hi"},
-            {"role": "assistant", "content": "Good evening, sir."},
-            {"role": "system", "content": "not a turn"},
-        ]
-    )
-    assert len(messages) == 2
-    assert isinstance(messages[0], ModelRequest) and _user_text(messages[0]) == "Hi"
-    assert isinstance(messages[1], ModelResponse)
-    assert messages[1].parts == [TextPart("Good evening, sir.")]
-
-
 @pytest.mark.asyncio
 async def test_a_turn_returns_the_agents_reply_and_stores_both_sides() -> None:
     script = Script("Good morning, sir.")
@@ -204,9 +204,12 @@ async def test_a_turn_returns_the_agents_reply_and_stores_both_sides() -> None:
         "neutral",
         [],
     )
-    deps.session_mgr.append_turn.assert_has_awaits(  # type: ignore[attr-defined]
-        [call("sess-1", "user", "Good morning"), call("sess-1", "assistant", "Good morning, sir.")]
-    )
+    deps.session_mgr.load.assert_awaited_once_with("sess-1", "web_pwa", "sir")  # type: ignore[attr-defined]
+    ((session_id, stored, who), _) = deps.session_mgr.store_run.await_args  # type: ignore[attr-defined]
+    assert (session_id, who) == ("sess-1", "sir")
+    assert [type(m) for m in stored] == [ModelRequest, ModelResponse]
+    assert _user_text(stored[0]) == "Good morning"
+    assert stored[1].parts == [TextPart("Good morning, sir.")]
 
 
 @pytest.mark.asyncio
@@ -229,7 +232,7 @@ async def test_an_exceeded_budget_answers_without_a_run() -> None:
 
     assert (response.text, response.mood) == (BUDGET_REPLY, "concerned")
     assert script.call_count == 0
-    deps.session_mgr.get_or_create.assert_not_awaited()  # type: ignore[attr-defined]
+    deps.session_mgr.load.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -260,7 +263,7 @@ async def test_a_budget_spent_mid_run_ends_the_turn_with_the_budget_reply() -> N
     assert script.call_count == 1
     assert response.actions_taken == ["home.get_lights"]
     assert await _counted(deps) == (1, 2_000_000)
-    deps.session_mgr.append_turn.assert_awaited()  # type: ignore[attr-defined]
+    deps.session_mgr.store_run.assert_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -291,7 +294,7 @@ async def test_blank_replies_past_the_output_retries_end_with_the_deliberating_r
     assert response.text == DELIBERATING_REPLY
     assert script.call_count == 3
     assert (await _counted(deps))[0] == 3
-    deps.session_mgr.append_turn.assert_awaited()  # type: ignore[attr-defined]
+    deps.session_mgr.store_run.assert_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -317,7 +320,7 @@ async def test_a_provider_error_still_raises_so_the_request_is_retried() -> None
     with pytest.raises(ModelHTTPError):
         await ConsciousEngine(deps=deps).process_request(_request())
 
-    deps.session_mgr.append_turn.assert_not_awaited()  # type: ignore[attr-defined]
+    deps.session_mgr.store_run.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -332,7 +335,7 @@ async def test_a_failed_spend_write_still_returns_the_reply(
         response = await ConsciousEngine(deps=deps).process_request(_request())
 
     assert response.text == "Hello, sir."
-    deps.session_mgr.append_turn.assert_awaited()  # type: ignore[attr-defined]
+    deps.session_mgr.store_run.assert_awaited()  # type: ignore[attr-defined]
     assert any("Spend write failed" in r.getMessage() for r in caplog.records)
 
 
@@ -357,7 +360,7 @@ async def test_a_failed_run_stores_no_turn() -> None:
     with pytest.raises(RuntimeError, match="provider down"):
         await ConsciousEngine(deps=deps).process_request(_request())
 
-    deps.session_mgr.append_turn.assert_not_awaited()  # type: ignore[attr-defined]
+    deps.session_mgr.store_run.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -395,13 +398,13 @@ async def test_an_invalid_timezone_falls_back_to_the_stored_one(
 async def test_the_session_history_is_the_runs_message_history() -> None:
     script = Script("It is 3pm, sir.")
     deps = _deps(script)
-    deps.session_mgr.get_or_create.return_value = {  # type: ignore[attr-defined]
-        "channel": "web_pwa",
-        "history": [
-            {"role": "user", "content": "Hi"},
-            {"role": "assistant", "content": "Good evening, sir."},
+    deps.session_mgr.load.return_value = Session(  # type: ignore[attr-defined]
+        channel="web_pwa",
+        messages=[
+            ModelRequest(parts=[UserPromptPart("Hi")]),
+            ModelResponse(parts=[TextPart("Good evening, sir.")]),
         ],
-    }
+    )
 
     await ConsciousEngine(deps=deps).process_request(_request(content="What time is it?"))
 
@@ -748,22 +751,141 @@ async def test_process_request_injects_routine_hint() -> None:
 # ── a turn answered from its side-effect ledger (#304) ───────────────────────
 
 
-async def test_record_partial_turn_appends_the_turn_to_the_session() -> None:
-    deps = _deps()
+# ── full session history (spec component 5) ──
+
+
+def _sessions() -> SessionManager:
+    return SessionManager(fakeredis.FakeAsyncRedis())
+
+
+async def _stored(mgr: SessionManager, session_id: str = "sess-1") -> list[Any]:
+    return stored_messages(await mgr._redis.hgetall(f"{SESSIONS_KEY_PREFIX}{session_id}"))
+
+
+@pytest.mark.asyncio
+async def test_a_tool_result_reaches_the_next_turn() -> None:
+    registry = AsyncMock()
+    registry.get_tools.return_value = [_info("home.get_lights")]
+    script = Script(
+        tool_call("home_get_lights", {"entity_id": "light.desk"}),
+        "The desk lamp is on, sir.",
+        "It was on when I looked, sir.",
+    )
+    deps = _deps(script, tool_registry=registry, domain_router=_router(), session_mgr=_sessions())
     engine = ConsciousEngine(deps=deps)
-    request = _request(content="turn on the porch light")
 
-    await engine.record_partial_turn(request, "I did some of it, sir.")
+    await engine.process_request(_request(content="Is the desk lamp on?"))
+    await engine.process_request(_request(content="Was it on before?"))
 
-    assert deps.session_mgr.append_turn.await_args_list == [  # type: ignore[attr-defined]
-        call("sess-1", "user", "turn on the porch light"),
-        call("sess-1", "assistant", "I did some of it, sir."),
+    second_turn = script.requests[2][0]
+    returns = [p for m in second_turn for p in m.parts if isinstance(p, ToolReturnPart)]
+    assert [r.tool_name for r in returns] == ["home_get_lights"]
+    assert _user_text(second_turn[0]) == "Is the desk lamp on?"
+    assert _user_text(second_turn[-1]) == "Was it on before?"
+
+
+@pytest.mark.asyncio
+async def test_the_stored_history_drops_instructions_and_each_turn_sends_its_own() -> None:
+    script = Script("Good evening, sir.", "Still here, sir.")
+    deps = _deps(script, session_mgr=_sessions())
+    engine = ConsciousEngine(deps=deps)
+
+    await engine.process_request(_request(content="Hello"))
+    stored = await _stored(deps.session_mgr)
+    await engine.process_request(_request(content="Are you there?"))
+
+    assert all(m.instructions is None for m in stored if isinstance(m, ModelRequest))
+    assert script.instructions(1)  # the second turn still carries the full prompt
+
+
+@pytest.mark.asyncio
+async def test_a_new_speaker_starts_without_the_sessions_history() -> None:
+    script = Script("Unlocked, sir.", "Hello.", "Good evening, sir.")
+    deps = _deps(script, session_mgr=_sessions())
+    engine = ConsciousEngine(deps=deps)
+    request = {"session_id": "sat-kitchen", "channel": "satellite"}
+
+    await engine.process_request(_request(content="Unlock the front door", **request))
+    deps.identity_gate.resolve.return_value = identity("guest")  # type: ignore[attr-defined]
+    await engine.process_request(_request(content="Hi there", **request))
+    deps.identity_gate.resolve.return_value = identity("sir")  # type: ignore[attr-defined]
+    await engine.process_request(_request(content="Evening", **request))
+
+    assert [_user_text(m) for m in script.requests[1][0]] == ["Hi there"]
+    sir_again = [m for m in script.requests[2][0] if isinstance(m, ModelRequest)]
+    assert [_user_text(m) for m in sir_again] == ["Evening"]
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_text_session_is_continued_then_rewritten() -> None:
+    mgr = _sessions()
+    history = [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello, sir."}]
+    await mgr._redis.hset(
+        f"{SESSIONS_KEY_PREFIX}sess-1",
+        mapping={"channel": "web_pwa", LEGACY_HISTORY_FIELD: json.dumps(history)},
+    )
+    script = Script("It is 3pm, sir.")
+    deps = _deps(script, session_mgr=mgr)
+
+    await ConsciousEngine(deps=deps).process_request(_request(content="What time is it?"))
+
+    assert [type(m) for m in script.requests[0][0]] == [ModelRequest, ModelResponse, ModelRequest]
+    raw = await mgr._redis.hgetall(f"{SESSIONS_KEY_PREFIX}sess-1")
+    assert LEGACY_HISTORY_FIELD.encode() not in raw
+    assert MESSAGES_FIELD.encode() in raw
+
+
+@pytest.mark.asyncio
+async def test_a_turn_without_its_own_answer_stores_the_turn_as_text() -> None:
+    """The request limit stops a run mid-tool-loop; the stored history must not end in a
+    tool call, and the next turn sees what the user was told."""
+    registry = AsyncMock()
+    registry.get_tools.return_value = [_info("home.get_lights")]
+    calls = [
+        tool_call("home_get_lights", {"entity_id": "light.desk"}) for _ in range(REQUEST_LIMIT)
     ]
+    script = Script(*calls, "Sorry about that, sir.")
+    deps = _deps(script, tool_registry=registry, domain_router=_router(), session_mgr=_sessions())
+    engine = ConsciousEngine(deps=deps)
+
+    await engine.process_request(_request(content="Check the lights"))
+    await engine.process_request(_request(content="Well?"))
+
+    second_turn = script.requests[REQUEST_LIMIT][0]
+    assert [type(m) for m in second_turn] == [ModelRequest, ModelResponse, ModelRequest]
+    assert second_turn[1].parts == [TextPart(DELIBERATING_REPLY)]
+
+
+async def test_record_partial_turn_appends_the_turn_to_the_session() -> None:
+    script = Script("Good evening, sir.")
+    deps = _deps(script, session_mgr=_sessions())
+    engine = ConsciousEngine(deps=deps)
+    await engine.process_request(_request(content="Hello"))
+
+    await engine.record_partial_turn(
+        _request(content="turn on the porch light"), "I did some of it, sir."
+    )
+
+    stored = await _stored(deps.session_mgr)
+    assert [_user_text(m) for m in stored if isinstance(m, ModelRequest)] == [
+        "Hello",
+        "turn on the porch light",
+    ]
+    assert stored[-1].parts == [TextPart("I did some of it, sir.")]
+
+
+async def test_record_partial_turn_on_an_expired_session_starts_it() -> None:
+    deps = _deps(session_mgr=_sessions())
+
+    await ConsciousEngine(deps=deps).record_partial_turn(_request(content="lights"), "Done.")
+
+    stored = await _stored(deps.session_mgr)
+    assert [type(m) for m in stored] == [ModelRequest, ModelResponse]
 
 
 async def test_record_partial_turn_logs_rather_than_raises_a_session_failure() -> None:
     deps = _deps()
-    deps.session_mgr.append_turn.side_effect = ConnectionError("gone")  # type: ignore[attr-defined]
+    deps.session_mgr.append_text_turn.side_effect = ConnectionError("gone")  # type: ignore[attr-defined]
 
     await ConsciousEngine(deps=deps).record_partial_turn(_request(), "partial")
 
