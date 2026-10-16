@@ -89,16 +89,18 @@ sequenceDiagram
     A->>M: tool results
     M-->>A: final text
     A-->>E: output (str) + usage
-    E->>E: store session text, scratchpad note
+    E->>E: store the session's messages, scratchpad note
 ```
 
 **The agent** is built once per process by `build_system2_agent()`
 (`core/conscious/agent.py`): output type `str`, two output retries, model settings
 `max_tokens`, `timeout` and the role header, and the instructions assembled per turn by
 `assemble()` (`core/conscious/context_assembler.py`) from `TurnDeps`, whose prose sections
-the engine rendered from the prompt store before the run (see [Prompts](#prompts)). Its capabilities are instrumentation and
-`RepairToolArguments`, which repairs malformed JSON in a call's arguments before they are
-validated. The engine passes the model on each run, so tests run the same agent against a
+the engine rendered from the prompt store before the run (see [Prompts](#prompts)). Its capabilities are
+`RepairToolArguments` (repairs malformed JSON in a call's arguments before they are
+validated), `RecordEffects` (the turn ledger), the history bounds (`history_capabilities()`,
+see Compaction below), instrumentation and, where anything is billed, the spend
+capability. The engine passes the model on each run, so tests run the same agent against a
 `FunctionModel`.
 
 **Turn dependencies** (`core/conscious/deps.py`): `TurnServices` holds the process's handles
@@ -114,9 +116,23 @@ redelivered (see [Retries](#retries)). Over the daily budget, the turn never sta
 reply is the budget message (mood `concerned`). The agent's `SpendLimits` counts each
 response as it arrives, so a failed run is still paid for.
 
-**Sessions** stay text-only in this PR: the stored user and assistant text becomes the
-run's message history, and only text is stored back. Tool calls and results within a
-session are not kept (PR 4).
+**Sessions** keep the whole conversation: the run's message history, tool calls and
+results included, is stored in the session (`core/conscious/session.py`) and is the next
+turn's history. Each turn replaces it, since compaction (below) rewrites older messages
+during the run. Instructions are not stored; every run sends its own. A turn by a
+different identity than the one that wrote the session starts with no history, so a
+satellite's shared session starts over when the speaker changes. A run that ends without
+its own answer (the deliberating or budget reply) stores the turn as text. Sessions expire
+after `SESSION_TIMEOUT_MINUTES` (default 30) idle.
+
+**Compaction** (`core/conscious/history.py`) bounds that history by three means, cheapest first: one tool result is clipped at 100,000 characters as it is made; once the
+context estimate passes 28,000 tokens, tool results older than the three most recent are
+replaced by `[tool result cleared]`; past 60 messages, the oldest are dropped down to 40,
+keeping the first user message and tool call/return pairs together. The numbers come from
+a week of production traces and the 32k-token eval model; the module docstring has them.
+Nothing yet bounds total tokens, so a history that outgrows the window fails until the
+session expires, tracked in
+[#371](https://github.com/anirudhlath/alfred/issues/371).
 
 ### Tool names
 
@@ -367,7 +383,7 @@ it is never retried.
   ledger a crashed one left, is not run again. `ledger_reply` answers from a fixed template,
   with no model call: what was done, what may or may not have gone through ("please check
   before asking again"), and what awaits confirmation. The entry is ACKed and dead-lettered
-  `partial`, and the turn is stored in the session once the answer is published. A run
+  `partial`, and the turn is stored in the session, as text after its history, once the answer is published. A run
   the daily budget stops after it acted answers the same template plus one budget
   sentence, never the bare budget reply.
 - **Each answer names its request.** Every `AlfredResponse` the engine publishes carries
@@ -453,7 +469,7 @@ one-toolset agent.
 | PR | Changes here |
 |---|---|
 | 3 | prompts move to the self-hosted Langfuse, with repo defaults (done, see [Prompts](#prompts)) |
-| 4 | full session history, tool calls and results included |
+| 4 | full session history, tool calls and results included (done, see Sessions under System 2) |
 | 5 | deferred tool approvals replace the critical intercept; late replies become follow-ups |
 | 6 | retries, the turn ledger and spend on the harness's `SpendLimits` (done, see [Retries](#retries) and [Spend](#spend)) |
 | 7 | the judge uses Inspect's own OpenAI provider; `evals/harness/vllm_model.py` goes |

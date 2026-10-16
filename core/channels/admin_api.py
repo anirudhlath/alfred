@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from bus.schemas.events import ActionRequest
 from core.channels.stream_catalog import STREAM_CATALOG, decode_entry, stream_summaries
+from core.conscious.session import stored_messages, turn_count
 from core.memory.paths import episodic_cold_path, preferences_dir, profile_dir, scratchpad_path
 from core.reflex.attention import (
     attention_add,
@@ -463,11 +464,7 @@ def create_admin_router() -> APIRouter:
         async for key in r.scan_iter(match=f"{SESSIONS_KEY_PREFIX}*"):
             key_str = decode_stream_value(key)
             data = _decode_hash(await r.hgetall(key_str))
-            history = data.get("history") or "[]"
-            try:
-                turns = len(json.loads(history))
-            except (json.JSONDecodeError, ValueError):
-                turns = 0
+            turns = turn_count(stored_messages(data))
             out.append(
                 {
                     "session_id": key_str.removeprefix(SESSIONS_KEY_PREFIX),

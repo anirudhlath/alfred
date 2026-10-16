@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 def _make_redis_mock() -> AsyncMock:
     """Build an AsyncMock Redis that satisfies SessionManager."""
     redis = AsyncMock()
-    # SessionManager.get_or_create calls hgetall → empty dict = new session
+    # SessionManager.load calls hgetall → empty dict = new session
     redis.hgetall = AsyncMock(return_value={})
     redis.hset = AsyncMock(return_value=None)
     redis.hget = AsyncMock(return_value=None)

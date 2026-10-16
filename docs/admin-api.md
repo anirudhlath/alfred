@@ -306,10 +306,11 @@ Reads the full `alfred:notifications:deferred` Redis List. Each element is a JSO
 | `DELETE` | `/api/admin/sessions/{session_id}` | Terminate a session immediately |
 
 **List sessions** scans `alfred:sessions:*` keys. For each session it fetches the hash
-fields (`hgetall`), counts conversation turns from the JSON `history` field, and reads the
-Redis `TTL`. Binary embedding fields (keys starting with `embedding`) are stripped before
-returning. The N+1 pattern (one `hgetall+ttl` per session) is intentional — session counts
-are small and this is low-frequency admin traffic.
+fields (`hgetall`), counts the user turns in the stored `messages` (or, for a session
+written before full history, its text `history`), and reads the Redis `TTL`. Binary
+embedding fields (keys starting with `embedding`) are stripped before returning. The N+1
+pattern (one `hgetall+ttl` per session) is intentional — session counts are small and this
+is low-frequency admin traffic.
 
 Response per session: `session_id`, `channel`, `created_at`, `turns`, `ttl_seconds`.
 
