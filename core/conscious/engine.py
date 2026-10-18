@@ -2,7 +2,8 @@
 
 A request is answered in one agent run (``core.conscious.agent``): the engine resolves
 identity, checks the budget, gathers the turn's context into ``TurnDeps`` and runs the
-agent over the session's history. The agent's ``SpendLimits`` counts every model response,
+agent over the session's whole message history, then stores the run's messages back
+(``core.conscious.session``). The agent's ``SpendLimits`` counts every model response,
 including those of a run that fails, and refuses a request once the day's budget is gone;
 the turn then gets the budget reply, after what it already did if it acted. A model that
 runs out of requests or retries gets the deliberating reply, because replaying the request
@@ -18,13 +19,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal
 
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
-    TextPart,
-    UserPromptPart,
-)
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness.spend import SpendLimitExceeded
 
@@ -32,6 +26,7 @@ from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.agent import REQUEST_LIMIT
 from core.conscious.deps import TurnDeps, TurnServices
 from core.conscious.effects import EffectLedger, ledger_reply
+from core.conscious.session import text_turn
 from core.conscious.system2_prompts import fetch_system2_prompts
 from core.conscious.tools.integrations import fetch_integration_tools
 from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
@@ -48,12 +43,14 @@ from shared.usertime import (
 
 if TYPE_CHECKING:
     from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelMessage
     from pydantic_ai.models import Model
     from pydantic_ai_harness.spend import SpendLimits
 
     from core.conscious.identity import IdentityGate
     from core.conscious.session import SessionManager
     from core.conscious.tools.integrations import IntegrationTool
+    from core.identity.schemas import IdentityResult
     from core.memory.context_index import ContextIndexManager
     from core.memory.routines.store import RoutineStore
     from core.memory.schemas import RoutineSpec
@@ -83,22 +80,6 @@ NOT_CONFIGURED_REPLY: Final = (
 )
 
 Mood = Literal["neutral", "concerned"]
-
-
-def session_messages(history: list[dict[str, str]]) -> list[ModelMessage]:
-    """The stored session as the run's message history.
-
-    Sessions store only what was said, user and assistant text; tool calls and results are
-    not kept between turns yet. Anything else in the list is skipped.
-    """
-    messages: list[ModelMessage] = []
-    for turn in history:
-        content = turn.get("content", "")
-        if turn.get("role") == "user":
-            messages.append(ModelRequest(parts=[UserPromptPart(content)]))
-        elif turn.get("role") == "assistant":
-            messages.append(ModelResponse(parts=[TextPart(content)]))
-    return messages
 
 
 @dataclass
@@ -272,12 +253,7 @@ class ConsciousEngine:
         now = datetime.now(UTC)
         tz_name = await self._timezone(request)
 
-        identity = self._identity_gate.resolve(
-            channel=request.channel,
-            identity_claim=request.identity_claim,
-            authenticated=request.authenticated,
-            identity_confidence=request.identity_confidence,
-        )
+        identity = self._resolve(request)
         logger.info(
             "Identity resolved: %s (method=%s, confidence=%.2f)",
             identity.identity,
@@ -290,7 +266,9 @@ class ConsciousEngine:
             logger.warning("Daily budget exceeded — returning System 1 fallback")
             return self._reply(request, BUDGET_REPLY, [], mood="concerned")
 
-        session = await self._session_mgr.get_or_create(request.session_id, request.channel)
+        session = await self._session_mgr.load(
+            request.session_id, request.channel, identity.identity
+        )
         integration_tools = await self._integration_tools(identity.identity)
         prompts = await fetch_system2_prompts(
             self._prompts,
@@ -319,12 +297,23 @@ class ConsciousEngine:
         )
 
         usage = RunUsage()
-        text, mood = await self._run(request, deps, session["history"], usage)
+        text, mood, messages = await self._run(request, deps, session.messages, usage)
 
-        await self._session_mgr.append_turn(request.session_id, "user", request.content)
-        await self._session_mgr.append_turn(request.session_id, "assistant", text)
+        # Stored before the reply is published, as before. A crash between the two stores
+        # the turn, and a redelivery then runs again over a history that already holds it
+        # (or appends a ledger text turn): accepted, the same order as the text-only sessions.
+        await self._session_mgr.store_run(request.session_id, messages, identity.identity)
         await self._note(now, request.content, text, deps.actions_taken, usage)
         return self._reply(request, text, deps.actions_taken, mood=mood)
+
+    def _resolve(self, request: UserRequest) -> IdentityResult:
+        """Who sent *request*, by the identity gate."""
+        return self._identity_gate.resolve(
+            channel=request.channel,
+            identity_claim=request.identity_claim,
+            authenticated=request.authenticated,
+            identity_confidence=request.identity_confidence,
+        )
 
     async def _timezone(self, request: UserRequest) -> str:
         """The client's zone when it sent a valid one, persisted; else the stored zone."""
@@ -370,13 +359,18 @@ class ConsciousEngine:
         self,
         request: UserRequest,
         deps: TurnDeps,
-        history: list[dict[str, str]],
+        history: list[ModelMessage],
         usage: RunUsage,
-    ) -> tuple[str, Mood]:
-        """One agent run: its reply and mood. *usage* accumulates across it, for the note."""
+    ) -> tuple[str, Mood, list[ModelMessage]]:
+        """One agent run: its reply, its mood and the session's history after it.
+
+        A finished run's history is ``all_messages()``, compacted during the run. A run
+        that ends without its own answer leaves *history* plus the turn as text, never its
+        half-finished messages. *usage* accumulates across it, for the note.
+        """
         model = self._model
         if model is None:
-            return NOT_CONFIGURED_REPLY, "neutral"
+            return self._ended(request, history, NOT_CONFIGURED_REPLY, "neutral")
         try:
             with (
                 langfuse_attributes(
@@ -387,26 +381,33 @@ class ConsciousEngine:
                 result = await self._agent.run(
                     request.content,
                     deps=deps,
-                    message_history=session_messages(history),
+                    message_history=history,
                     model=model,
                     usage=usage,
                     usage_limits=UsageLimits(request_limit=REQUEST_LIMIT),
                 )
-            return result.output, "neutral"
+            return result.output, "neutral", result.all_messages()
         except SpendLimitExceeded:
             # A UsageLimitExceeded too, so it is caught first. Raised before a request,
             # once an earlier response in this run (or another process) spent the day.
             logger.warning("Daily budget spent during the run — returning the budget reply")
-            return await self._budget_reply(request), "concerned"
+            return self._ended(request, history, await self._budget_reply(request), "concerned")
         except UsageLimitExceeded:
             logger.warning("System 2 used its %d model requests without answering", REQUEST_LIMIT)
-            return DELIBERATING_REPLY, "neutral"
+            return self._ended(request, history, DELIBERATING_REPLY, "neutral")
         except UnexpectedModelBehavior as exc:
             # Retries exhausted, blank replies, or the token limit hit before any output.
             # ModelAPIError (HTTP, connection, timeout) is a sibling, not a subclass, so a
             # provider failure still raises and the request is retried.
             logger.warning("System 2 gave up on the model's replies: %s", exc)
-            return DELIBERATING_REPLY, "neutral"
+            return self._ended(request, history, DELIBERATING_REPLY, "neutral")
+
+    @staticmethod
+    def _ended(
+        request: UserRequest, history: list[ModelMessage], text: str, mood: Mood
+    ) -> tuple[str, Mood, list[ModelMessage]]:
+        """A turn answered with *text* instead of the run's own answer."""
+        return text, mood, [*history, *text_turn(request.content, text)]
 
     async def _budget_reply(self, request: UserRequest) -> str:
         """The budget reply for a run the budget stopped partway. If the turn already
@@ -438,12 +439,12 @@ class ConsciousEngine:
             logger.warning("Failed to write scratchpad observation: %s", exc)
 
     async def record_partial_turn(self, request: UserRequest, text: str) -> None:
-        """Store a turn answered from its side-effect ledger (*text*) in the session, like
-        a normal turn, so the next turn knows what was done. Called once the answer is
-        published; a failed write is logged, not raised."""
+        """Store a turn answered from its side-effect ledger (*text*) in the session, as
+        text after the stored history, so the next turn knows what was done. Called once
+        the answer is published; a failed write is logged, not raised."""
         try:
-            await self._session_mgr.append_turn(request.session_id, "user", request.content)
-            await self._session_mgr.append_turn(request.session_id, "assistant", text)
+            who = self._resolve(request).identity
+            await self._session_mgr.append_text_turn(request.session_id, who, request.content, text)
         except Exception:
             logger.warning("Failed to store a partial turn in the session", exc_info=True)
 

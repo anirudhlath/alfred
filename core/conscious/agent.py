@@ -5,7 +5,8 @@ Its one toolset is the catalog, so every tool reaches the model under one name m
 (``tools.names.wire_name``) and is dispatched by that same name. ``RecordEffects`` writes
 each side-effecting call to the request's ledger (``core.conscious.effects``), and the
 process's ``SpendLimits`` (``shared.spend``) gates and counts every model request against
-the daily budget.
+the daily budget. ``history_capabilities`` (``core.conscious.history``) bounds the session's
+history and each tool result in it.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 from core.conscious.context_assembler import assemble
 from core.conscious.deps import TurnDeps
 from core.conscious.effects import RecordEffects
+from core.conscious.history import history_capabilities
 from core.conscious.tools.attention import attention_toolset
 from core.conscious.tools.catalog import CatalogToolset
 from core.conscious.tools.integrations import integration_toolset
@@ -67,6 +69,7 @@ def build_system2_agent(
     capabilities: list[AbstractCapability[TurnDeps]] = [
         RepairToolArguments(),
         RecordEffects(),
+        *history_capabilities(),
         instrumentation(),
     ]
     if spend is not None:
