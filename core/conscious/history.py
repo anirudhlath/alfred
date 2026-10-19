@@ -49,7 +49,8 @@ TOOL_RESULT_MAX_CHARS: Final = 100_000
 # 32k-token window.
 CLEAR_TOOL_RESULTS_OVER_TOKENS: Final = 28_000
 # The most recent tool call/return pairs, never blanked: what a follow-up refers to. A tool
-# search counts as one pair, so a turn that searches then acts keeps one fewer result.
+# search counts as one pair: after a turn that searches and then acts, the four are the search
+# and three ordinary results (the action and two before it), not four ordinary ones.
 TOOL_RESULTS_KEPT: Final = 4
 # Never blank for less than this.
 CLEAR_AT_LEAST_TOKENS: Final = 2_000

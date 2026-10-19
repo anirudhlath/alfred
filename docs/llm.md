@@ -100,8 +100,8 @@ the engine rendered from the prompt store before the run (see [Prompts](#prompts
 `RepairToolArguments` (repairs malformed JSON in a call's arguments before they are
 validated), `RecordEffects` (the turn ledger), `ToolSearch` (see [Tool search](#tool-search)),
 the history bounds (`history_capabilities()`, see Compaction below), instrumentation and,
-where anything is billed, the spend capability. The engine passes the model on each run, so tests run the same agent against a
-`FunctionModel`.
+where anything is billed, the spend capability. The engine passes the model on each run, so
+tests run the same agent against a `FunctionModel`.
 
 **Turn dependencies** (`core/conscious/deps.py`): `TurnServices` holds the process's handles
 (Redis, the domain router, the context reader, the context index); `TurnDeps` holds one
@@ -149,7 +149,8 @@ is answered with a retry prompt listing the wire names, and nothing is dispatche
 
 `CatalogToolset` (`core/conscious/tools/catalog.py`) combines the toolsets in priority
 order. The first to offer a wire name owns it; a later one is dropped with one ERROR per
-process, so a service can never register over an internal tool.
+process, so a service can never register over an internal tool, or over `search_tools`, the
+name the framework reserves for its tool search (see [Tool search](#tool-search)).
 
 | Order | Toolset | File | Offered to |
 |---|---|---|---|
@@ -213,6 +214,12 @@ the next model request, and a search that matches nothing says so. Calling a def
 that was not found first is refused with a retry prompt telling the model to search, and
 nothing is dispatched. So a turn that needs a deferred tool takes at least three model
 requests: search, call, answer.
+
+The keyword strategy counts any shared word, common ones such as "the" and "turn" included,
+so a natural query usually matches something and a match is not relevance. Embedding search
+(below) is the follow-up. The wire name `search_tools` is the framework's: the catalog drops
+any toolset's tool of that name and reports it as a name collision (`SEARCH_TOOL_NAME`),
+because the framework refuses every run that holds one next to a deferred tool.
 
 A search is not an action: `actions_taken` and the turn ledger record only the tool calls
 that follow. The search corpus is the turn's scoped toolset, so a guest's search can reveal
