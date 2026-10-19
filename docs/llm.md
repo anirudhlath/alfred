@@ -98,9 +98,9 @@ sequenceDiagram
 `assemble()` (`core/conscious/context_assembler.py`) from `TurnDeps`, whose prose sections
 the engine rendered from the prompt store before the run (see [Prompts](#prompts)). Its capabilities are
 `RepairToolArguments` (repairs malformed JSON in a call's arguments before they are
-validated), `RecordEffects` (the turn ledger), the history bounds (`history_capabilities()`,
-see Compaction below), instrumentation and, where anything is billed, the spend
-capability. The engine passes the model on each run, so tests run the same agent against a
+validated), `RecordEffects` (the turn ledger), `ToolSearch` (see [Tool search](#tool-search)),
+the history bounds (`history_capabilities()`, see Compaction below), instrumentation and,
+where anything is billed, the spend capability. The engine passes the model on each run, so tests run the same agent against a
 `FunctionModel`.
 
 **Turn dependencies** (`core/conscious/deps.py`): `TurnServices` holds the process's handles
@@ -155,7 +155,7 @@ process, so a service can never register over an internal tool.
 | 2 | memory (`memory_recall_memories`, `memory_get_live_state`) | `tools/memory.py` | sir, when the turn has a context index |
 | 3 | attention + `confirm_pending_action` | `tools/attention.py` | sir |
 | 4 | integrations | `tools/integrations.py` | sir |
-| 5 | `RegistryToolset` (every SDK-registered tool except the `trigger-engine` service's, which `TriggerToolset` serves) | `tools/registry.py` | sir: all; guest: `benign` risk only |
+| 5 | `RegistryToolset` (every SDK-registered tool except the `trigger-engine` service's, which `TriggerToolset` serves; non-reflex tools load on demand, see [Tool search](#tool-search)) | `tools/registry.py` | sir: all; guest: `benign` risk only |
 
 Each toolset retries a failed call twice (`TOOL_RETRIES = 2`).
 
@@ -193,6 +193,33 @@ An unexpected exception in a toolset is logged with its traceback, and the model
 `actions_taken` records every call the catalog dispatches, failed ones included, under the
 tool's registry name (or its wire name, for in-process tools). Calls whose arguments fail
 validation are not recorded.
+
+### Tool search
+
+A request does not carry every tool. `RegistryToolset` loads a registry tool up front only
+when its `audience` is `reflex`, the house's everyday verbs; every other registry tool is
+deferred (`ToolDefinition.defer_loading`) and reaches the model once it has searched for
+it. The rule reads the registration's metadata, never a tool's name. The in-process
+toolsets (triggers, memory, attention, integrations) are always loaded.
+
+The search is Pydantic AI's `ToolSearch` capability, built by `tool_search()`
+(`core/conscious/tools/search.py`). On a chat-completions model it is a local function tool,
+`search_tools`, taking `{"queries": ["vacuum start", ...]}`, one short query per need. It
+ranks by keywords (`SEARCH_STRATEGY` is pinned, because the framework's default may change)
+and returns at most ten tools (`SEARCH_MAX_RESULTS`). A matched tool's schema is sent from
+the next model request, and a search that matches nothing says so. Calling a deferred tool
+that was not found first is refused with a retry prompt telling the model to search, and
+nothing is dispatched. So a turn that needs a deferred tool takes at least three model
+requests: search, call, answer.
+
+A search is not an action: `actions_taken` and the turn ledger record only the tool calls
+that follow. The search corpus is the turn's scoped toolset, so a guest's search can reveal
+only `benign` tools. What a search found is re-derived from the session's history on each
+request, so it carries into the next turn of the session, until compaction drops the
+exchange and the model searches again.
+
+Embedding search over the tool descriptions, ranked by cosine, is the planned follow-up if
+keyword search misses; it plugs into `ToolSearch` as a strategy function.
 
 ## The Librarian
 
@@ -488,7 +515,7 @@ one-toolset agent.
 | `core/conscious/agent.py` | `build_system2_agent`, `system2_toolsets`, `REQUEST_LIMIT` |
 | `core/conscious/engine.py` | `ConsciousEngine`: one turn around one agent run |
 | `core/conscious/deps.py` | `TurnServices`, `TurnDeps` |
-| `core/conscious/tools/` | `names`, `scope`, `catalog`, `sir_only`, `validation`, `registry`, `triggers`, `memory`, `attention`, `integrations` |
+| `core/conscious/tools/` | `names`, `scope`, `catalog`, `sir_only`, `validation`, `registry`, `search`, `triggers`, `memory`, `attention`, `integrations` |
 | `core/librarian/agents.py` | the five Librarian agents and their output models |
 | `shared/llm_http.py` | `RetryingTransport`, `RetryPolicy`, `retrying_http_client` |
 | `core/conscious/runner.py` | `process_request_entry`: delivery, answered marker, ledger answers, dead letters |

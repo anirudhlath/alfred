@@ -52,7 +52,7 @@ from core.conscious.session import (
 from core.conscious.tools.catalog import TOOL_RETRIES
 from core.memory.schemas import RoutineSpec
 from core.memory.vector_store import ContextMetadata, SearchResult
-from core.reflex.tool_registry import ToolInfo
+from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo
 from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 from shared.prompts.names import SYSTEM2_PERSONALITY
 from shared.prompts.store import PromptStore
@@ -142,13 +142,14 @@ async def _counted(deps: ConsciousDeps) -> tuple[int, int]:
     return status.spent.requests, status.spent.tokens
 
 
-def _info(name: str) -> ToolInfo:
+def _info(name: str, audience: str = REFLEX_AUDIENCE) -> ToolInfo:
     return ToolInfo(
         name=name,
         description=f"{name} does a thing",
         feature_name=name.split(".")[0],
         feature_description="Home control",
         target_service="home-service",
+        audience=audience,
         risk="benign",
         input_schema={
             "type": "object",

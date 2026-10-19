@@ -38,7 +38,7 @@ from core.conscious.tools.integrations import IntegrationTool, IntegrationToolse
 from core.conscious.tools.registry import RegistryToolset
 from core.conscious.tools.triggers import TriggerToolset
 from core.integrations.base import IntegrationResult
-from core.reflex.tool_registry import ToolInfo
+from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo
 from core.routing.domain_router import CONFIRMATION_REQUIRED_PREFIX
 from core.routing.pending import store_pending_action
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
@@ -194,13 +194,14 @@ def test_a_name_without_a_service_prefix_is_humanised_whole() -> None:
 # ── what is recorded ─────────────────────────────────────────────────────────
 
 
-def _info(name: str, risk: str = "benign") -> ToolInfo:
+def _info(name: str, risk: str = "benign", audience: str = REFLEX_AUDIENCE) -> ToolInfo:
     return ToolInfo(
         name=name,
         description=f"{name} does a thing",
         feature_name=name.split(".")[0],
         feature_description="Home control",
         target_service="home-service",
+        audience=audience,
         risk=risk,  # type: ignore[arg-type]
         input_schema={
             "type": "object",

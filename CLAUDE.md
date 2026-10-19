@@ -91,7 +91,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `conftest.py` — root test fixtures (InMemoryKeyring, telemetry clear, tv_on_event, mock_embedder, mock_vector_store)
 - `core/reflex/attention.py` — `AttentionSet` (SLM gating) + `attention_add/remove/list` helpers; seed rules in `core/reflex/attention_seed.yaml`
 - `core/routing/risk.py` + `core/routing/pending.py` — tool risk lookup + pending critical-action store/confirm (see `docs/autonomy.md`)
-- `core/conscious/tools/` — System 2's tools: `names.wire_name` (the one name mapping, #299), `catalog.CatalogToolset`, `scope` (guest = benign only), `registry`, `triggers`, `memory`, `attention` (sir-only confirm + attention), `integrations`; see `docs/llm.md`
+- `core/conscious/tools/` — System 2's tools: `names.wire_name` (the one name mapping, #299), `catalog.CatalogToolset`, `scope` (guest = benign only), `registry`, `search` (deferred registry tools load through `search_tools`), `triggers`, `memory`, `attention` (sir-only confirm + attention), `integrations`; see `docs/llm.md`
 - `shared/agents.py` + `shared/llm_roles.py` — model resolution (`resolve_model`), the `X-Alfred-Role` header, agent instrumentation
 
 ## Secrets & Credentials

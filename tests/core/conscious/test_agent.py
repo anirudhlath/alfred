@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis
 import pytest
+from pydantic_ai.messages import ModelRequest, RetryPromptPart
 from pydantic_ai_harness.spend import SpendEntry, SpendLimitExceeded
 
 from core.conscious.agent import (
@@ -20,8 +21,9 @@ from core.conscious.agent import (
 )
 from core.conscious.system2_prompts import System2Prompts
 from core.conscious.tools import names, validation
+from core.conscious.tools.search import QUERIES_DESCRIPTION, SEARCH_DESCRIPTION, tool_search
 from core.memory.vector_store import ContextMetadata, SearchResult
-from core.reflex.tool_registry import ToolInfo
+from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
 from shared.prompts.names import SYSTEM2_IDENTITY_SIR, SYSTEM2_LOCATION, SYSTEM2_PERSONALITY
@@ -60,13 +62,14 @@ def _agent(*, max_tokens: int = 512, timeout_s: float = 15.0) -> Agent[TurnDeps,
     )
 
 
-def _info(name: str, risk: str = "benign") -> ToolInfo:
+def _info(name: str, risk: str = "benign", audience: str = REFLEX_AUDIENCE) -> ToolInfo:
     return ToolInfo(
         name=name,
         description=f"{name} does a thing",
         feature_name=name.split(".")[0],
         feature_description="Home control",
         target_service="home-service",
+        audience=audience,
         risk=risk,
         input_schema={
             "type": "object",
@@ -245,3 +248,115 @@ async def test_the_budget_gates_every_model_request() -> None:
         await agent.run("hi", deps=make_deps(), model=script.model)
 
     assert script.call_count == 0
+
+
+# ── tool search ──────────────────────────────────────────────────────────────
+
+
+def _vacuum_registry() -> list[ToolInfo]:
+    return [_info("home.light_turn_on"), _info("home.vacuum_start", audience="conscious")]
+
+
+def test_tool_search_is_pinned_and_described() -> None:
+    cap = tool_search()
+    assert (cap.strategy, cap.max_results, cap.tool_description, cap.parameter_description) == (
+        "keywords",
+        10,
+        SEARCH_DESCRIPTION,
+        QUERIES_DESCRIPTION,
+    )
+
+
+@pytest.mark.asyncio
+async def test_only_reflex_registry_tools_are_loaded_before_a_search() -> None:
+    script = Script("hi")
+    services = make_services(context_index=AsyncMock())
+    deps = make_deps(registry_tools=_vacuum_registry(), services=services)
+
+    await _agent().run("hi", deps=deps, model=script.model)
+
+    offered = script.offered(0)
+    assert {"home_light_turn_on", "search_tools", "memory_recall_memories"} <= set(offered)
+    assert "home_vacuum_start" not in offered
+    search = next(t for t in script.requests[0][1].function_tools if t.name == "search_tools")
+    assert search.description == SEARCH_DESCRIPTION
+
+
+@pytest.mark.asyncio
+async def test_a_searched_tool_is_loaded_and_dispatched() -> None:
+    router = _router()
+    args = {"entity_id": "vacuum.hall"}
+    script = Script(
+        tool_call("search_tools", {"queries": ["vacuum start"]}),
+        tool_call("home_vacuum_start", args),
+        "Started, sir.",
+    )
+    deps = make_deps(registry_tools=_vacuum_registry(), services=make_services(router=router))
+
+    result = await _agent().run("vacuum", deps=deps, model=script.model)
+
+    assert result.output == "Started, sir."
+    assert "home_vacuum_start" in script.offered(1)
+    router.route.assert_awaited_once()
+    assert router.route.await_args.args[0].tool_name == "home.vacuum_start"
+    assert deps.actions_taken == ["home.vacuum_start"]
+
+
+@pytest.mark.asyncio
+async def test_calling_an_unsearched_tool_is_refused_with_a_hint_and_the_turn_recovers() -> None:
+    router = _router()
+    args = {"entity_id": "vacuum.hall"}
+    script = Script(
+        tool_call("home_vacuum_start", args),
+        tool_call("search_tools", {"queries": ["vacuum start"]}),
+        tool_call("home_vacuum_start", args),
+        "Started, sir.",
+    )
+    deps = make_deps(registry_tools=_vacuum_registry(), services=make_services(router=router))
+
+    result = await _agent().run("vacuum", deps=deps, model=script.model)
+
+    last = script.requests[1][0][-1]
+    assert isinstance(last, ModelRequest)
+    (retry,) = [p for p in last.parts if isinstance(p, RetryPromptPart)]
+    assert "search" in retry.model_response()
+    router.route.assert_awaited_once()
+    assert result.output == "Started, sir."
+
+
+@pytest.mark.asyncio
+async def test_a_search_that_matches_nothing_dispatches_nothing() -> None:
+    router = _router()
+    script = Script(
+        tool_call("search_tools", {"queries": ["teleport the cat"]}),
+        "I have no means of doing that, sir.",
+    )
+    deps = make_deps(registry_tools=_vacuum_registry(), services=make_services(router=router))
+
+    result = await _agent().run("teleport", deps=deps, model=script.model)
+
+    router.route.assert_not_awaited()
+    assert "No matching tools" in script.returns(1)[0]
+    assert result.output == "I have no means of doing that, sir."
+
+
+@pytest.mark.asyncio
+async def test_a_guest_can_neither_find_nor_call_an_elevated_deferred_tool() -> None:
+    router = _router()
+    registry = [
+        _info("home.lock_door", "elevated", audience="conscious"),
+        _info("home.vacuum_start", audience="conscious"),
+    ]
+    script = Script(
+        tool_call("search_tools", {"queries": ["lock the door"]}),
+        tool_call("home_lock_door", {"entity_id": "lock.front"}),
+        "I'm afraid I can't, sir.",
+    )
+    deps = make_deps("guest", registry_tools=registry, services=make_services(router=router))
+
+    await _agent().run("lock up", deps=deps, model=script.model)
+
+    assert "home_lock_door" not in script.returns(1)[0]
+    assert "home_lock_door" not in script.offered(1)
+    assert "home_lock_door" not in script.offered(2)
+    router.route.assert_not_awaited()

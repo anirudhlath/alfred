@@ -15,12 +15,18 @@ from pydantic_ai import ToolFailed
 
 from core.conscious.tools import names, validation
 from core.conscious.tools.registry import RegistryToolset
-from core.reflex.tool_registry import ToolInfo, ToolRegistry
+from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo, ToolRegistry
 from core.routing.domain_router import CONFIRMATION_REQUIRED_PREFIX
 from core.triggers.models import TRIGGER_ENGINE_SOURCE
 from sdk.alfred_sdk.client import AlfredClient
 from sdk.alfred_sdk.feature import BaseFeature, tool
-from tests.core.conscious.helpers import call_direct, make_deps, make_services, tool_agent
+from tests.core.conscious.helpers import (
+    call_direct,
+    make_deps,
+    make_services,
+    run_context,
+    tool_agent,
+)
 from tests.llm_fakes import Script, tool_call
 
 if TYPE_CHECKING:
@@ -35,13 +41,16 @@ def _fresh_logs(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     validation._compile.cache_clear()
 
 
-def _info(name: str, risk: str = "benign", **overrides: Any) -> ToolInfo:
+def _info(
+    name: str, risk: str = "benign", audience: str = REFLEX_AUDIENCE, **overrides: Any
+) -> ToolInfo:
     fields: dict[str, Any] = {
         "name": name,
         "description": f"{name} does a thing",
         "feature_name": name.split(".")[0],
         "feature_description": "Home control",
         "target_service": "home-service",
+        "audience": audience,
         "risk": risk,
         "input_schema": {
             "type": "object",
@@ -158,6 +167,24 @@ async def test_invalid_arguments_are_retried_with_the_schema_errors_and_never_ro
     assert script.retries(2)
     router.route.assert_not_awaited()
     assert deps.actions_taken == []
+
+
+@pytest.mark.asyncio
+async def test_reflex_audience_tools_load_and_others_are_deferred() -> None:
+    tools = [
+        _info("home.light_turn_on"),
+        _info("home.vacuum_start", audience="conscious"),
+        _info("home.call_service", "critical", audience="conscious"),
+    ]
+    deps = make_deps(registry_tools=tools)
+
+    offered = await RegistryToolset().get_tools(run_context(deps))
+
+    assert {name: tool.tool_def.defer_loading for name, tool in offered.items()} == {
+        "home_light_turn_on": False,
+        "home_vacuum_start": True,
+        "home_call_service": True,
+    }
 
 
 @pytest.mark.asyncio
@@ -345,7 +372,8 @@ class _ClimateFeature(BaseFeature):
 
     feature_name = "climate"
 
-    @tool(risk="critical")
+    # Reflex audience, so the tool is loaded: these tests call it without searching.
+    @tool(risk="critical", audience="reflex")
     async def set_schedule(
         self,
         zone: str,
