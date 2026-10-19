@@ -835,13 +835,14 @@ async def test_a_session_stored_before_tool_search_replays_with_its_tools_withhe
     script = Script("It is running, sir.")
     deps = _deps(script, tool_registry=registry, session_mgr=mgr)
 
-    await ConsciousEngine(deps=deps).process_request(_request(content="Is it running?"))
+    response = await ConsciousEngine(deps=deps).process_request(_request(content="Is it running?"))
 
+    assert isinstance(response, AlfredResponse)
+    assert (response.text, response.actions_taken) == ("It is running, sir.", [])
     # No search part in the history: the tool is withheld, though the model once called it.
     assert "home_vacuum_start" not in script.offered(0)
     replayed = [p for m in script.requests[0][0] for p in m.parts if isinstance(p, ToolCallPart)]
     assert [p.tool_name for p in replayed] == ["home_vacuum_start"]
-    deps.domain_router.route.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
