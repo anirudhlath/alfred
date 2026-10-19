@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -9,7 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis
 import pytest
-from pydantic_ai.messages import ModelRequest, RetryPromptPart
+from pydantic_ai.native_tools._tool_search import (  # no public path: the framework's own name
+    TOOL_SEARCH_FUNCTION_TOOL_NAME,
+)
 from pydantic_ai_harness.spend import SpendEntry, SpendLimitExceeded
 
 from core.conscious.agent import (
@@ -21,7 +24,12 @@ from core.conscious.agent import (
 )
 from core.conscious.system2_prompts import System2Prompts
 from core.conscious.tools import names, validation
-from core.conscious.tools.search import QUERIES_DESCRIPTION, SEARCH_DESCRIPTION, tool_search
+from core.conscious.tools.search import (
+    QUERIES_DESCRIPTION,
+    SEARCH_DESCRIPTION,
+    SEARCH_TOOL_NAME,
+    tool_search,
+)
 from core.memory.vector_store import ContextMetadata, SearchResult
 from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
@@ -267,6 +275,33 @@ def test_tool_search_is_pinned_and_described() -> None:
     )
 
 
+def test_the_reserved_tool_name_is_the_frameworks() -> None:
+    assert SEARCH_TOOL_NAME == TOOL_SEARCH_FUNCTION_TOOL_NAME
+
+
+@pytest.mark.asyncio
+async def test_a_registry_tool_named_search_tools_cannot_take_the_turn_down(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # `search.tools` has the wire name `search_tools`, which the framework reserves and
+    # refuses to run with when any tool is deferred.
+    registry = [_info("search.tools"), _info("home.vacuum_start", audience="conscious")]
+    script = Script("Hello, sir.")
+
+    with caplog.at_level(logging.ERROR, logger="core.conscious.tools.names"):
+        result = await _agent().run(
+            "hi", deps=make_deps(registry_tools=registry), model=script.model
+        )
+
+    assert result.output == "Hello, sir."
+    assert script.offered(0).count("search_tools") == 1
+    # The one offered is the framework's search, not the registry's impostor.
+    search = next(t for t in script.requests[0][1].function_tools if t.name == "search_tools")
+    assert search.description == SEARCH_DESCRIPTION
+    assert list(script.schema("search_tools")["properties"]) == ["queries"]
+    assert "'search.tools' is not offered" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_only_reflex_registry_tools_are_loaded_before_a_search() -> None:
     script = Script("hi")
@@ -316,11 +351,12 @@ async def test_calling_an_unsearched_tool_is_refused_with_a_hint_and_the_turn_re
 
     result = await _agent().run("vacuum", deps=deps, model=script.model)
 
-    last = script.requests[1][0][-1]
-    assert isinstance(last, ModelRequest)
-    (retry,) = [p for p in last.parts if isinstance(p, RetryPromptPart)]
-    assert "search" in retry.model_response()
+    # The framework's own refusal, not the unknown-tool one (which also names `search_tools`).
+    (retry,) = script.retries(1)
+    assert "search for it first" in retry
     router.route.assert_awaited_once()
+    # Only the call that followed the search is recorded; the refused one never dispatched.
+    assert deps.actions_taken == ["home.vacuum_start"]
     assert result.output == "Started, sir."
 
 
@@ -340,19 +376,24 @@ async def test_a_search_that_matches_nothing_dispatches_nothing() -> None:
     assert result.output == "I have no means of doing that, sir."
 
 
-@pytest.mark.asyncio
-async def test_a_guest_can_neither_find_nor_call_an_elevated_deferred_tool() -> None:
-    router = _router()
-    registry = [
+def _lock_registry() -> list[ToolInfo]:
+    return [
         _info("home.lock_door", "elevated", audience="conscious"),
         _info("home.vacuum_start", audience="conscious"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_guest_can_neither_find_nor_call_an_elevated_deferred_tool() -> None:
+    router = _router()
     script = Script(
         tool_call("search_tools", {"queries": ["lock the door"]}),
         tool_call("home_lock_door", {"entity_id": "lock.front"}),
         "I'm afraid I can't, sir.",
     )
-    deps = make_deps("guest", registry_tools=registry, services=make_services(router=router))
+    deps = make_deps(
+        "guest", registry_tools=_lock_registry(), services=make_services(router=router)
+    )
 
     await _agent().run("lock up", deps=deps, model=script.model)
 
@@ -360,3 +401,20 @@ async def test_a_guest_can_neither_find_nor_call_an_elevated_deferred_tool() -> 
     assert "home_lock_door" not in script.offered(1)
     assert "home_lock_door" not in script.offered(2)
     router.route.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sir_finds_the_same_elevated_tool_the_guest_cannot() -> None:
+    # The control for the guest test above: same registry, same query. Without it, a
+    # change to the descriptions or the strategy could make the guest assertions pass
+    # because nothing was ever findable.
+    script = Script(
+        tool_call("search_tools", {"queries": ["lock the door"]}),
+        "Found it, sir.",
+    )
+    deps = make_deps("sir", registry_tools=_lock_registry())
+
+    await _agent().run("lock up", deps=deps, model=script.model)
+
+    assert "home_lock_door" in script.returns(1)[0]
+    assert "home_lock_door" in script.offered(1)

@@ -19,6 +19,9 @@ from pydantic_ai.capabilities import ToolSearch
 if TYPE_CHECKING:
     from core.conscious.deps import TurnDeps
 
+# The name of the local function tool the framework adds. It is reserved: a run that holds
+# a deferred tool and any tool of this name fails, so the catalog never offers one.
+SEARCH_TOOL_NAME: Final = "search_tools"
 SEARCH_STRATEGY: Final = "keywords"
 SEARCH_MAX_RESULTS: Final = 10
 # The framework's own text talks about capability ids, which is wrong here.
