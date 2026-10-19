@@ -794,6 +794,57 @@ async def test_a_tool_result_reaches_the_next_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_tool_found_in_one_turn_is_still_loaded_in_the_next() -> None:
+    registry = AsyncMock()
+    registry.get_tools.return_value = [_info("home.vacuum_start", audience="conscious")]
+    router = _router()
+    start = {"entity_id": "vacuum.hall"}
+    script = Script(
+        tool_call("search_tools", {"queries": ["vacuum start"]}),
+        tool_call("home_vacuum_start", start),
+        "Started, sir.",
+        tool_call("home_vacuum_start", start),
+        "Started again, sir.",
+    )
+    deps = _deps(script, tool_registry=registry, domain_router=router, session_mgr=_sessions())
+    engine = ConsciousEngine(deps=deps)
+
+    await engine.process_request(_request(content="Start the vacuum"))
+    await engine.process_request(_request(content="Start it again"))
+
+    assert "home_vacuum_start" not in script.offered(0)
+    assert "home_vacuum_start" in script.offered(3)  # turn 2's first request
+    assert router.route.await_count == 2
+    assert script.call_count == 5  # no second search
+
+
+@pytest.mark.asyncio
+async def test_a_session_stored_before_tool_search_replays_with_its_tools_withheld() -> None:
+    registry = AsyncMock()
+    registry.get_tools.return_value = [_info("home.vacuum_start", audience="conscious")]
+    mgr = _sessions()
+    stored_before = [
+        ModelRequest(parts=[UserPromptPart("start the vacuum")]),
+        ModelResponse(
+            parts=[ToolCallPart("home_vacuum_start", {"entity_id": "vacuum.hall"}, "c1")]
+        ),
+        ModelRequest(parts=[ToolReturnPart("home_vacuum_start", "ok", "c1")]),
+        ModelResponse(parts=[TextPart("Started, sir.")]),
+    ]
+    await mgr.store_run("sess-1", stored_before, "sir")
+    script = Script("It is running, sir.")
+    deps = _deps(script, tool_registry=registry, session_mgr=mgr)
+
+    await ConsciousEngine(deps=deps).process_request(_request(content="Is it running?"))
+
+    # No search part in the history: the tool is withheld, though the model once called it.
+    assert "home_vacuum_start" not in script.offered(0)
+    replayed = [p for m in script.requests[0][0] for p in m.parts if isinstance(p, ToolCallPart)]
+    assert [p.tool_name for p in replayed] == ["home_vacuum_start"]
+    deps.domain_router.route.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
 async def test_the_stored_history_drops_instructions_and_each_turn_sends_its_own() -> None:
     script = Script("Good evening, sir.", "Still here, sir.")
     deps = _deps(script, session_mgr=_sessions())
@@ -966,6 +1017,11 @@ async def test_the_run_is_linked_to_the_turns_prompts(monkeypatch: pytest.Monkey
 
 
 # ── history bounds (spec component 5) ──
+
+
+def test_history_bounds() -> None:
+    # One more than before tool search: a search takes a pair of its own.
+    assert TOOL_RESULTS_KEPT == 4
 
 
 @pytest.mark.asyncio

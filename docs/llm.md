@@ -126,9 +126,11 @@ its own answer (the deliberating or budget reply) stores the turn as text. Sessi
 after `SESSION_TIMEOUT_MINUTES` (default 30) idle.
 
 **Compaction** (`core/conscious/history.py`) bounds that history by three means, cheapest first: one tool result is clipped at 100,000 characters as it is made; once the
-context estimate passes 28,000 tokens, tool results older than the three most recent are
-replaced by `[tool result cleared]`; past 60 messages, the oldest are dropped down to 40,
-keeping the first user message and tool call/return pairs together. The numbers come from
+context estimate passes 28,000 tokens, tool results older than the four most recent pairs
+are replaced by `[tool result cleared]` (a tool search is one of the pairs and is never
+blanked); past 60 messages, the oldest are dropped down to 40, keeping the first user
+message and tool call/return pairs together. Dropping a search with them unloads the tools
+it found (see [Tool search](#tool-search)). The numbers come from
 a week of production traces and the 32k-token eval model; the module docstring has them.
 Nothing yet bounds total tokens, so a history that outgrows the window fails until the
 session expires, tracked in
