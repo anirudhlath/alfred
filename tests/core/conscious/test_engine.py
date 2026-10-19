@@ -18,6 +18,8 @@ from pydantic_ai.messages import (
     TextPart,
     ToolCallPart,
     ToolReturnPart,
+    ToolSearchCallPart,
+    ToolSearchReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.usage import RequestUsage
@@ -66,6 +68,7 @@ from tests.shared.prompts.fakes import FakeLangfuse
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from pydantic_ai.messages import ModelMessage
     from pydantic_ai_harness.spend import SpendLimits
 
 
@@ -1098,3 +1101,69 @@ async def test_old_tool_results_are_cleared_past_the_token_ceiling() -> None:
     ]
     assert sent[0] == "[tool result cleared]"
     assert all(c == "y" * size for c in sent[1:])
+
+
+def _plain_exchange(i: int, size: int) -> list[ModelMessage]:
+    return [
+        ModelRequest(parts=[UserPromptPart(f"check {i}")]),
+        ModelResponse(
+            parts=[ToolCallPart("home_get_lights", {"entity_id": "light.desk"}, f"c{i}")]
+        ),
+        ModelRequest(parts=[ToolReturnPart("home_get_lights", "y" * size, f"c{i}")]),
+        ModelResponse(parts=[TextPart(f"done {i}")]),
+    ]
+
+
+def _search_exchange() -> list[ModelMessage]:
+    return [
+        ModelRequest(parts=[UserPromptPart("vacuum the hall")]),
+        ModelResponse(
+            parts=[ToolSearchCallPart(args={"queries": ["vacuum start"]}, tool_call_id="s0")]
+        ),
+        ModelRequest(
+            parts=[
+                ToolSearchReturnPart(
+                    content={"discovered_tools": [{"name": "home_vacuum_start"}]},
+                    tool_call_id="s0",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart("Found it, sir.")]),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("plain_after_search", [TOOL_RESULTS_KEPT, TOOL_RESULTS_KEPT - 1])
+async def test_a_search_result_survives_clearing_and_takes_one_of_the_kept_places(
+    plain_after_search: int,
+) -> None:
+    """Clearing blanks only plain tool results: a blanked search return would crash the
+    next request. A search is also one of the kept pairs, so one fewer plain pair follows it
+    when it sits inside the window, and the oldest plain result is blanked either way."""
+    registry = AsyncMock()
+    registry.get_tools.return_value = [
+        _info("home.get_lights"),
+        _info("home.vacuum_start", audience="conscious"),
+    ]
+    mgr = _sessions()
+    # Any three results together are over the ceiling (~4 chars/token).
+    size = CLEAR_TOOL_RESULTS_OVER_TOKENS * 4 // 2
+    history = [
+        *_plain_exchange(0, size),
+        *_search_exchange(),
+        *(m for i in range(1, plain_after_search + 1) for m in _plain_exchange(i, size)),
+    ]
+    await mgr.store_run("sess-1", history, "sir")
+    script = Script("Fine, sir.")
+    deps = _deps(script, tool_registry=registry, session_mgr=mgr)
+
+    await ConsciousEngine(deps=deps).process_request(_request(content="and now?"))
+
+    sent = [p for m in script.requests[0][0] for p in m.parts if isinstance(p, ToolReturnPart)]
+    (search,) = [p for p in sent if isinstance(p, ToolSearchReturnPart)]
+    assert search.content == {"discovered_tools": [{"name": "home_vacuum_start"}]}
+    plain = [p.content for p in sent if not isinstance(p, ToolSearchReturnPart)]
+    assert plain[0] == "[tool result cleared]"
+    assert plain[1:] == ["y" * size] * plain_after_search
+    # What the search found is still loaded.
+    assert "home_vacuum_start" in script.offered(0)
