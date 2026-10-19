@@ -76,7 +76,7 @@ One Pydantic AI agent per request (`agent.py`); see `docs/llm.md`.
 - `failures.py` — `classify()` (permanent vs transient), `dead_letter()`, `FAILED_REPLY`, `MAX_DELIVERIES`
 - `effects.py` — the side-effect ledger: `RecordEffects` capability, `EffectLedger`, `ledger_reply()`; a toolset marks a side-effecting tool with `SIDE_EFFECT` in its `ToolDefinition` metadata
 - `agent.py` — `build_system2_agent()`, `system2_toolsets()` (priority order), `REQUEST_LIMIT`
-- `tools/` — the catalog and its toolsets; every tool is named by `tools/names.wire_name`
+- `tools/` — the catalog and its toolsets; every tool is named by `tools/names.wire_name`; `tools/search.py` is the tool search that loads non-reflex registry tools on demand
 - `memory_tools.py` — `recall_memories()`, `get_live_state()`: the memory toolset's bodies
 - `system2_prompts.py` — `System2Prompts`, `fetch_system2_prompts()`: which prose sections a turn includes (personality, voice delivery, identity, location, integrations, proactivity), rendered from the prompt store (`shared/prompts/`) before the run
 - `context_assembler.py` — `assemble()`: the instructions, the rendered sections with the turn's data between them: time, involuntary recall, routine hint (no tool list)
@@ -89,7 +89,7 @@ One Pydantic AI agent per request (`agent.py`); see `docs/llm.md`.
 2. Memory tools (`tools/memory.py`, prefix `memory_`) → `memory_tools.py`; sir-only
 3. Attention + `confirm_pending_action` (`tools/attention.py`); sir-only
 4. Integration tools (`tools/integrations.py`, prefix `integration_`) → `IntegrationRegistry.execute()`; sir-only
-5. Registry tools (`tools/registry.py`) → `DomainRouter` to external services; a guest is offered `benign` risk only
+5. Registry tools (`tools/registry.py`) → `DomainRouter` to external services; a guest is offered `benign` risk only; non-reflex tools are deferred and found through `search_tools` (`tools/search.py`)
 - `__main__.py` runs a 15-min background loop (`asyncio.wait_for`) for proactive routine suggestions; ignored suggestions have confidence decremented over time
 
 ## Voice (`voice/`) — Voice I/O

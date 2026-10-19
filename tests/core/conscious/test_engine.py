@@ -18,6 +18,8 @@ from pydantic_ai.messages import (
     TextPart,
     ToolCallPart,
     ToolReturnPart,
+    ToolSearchCallPart,
+    ToolSearchReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.usage import RequestUsage
@@ -52,7 +54,7 @@ from core.conscious.session import (
 from core.conscious.tools.catalog import TOOL_RETRIES
 from core.memory.schemas import RoutineSpec
 from core.memory.vector_store import ContextMetadata, SearchResult
-from core.reflex.tool_registry import ToolInfo
+from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo
 from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 from shared.prompts.names import SYSTEM2_PERSONALITY
 from shared.prompts.store import PromptStore
@@ -66,6 +68,7 @@ from tests.shared.prompts.fakes import FakeLangfuse
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from pydantic_ai.messages import ModelMessage
     from pydantic_ai_harness.spend import SpendLimits
 
 
@@ -142,13 +145,14 @@ async def _counted(deps: ConsciousDeps) -> tuple[int, int]:
     return status.spent.requests, status.spent.tokens
 
 
-def _info(name: str) -> ToolInfo:
+def _info(name: str, audience: str = REFLEX_AUDIENCE) -> ToolInfo:
     return ToolInfo(
         name=name,
         description=f"{name} does a thing",
         feature_name=name.split(".")[0],
         feature_description="Home control",
         target_service="home-service",
+        audience=audience,
         risk="benign",
         input_schema={
             "type": "object",
@@ -793,6 +797,58 @@ async def test_a_tool_result_reaches_the_next_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_tool_found_in_one_turn_is_still_loaded_in_the_next() -> None:
+    registry = AsyncMock()
+    registry.get_tools.return_value = [_info("home.vacuum_start", audience="conscious")]
+    router = _router()
+    start = {"entity_id": "vacuum.hall"}
+    script = Script(
+        tool_call("search_tools", {"queries": ["vacuum start"]}),
+        tool_call("home_vacuum_start", start),
+        "Started, sir.",
+        tool_call("home_vacuum_start", start),
+        "Started again, sir.",
+    )
+    deps = _deps(script, tool_registry=registry, domain_router=router, session_mgr=_sessions())
+    engine = ConsciousEngine(deps=deps)
+
+    await engine.process_request(_request(content="Start the vacuum"))
+    await engine.process_request(_request(content="Start it again"))
+
+    assert "home_vacuum_start" not in script.offered(0)
+    assert "home_vacuum_start" in script.offered(3)  # turn 2's first request
+    assert router.route.await_count == 2
+    assert script.call_count == 5  # no second search
+
+
+@pytest.mark.asyncio
+async def test_a_session_stored_before_tool_search_replays_with_its_tools_withheld() -> None:
+    registry = AsyncMock()
+    registry.get_tools.return_value = [_info("home.vacuum_start", audience="conscious")]
+    mgr = _sessions()
+    stored_before = [
+        ModelRequest(parts=[UserPromptPart("start the vacuum")]),
+        ModelResponse(
+            parts=[ToolCallPart("home_vacuum_start", {"entity_id": "vacuum.hall"}, "c1")]
+        ),
+        ModelRequest(parts=[ToolReturnPart("home_vacuum_start", "ok", "c1")]),
+        ModelResponse(parts=[TextPart("Started, sir.")]),
+    ]
+    await mgr.store_run("sess-1", stored_before, "sir")
+    script = Script("It is running, sir.")
+    deps = _deps(script, tool_registry=registry, session_mgr=mgr)
+
+    response = await ConsciousEngine(deps=deps).process_request(_request(content="Is it running?"))
+
+    assert isinstance(response, AlfredResponse)
+    assert (response.text, response.actions_taken) == ("It is running, sir.", [])
+    # No search part in the history: the tool is withheld, though the model once called it.
+    assert "home_vacuum_start" not in script.offered(0)
+    replayed = [p for m in script.requests[0][0] for p in m.parts if isinstance(p, ToolCallPart)]
+    assert [p.tool_name for p in replayed] == ["home_vacuum_start"]
+
+
+@pytest.mark.asyncio
 async def test_the_stored_history_drops_instructions_and_each_turn_sends_its_own() -> None:
     script = Script("Good evening, sir.", "Still here, sir.")
     deps = _deps(script, session_mgr=_sessions())
@@ -967,6 +1023,11 @@ async def test_the_run_is_linked_to_the_turns_prompts(monkeypatch: pytest.Monkey
 # ── history bounds (spec component 5) ──
 
 
+def test_history_bounds() -> None:
+    # One more than before tool search: a search takes a pair of its own.
+    assert TOOL_RESULTS_KEPT == 4
+
+
 @pytest.mark.asyncio
 async def test_no_spilled_result_reader_is_offered() -> None:
     script = Script("Hello, sir.")
@@ -1040,3 +1101,69 @@ async def test_old_tool_results_are_cleared_past_the_token_ceiling() -> None:
     ]
     assert sent[0] == "[tool result cleared]"
     assert all(c == "y" * size for c in sent[1:])
+
+
+def _plain_exchange(i: int, size: int) -> list[ModelMessage]:
+    return [
+        ModelRequest(parts=[UserPromptPart(f"check {i}")]),
+        ModelResponse(
+            parts=[ToolCallPart("home_get_lights", {"entity_id": "light.desk"}, f"c{i}")]
+        ),
+        ModelRequest(parts=[ToolReturnPart("home_get_lights", "y" * size, f"c{i}")]),
+        ModelResponse(parts=[TextPart(f"done {i}")]),
+    ]
+
+
+def _search_exchange() -> list[ModelMessage]:
+    return [
+        ModelRequest(parts=[UserPromptPart("vacuum the hall")]),
+        ModelResponse(
+            parts=[ToolSearchCallPart(args={"queries": ["vacuum start"]}, tool_call_id="s0")]
+        ),
+        ModelRequest(
+            parts=[
+                ToolSearchReturnPart(
+                    content={"discovered_tools": [{"name": "home_vacuum_start"}]},
+                    tool_call_id="s0",
+                )
+            ]
+        ),
+        ModelResponse(parts=[TextPart("Found it, sir.")]),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("plain_after_search", [TOOL_RESULTS_KEPT, TOOL_RESULTS_KEPT - 1])
+async def test_a_search_result_survives_clearing_and_takes_one_of_the_kept_places(
+    plain_after_search: int,
+) -> None:
+    """Clearing blanks only plain tool results: a blanked search return would crash the
+    next request. A search is also one of the kept pairs, so one fewer plain pair follows it
+    when it sits inside the window, and the oldest plain result is blanked either way."""
+    registry = AsyncMock()
+    registry.get_tools.return_value = [
+        _info("home.get_lights"),
+        _info("home.vacuum_start", audience="conscious"),
+    ]
+    mgr = _sessions()
+    # Any three results together are over the ceiling (~4 chars/token).
+    size = CLEAR_TOOL_RESULTS_OVER_TOKENS * 4 // 2
+    history = [
+        *_plain_exchange(0, size),
+        *_search_exchange(),
+        *(m for i in range(1, plain_after_search + 1) for m in _plain_exchange(i, size)),
+    ]
+    await mgr.store_run("sess-1", history, "sir")
+    script = Script("Fine, sir.")
+    deps = _deps(script, tool_registry=registry, session_mgr=mgr)
+
+    await ConsciousEngine(deps=deps).process_request(_request(content="and now?"))
+
+    sent = [p for m in script.requests[0][0] for p in m.parts if isinstance(p, ToolReturnPart)]
+    (search,) = [p for p in sent if isinstance(p, ToolSearchReturnPart)]
+    assert search.content == {"discovered_tools": [{"name": "home_vacuum_start"}]}
+    plain = [p.content for p in sent if not isinstance(p, ToolSearchReturnPart)]
+    assert plain[0] == "[tool result cleared]"
+    assert plain[1:] == ["y" * size] * plain_after_search
+    # What the search found is still loaded.
+    assert "home_vacuum_start" in script.offered(0)

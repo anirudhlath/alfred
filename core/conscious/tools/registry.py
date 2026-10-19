@@ -24,6 +24,7 @@ from core.conscious.tools.catalog import TOOL_RETRIES
 from core.conscious.tools.names import WireNameError, error_once, report_collision, wire_name
 from core.conscious.tools.scope import Refused, allowed
 from core.conscious.tools.validation import ANY_OBJECT, check_arguments, compile_schema
+from core.reflex.tool_registry import REFLEX_AUDIENCE
 from core.routing.domain_router import CONFIRMATION_REQUIRED_PREFIX
 from core.triggers.models import TRIGGER_ENGINE_SOURCE
 
@@ -99,6 +100,9 @@ class RegistryToolset(AbstractToolset[TurnDeps]):
                 name=name,
                 description=info.description,
                 parameters_json_schema=schema,
+                # Only the reflex audience's everyday verbs are always loaded; the model
+                # finds the rest by searching (``tools.search``).
+                defer_loading=info.audience != REFLEX_AUDIENCE,
                 metadata={
                     "registry_name": info.name,
                     "target_service": info.target_service,

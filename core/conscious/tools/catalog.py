@@ -2,7 +2,9 @@
 
 Pydantic AI's ``CombinedToolset`` refuses a run when two toolsets offer one name. The
 catalog keeps the first and logs the second once, so one bad registration cannot take
-System 2 down. It also records each call it dispatches (``TurnDeps.actions_taken``) and
+System 2 down. The framework's own ``search_tools`` is reserved the same way: a toolset's tool
+of that name is dropped, because the framework refuses every run that holds it next to a
+deferred tool. The catalog also records each call it dispatches (``TurnDeps.actions_taken``) and
 turns an unexpected exception into a failed tool result the model can read.
 """
 
@@ -19,6 +21,7 @@ from pydantic_ai.toolsets.abstract import ToolsetTool
 
 from core.conscious.deps import TurnDeps
 from core.conscious.tools.names import report_collision
+from core.conscious.tools.search import SEARCH_TOOL_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,9 @@ class CatalogToolset(CombinedToolset[TurnDeps]):
         tools: dict[str, ToolsetTool[TurnDeps]] = {}
         for toolset in self.toolsets:
             for name, tool in (await toolset.get_tools(ctx)).items():
+                if name == SEARCH_TOOL_NAME:
+                    report_collision(name, SEARCH_TOOL_NAME, tool_identity(tool.tool_def))
+                    continue
                 if name in tools:
                     kept = tool_identity(tools[name].tool_def)
                     report_collision(name, kept, tool_identity(tool.tool_def))

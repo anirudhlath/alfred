@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis
@@ -38,7 +38,7 @@ from core.conscious.tools.integrations import IntegrationTool, IntegrationToolse
 from core.conscious.tools.registry import RegistryToolset
 from core.conscious.tools.triggers import TriggerToolset
 from core.integrations.base import IntegrationResult
-from core.reflex.tool_registry import ToolInfo
+from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo
 from core.routing.domain_router import CONFIRMATION_REQUIRED_PREFIX
 from core.routing.pending import store_pending_action
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
@@ -54,7 +54,10 @@ from shared.streams import (
     USER_RESPONSES_STREAM,
 )
 from tests.core.conscious.helpers import identity, make_deps, make_services
-from tests.llm_fakes import Script, tool_call
+from tests.llm_fakes import Script, tool_call, tool_calls
+
+if TYPE_CHECKING:
+    from pydantic_ai.messages import ModelResponse
 
 _GROUP = "conscious-engine"
 _CONSUMER = "worker-1"
@@ -194,13 +197,14 @@ def test_a_name_without_a_service_prefix_is_humanised_whole() -> None:
 # ── what is recorded ─────────────────────────────────────────────────────────
 
 
-def _info(name: str, risk: str = "benign") -> ToolInfo:
+def _info(name: str, risk: str = "benign", audience: str = REFLEX_AUDIENCE) -> ToolInfo:
     return ToolInfo(
         name=name,
         description=f"{name} does a thing",
         feature_name=name.split(".")[0],
         feature_description="Home control",
         target_service="home-service",
+        audience=audience,
         risk=risk,  # type: ignore[arg-type]
         input_schema={
             "type": "object",
@@ -518,12 +522,20 @@ def _request() -> UserRequest:
     )
 
 
-def _engine(redis: fakeredis.FakeAsyncRedis, script: Script, router: AsyncMock) -> ConsciousEngine:
-    """A real engine and System 2 agent over fakeredis, with one registry tool."""
+def _engine(
+    redis: fakeredis.FakeAsyncRedis,
+    script: Script,
+    router: AsyncMock,
+    registry_tools: list[ToolInfo] | None = None,
+) -> ConsciousEngine:
+    """A real engine and System 2 agent over fakeredis; the registry holds *registry_tools*,
+    by default one light tool."""
     identity_gate = MagicMock()
     identity_gate.resolve.return_value = identity("sir")
     registry = AsyncMock()
-    registry.get_tools.return_value = [_info("home.light_turn_on")]
+    registry.get_tools.return_value = (
+        registry_tools if registry_tools is not None else [_info("home.light_turn_on")]
+    )
     spend = build_spend_limits(redis, cap_usd=5.0, clock=local_clock(lambda: "UTC"))
     return ConsciousEngine(
         deps=ConsciousDeps(
@@ -688,4 +700,109 @@ async def test_an_integration_write_then_a_transient_failure_is_never_repeated(
         "I'd started on that — I did: integration apple calendar create event — then ran "
         "into a problem before I could finish, sir."
     ]
+    assert int((await redis.xpending(USER_REQUESTS_STREAM, _GROUP))["pending"]) == 0
+
+
+# ── two side effects in one response (the framework runs them concurrently) ──
+
+
+_VACUUM = "home.vacuum_start"
+_LIGHT = "home.light_turn_on"
+
+
+def _vacuum_and_light() -> list[ToolInfo]:
+    """One tool found by search (not a reflex tool) and one that is always offered."""
+    return [_info(_VACUUM, audience="conscious"), _info(_LIGHT)]
+
+
+def _search_for_the_vacuum() -> ModelResponse:
+    return tool_call("search_tools", {"queries": ["vacuum start"]})
+
+
+def _vacuum_and_light_together() -> ModelResponse:
+    return tool_calls(
+        ("home_vacuum_start", {"entity_id": "vacuum.hall"}),
+        ("home_light_turn_on", {"entity_id": "light.porch"}),
+    )
+
+
+async def test_two_side_effects_in_one_response_both_act_and_settle() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    router = _router()
+    script = Script(_search_for_the_vacuum(), _vacuum_and_light_together(), "Done, sir.")
+    request = _request()
+    entry_id = await _pending(redis, request)
+
+    await _deliver(redis, entry_id, _engine(redis, script, router, _vacuum_and_light()), delivery=1)
+
+    assert router.route.await_count == 2
+    assert {call.args[0].tool_name for call in router.route.await_args_list} == {_VACUUM, _LIGHT}
+    assert sorted(await EffectLedger(redis).read(request.event_id), key=lambda e: e.tool) == [
+        Effect(_LIGHT, {"entity_id": "light.porch"}, "ok"),
+        Effect(_VACUUM, {"entity_id": "vacuum.hall"}, "ok"),
+    ]
+    [(_id, fields)] = await forward_range(redis, USER_RESPONSES_STREAM)
+    response = json.loads(fields[b"event"])
+    assert response["text"] == "Done, sir."
+    assert sorted(response["actions_taken"]) == [_LIGHT, _VACUUM]
+    assert int((await redis.xpending(USER_REQUESTS_STREAM, _GROUP))["pending"]) == 0
+
+
+async def test_a_redelivery_after_two_concurrent_side_effects_acts_on_neither() -> None:
+    """The process died after both calls of one response ran: the redelivery must run
+    neither again, nor ask the model anything."""
+    redis = fakeredis.FakeAsyncRedis()
+    router = _router()
+    script = Script(
+        _search_for_the_vacuum(), _vacuum_and_light_together(), ModelHTTPError(503, "m")
+    )
+    request = _request()
+    entry_id = await _pending(redis, request)
+    engine = _engine(redis, script, router, _vacuum_and_light())
+    with pytest.raises(ModelHTTPError):
+        await engine.process_request(request)  # the crashed delivery: no runner after it
+    assert router.route.await_count == 2
+    spy = MagicMock(wraps=engine)
+    spy.process_request = AsyncMock()
+    spy.record_partial_turn = AsyncMock(wraps=engine.record_partial_turn)
+
+    await _deliver(redis, entry_id, spy, delivery=2)
+
+    spy.process_request.assert_not_awaited()
+    assert router.route.await_count == 2
+    assert script.call_count == 3
+    responses = await forward_range(redis, USER_RESPONSES_STREAM)
+    [text] = [json.loads(f[b"event"])["text"] for _id, f in responses]
+    assert text == ledger_reply(await EffectLedger(redis).read(request.event_id))
+    assert text.startswith("I'd started on that — I did: ")
+    assert "vacuum start" in text
+    assert "light turn on" in text
+    assert int((await redis.xpending(USER_REQUESTS_STREAM, _GROUP))["pending"]) == 0
+
+
+async def test_one_failed_call_of_two_concurrent_side_effects_leaves_the_other_settled_ok() -> None:
+    def vacuum_stuck(action: ActionRequest) -> MagicMock:
+        if action.tool_name == _VACUUM:
+            return MagicMock(status="error", result=None, error="vacuum stuck")
+        return MagicMock(status="success", result={"ok": True}, error=None)
+
+    redis = fakeredis.FakeAsyncRedis()
+    router = AsyncMock()
+    router.route.side_effect = vacuum_stuck
+    script = Script(
+        _search_for_the_vacuum(),
+        _vacuum_and_light_together(),
+        "The light is on; the vacuum is stuck, sir.",
+    )
+    request = _request()
+    entry_id = await _pending(redis, request)
+
+    await _deliver(redis, entry_id, _engine(redis, script, router, _vacuum_and_light()), delivery=1)
+
+    ledger = await EffectLedger(redis).read(request.event_id)
+    assert {e.tool: e.status for e in ledger} == {_VACUUM: "failed", _LIGHT: "ok"}
+    [(_id, fields)] = await forward_range(redis, USER_RESPONSES_STREAM)
+    response = json.loads(fields[b"event"])
+    assert response["text"] == "The light is on; the vacuum is stuck, sir."
+    assert sorted(response["actions_taken"]) == [_LIGHT, _VACUUM]
     assert int((await redis.xpending(USER_REQUESTS_STREAM, _GROUP))["pending"]) == 0

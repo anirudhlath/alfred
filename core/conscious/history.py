@@ -22,6 +22,9 @@ oldest messages past a count, keeping the first user message and tool call/retur
 together. Both compactions rewrite the run's messages, which is why a turn replaces the
 stored session rather than appending to it.
 
+A tool search's call/return pair counts as one of the kept pairs and is never blanked;
+SlidingWindowCompaction dropping it unloads the tools it found, and the model searches again.
+
 Nothing bounds total tokens yet, so a history that outgrows the window fails until the
 session expires (issue #371). ``ThinkingPart``s are replayed and stored too, and nothing
 bounds them; that matters only if a reasoning model is configured (issue #371).
@@ -45,8 +48,10 @@ TOOL_RESULT_MAX_CHARS: Final = 100_000
 # Context estimate past which old tool results are blanked; leaves room to answer on a
 # 32k-token window.
 CLEAR_TOOL_RESULTS_OVER_TOKENS: Final = 28_000
-# The most recent tool call/return pairs, never blanked: what a follow-up refers to.
-TOOL_RESULTS_KEPT: Final = 3
+# The most recent tool call/return pairs, never blanked: what a follow-up refers to. A tool
+# search counts as one pair: after a turn that searches and then acts, the four are the search
+# and three ordinary results (the action and two before it), not four ordinary ones.
+TOOL_RESULTS_KEPT: Final = 4
 # Never blank for less than this.
 CLEAR_AT_LEAST_TOKENS: Final = 2_000
 SESSION_MAX_MESSAGES: Final = 60

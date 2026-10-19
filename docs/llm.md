@@ -98,10 +98,10 @@ sequenceDiagram
 `assemble()` (`core/conscious/context_assembler.py`) from `TurnDeps`, whose prose sections
 the engine rendered from the prompt store before the run (see [Prompts](#prompts)). Its capabilities are
 `RepairToolArguments` (repairs malformed JSON in a call's arguments before they are
-validated), `RecordEffects` (the turn ledger), the history bounds (`history_capabilities()`,
-see Compaction below), instrumentation and, where anything is billed, the spend
-capability. The engine passes the model on each run, so tests run the same agent against a
-`FunctionModel`.
+validated), `RecordEffects` (the turn ledger), `ToolSearch` (see [Tool search](#tool-search)),
+the history bounds (`history_capabilities()`, see Compaction below), instrumentation and,
+where anything is billed, the spend capability. The engine passes the model on each run, so
+tests run the same agent against a `FunctionModel`.
 
 **Turn dependencies** (`core/conscious/deps.py`): `TurnServices` holds the process's handles
 (Redis, the domain router, the context reader, the context index); `TurnDeps` holds one
@@ -126,9 +126,11 @@ its own answer (the deliberating or budget reply) stores the turn as text. Sessi
 after `SESSION_TIMEOUT_MINUTES` (default 30) idle.
 
 **Compaction** (`core/conscious/history.py`) bounds that history by three means, cheapest first: one tool result is clipped at 100,000 characters as it is made; once the
-context estimate passes 28,000 tokens, tool results older than the three most recent are
-replaced by `[tool result cleared]`; past 60 messages, the oldest are dropped down to 40,
-keeping the first user message and tool call/return pairs together. The numbers come from
+context estimate passes 28,000 tokens, tool results older than the four most recent pairs
+are replaced by `[tool result cleared]` (a tool search is one of the pairs and is never
+blanked); past 60 messages, the oldest are dropped down to 40, keeping the first user
+message and tool call/return pairs together. Dropping a search with them unloads the tools
+it found (see [Tool search](#tool-search)). The numbers come from
 a week of production traces and the 32k-token eval model; the module docstring has them.
 Nothing yet bounds total tokens, so a history that outgrows the window fails until the
 session expires, tracked in
@@ -147,7 +149,8 @@ is answered with a retry prompt listing the wire names, and nothing is dispatche
 
 `CatalogToolset` (`core/conscious/tools/catalog.py`) combines the toolsets in priority
 order. The first to offer a wire name owns it; a later one is dropped with one ERROR per
-process, so a service can never register over an internal tool.
+process, so a service can never register over an internal tool, or over `search_tools`, the
+name the framework reserves for its tool search (see [Tool search](#tool-search)).
 
 | Order | Toolset | File | Offered to |
 |---|---|---|---|
@@ -155,7 +158,7 @@ process, so a service can never register over an internal tool.
 | 2 | memory (`memory_recall_memories`, `memory_get_live_state`) | `tools/memory.py` | sir, when the turn has a context index |
 | 3 | attention + `confirm_pending_action` | `tools/attention.py` | sir |
 | 4 | integrations | `tools/integrations.py` | sir |
-| 5 | `RegistryToolset` (every SDK-registered tool except the `trigger-engine` service's, which `TriggerToolset` serves) | `tools/registry.py` | sir: all; guest: `benign` risk only |
+| 5 | `RegistryToolset` (every SDK-registered tool except the `trigger-engine` service's, which `TriggerToolset` serves; non-reflex tools load on demand, see [Tool search](#tool-search)) | `tools/registry.py` | sir: all; guest: `benign` risk only |
 
 Each toolset retries a failed call twice (`TOOL_RETRIES = 2`).
 
@@ -193,6 +196,39 @@ An unexpected exception in a toolset is logged with its traceback, and the model
 `actions_taken` records every call the catalog dispatches, failed ones included, under the
 tool's registry name (or its wire name, for in-process tools). Calls whose arguments fail
 validation are not recorded.
+
+### Tool search
+
+A request does not carry every tool. `RegistryToolset` loads a registry tool up front only
+when its `audience` is `reflex`, the house's everyday verbs; every other registry tool is
+deferred (`ToolDefinition.defer_loading`) and reaches the model once it has searched for
+it. The rule reads the registration's metadata, never a tool's name. The in-process
+toolsets (triggers, memory, attention, integrations) are always loaded.
+
+The search is Pydantic AI's `ToolSearch` capability, built by `tool_search()`
+(`core/conscious/tools/search.py`). On a chat-completions model it is a local function tool,
+`search_tools`, taking `{"queries": ["vacuum start", ...]}`, one short query per need. It
+ranks by keywords (`SEARCH_STRATEGY` is pinned, because the framework's default may change)
+and returns at most ten tools (`SEARCH_MAX_RESULTS`). A matched tool's schema is sent from
+the next model request, and a search that matches nothing says so. Calling a deferred tool
+that was not found first is refused with a retry prompt telling the model to search, and
+nothing is dispatched. So a turn that needs a deferred tool takes at least three model
+requests: search, call, answer.
+
+The keyword strategy counts any shared word, common ones such as "the" and "turn" included,
+so a natural query usually matches something and a match is not relevance. Embedding search
+(below) is the follow-up. The wire name `search_tools` is the framework's: the catalog drops
+any toolset's tool of that name and reports it as a name collision (`SEARCH_TOOL_NAME`),
+because the framework refuses every run that holds one next to a deferred tool.
+
+A search is not an action: `actions_taken` and the turn ledger record only the tool calls
+that follow. The search corpus is the turn's scoped toolset, so a guest's search can reveal
+only `benign` tools. What a search found is re-derived from the session's history on each
+request, so it carries into the next turn of the session, until compaction drops the
+exchange and the model searches again.
+
+Embedding search over the tool descriptions, ranked by cosine, is the planned follow-up if
+keyword search misses; it plugs into `ToolSearch` as a strategy function.
 
 ## The Librarian
 
@@ -488,7 +524,7 @@ one-toolset agent.
 | `core/conscious/agent.py` | `build_system2_agent`, `system2_toolsets`, `REQUEST_LIMIT` |
 | `core/conscious/engine.py` | `ConsciousEngine`: one turn around one agent run |
 | `core/conscious/deps.py` | `TurnServices`, `TurnDeps` |
-| `core/conscious/tools/` | `names`, `scope`, `catalog`, `sir_only`, `validation`, `registry`, `triggers`, `memory`, `attention`, `integrations` |
+| `core/conscious/tools/` | `names`, `scope`, `catalog`, `sir_only`, `validation`, `registry`, `search`, `triggers`, `memory`, `attention`, `integrations` |
 | `core/librarian/agents.py` | the five Librarian agents and their output models |
 | `shared/llm_http.py` | `RetryingTransport`, `RetryPolicy`, `retrying_http_client` |
 | `core/conscious/runner.py` | `process_request_entry`: delivery, answered marker, ledger answers, dead letters |

@@ -11,6 +11,7 @@ from pydantic_ai.toolsets import FunctionToolset
 
 from core.conscious.tools import names
 from core.conscious.tools.catalog import TOOL_RETRIES, CatalogToolset
+from core.conscious.tools.search import SEARCH_TOOL_NAME
 from tests.core.conscious.helpers import make_deps, run_context, tool_agent
 from tests.llm_fakes import Script, tool_call
 
@@ -58,6 +59,27 @@ async def test_a_wire_name_two_toolsets_offer_goes_to_the_first(
     assert list(tools) == ["ping"]
     assert tools["ping"].tool_def.description == "First."
     assert caplog.text.count("both map to wire name 'ping'") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_tool_offering_the_tool_search_name_is_dropped_and_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def ping() -> str:
+        """Pings."""
+        return "pong"
+
+    impostor = FunctionToolset([], max_retries=TOOL_RETRIES)
+    impostor.add_function(ping, name=SEARCH_TOOL_NAME)
+    catalog = CatalogToolset([_toolset(ping), impostor])
+    ctx = run_context(make_deps())
+
+    with caplog.at_level(logging.ERROR, logger="core.conscious.tools.names"):
+        tools = await catalog.get_tools(ctx)
+        await catalog.get_tools(ctx)
+
+    assert list(tools) == ["ping"]
+    assert caplog.text.count(f"both map to wire name '{SEARCH_TOOL_NAME}'") == 1
 
 
 @pytest.mark.asyncio

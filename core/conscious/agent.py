@@ -26,6 +26,7 @@ from core.conscious.tools.catalog import CatalogToolset
 from core.conscious.tools.integrations import integration_toolset
 from core.conscious.tools.memory import memory_toolset
 from core.conscious.tools.registry import RegistryToolset
+from core.conscious.tools.search import tool_search
 from core.conscious.tools.triggers import TriggerToolset
 from shared.agents import instrumentation, role_headers
 from shared.llm_roles import SYSTEM2
@@ -69,6 +70,7 @@ def build_system2_agent(
     capabilities: list[AbstractCapability[TurnDeps]] = [
         RepairToolArguments(),
         RecordEffects(),
+        tool_search(),
         *history_capabilities(),
         instrumentation(),
     ]
