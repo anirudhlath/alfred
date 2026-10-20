@@ -321,6 +321,7 @@ class LlmSettings:
 
     system2_model: str
     librarian_model: str
+    approval_model: str
     vllm_base_url: str
     openrouter_api_key: str
     system2_max_tokens: int
@@ -362,6 +363,7 @@ def resolve_llm_settings(env: Mapping[str, str]) -> LlmSettings:
     return LlmSettings(
         system2_model=system2,
         librarian_model=get("LIBRARIAN_MODEL") or system2,
+        approval_model=get("APPROVAL_MODEL") or system2,
         vllm_base_url=normalize_vllm_base_url(base_url),
         openrouter_api_key=get("OPENROUTER_API_KEY") or get("CLAUDE_API_KEY"),
         system2_max_tokens=_positive_int(tokens_name, get(tokens_name), DEFAULT_SYSTEM2_MAX_TOKENS),
@@ -425,6 +427,7 @@ class AlfredConfig:
     # Phase 3: Conscious Engine (models and keys: see the LLM settings below)
     system2_model: str = DEFAULT_SYSTEM2_MODEL
     librarian_model: str = DEFAULT_SYSTEM2_MODEL
+    approval_model: str = DEFAULT_SYSTEM2_MODEL
     vllm_base_url: str = ""
     openrouter_api_key: str = ""
     system2_max_tokens: int = DEFAULT_SYSTEM2_MAX_TOKENS
@@ -542,6 +545,7 @@ class AlfredConfig:
             # Phase 3: Conscious Engine
             system2_model=llm.system2_model,
             librarian_model=llm.librarian_model,
+            approval_model=llm.approval_model,
             vllm_base_url=llm.vllm_base_url,
             openrouter_api_key=llm.openrouter_api_key,
             system2_max_tokens=llm.system2_max_tokens,

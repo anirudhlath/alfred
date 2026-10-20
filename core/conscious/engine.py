@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     from pydantic_ai_harness.spend import SpendLimits
 
     from bus.schemas.events import ChannelName, ContentType
+    from core.conscious.approval_classifier import ApprovalClassifier
     from core.conscious.approvals import Notifier
     from core.conscious.identity import IdentityGate
     from core.conscious.session import SessionManager
@@ -112,7 +113,8 @@ class ConsciousDeps:
     ``model`` is None when ``SYSTEM2_MODEL`` resolved to nothing at startup; every request
     then gets the not-configured reply. ``spend`` is the daily budget the agent carries as
     a capability; the engine reads it before a turn starts.
-    ``notifier`` asks the owner to approve a parked run.
+    ``notifier`` asks the owner to approve a parked run; ``approval`` reads the owner's reply
+    to it, and with None no reply approves anything.
     ``prompts`` serves the turn's prose; the default serves the repo defaults.
     """
 
@@ -126,6 +128,7 @@ class ConsciousDeps:
     agent: Agent[TurnDeps, str | DeferredToolRequests]
     model: Model | None
     notifier: Notifier
+    approval: ApprovalClassifier | None = None
     routine_store: RoutineStore | None = None
     context_index: ContextIndexManager | None = None
     config: ConsciousConfig = field(default_factory=ConsciousConfig)

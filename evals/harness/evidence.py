@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from bus.schemas.events import ActionRequest, ReflexDecision, UrgencyLevel
 
-Role = Literal["system1", "system2", "librarian", "unknown"]
+Role = Literal["system1", "system2", "librarian", "approval", "unknown"]
 Decision = ReflexDecision
 Urgency = UrgencyLevel
 StepKind = Literal["user", "ha_event", "wait", "clock", "advance_trigger", "dnd"]

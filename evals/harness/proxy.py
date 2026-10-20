@@ -24,7 +24,7 @@ import httpx
 from aiohttp import web
 
 from evals.harness.evidence import LlmCall, Role, ToolCall
-from shared.llm_roles import LIBRARIAN, ROLE_HEADER, SYSTEM1, SYSTEM2
+from shared.llm_roles import APPROVAL, LIBRARIAN, ROLE_HEADER, SYSTEM1, SYSTEM2
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -36,6 +36,7 @@ ROLES_BY_HEADER: dict[str, Role] = {
     SYSTEM1: "system1",
     SYSTEM2: "system2",
     LIBRARIAN: "librarian",
+    APPROVAL: "approval",
 }
 _DROP_HEADERS = {"host", "content-length", "transfer-encoding", "connection"}
 # Requests upstream at once, chat and passthrough alike. vLLM is shared with production:

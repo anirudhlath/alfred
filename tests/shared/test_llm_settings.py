@@ -45,6 +45,7 @@ def test_blank_values_mean_the_default() -> None:
         [
             "SYSTEM2_MODEL",
             "LIBRARIAN_MODEL",
+            "APPROVAL_MODEL",
             "VLLM_BASE_URL",
             "SYSTEM2_MAX_TOKENS",
             "SYSTEM2_TIMEOUT_S",
@@ -129,6 +130,17 @@ def test_normalize_vllm_base_url(raw: str, want: str) -> None:
 def test_librarian_model_override() -> None:
     s = resolve_llm_settings({"SYSTEM2_MODEL": "vllm:a", "LIBRARIAN_MODEL": "vllm:b"})
     assert (s.system2_model, s.librarian_model) == ("vllm:a", "vllm:b")
+
+
+def test_approval_model_defaults_to_system2() -> None:
+    assert resolve_llm_settings({}).approval_model == DEFAULT_SYSTEM2_MODEL
+    s = resolve_llm_settings({"SYSTEM2_MODEL": "vllm:a", "LIBRARIAN_MODEL": "vllm:b"})
+    assert s.approval_model == "vllm:a"
+
+
+def test_approval_model_override() -> None:
+    s = resolve_llm_settings({"SYSTEM2_MODEL": "vllm:a", "APPROVAL_MODEL": "vllm:c"})
+    assert (s.system2_model, s.approval_model) == ("vllm:a", "vllm:c")
 
 
 def test_openrouter_key_falls_back_to_claude_api_key() -> None:

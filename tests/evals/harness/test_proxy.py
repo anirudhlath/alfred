@@ -14,7 +14,7 @@ from evals.harness import proxy as proxy_module
 from evals.harness.evidence import LlmCall
 from evals.harness.judge import JUDGE_CONNECTIONS, make_judge_model
 from evals.harness.proxy import MAX_UPSTREAM, ROLES_BY_HEADER, LlmProxy
-from shared.llm_roles import LIBRARIAN, LLM_ROLES, ROLE_HEADER, SYSTEM1, SYSTEM2
+from shared.llm_roles import APPROVAL, LIBRARIAN, LLM_ROLES, ROLE_HEADER, SYSTEM1, SYSTEM2
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -394,11 +394,12 @@ def test_the_proxy_and_the_judge_share_one_vllm_budget_of_four() -> None:
         ({ROLE_HEADER: SYSTEM1}, "system1"),
         ({ROLE_HEADER: SYSTEM2}, "system2"),
         ({ROLE_HEADER: LIBRARIAN}, "librarian"),
+        ({ROLE_HEADER: APPROVAL}, "approval"),
         ({ROLE_HEADER: "System2"}, "unknown"),
         ({ROLE_HEADER: "reflex"}, "unknown"),
         ({}, "unknown"),
     ],
-    ids=["system1", "system2", "librarian", "wrong-case", "not-a-role", "no-header"],
+    ids=["system1", "system2", "librarian", "approval", "wrong-case", "not-a-role", "no-header"],
 )
 async def test_a_calls_role_is_its_role_header_and_never_its_prompt(
     headers: dict[str, str], role: Role

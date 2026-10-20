@@ -19,6 +19,7 @@ import core.integrations.weather
 import core.triggers.types  # noqa: F401  # trigger type registrations
 from bus.schemas.events import ActionRequest, ActionResult
 from core.conscious.agent import build_system2_agent, system2_toolsets
+from core.conscious.approval_classifier import ApprovalClassifier
 from core.conscious.engine import ConsciousConfig, ConsciousDeps, ConsciousEngine
 from core.conscious.identity import IdentityGate
 from core.conscious.runner import process_request_entry
@@ -348,6 +349,11 @@ async def run(config: AlfredConfig) -> None:
             agent=system2,
             model=resolve_model("SYSTEM2_MODEL", config.system2_model),
             notifier=notifier,
+            approval=ApprovalClassifier(
+                model=resolve_model("APPROVAL_MODEL", config.approval_model),
+                prompts=prompts,
+                spend=spend,
+            ),
             routine_store=routine_store,
             context_index=context_index,
             config=ConsciousConfig(
