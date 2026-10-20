@@ -43,8 +43,10 @@ async def followup_worker(
 ) -> None:
     """Consume ``USER_RESPONSES_STREAM`` and deliver the follow-ups among the responses.
 
-    The group starts at the stream's end: a follow-up is worth delivering now, never on the
-    replay of a stream's history. Same worker pattern as
+    The group is created at the stream's end, so its first start replays none of the
+    stream's history. After that it resumes from the last entry it read: what landed while
+    the process was down is delivered when it comes back, a late answer only while its
+    registration lives. Same worker pattern as
     core/notifications/delivery.py::notification_delivery_worker.
     """
     await ensure_consumer_group(redis, USER_RESPONSES_STREAM, FOLLOWUP_GROUP, start_id="$")
@@ -63,6 +65,10 @@ async def followup_worker(
                 for entry_id, entry_data in stream_entries:
                     try:
                         await _handle(redis, entry_data, deliver)
+                    except Exception as exc:
+                        # One entry's failure (a Redis error on its claim) is its own: the
+                        # rest of the batch is still handled, or it would never be read again.
+                        logger.warning("Skipping response entry {}: {}", entry_id, exc)
                     finally:
                         # Every entry is ACKed, delivered or not (plan ruling R8): delivery
                         # is best effort, so there is no PEL to reclaim — the deliberate

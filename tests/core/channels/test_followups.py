@@ -7,6 +7,7 @@ from typing import Any
 
 import fakeredis
 from loguru import logger
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from bus.schemas.events import AlfredResponse
 from core.channels.followups import FOLLOWUP_GROUP, followup_worker
@@ -38,6 +39,15 @@ class _RacingRedis(_Redis):
         value = await super().get(name)
         await asyncio.sleep(0)
         return value
+
+
+class _FlakyRedis(_Redis):
+    """Fails the GET of one request's registration, as a dropped connection would."""
+
+    async def get(self, name: Any) -> Any:
+        if name == FOLLOWUP_KEY.format("req-broken"):
+            raise RedisConnectionError("connection reset")
+        return await super().get(name)
 
 
 class _Sink:
@@ -183,3 +193,28 @@ async def test_every_entry_is_acked() -> None:
     pending = await redis.xpending(USER_RESPONSES_STREAM, FOLLOWUP_GROUP)
     assert pending["pending"] == 0
     assert any("the socket went away" in w for w in warnings)
+
+
+async def test_a_failed_claim_does_not_strand_its_batch() -> None:
+    """A Redis error on one entry's claim is that entry's alone: the next one in the batch
+    is still delivered, and both are ACKed."""
+    redis = await _redis(_FlakyRedis)
+    await redis.set(FOLLOWUP_KEY.format("req-broken"), "late")
+    await redis.set(FOLLOWUP_KEY.format("req-1"), "late")
+    warnings: list[str] = []
+    sink_id = logger.add(warnings.append, level="WARNING", format="{message}")
+    try:
+        sink = await _run(
+            redis,
+            [
+                {"event": _response("Lost to the outage.", in_reply_to="req-broken")},
+                {"event": _response("Late, sir.")},
+            ],
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert [r.text for r in sink.delivered] == ["Late, sir."]
+    pending = await redis.xpending(USER_RESPONSES_STREAM, FOLLOWUP_GROUP)
+    assert pending["pending"] == 0
+    assert any("connection reset" in w for w in warnings)

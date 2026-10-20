@@ -1,5 +1,6 @@
 """WebSocket channel filtering, and the follow-up sink that delivers late replies (#307)."""
 
+import asyncio
 from collections.abc import Iterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,6 +15,7 @@ from core.channels.web_server import (
     _active_websockets,
     _followup_sink,
     _session_sockets,
+    create_app,
     get_active_websockets,
     get_web_websockets,
 )
@@ -94,7 +96,11 @@ async def _notifications(redis: fakeredis.FakeAsyncRedis) -> list[Notification]:
 
 
 def _followup(
-    channel: ChannelName, session_id: str, text: str = "The door is locked, sir."
+    channel: ChannelName,
+    session_id: str,
+    text: str = "The door is locked, sir.",
+    *,
+    followup: bool = True,
 ) -> AlfredResponse:
     return AlfredResponse(
         source="conscious-engine",
@@ -104,7 +110,7 @@ def _followup(
         actions_taken=["lock.lock"],
         mood="pleased",
         in_reply_to="req-1",
-        followup=True,
+        followup=followup,
     )
 
 
@@ -131,6 +137,24 @@ async def test_a_web_followup_reaches_the_sessions_socket(
     )
     other.send_json.assert_not_awaited()
     assert await _notifications(redis) == []
+
+
+@pytest.mark.usefixtures("no_tts")
+async def test_a_late_answer_reaches_its_socket_as_a_followup(
+    session_sockets: dict[str, set[Any]],
+) -> None:
+    """A late answer is no follow-up on the bus, but the socket stopped waiting for it: its
+    frame says followup, or the Room takes it for the answer to the turn in flight."""
+    redis = fakeredis.FakeAsyncRedis()
+    socket = AsyncMock()
+    session_sockets["s1"] = {socket}
+
+    late = _followup("web_pwa", "s1", "Late, sir.", followup=False)
+    await _followup_sink(_notifier(redis), lambda: None)(late)
+
+    [frame] = [call.args[0] for call in socket.send_json.await_args_list]
+    assert frame["text"] == "Late, sir."
+    assert frame["followup"] is True
 
 
 @pytest.mark.usefixtures("no_tts", "session_sockets")
@@ -205,3 +229,69 @@ def test_a_socket_is_on_its_session_while_open(
     assert frame["followup"] is False
     assert seen == [{"restored": 1}]
     assert session_sockets == {}
+
+
+def test_lifespan_starts_the_followup_worker() -> None:
+    """The lifespan starts followup_worker on the shared pool with the follow-up sink, its
+    consumer name and the shutdown event it sets on the way out; the sink reads the satellite
+    bridge per delivery. Patch set mirrors
+    tests/core/channels/test_service_credentials.py::test_lifespan_starts_credential_push_worker.
+    """
+    calls: list[dict[str, Any]] = []
+    sinks: list[tuple[Any, Any]] = []
+    sink = AsyncMock()
+
+    async def fake_worker(
+        redis: Any, *, deliver: Any, consumer: str, shutdown: asyncio.Event
+    ) -> None:
+        calls.append(
+            {"redis": redis, "deliver": deliver, "consumer": consumer, "shutdown": shutdown}
+        )
+
+    def fake_sink(notifier: Any, get_bridge: Any) -> Any:
+        sinks.append((notifier, get_bridge))
+        return sink
+
+    mock_redis = AsyncMock()
+    mock_redis.hgetall = AsyncMock(return_value={})
+    mock_redis.close = AsyncMock()
+
+    mock_store = AsyncMock()
+    mock_store.get_user_id = AsyncMock(return_value=None)
+    mock_store.list_credentials = AsyncMock(return_value=[])
+    mock_store.has_any_credential = AsyncMock(return_value=False)
+
+    def fake_warmup(service: str, steps: Any) -> Any:
+        return asyncio.create_task(asyncio.sleep(0))
+
+    with (
+        patch("core.channels.web_server.aioredis.from_url", return_value=mock_redis),
+        patch("core.channels.web_server.CredentialStore", return_value=mock_store),
+        patch("core.channels.web_server._init_apns_adapter", new=AsyncMock()),
+        patch("core.channels.web_server.start_warmup", new=fake_warmup),
+        patch(
+            "core.notifications.delivery.notification_delivery_worker",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.channels.service_credentials.credential_push_worker",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("core.channels.followups.followup_worker", new=fake_worker),
+        patch("core.channels.web_server._followup_sink", new=fake_sink),
+        patch("httpx.AsyncClient.aclose", new=AsyncMock()),
+    ):
+        app = create_app(redis_url="redis://localhost:6379")
+        with TestClient(app) as client:
+            assert client.get("/health").status_code == 200
+
+    [call] = calls
+    assert call["redis"] is mock_redis
+    assert call["deliver"] is sink
+    assert call["consumer"] == "worker-1"
+    assert call["shutdown"].is_set()
+    [(notifier, get_bridge)] = sinks
+    assert isinstance(notifier, NotificationPublisher)
+    bridge = object()
+    app.state.satellite_bridge = bridge
+    assert get_bridge() is bridge

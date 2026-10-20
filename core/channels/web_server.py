@@ -171,7 +171,11 @@ async def _deliver_to_session(response: AlfredResponse, notifier: NotificationPu
     sent = 0
     sockets = list(_session_sockets.get(response.session_id, ()))
     if sockets:
-        frame = await _response_frame(response, response.session_id)
+        # Every frame sent from here is unsolicited from the socket's side, a late answer
+        # included, so it says followup: the Room otherwise takes it for the answer to the
+        # turn in flight (ruling P21).
+        unsolicited = response.model_copy(update={"followup": True})
+        frame = await _response_frame(unsolicited, response.session_id)
         for websocket in sockets:
             try:
                 await websocket.send_json(frame)
