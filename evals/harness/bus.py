@@ -35,6 +35,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Concatenate, Literal, Protocol
 from uuid import uuid4
 
@@ -74,6 +75,18 @@ if TYPE_CHECKING:
 EVAL_CREDENTIAL = "alfred-eval"  # the credential_id on the harness's admin sessions
 _SESSION_TTL_S = 300  # a backstop: the session is deleted right after its one call
 _MAX_SEQ = 2**64 - 1  # the last sequence number a stream id's millisecond can hold
+# What the approval endpoints answer with: done, malformed id, gone, a crash, the store
+# down. Anything else (401, 403, 405, 422, a gateway's 502) means the harness's own session
+# or request is wrong, which no golden should score.
+DOOR_ANSWERS = frozenset(
+    {
+        HTTPStatus.OK,
+        HTTPStatus.BAD_REQUEST,
+        HTTPStatus.NOT_FOUND,
+        HTTPStatus.INTERNAL_SERVER_ERROR,
+        HTTPStatus.SERVICE_UNAVAILABLE,
+    }
+)
 
 
 class BusError(RuntimeError):
@@ -444,11 +457,15 @@ class ContainerBus:
 
     async def decide_pending(self, request_id: str, decision: Literal["confirm", "deny"]) -> int:
         """Confirm or deny a pending action through the web channel, as the Door does, and
-        return the HTTP status: 200, 404 when the record is gone, 400, 503 when the store is
-        down. No status raises, because what a refusal means is for the driver to record;
-        a request that gets no answer does."""
+        return the HTTP status when it is one of the product's answers (``DOOR_ANSWERS``):
+        for the driver to record, since what a 404 or a 500 means is for the checks to score.
+        Any other status (a refused session, a changed contract) is the harness's fault, not
+        the product's, and raises, as does a request that gets no answer."""
         path = f"/api/actions/{request_id}/{decision}"
-        return (await self._post_signed_in("decide_pending", path)).status_code
+        response = await self._post_signed_in("decide_pending", path)
+        if response.status_code not in DOOR_ANSWERS:
+            raise BusError(f"POST {path} answered {response.status_code}: {response.text[:200]}")
+        return response.status_code
 
     @_bounded
     async def clear_dnd(self) -> None:

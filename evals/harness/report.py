@@ -212,6 +212,15 @@ def _also(error: str | None, problem: str) -> str:
     return f"{error}; {problem}" if error else problem
 
 
+def _turn_reply_ms(evidence: Evidence) -> list[float]:
+    """How long each turn took to answer. A door step's reply is timed from the owner's
+    decision, not from a turn, so it does not belong in the pooled reply percentiles."""
+    kinds = evidence.step_kinds
+    return [
+        r.latency_ms for r in evidence.replies if r.step >= len(kinds) or kinds[r.step] != "door"
+    ]
+
+
 def _sample_run(sample: EvalSample) -> SampleRun:
     md = sample.metadata or {}
     score = (sample.scores or {}).get(SCORER_NAME)
@@ -251,7 +260,7 @@ def _sample_run(sample: EvalSample) -> SampleRun:
         value=value,
         checks=checks,
         error=error,
-        reply_ms=[r.latency_ms for r in evidence.replies] if evidence else [],
+        reply_ms=_turn_reply_ms(evidence) if evidence else [],
         llm=[
             LlmUsage(
                 role=c.role,

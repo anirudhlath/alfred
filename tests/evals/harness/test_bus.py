@@ -506,7 +506,7 @@ async def test_decide_pending_posts_the_decision_with_a_session_that_lives_only_
     assert await redis.keys(f"{AUTH_SESSION_PREFIX}*") == []
 
 
-@pytest.mark.parametrize("status", [400, 404, 503])
+@pytest.mark.parametrize("status", [400, 404, 500, 503])
 async def test_decide_pending_returns_a_refusal_for_the_driver_to_record(
     redis: fakeredis.FakeAsyncRedis, status: int
 ) -> None:
@@ -514,6 +514,21 @@ async def test_decide_pending_returns_a_refusal_for_the_driver_to_record(
         return httpx.Response(status, json={"detail": "no"})
 
     assert await bus(redis, refuse).decide_pending("gone", "confirm") == status
+    assert await redis.keys(f"{AUTH_SESSION_PREFIX}*") == []
+
+
+@pytest.mark.parametrize("status", [401, 403, 405, 422, 502])
+async def test_decide_pending_raises_on_a_status_the_product_never_answers_with(
+    redis: fakeredis.FakeAsyncRedis, status: int
+) -> None:
+    """A rejected session or a changed contract is the harness's fault: recorded as the
+    product's answer it would score a golden as a regression."""
+
+    async def refuse(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"detail": "no"})
+
+    with pytest.raises(BusError, match=f"/api/actions/gone/confirm answered {status}: "):
+        await bus(redis, refuse).decide_pending("gone", "confirm")
     assert await redis.keys(f"{AUTH_SESSION_PREFIX}*") == []
 
 

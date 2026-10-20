@@ -414,9 +414,10 @@ async def _door(
     The tail of the responses stream is taken first, so the follow-up read starts after
     what was already there. On a 200 the run resumes in the conscious process and publishes
     its reply as a follow-up to the request that parked it (the user step the selector
-    names): that reply is this step's. Any other status, or a follow-up that does not come
-    in ``reply_timeout_s``, records no reply and fails no run: the checks score the
-    evidence. Then it waits for the HA calls a check still wants, and settles.
+    names): that reply is this step's. Any other answer of the product's (400, 404, 500,
+    503), or a follow-up that does not come in ``reply_timeout_s``, records no reply and fails
+    no run: the checks score the evidence. A status the product never answers with raises
+    in the bus. Then it waits for the HA calls a check still wants, and settles.
     """
     pending_id = _pending_id(ev, index, step.pending_action)
     since_id = await ctx.bus.responses_tail()

@@ -298,6 +298,12 @@ class Scenario(BaseModel):
                 and step.pending_action.at_step >= i
             ):
                 raise ValueError(f"steps.{i}.pending_action.at_step must name an earlier step")
+            # A door step waits for the follow-up to the request that parked the action,
+            # which only a user step sends.
+            if isinstance(step, DoorStep) and not isinstance(
+                self.steps[step.pending_action.at_step], UserStep
+            ):
+                raise ValueError(f"steps.{i}.pending_action.at_step must name a user step")
         kinds = [step_kind(s) for s in self.steps]
         for i, check in enumerate(self.expect):
             for field in ("after_step", "at_step"):

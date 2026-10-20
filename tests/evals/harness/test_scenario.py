@@ -536,18 +536,35 @@ def test_a_door_steps_decision_is_confirm_or_deny(decision: object) -> None:
         golden([{"user": "Unlock it."}, {**DOOR, "door": decision}], [EXPECT])
 
 
+UNLOCK: dict[str, Any] = {"user": "Unlock it."}
+WAIT: dict[str, Any] = {"wait": 1}
+
+
+def door_at(**bad: Any) -> list[dict[str, Any]]:
+    return [UNLOCK, {**DOOR, **bad}, WAIT]
+
+
 @pytest.mark.parametrize(
-    "bad",
+    "steps",
     [
-        {"settle": -1},
-        {"extra": 1},
-        {"pending_action": {"at_step": 0, "tool": "home.lock_unlock", "parameters": {}}},
-        {"pending_action": {"at_step": -1, "tool": "home.lock_unlock"}},
-        {"pending_action": {"at_step": 1, "tool": "home.lock_unlock"}},  # itself
-        {"pending_action": {"at_step": 2, "tool": "home.lock_unlock"}},  # a later step
-        {"user": "Yes."},  # two kinds in one step
+        door_at(settle=-1),
+        door_at(extra=1),
+        door_at(pending_action={"at_step": 0, "tool": "home.lock_unlock", "parameters": {}}),
+        door_at(pending_action={"at_step": -1, "tool": "home.lock_unlock"}),
+        door_at(pending_action={"at_step": 1, "tool": "home.lock_unlock"}),  # itself
+        door_at(pending_action={"at_step": 2, "tool": "home.lock_unlock"}),  # a later step
+        door_at(user="Yes."),  # two kinds in one step
+        # An earlier step that is not a user step has no request to wait a follow-up of.
+        [WAIT, UNLOCK, DOOR],
+        [{"dnd": True}, UNLOCK, {**DOOR, "pending_action": {"at_step": 0, "tool": "t"}}],
+        [UNLOCK, DOOR, {**DOOR, "pending_action": {"at_step": 1, "tool": "t"}}],  # a door step
     ],
 )
-def test_an_invalid_door_step_fails_before_play(bad: dict[str, Any]) -> None:
+def test_an_invalid_door_step_fails_before_play(steps: list[dict[str, Any]]) -> None:
     with pytest.raises(ValidationError):
-        golden([{"user": "Unlock it."}, {**DOOR, **bad}, {"wait": 1}], [EXPECT])
+        golden(steps, [EXPECT])
+
+
+def test_a_door_step_may_name_a_user_step_with_others_in_between() -> None:
+    s = golden([UNLOCK, WAIT, {"user": "Yes."}, DOOR], [EXPECT])
+    assert [step_kind(step) for step in s.steps] == ["user", "wait", "user", "door"]

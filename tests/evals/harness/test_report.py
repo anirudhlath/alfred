@@ -39,6 +39,14 @@ META = RunMeta(
     stacks=[],
 )
 EV = evidence(replies=["Done, sir."], llm_calls=[llm("system2")])
+# A door step's follow-up is timed from the owner's decision, not from a turn.
+DOOR_EV = evidence(
+    replies=["Done, sir.", "Unlocked, sir."],
+    latencies=[1000.0, 90_000.0],
+    step_started=[0.0, 1.0],
+    step_kinds=["user", "door"],
+    llm_calls=[llm("system2")],
+)
 CheckStatus = Literal["pass", "fail", "error"]
 
 
@@ -90,7 +98,8 @@ def fake_stack():  # type: ignore[no-untyped-def]
         if state.sample_id == "home.bad":
             raise RuntimeError("stack fell over")
         bogus = state.sample_id == "home.bad-evidence"
-        state.store.set("evidence", {"bogus": 1} if bogus else EV.model_dump(mode="json"))
+        ev = DOOR_EV if state.sample_id == "home.door" else EV
+        state.store.set("evidence", {"bogus": 1} if bogus else ev.model_dump(mode="json"))
         return state
 
     return solve
@@ -382,6 +391,16 @@ def test_run_problems_render_above_the_tables() -> None:
     md = render_markdown(summarize([run("home.a", "C")], meta))
     assert "## Run problems\n\n- home: error — boom" in md
     assert md.index("## Run problems") < md.index("## PRD rows")
+
+
+async def test_a_door_reply_stays_out_of_the_reply_latency_percentiles(tmp_path: Path) -> None:
+    log = await run_eval(tmp_path, [sample("home.door")], 1)
+    [door] = runs_from_logs([log])
+    # The door step's reply is on the evidence, but it is not a turn's reply time.
+    assert [(r.step, r.latency_ms) for r in DOOR_EV.replies] == [(0, 1000.0), (1, 90_000.0)]
+    assert door.reply_ms == [1000.0]
+    card = summarize([door], META)
+    assert (card.reply_p50_ms, card.reply_p95_ms) == (1000.0, 1000.0)
 
 
 async def test_runs_from_logs_reads_inspect_logs(tmp_path: Path) -> None:

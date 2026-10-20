@@ -878,9 +878,10 @@ EVALS = Path(__file__).resolve().parents[2] / "evals"
 
 def test_nothing_in_evals_names_the_retired_confirmation_tool() -> None:
     """The model no longer approves anything: an approval is a reply or a Door decision."""
-    files = [p for p in EVALS.rglob("*") if p.is_file() and p.suffix in {".py", ".yaml", ".md"}]
-    assert files
-    assert [str(p) for p in files if "confirm_pending_action" in p.read_text()] == []
+    # Every file, of any extension: a retired name can hide in a fixture or a note.
+    files = [p for p in EVALS.rglob("*") if p.is_file() and "__pycache__" not in p.parts]
+    assert len(files) > 100
+    assert [str(p) for p in files if b"confirm_pending_action" in p.read_bytes()] == []
 
 
 def test_critical_goldens_approve_by_reply_and_by_the_door() -> None:
