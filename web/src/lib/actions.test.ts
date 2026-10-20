@@ -180,15 +180,31 @@ describe("actionReducer — answering", () => {
     expect(state[0].phase).toBe("queued");
   });
 
-  it("does not let a slow confirm walk an applied result back to queued", () => {
-    const before = [{ ...tracked("applied"), appliedAt: "2026-09-07T07:42:10Z" }];
-    const state = actionReducer(before, {
-      type: "confirm-sent",
-      id: "a91f3c2e",
-      at: "2026-09-07T07:42:11Z",
+  it.each(["applied", "failed", "declined"] as const)(
+    "does not let a slow confirm walk a %s outcome back to queued",
+    (phase) => {
+      // The result stream and the confirm's own 200 have no order between them,
+      // and a decline is the house's final word: none of them is a promise again.
+      const before = [{ ...tracked(phase), appliedAt: "2026-09-07T07:42:10Z" }];
+      const state = actionReducer(before, {
+        type: "confirm-sent",
+        id: "a91f3c2e",
+        at: "2026-09-07T07:42:11Z",
+      });
+      expect(state[0].phase).toBe(phase);
+      expect(state[0].confirmedAt).toBeUndefined();
+    },
+  );
+
+  it("keeps a failure that landed before its own confirm's 200", () => {
+    const queued = actionReducer([tracked()], { type: "confirm-sent", id: "a91f3c2e", at: "2026-09-07T07:42:00Z" });
+    const failed = actionReducer(queued, {
+      type: "result",
+      result: { ...actionResultFixture, status: "error" },
+      at: "2026-09-07T07:42:10Z",
     });
-    expect(state[0].phase).toBe("applied");
-    expect(state[0].confirmedAt).toBeUndefined();
+    const late = actionReducer(failed, { type: "confirm-sent", id: "a91f3c2e", at: "2026-09-07T07:42:11Z" });
+    expect(late[0].phase).toBe("failed");
   });
 
   it("marks a 404 confirm as already answered", () => {
@@ -250,6 +266,20 @@ describe("actionReducer — answering", () => {
       at: "2026-09-07T07:47:10Z",
     });
     expect(state[0].phase).toBe("failed");
+  });
+
+  it.each([
+    ["success", "applied"],
+    ["error", "failed"],
+  ] as const)("a late %s result after a decline shows what the lock did: %s", (status, phase) => {
+    // If the lock reported, it happened — the same rule as for `expired`.
+    const state = actionReducer([tracked("declined")], {
+      type: "result",
+      result: { ...actionResultFixture, status },
+      at: "2026-09-07T07:42:10Z",
+    });
+    expect(state[0].phase).toBe(phase);
+    expect(state[0].result?.status).toBe(status);
   });
 
   it("a decline declines a pending action", () => {

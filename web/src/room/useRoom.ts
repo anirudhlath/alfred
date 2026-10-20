@@ -33,21 +33,19 @@ function isTransient(item: TimelineItem): boolean {
  * A row is stamped when it is made, and a turn's transient row when the turn
  * went out — so a follow-up, which lands while that turn still waits, sorts
  * below the spinner it has nothing to do with. Lift each Alfred row above the
- * first transient before it; everything else keeps the place its stamp gives.
+ * run of transient rows directly over it, and no further: never past a message
+ * or a notification. Everything else keeps the place its stamp gives.
  */
 function liftRepliesAboveTransients(sorted: TimelineItem[]): TimelineItem[] {
   const out: TimelineItem[] = [];
-  let firstTransient = -1;
   for (const item of sorted) {
-    if (isTransient(item)) {
-      if (firstTransient < 0) firstTransient = out.length;
+    if (item.kind !== "alfred") {
       out.push(item);
-    } else if (item.kind === "alfred" && firstTransient >= 0) {
-      out.splice(firstTransient, 0, item);
-      firstTransient += 1;
-    } else {
-      out.push(item);
+      continue;
     }
+    let at = out.length;
+    while (at > 0 && isTransient(out[at - 1])) at -= 1;
+    out.splice(at, 0, item);
   }
   return out;
 }
@@ -329,7 +327,7 @@ export function useRoom({
 
       if (msg.type === "error") {
         setLive((current) => [
-          ...current.filter((item) => item.kind !== "thinking" && item.kind !== "transcribing"),
+          ...current.filter((item) => !isTransient(item)),
           { kind: "alfred", id: uid("alfred"), at: iso, text: msg.text, actions: [], error: true },
         ]);
         return;

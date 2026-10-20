@@ -452,6 +452,21 @@ describe("useRoom — what comes back", () => {
     expect(texts).toEqual(["First, sir.", "Second, sir."]);
   });
 
+  it("never lifts a followup past the message that came after a transient row", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendAudio("data:audio/mp4;base64,AAAA", 1.2));
+    vi.setSystemTime(new Date(NOW.getTime() + 2_000));
+    act(() => result.current.sendText("And the windows?"));
+    vi.setSystemTime(new Date(NOW.getTime() + 5_000));
+
+    act(() =>
+      chat.deliver({ type: "response", text: "Done, sir.", session_id: "s_9f2", followup: true }),
+    );
+
+    // Above the spinner it sits next to, but never above the user's own words.
+    expect(kinds(result.current.items)).toEqual(["transcribing", "you", "alfred", "thinking"]);
+  });
+
   it("takes a followup with no turn in flight as a plain reply", () => {
     const { result, chat } = renderRoom({ history: [], online: true });
 

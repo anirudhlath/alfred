@@ -6,6 +6,7 @@ import {
   useMemo,
   useReducer,
   useState,
+  type Dispatch,
   type ReactNode,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -15,6 +16,7 @@ import {
   denyAction,
   fetchAction,
   fetchPending,
+  type ActionEvent,
   type TrackedAction,
 } from "@/lib/actions";
 import { ApiError } from "@/lib/api";
@@ -50,6 +52,30 @@ export interface DoorValue {
 }
 
 const DoorContext = createContext<DoorValue | null>(null);
+
+/**
+ * Send one answer, a confirm or a "Don't", and say what the house made of it.
+ * 404 is the handoff's "already consumed" case: the same tombstone as an expiry,
+ * with a different sentence. Anything else (a 503 while the store is down, no
+ * network) leaves it pending so the owner can try again while the fuse still
+ * runs; it goes to the console, where Safari's inspector can see it, not nowhere.
+ */
+function answer(
+  id: string,
+  send: (id: string) => Promise<void>,
+  dispatch: Dispatch<ActionEvent>,
+  sent: () => ActionEvent,
+): void {
+  void send(id)
+    .then(() => dispatch(sent()))
+    .catch((error: unknown) => {
+      if (error instanceof ApiError && error.status === 404) {
+        dispatch({ type: "confirm-404", id });
+        return;
+      }
+      console.warn(`door: could not answer ${id}`, error);
+    });
+}
 
 export function DoorProvider({ children }: { children: ReactNode }) {
   const { chat, telemetry } = useConnection();
@@ -122,31 +148,20 @@ export function DoorProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(timer);
   }, [counting]);
 
-  const confirm = useCallback((id: string) => {
-    void confirmAction(id)
-      .then(() => dispatch({ type: "confirm-sent", id, at: new Date().toISOString() }))
-      .catch((error: unknown) => {
-        // 404 is the handoff's "already consumed" case: the same tombstone as an
-        // expiry, with a different sentence. Anything else leaves it pending so
-        // the user can try again while the fuse still runs.
-        if (error instanceof ApiError && error.status === 404) {
-          dispatch({ type: "confirm-404", id });
-        }
-      });
-  }, []);
+  const confirm = useCallback(
+    (id: string) =>
+      answer(id, confirmAction, dispatch, () => ({
+        type: "confirm-sent",
+        id,
+        at: new Date().toISOString(),
+      })),
+    [],
+  );
 
-  const deny = useCallback((id: string) => {
-    void denyAction(id)
-      .then(() => dispatch({ type: "declined", id }))
-      .catch((error: unknown) => {
-        // The same answers as a confirm: 404 is "someone else got there first"
-        // and takes the same event; anything else (a 503 while the store is
-        // down, no network) leaves it pending to try again while the fuse runs.
-        if (error instanceof ApiError && error.status === 404) {
-          dispatch({ type: "confirm-404", id });
-        }
-      });
-  }, []);
+  const deny = useCallback(
+    (id: string) => answer(id, denyAction, dispatch, () => ({ type: "declined", id })),
+    [],
+  );
 
   const value = useMemo<DoorValue>(() => {
     const current = actions.find((item) => item.action.request_id === openId) ?? null;

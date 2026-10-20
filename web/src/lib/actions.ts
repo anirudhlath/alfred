@@ -110,11 +110,16 @@ export function actionReducer(state: TrackedAction[], ev: ActionEvent): TrackedA
     }
 
     case "confirm-sent":
-      // A result that landed first is the stronger fact: a slow 200 must not
-      // demote `applied` back to a promise. From `expired` it is welcome — the
-      // phone's clock ran ahead of the server's, and the server took the answer.
+      // An outcome that landed first is the stronger fact: the result stream and
+      // this 200 have no order between them, and a slow 200 must not demote
+      // `applied` or `failed` back to a promise, nor a decline the house already
+      // took. From `expired` it is welcome — the phone's clock ran ahead of the
+      // server's, and the server took the answer.
       return state.map((item) =>
-        item.action.request_id === ev.id && item.phase !== "applied"
+        item.action.request_id === ev.id &&
+        item.phase !== "applied" &&
+        item.phase !== "failed" &&
+        item.phase !== "declined"
           ? { ...item, phase: "queued", confirmedAt: ev.at }
           : item,
       );
@@ -143,8 +148,9 @@ export function actionReducer(state: TrackedAction[], ev: ActionEvent): TrackedA
       );
 
     case "result":
-      // Applied even from `expired`: if the lock reported, it happened, and the
-      // tombstone was wrong. The same holds for a failure: it was tried.
+      // Applied even from `expired` or `declined`: if the lock reported, it
+      // happened, and the tombstone or the decline was wrong about it. The same
+      // holds for a failure: it was tried.
       return state.map((item) =>
         item.action.request_id === ev.result.request_id
           ? {

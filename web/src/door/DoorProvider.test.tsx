@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/api";
 import type { ChatServerMessage, TelemetryMessage } from "@/lib/types";
 import { ConnectionProvider } from "@/shell/ConnectionProvider";
 import {
@@ -159,6 +160,17 @@ function renderDoor() {
 const phases = () => screen.getByTestId("phases").textContent;
 const now = () => Number(screen.getByTestId("now").textContent);
 
+/**
+ * Let a rejected request run its `.catch`. `waitFor` resolves the moment `fetch`
+ * is called, which is before the rejection is processed, so a "stays pending"
+ * assertion made straight after it would pass whatever the handler did.
+ */
+async function settle(): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(50);
+  });
+}
+
 /** The app comes back to the foreground. */
 function comeBack(): void {
   act(() => {
@@ -195,6 +207,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("DoorProvider", () => {
@@ -366,8 +379,9 @@ describe("DoorProvider", () => {
     await waitFor(() => expect(phases()).toBe("a91f3c2e:answered"));
   });
 
-  it("leaves a deny the house could not take pending, so it can be tried again", async () => {
+  it("leaves a deny the house could not take pending, and says so, so it can be tried again", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     denyStatus = 503;
     pendingBody = { actions: [pendingActionFixture] };
     renderDoor();
@@ -375,8 +389,25 @@ describe("DoorProvider", () => {
 
     await user.click(screen.getByRole("button", { name: "deny" }));
 
-    await waitFor(() => expect(calls).toContain("POST /api/actions/a91f3c2e/deny"));
+    await waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+    await settle();
     expect(phases()).toBe("a91f3c2e:pending");
+    expect(calls).toContain("POST /api/actions/a91f3c2e/deny");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("a91f3c2e"), expect.any(ApiError));
+  });
+
+  it("does not warn about a 404, which is an answer", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    denyStatus = 404;
+    pendingBody = { actions: [pendingActionFixture] };
+    renderDoor();
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+
+    await user.click(screen.getByRole("button", { name: "deny" }));
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:answered"));
+
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("lets a deny that lost the race to our own confirm leave it queued", async () => {
@@ -391,6 +422,7 @@ describe("DoorProvider", () => {
     await user.click(screen.getByRole("button", { name: "deny" }));
 
     await waitFor(() => expect(calls).toContain("POST /api/actions/a91f3c2e/deny"));
+    await settle();
     expect(phases()).toBe("a91f3c2e:queued");
   });
 
@@ -424,8 +456,9 @@ describe("DoorProvider", () => {
     expect(screen.getByTestId("pending")).toHaveTextContent("0");
   });
 
-  it("leaves a confirm the server refused for any other reason pending", async () => {
+  it("leaves a confirm the server refused for any other reason pending, and says so", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     confirmStatus = 500;
     pendingBody = { actions: [pendingActionFixture] };
     renderDoor();
@@ -433,8 +466,10 @@ describe("DoorProvider", () => {
 
     await user.click(screen.getByRole("button", { name: "confirm" }));
 
-    await waitFor(() => expect(calls).toContain("POST /api/actions/a91f3c2e/confirm"));
+    await waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+    await settle();
     expect(phases()).toBe("a91f3c2e:pending");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("a91f3c2e"), expect.any(ApiError));
   });
 
   it("expires a pending action when its fuse runs out", async () => {
