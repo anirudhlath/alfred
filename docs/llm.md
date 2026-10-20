@@ -257,14 +257,18 @@ this is the part that belongs to the LLM layer.
   model call. What it asks about is described by code, not by the model: each call reads
   the humanised tool name and every parameter it will run with, then the model's `reason` as
   a quoted aside, e.g. `lock unlock (target=Garage) ("Unlock the front door")`
-  (`describe_call`; names, values and the reason are cleaned to one short plain line). The
-  session stores the id as `pending_approval`.
+  (`describe_call`; each is one short plain line: whitespace collapsed, quote marks and
+  Unicode format characters removed, and from the reason also parentheses and every
+  quotation-mark look-alike; a name that is not plain printable ASCII is shown JSON-escaped
+  and a dict or list value whole, not cut; the full rules are in `docs/autonomy.md`, "Rules
+  that hold on every path"). The session stores the id as `pending_approval`.
 - **A reply is read by the classifier** (`ApprovalClassifier`). While a session has a
   `pending_approval`, the next message from **sir** on it is classified against the pending
   calls: `approve`, `deny` or `other`, by the `approval-classifier` prompt on
   `APPROVAL_MODEL`. The prompt is static; the calls (one `describe_call` line each) and the
-  reply go in the user message as `<actions>` and `<reply>` blocks of data, with `<` and `>`
-  stripped so neither can close its block early. The classifier runs before
+  reply go in the user message as `<actions>` and `<reply>` blocks of data, with angle
+  brackets stripped (`<` `>`, their full-width `＜` `＞` and small-form `﹤` `﹥`
+  look-alikes) so neither can close its block early. The classifier runs before
   the record is claimed, so a slow model never holds a claimed record; if the Door answered
   first, the reply is a normal turn. A missing model, an output that never validates
   (one retry) and the daily budget all read as `other`: the call is left unconfirmed rather

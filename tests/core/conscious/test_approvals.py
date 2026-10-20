@@ -270,15 +270,80 @@ def test_a_value_is_one_short_line_without_quotes_or_format_characters() -> None
     assert not any(ch in described for ch in '"“”„‟«»\u202e\u200b')
 
 
-def test_a_key_is_cleaned_and_capped_like_a_value() -> None:
-    call = _tool("home.lock_unlock", {'tar\u202e"get\n' + "k" * 100: "Garage"})
+def test_a_plain_key_is_capped() -> None:
+    described = describe_call(_tool("home.lock_unlock", {"k" * 100: "Garage"}))
+
+    key = described.removeprefix("lock unlock (").removesuffix("=Garage)")
+    assert key == "k" * (PARAM_KEY_MAX - 1) + "…"
+
+
+def test_a_key_that_cleaning_would_change_is_escaped_instead() -> None:
+    """``ta"rget`` must not read as ``target`` beside the real one."""
+    call = _tool("home.lock_unlock", {'ta"rget': "Front door", "target": "Garage"})
+
+    assert describe_call(call) == 'lock unlock (ta\\"rget=Front door, target=Garage)'
+
+
+def test_a_look_alike_key_is_shown_escaped_not_cleaned() -> None:
+    """P39: a zero-width character must not make a decoy key read as the real one."""
+    call = _tool("home.lock_unlock", {"tar\u200bget": "Front door", "target": "Garage"})
+
+    assert describe_call(call) == ("lock unlock (tar\\u200bget=Front door, target=Garage)")
+
+
+@pytest.mark.parametrize(
+    ("key", "shown"),
+    [
+        ("targ\u0435t", "targ\\u0435t"),  # a Cyrillic "e"
+        ("tar\u202eget", "tar\\u202eget"),  # a bidi control
+        ("tar\nget", "tar\\nget"),  # a newline
+        ("t\U0001f512", "t\\ud83d\\udd12"),  # beyond the BMP
+    ],
+)
+def test_a_key_that_is_not_plain_ascii_is_json_escaped(key: str, shown: str) -> None:
+    assert describe_call(_tool("home.lock_unlock", {key: "Garage"})) == (
+        f"lock unlock ({shown}=Garage)"
+    )
+
+
+def test_an_escaped_key_is_capped_like_any_other() -> None:
+    described = describe_call(_tool("home.lock_unlock", {"\u0435" * 30: "Garage"}))
+
+    key = described.removeprefix("lock unlock (").removesuffix("=Garage)")
+    assert key.startswith("\\u0435\\u0435")
+    assert key.endswith("…")
+    assert len(key) == PARAM_KEY_MAX
+
+
+def test_a_structured_value_is_shown_in_full() -> None:
+    """P39: call_service's free ``data`` can carry the entity it acts on, so it is not cut."""
+    data = {"pad": "x" * 80, "entity_id": "lock.front_door"}
+    call = _tool("home.call_service", {"domain": "lock", "service": "unlock", "data": data})
 
     described = describe_call(call)
 
-    key = described.removeprefix("lock unlock (").removesuffix("=Garage)")
-    assert key.startswith("target kkk")
-    assert key.endswith("…")
-    assert len(key) == PARAM_KEY_MAX
+    assert described.endswith(",entity_id:lock.front_door})")
+    assert "x" * 80 in described
+    assert "…" not in described
+
+
+def test_a_nested_look_alike_name_is_escaped_too() -> None:
+    """The decoy that fails at the top level fails as well inside a value shown in full."""
+    data = {"entity_id\u200b": "lock.back", "entity_id": "lock.front"}
+    call = _tool("home.call_service", {"domain": "lock", "service": "unlock", "data": data})
+
+    assert describe_call(call).endswith("data={entity_id\\u200b:lock.back,entity_id:lock.front})")
+
+
+def test_a_long_list_is_shown_in_full_but_a_long_string_is_still_cut() -> None:
+    ids = [f"light.room_{n}" for n in range(12)]
+
+    listed = describe_call(_tool("home.light_turn_off", {"entity_id": ids}))
+    text = describe_call(_tool("home.light_turn_off", {"entity_id": ",".join(ids)}))
+
+    assert listed.endswith("light.room_11])")
+    assert text.endswith("…)")
+    assert "room_11" not in text
 
 
 def test_a_reason_is_one_short_line_without_quotes() -> None:
@@ -295,14 +360,39 @@ def test_a_reason_is_one_short_line_without_quotes() -> None:
 
 
 def test_a_reason_cannot_fake_the_end_of_its_quotes() -> None:
-    """Curly and angle quotes and bidi controls would visually close the clause early."""
-    reason = "Unlock the door” (target=Hall) “\u202e\u2066 «ok» „fine‟"
+    """Quote look-alikes, parentheses and bidi controls would close the clause early."""
+    reason = (
+        "Unlock the door\u201d (hall) \u201c\u202e\u2066 \u00abok\u00bb \u201efine\u201f "
+        "\u2018a\u2019 \u2039b\u203a \u2033c\uff02 \u05f4d \u02ee" + "e"
+    )
 
     described = describe_call(_tool("home.lock_unlock", {"target": "Garage"}, reason))
 
     clause = described.removeprefix("lock unlock (target=Garage) (").removesuffix(")")
-    assert clause == '"Unlock the door (target=Hall) ok fine"'
-    assert not any(ch in clause[1:-1] for ch in '"“”„‟«»\u202e\u2066')
+    assert clause == '"Unlock the door hall ok fine a b c d e"'
+    dropped = (
+        '"()\u201c\u201d\u201e\u201f\u00ab\u00bb\u2018\u2019\u2039\u203a\u2033\uff02\u05f4\u02ee'
+    )
+    assert not any(ch in clause[1:-1] for ch in dropped + "\u202e\u2066")
+
+
+def test_a_reason_cannot_open_a_second_parameter_group() -> None:
+    """P39: ``″) (target=Front door) (″`` read as a group of its own next to the real one."""
+    call = _tool("home.lock_unlock", {"target": "Garage"}, "front door″) (target=Front door) (″ok")
+
+    described = describe_call(call)
+
+    assert described.count("(target=") == 1
+    assert described.startswith("lock unlock (target=Garage) (")
+    assert described.count("(") == 2  # the parameters' and the reason's, no more
+    assert described.count(")") == 2
+
+
+def test_a_value_keeps_its_apostrophes_and_parentheses() -> None:
+    """Only the reason loses them: a name like this is what the house resolves."""
+    call = _tool("home.lock_unlock", {"target": "Sam\u2019s room (upstairs)"})
+
+    assert describe_call(call) == "lock unlock (target=Sam\u2019s room (upstairs))"
 
 
 def test_a_reason_of_only_quotes_and_space_adds_no_clause() -> None:

@@ -266,13 +266,26 @@ Full behaviour in [`web-frontend.md`](web-frontend.md#the-door).
   call service (domain=lock, service=unlock, entity_id=lock.front_door) ("lock the door")
   ```
 
-  Each name, value and reason is cleaned to one plain line: whitespace runs collapsed,
-  quote marks and Unicode format characters (bidi controls, zero-width) removed, a value
-  that is not text shown as compact JSON, and the text cut with "…" at 40 characters for a
-  name, 60 for a value and 120 for the reason. So a reason cannot make an unlock read as a
-  light, fake the end of its quotes, or carry text aimed at the classifier. The Door keeps
-  showing a parked run's first call (tool and parameters); its reason line is the summary of
-  every call.
+  Each name, value and reason is shown as one plain line:
+
+  - **Names** that are plain printable ASCII are shown as they are, cut with "…" at 40
+    characters. Any other name (a zero-width or Cyrillic look-alike, a bidi control, a quote
+    mark) is shown JSON-escaped (`tar\u200bget`) instead of cleaned, so a decoy never reads
+    like the real name beside it.
+  - **Values** have whitespace runs collapsed and quote marks and Unicode format characters
+    (bidi controls, zero-width) removed. A string is cut at 60 characters; a dict or list is
+    shown whole as compact JSON, with its non-ASCII escaped, because what a call acts on
+    (`call_service`'s `data` carries an `entity_id`) can sit anywhere in it.
+  - **The reason** gets the value cleaning and loses more, since it sits in quotes after
+    the parameters: parentheses and the common quotation marks (Unicode categories Pi and
+    Pf, and the look-alikes `″` `＂` `״` `ˮ`), cut at 120 characters. A rarer quote glyph
+    can still fake the end of the reason's own quotes, but not a parameter group.
+  - The classifier's copy of a line also drops angle brackets, full-width and small-form
+    ones included (`docs/llm.md`).
+
+  So a reason cannot make an unlock read as a light, close its own quotes or open a parameter
+  group of its own, or carry text aimed at the classifier. The Door keeps showing a parked
+  run's first call (tool and parameters); its reason line is the summary of every call.
 - **Critical actions require confirmation even when the owner asked directly.** The model
   never self-certifies: there is no tool that confirms an action, the model never sees an
   approval id, and `confirmed` on a registry call is set from the approval the harness

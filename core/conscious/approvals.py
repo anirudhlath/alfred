@@ -57,14 +57,22 @@ APPROVAL_NAMESPACE: Final = uuid5(NAMESPACE_URL, "alfred:approvals")
 Decision = Literal["approve", "deny", "other"]
 
 # What a description shows of a call, each cut at this many characters, ellipsis included:
-# the model's reason as a quoted aside, and every parameter's name and value.
+# the model's reason as a quoted aside, and every parameter's name and value. A structured
+# value (a dict or list) is the exception: it is shown whole, because what a call acts on
+# can sit anywhere in it (``call_service``'s free ``data`` carries an ``entity_id``).
 REASON_CLAUSE_MAX: Final = 120
 PARAM_KEY_MAX: Final = 40
 PARAM_VALUE_MAX: Final = 60
 _WHITESPACE: Final = re.compile(r"\s+")
-# Quote marks that could visually end the quoted reason early; format characters (Unicode
+# Quote marks that could visually end a quoted text early; format characters (Unicode
 # category Cf: bidi controls, zero-width characters) are dropped as well.
 _QUOTES: Final = frozenset('"“”„‟«»')
+# What the reason loses besides: parentheses, which would open a group of its own next to the
+# parameters', and the look-alikes of a quote that no Unicode quote category covers (double
+# prime, full-width quotation mark, Hebrew punctuation gershayim, modifier letter double
+# apostrophe), plus every initial and final quotation mark (categories Pi and Pf).
+_REASON_DROPPED: Final = frozenset("()\u2033\uff02\u05f4\u02ee")
+_REASON_DROPPED_CATEGORIES: Final = frozenset({"Pi", "Pf"})
 _DENIED: Final = "The user declined."
 _NOT_CONFIRMED: Final = "Not confirmed; the user moved on."
 _SOURCE: Final = "conscious-engine"
@@ -108,23 +116,55 @@ def parked_calls(requests: DeferredToolRequests) -> list[ParkedCall]:
     return calls
 
 
-def _clean(text: str, cap: int) -> str:
-    """*text* as one plain line of at most *cap* characters.
+def _cut(line: str, cap: int) -> str:
+    """*line* if it fits in *cap* characters, else cut so it ends with an ellipsis."""
+    return line if len(line) <= cap else line[: cap - 1].rstrip() + "…"
+
+
+def _clean(text: str, cap: int | None, *, reason: bool = False) -> str:
+    """*text* as one plain line of at most *cap* characters (no limit when *cap* is None).
 
     Quote marks and format characters (bidi controls, zero-width characters) are removed,
     runs of whitespace, newlines included, become a single space, and a longer text is cut
     and ends with an ellipsis. What is shown cannot hide where it ends, or break the line.
+    The model's *reason* loses more, since it sits inside quotes after the parameters:
+    parentheses and every kind of quotation mark, so it cannot close its own quotes, or
+    pass for a parameter group of its own.
     """
-    kept = "".join(ch for ch in text if ch not in _QUOTES and unicodedata.category(ch) != "Cf")
-    line = _WHITESPACE.sub(" ", kept).strip()
-    return line if len(line) <= cap else line[: cap - 1].rstrip() + "…"
+
+    def kept(ch: str) -> bool:
+        category = unicodedata.category(ch)
+        if ch in _QUOTES or category == "Cf":
+            return False
+        return not (reason and (ch in _REASON_DROPPED or category in _REASON_DROPPED_CATEGORIES))
+
+    line = _WHITESPACE.sub(" ", "".join(filter(kept, text))).strip()
+    return line if cap is None else _cut(line, cap)
 
 
-def _shown(value: object) -> str:
-    """A parameter's value as text: a string as it is, anything else as compact JSON."""
+def _key_shown(key: str) -> str:
+    """A parameter's name: as it is when it is plain, else JSON-escaped so it stays visible.
+
+    Cleaning a name would make a decoy (a zero-width character, a Cyrillic letter, a quote
+    inside) read exactly like the real one beside it, so a name that is not plain printable
+    ASCII, or that cleaning would change, shows its escapes (``tar\\u200bget``) instead.
+    """
+    if key.isascii() and key.isprintable() and _clean(key, None) == key:
+        return _cut(key, PARAM_KEY_MAX)
+    return _cut(json.dumps(key, ensure_ascii=True)[1:-1], PARAM_KEY_MAX)
+
+
+def _value_shown(value: object) -> str:
+    """A parameter's value as one line: a string as it is, anything else as compact JSON.
+
+    A string is cut at ``PARAM_VALUE_MAX``. A dict or list is not, and its non-ASCII is
+    escaped like a name's, so nothing in it, a nested name included, can be hidden or cut.
+    """
     if isinstance(value, str):
-        return value
-    return json.dumps(value, separators=(",", ":"), ensure_ascii=False, default=str)
+        return _clean(value, PARAM_VALUE_MAX)
+    structured = isinstance(value, dict | list)
+    shown = json.dumps(value, separators=(",", ":"), ensure_ascii=structured, default=str)
+    return _clean(shown, None if structured else PARAM_VALUE_MAX)
 
 
 def describe_call(call: ParkedCall) -> str:
@@ -140,13 +180,13 @@ def describe_call(call: ParkedCall) -> str:
     """
     described = humanise(call.tool_name)
     pairs = ", ".join(
-        f"{_clean(key, PARAM_KEY_MAX)}={_clean(_shown(value), PARAM_VALUE_MAX)}"
+        f"{_key_shown(key)}={_value_shown(value)}"
         for key, value in call.parameters.items()
         if key != "reason"
     )
     if pairs:
         described = f"{described} ({pairs})"
-    reason = _clean(call.reason or "", REASON_CLAUSE_MAX)
+    reason = _clean(call.reason or "", REASON_CLAUSE_MAX, reason=True)
     return f'{described} ("{reason}")' if reason else described
 
 
