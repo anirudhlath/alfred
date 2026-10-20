@@ -84,8 +84,18 @@ class EffectLedger:
 
     async def started(self, request_id: str, tool: str, args: dict[str, Any]) -> int:
         """Record a call about to run; returns its index for ``finished``."""
+        return await self._append(request_id, tool, args, "started")
+
+    async def parked_call(self, request_id: str, tool: str, args: dict[str, Any]) -> int:
+        """Record a call held for the user's confirmation, in one write: it never ran, so
+        there is no ``started`` entry to strand in doubt if the process dies between two."""
+        return await self._append(request_id, tool, args, "parked")
+
+    async def _append(
+        self, request_id: str, tool: str, args: dict[str, Any], status: EffectStatus
+    ) -> int:
         key = EFFECTS_KEY.format(request_id)
-        entry = json.dumps({"tool": tool, "args": args, "status": "started"}, default=str)
+        entry = json.dumps({"tool": tool, "args": args, "status": status}, default=str)
         async with self._redis.pipeline(transaction=True) as pipe:
             pipe.rpush(key, entry)
             pipe.expire(key, EFFECTS_TTL_S)

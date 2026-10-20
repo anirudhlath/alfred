@@ -10,7 +10,7 @@ import pytest
 from pydantic_ai import DeferredToolRequests, ToolApproved, ToolDenied
 from pydantic_ai.messages import ToolCallPart
 
-from bus.schemas.events import ParkedCall, ParkedRun
+from bus.schemas.events import ActionRequest, ParkedCall, ParkedRun
 from core.conscious.approvals import (
     APPROVAL_NAMESPACE,
     Decision,
@@ -24,7 +24,13 @@ from core.conscious.approvals import (
 )
 from core.conscious.effects import EffectLedger
 from core.notifications.schema import Urgency
-from core.routing.pending import CONFIRMATION_TITLE, pending_key, read_pending
+from core.routing.pending import (
+    CONFIRMATION_TITLE,
+    park_run,
+    pending_key,
+    read_pending,
+    store_pending_action,
+)
 
 T0 = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
 
@@ -72,10 +78,26 @@ def _call(
     )
 
 
+class FailingNotifier:
+    """A notifier whose publish fails."""
+
+    async def publish(
+        self,
+        *,
+        title: str,
+        body: str,
+        source: str,
+        urgency: Urgency,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        raise ConnectionError("the dispatcher is down")
+
+
 def _run(
     calls: list[ParkedCall] | None = None,
     identity: dict[str, Any] | None = None,
     approval_id: str = "appr-1",
+    summary: str = "Unlock the front door; garage door open",
 ) -> ParkedRun:
     return ParkedRun(
         approval_id=approval_id,
@@ -86,7 +108,7 @@ def _run(
         created_at=T0,
         content_type="text",
         tz_name="UTC",
-        summary="Unlock the front door; garage door open",
+        summary=summary,
         calls=calls if calls is not None else [_call(0), _call(1, "home.garage_door_open", None)],
         messages="[]",
     )
@@ -179,9 +201,10 @@ async def test_park_notifies_once_and_ledgers_each_call(
     notifier = FakeNotifier()
     run = _run()
 
-    await park(redis, notifier, run, ledger_key="req-1")
-    await park(redis, notifier, run, ledger_key="req-1")
+    first = await park(redis, notifier, run, ledger_key="req-1")
+    second = await park(redis, notifier, run, ledger_key="req-1")
 
+    assert first == second == run
     assert await redis.exists(pending_key("appr-1")) == 1
     assert len(notifier.published) == 1
     note = notifier.published[0]
@@ -196,11 +219,97 @@ async def test_park_notifies_once_and_ledgers_each_call(
         "reason": "Unlock the front door; garage door open",
     }
     effects = await EffectLedger(redis).read("req-1")
-    # A redelivered park leaves the ledger as it was: one parked entry per call.
+    # A repeated park leaves the ledger as it was: one parked entry per call.
     assert [(e.tool, e.args, e.status) for e in effects] == [
         ("home.unlock_door", {"entity_id": "lock.door_0"}, "parked"),
         ("home.garage_door_open", {"entity_id": "lock.door_1"}, "parked"),
     ]
+
+
+async def test_park_recovers_a_crash_between_the_record_and_the_ledger(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    """The record was written, then the process died: no push went out, the ledger is empty."""
+    notifier = FakeNotifier()
+    run = _run()
+    assert await park_run(redis, run)
+
+    parked = await park(redis, notifier, run, ledger_key="req-1")
+
+    assert parked == run
+    assert len(notifier.published) == 1
+    effects = await EffectLedger(redis).read("req-1")
+    assert [(e.tool, e.status) for e in effects] == [
+        ("home.unlock_door", "parked"),
+        ("home.garage_door_open", "parked"),
+    ]
+
+    await park(redis, notifier, run, ledger_key="req-1")
+
+    assert len(notifier.published) == 1
+    assert await EffectLedger(redis).read("req-1") == effects
+
+
+async def test_park_retries_a_push_that_failed(redis: fakeredis.FakeAsyncRedis) -> None:
+    run = _run()
+
+    with pytest.raises(ConnectionError):
+        await park(redis, FailingNotifier(), run, ledger_key="req-1")
+
+    # The record stands, so the Door shows it, but nothing says the owner was told.
+    assert await read_pending(redis, "appr-1") == run
+    assert await EffectLedger(redis).read("req-1") == []
+
+    notifier = FakeNotifier()
+    await park(redis, notifier, run, ledger_key="req-1")
+
+    assert len(notifier.published) == 1
+    assert len(await EffectLedger(redis).read("req-1")) == 2
+
+
+async def test_park_answers_from_the_stored_record_when_the_calls_differ(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    """A redelivered turn's model can defer other calls than the record the owner will approve."""
+    stored = _run(calls=[_call(7, "home.lock_door", "Lock the back door.")], summary="Lock it")
+    assert await park_run(redis, stored)
+    notifier = FakeNotifier()
+
+    parked = await park(redis, notifier, _run(), ledger_key="req-1")
+
+    assert parked == stored
+    [note] = notifier.published
+    assert note["body"] == "Alfred wants to run 'home.lock_door' on home-service — confirm?"
+    assert note["metadata"] == {
+        "pending_action_id": "appr-1",
+        "tool_name": "home.lock_door",
+        "parameters": {"entity_id": "lock.door_7"},
+        "reason": "Lock it",
+    }
+    assert [(e.tool, e.status) for e in await EffectLedger(redis).read("req-1")] == [
+        ("home.lock_door", "parked")
+    ]
+    # The record the owner will approve is untouched.
+    assert await read_pending(redis, "appr-1") == stored
+
+
+async def test_park_keeps_its_own_run_when_the_stored_record_is_not_a_parked_run(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    """The id is taken by another kind of record: there is no stored run to answer from."""
+    other = ActionRequest(
+        source="conscious-engine",
+        request_id="appr-1",
+        target_service="home-service",
+        tool_name="home.lock_door",
+        parameters={},
+    )
+    await store_pending_action(redis, other)
+    notifier = FakeNotifier()
+    run = _run()
+
+    assert await park(redis, notifier, run, ledger_key="req-1") == run
+    assert notifier.published[0]["metadata"]["tool_name"] == "home.unlock_door"
 
 
 async def test_a_guest_record_is_not_claimable(redis: fakeredis.FakeAsyncRedis) -> None:

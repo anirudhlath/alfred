@@ -98,6 +98,20 @@ async def test_a_parked_call_reads_as_parked() -> None:
     assert await ledger.read("req-1") == [Effect("home.lock_unlock", {}, "parked")]
 
 
+async def test_a_parked_call_is_recorded_in_one_write() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    ledger = EffectLedger(redis)
+
+    index = await ledger.parked_call("req-1", "home.lock_unlock", {"entity_id": "lock.front"})
+
+    assert index == 0
+    assert await ledger.read("req-1") == [
+        Effect("home.lock_unlock", {"entity_id": "lock.front"}, "parked")
+    ]
+    assert await redis.llen(EFFECTS_KEY.format("req-1")) == 1
+    assert 0 < await redis.ttl(EFFECTS_KEY.format("req-1")) <= EFFECTS_TTL_S
+
+
 async def test_started_writes_the_entry_and_its_ttl_in_one_transaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
