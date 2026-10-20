@@ -68,6 +68,7 @@ from shared.usertime import last_user_timezone
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from core.conscious.runner import EntryRunner
     from shared.types import AioRedis
 
 _shutdown = asyncio.Event()
@@ -80,7 +81,7 @@ OUTCOME_SOURCE = "conscious-engine"
 
 # The streams the conscious loop answers, each with the runner function for its entries:
 # a user's request, and the owner's decision from the Door on a parked run.
-_ENTRY_RUNNERS: Final[dict[str, Callable[..., Awaitable[None]]]] = {
+_ENTRY_RUNNERS: Final[dict[str, EntryRunner]] = {
     USER_REQUESTS_STREAM: process_request_entry,
     APPROVALS_STREAM: process_approval_entry,
 }
@@ -224,7 +225,7 @@ async def _serve_once(
         redis,
         group,
         consumer,
-        {USER_REQUESTS_STREAM: ">", APPROVALS_STREAM: ">"},
+        {stream: ">" for stream in _ENTRY_RUNNERS},
         count=1,
         block=5000,
     )

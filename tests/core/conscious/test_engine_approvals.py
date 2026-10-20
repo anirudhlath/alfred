@@ -61,6 +61,7 @@ from shared.spend import build_spend_limits, local_clock
 from shared.streams import (
     ANSWERED_KEY,
     APPROVALS_STREAM,
+    DEAD_LETTER_STREAM,
     HOME_ACTION_RESULTS_STREAM,
     USER_REQUESTS_STREAM,
     USER_RESPONSES_STREAM,
@@ -1138,6 +1139,45 @@ async def test_a_door_decision_after_another_turn_parks_again_without_the_sessio
 
 
 @pytest.mark.asyncio
+async def test_a_door_decision_after_a_turn_that_parked_keeps_that_approval() -> None:
+    """Ruling P13: a turn between the Door's claim and the resume parked an approval of
+    its own. The session goes on waiting on that one, with its history; the resume only
+    adds its answer as text."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    tools = [*_TOOLS, _info("home.garage_door_open", risk="critical")]
+    script = Script(
+        tool_call("home_lock_unlock", _LOCK),
+        tool_call("home_garage_door_open", {"entity_id": "cover.garage"}),
+        "The door is unlocked, sir.",
+    )
+    engine = _engine(redis, script, router, notifier, tools=tools)
+    sessions = SessionManager(redis)
+    first_id = await _park(engine)
+    decision = await _door(redis, first_id, "approve")
+    garage = _request("open the garage")
+    await engine.process_request(garage)
+    second_id = approval_id_for(garage.event_id)
+    between = await sessions.load("sess-1", "web_pwa", "sir")
+    assert between.pending_approval == second_id
+
+    response = await engine.resume_approval(decision, received_ms=_now_ms())
+
+    router.route.assert_awaited_once()
+    assert router.route.await_args.args[0].tool_name == "home.lock_unlock"
+    assert response.text == "The door is unlocked, sir."
+    session = await sessions.load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval == second_id
+    assert session.messages[: len(between.messages)] == between.messages
+    assert len(session.messages) == len(between.messages) + 2
+    assert _tail(session.messages) == [
+        (ModelRequest, APPROVED_MARKER),
+        (ModelResponse, "The door is unlocked, sir."),
+    ]
+    assert isinstance(await read_pending(redis, second_id), ParkedRun)
+
+
+@pytest.mark.asyncio
 async def test_a_door_resume_without_its_own_answer_stores_the_marker() -> None:
     redis = fakeredis.FakeAsyncRedis()
     router, notifier = _router(), AsyncMock()
@@ -1220,8 +1260,8 @@ async def _approval_responses(redis: fakeredis.FakeAsyncRedis) -> list[AlfredRes
 
 @pytest.mark.asyncio
 async def test_a_door_decision_whose_history_no_longer_reads_fails_once() -> None:
-    """Ruling P17: the Door already claimed the record, so a retry cannot help. The
-    decision is answered once and leaves the stream; nothing runs."""
+    """Rulings P17/P18: the Door already claimed the record, so a retry cannot help. The
+    decision is answered once, leaves the stream and is dead-lettered; nothing runs."""
     redis = fakeredis.FakeAsyncRedis()
     router, notifier = _router(), AsyncMock()
     script = Script(tool_call("home_lock_unlock", _LOCK))
@@ -1246,6 +1286,9 @@ async def test_a_door_decision_whose_history_no_longer_reads_fails_once() -> Non
         "concerned",
     )
     assert int((await redis.xpending(APPROVALS_STREAM, _GROUP))["pending"]) == 0
+    [(_id, letter)] = await forward_range(redis, DEAD_LETTER_STREAM)
+    assert (letter[b"reason"], letter[b"error_type"]) == (b"permanent", b"UserError")
+    assert ApprovalDecision.model_validate_json(letter[b"event"]) == decision
     assert script.call_count == 1
     router.route.assert_not_awaited()
 

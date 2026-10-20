@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal
 
 from pydantic_ai import DeferredToolRequests, DeferredToolResults
-from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
+from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded, UserError
 from pydantic_ai.messages import ModelMessagesTypeAdapter, repair_messages
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness.spend import SpendLimitExceeded
@@ -44,7 +44,6 @@ from core.conscious.approvals import (
 )
 from core.conscious.deps import TurnDeps, TurnServices
 from core.conscious.effects import EffectLedger, ledger_reply
-from core.conscious.failures import FAILED_REPLY
 from core.conscious.session import text_turn
 from core.conscious.system2_prompts import fetch_system2_prompts
 from core.conscious.tools.integrations import fetch_integration_tools
@@ -380,8 +379,11 @@ class ConsciousEngine:
         stream, so the replay guard measures from the owner's tap. Only the calls the
         record holds are decided: a critical call the resumed run makes defers again and is
         parked as ``process_request`` parks one. The reply is a follow-up to the request
-        that parked the run. A run whose history or identity no longer reads gets
-        ``FAILED_REPLY`` once: the record is gone, so a retry could never resume it.
+        that parked the run.
+
+        Raises ``UserError`` when the run's history or identity no longer reads: the record
+        is gone, so a retry could never resume it, and the runner treats the error as
+        permanent (one ``FAILED_REPLY`` follow-up, then a dead letter holding the decision).
         """
         run = decision.run
         if await self._spend.exhausted():
@@ -390,13 +392,9 @@ class ConsciousEngine:
         try:
             history = ModelMessagesTypeAdapter.validate_json(run.messages)
             identity = IdentityResult.model_validate(run.identity)
-        except ValueError:
-            logger.error(
-                "Approval %s holds a run that no longer reads; nothing runs",
-                decision.approval_id,
-                exc_info=True,
-            )
-            return self.approval_failure_reply(run, FAILED_REPLY)
+        except ValueError as exc:
+            msg = f"Approval {decision.approval_id} holds a run that no longer reads"
+            raise UserError(msg) from exc
 
         now = datetime.now(UTC)
         integration_tools = await self._integration_tools(identity.identity)
@@ -470,7 +468,9 @@ class ConsciousEngine:
                 run.session_id, messages, who, pending_approval=pending
             )
             return
-        logger.info("A turn came before approval %s was decided; stored as text", run.approval_id)
+        logger.info(
+            "A turn came before approval %s was decided; stored as text", decision.approval_id
+        )
         await self._session_mgr.append_text_turn(
             run.session_id, who, _marker(decision.decision), text
         )

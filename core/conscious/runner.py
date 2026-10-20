@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
     from shared.types import AioRedis
 
-__all__ = ["TurnSubject", "process_approval_entry", "process_request_entry"]
+__all__ = ["EntryRunner", "TurnSubject", "process_approval_entry", "process_request_entry"]
 
 # Outlives the replay window many times over: no delivery can arrive after it lapses.
 ANSWERED_TTL_S: Final = 3600
@@ -125,6 +125,25 @@ class _ApprovalSubject:
         return reply
 
 
+class EntryRunner(Protocol):
+    """One stream's entry processor: ``process_request_entry`` or ``process_approval_entry``."""
+
+    async def __call__(
+        self,
+        entry_id: bytes | str,
+        entry_data: dict[bytes | str, bytes | str],
+        *,
+        engine: Any,
+        redis: AioRedis,
+        stream: str,
+        group: str,
+        consumer: str,
+        delivery: int = 1,
+        now_ms: int | None = None,
+        after_answer: Callable[[], Awaitable[object]] | None = None,
+    ) -> None: ...
+
+
 async def process_request_entry(
     entry_id: bytes | str,
     entry_data: dict[bytes | str, bytes | str],
@@ -144,14 +163,11 @@ async def process_request_entry(
     failure before the last delivery stays pending. A Redis error is logged and the
     entry left pending, never raised into the consumer loop.
     """
-    parsed = await _parse(UserRequest, entry_id, entry_data, redis, stream, group)
-    if parsed is None:
-        return
-    request, event = parsed
     await _process(
-        _RequestSubject(engine, request),
+        UserRequest,
+        lambda request: _RequestSubject(engine, request),
         entry_id,
-        event,
+        entry_data,
         redis=redis,
         stream=stream,
         group=group,
@@ -177,14 +193,11 @@ async def process_approval_entry(
 ) -> None:
     """Process one ApprovalDecision entry as ``process_request_entry`` processes a request:
     the run it resumes is a turn, answered once, and every answer is a follow-up."""
-    parsed = await _parse(ApprovalDecision, entry_id, entry_data, redis, stream, group)
-    if parsed is None:
-        return
-    decision, event = parsed
     await _process(
-        _ApprovalSubject(engine, decision),
+        ApprovalDecision,
+        lambda decision: _ApprovalSubject(engine, decision),
         entry_id,
-        event,
+        entry_data,
         redis=redis,
         stream=stream,
         group=group,
@@ -219,10 +232,11 @@ async def _parse[E: BaseEvent](
         return None
 
 
-async def _process(
-    subject: TurnSubject,
+async def _process[E: BaseEvent](
+    model: type[E],
+    subject_for: Callable[[E], TurnSubject],
     entry_id: bytes | str,
-    event: str,
+    entry_data: dict[bytes | str, bytes | str],
     *,
     redis: AioRedis,
     stream: str,
@@ -232,8 +246,13 @@ async def _process(
     now_ms: int | None,
     after_answer: Callable[[], Awaitable[object]] | None,
 ) -> None:
-    """Answer one delivery of *subject*, from the entry *entry_id* holding *event*, once;
-    or leave it pending for a retry."""
+    """Answer one delivery of the entry *entry_id*, read as a *model*, once, as the subject
+    *subject_for* makes of it; or leave it pending for a retry."""
+    parsed = await _parse(model, entry_id, entry_data, redis, stream, group)
+    if parsed is None:
+        return
+    parsed_event, event = parsed
+    subject = subject_for(parsed_event)
     turn = _Turn(redis, subject, entry_id, event, stream, group, delivery, after_answer)
     try:
         answered = bool(await redis.exists(turn.answered_key))
