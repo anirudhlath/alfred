@@ -98,7 +98,7 @@ with several calls, the payload shows the first call, and its `reason` names the
 | source | path |
 |---|---|
 | PWA Confirm / Deny | `POST /api/actions/{id}/confirm` (exists) and a new `POST /api/actions/{id}/deny`, both `require_authenticated`. The endpoint claims the record with `GETDEL`. A `parked_run` publishes an `ApprovalDecision` (new bus schema) to `APPROVALS_STREAM`. An `action` keeps today's republish path on confirm and is dropped on deny. The Door gains a "Don't" button. *(My call.)* |
-| A reply in the conversation | The verified owner's next turn in a session with `pending_approval` first runs the approval classifier, an agent with `output_type=Literal["approve", "deny", "other"]` given the pending calls and the reply. It runs only when the speaker's identity matches the record's. A guest's reply never reaches it. The turn claims the record with `GETDEL` before resuming. |
+| A reply in the conversation | The verified owner's next turn in a session with `pending_approval` first runs the approval classifier, an agent with `output_type=Literal["approve", "deny", "other"]` given the pending calls and the reply. It runs only when the turn's resolved identity is `sir`, by any method: passkey, Signal number, voice ID, or a satellite's local claim. A turn that resolves to `guest` never reaches it. The turn claims the record with `GETDEL` before resuming. *(The owner's call, 2026-10-19: they accept that while a satellite has no enrolled voiceprint, or voice ID fails, anyone in earshot can approve.)* |
 | Expiry | The TTL lapses. The next turn on that session closes the open call as interrupted. No message is sent. *(My call: the Door already shows the approval as expired.)* |
 
 Because every path claims with `GETDEL`, a Door tap and a "yes" in chat resume the run once.
@@ -134,6 +134,11 @@ traced like the other agents.
 - **A failed action** reaches the model as `ToolFailed`, so the reply says it failed (#306).
 - **The PWA's "applied" state:** an executed approved action publishes an `ActionResult` with `request_id`
   set to the approval id to `home_action_results`, which the Door already waits on.
+- **The Door shows a failure as a failure.** Today its reducer (`web/src/lib/actions.ts`) moves to
+  `applied` for any matching result, and the Door shows a green "Applied" even when the status is `error`.
+  It gains a failed state, and its design-system preview is updated in this PR. So when the owner
+  approves on the phone, the phone shows the outcome, and the resumed reply also goes to the channel the
+  request came from. *(My call: this satisfies both goal 3 and #306's "the channel they confirmed from".)*
 
 ### 5. Router-intercepted actions
 
