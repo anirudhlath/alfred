@@ -35,9 +35,6 @@ expect:
     source: domain-router
     urgency: urgent
     after_step: 1
-- tool_called:
-    tool: confirm_pending_action
-    at_step: 2
 - ha_called:
     domain: alarm_control_panel
     service: alarm_disarm

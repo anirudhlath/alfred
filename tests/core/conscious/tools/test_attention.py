@@ -1,4 +1,4 @@
-"""Confirmation and attention tools: the verified user's, in-process."""
+"""Attention tools: the verified user's, in-process."""
 
 from __future__ import annotations
 
@@ -7,12 +7,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from bus.schemas.events import ActionRequest, ParkedAction
 from core.conscious.tools.attention import ATTENTION_FUNCTIONS, attention_toolset
 from tests.core.conscious.helpers import make_deps, make_services, tool_agent
 from tests.llm_fakes import Script, tool_call
 
-_NAMES = ["attention_add", "attention_list", "attention_remove", "confirm_pending_action"]
+_NAMES = ["attention_add", "attention_list", "attention_remove"]
 
 
 def _redis() -> AsyncMock:
@@ -32,41 +31,6 @@ async def test_sir_is_offered_them_and_a_guest_is_not() -> None:
     await tool_agent(guest, attention_toolset()).run("go", deps=make_deps("guest"))
     assert sorted(sir.offered()) == _NAMES
     assert guest.offered() == []
-
-
-@pytest.mark.asyncio
-async def test_confirm_republishes_the_pending_action() -> None:
-    action = ActionRequest(
-        source="conscious-engine", target_service="home-service", tool_name="home.unlock_door"
-    )
-    redis = _redis()
-    redis.getdel = AsyncMock(return_value=ParkedAction(action=action).model_dump_json().encode())
-    script = Script(tool_call("confirm_pending_action", {"request_id": action.request_id}), "ok")
-
-    await tool_agent(script, attention_toolset()).run(
-        "go", deps=make_deps(services=make_services(redis=redis))
-    )
-
-    assert json.loads(script.returns(1)[0]) == {
-        "status": "confirmed",
-        "request_id": action.request_id,
-    }
-    stream, fields = redis.xadd.call_args[0]
-    assert stream == "alfred:actions"
-    assert ActionRequest.model_validate_json(fields["event"]).confirmed is True
-
-
-@pytest.mark.asyncio
-async def test_an_expired_confirmation_is_a_failed_result() -> None:
-    redis = _redis()
-    redis.getdel = AsyncMock(return_value=None)
-    script = Script(tool_call("confirm_pending_action", {"request_id": "x"}), "expired")
-
-    await tool_agent(script, attention_toolset()).run(
-        "go", deps=make_deps(services=make_services(redis=redis))
-    )
-
-    assert script.returns(1) == ["No pending action 'x' — it may have expired"]
 
 
 @pytest.mark.asyncio

@@ -82,7 +82,7 @@ def _handle_signal() -> None:
 async def _report_outcome(
     redis: AioRedis,
     log: Any,
-    notifier: NotificationPublisher | None,
+    notifier: NotificationPublisher,
     action: ActionRequest,
     result: ActionResult,
 ) -> None:
@@ -112,8 +112,6 @@ async def _report_outcome(
         await publish_action_result(redis, result)
     except Exception as e:
         log.error("Could not publish the result of confirmed action '{}': {}", action.tool_name, e)
-    if notifier is None:
-        return
     try:
         await notifier.publish(
             title=title, body=body, source=OUTCOME_SOURCE, urgency=Urgency.IMPORTANT
@@ -125,8 +123,8 @@ async def _report_outcome(
 async def _consume_internal_actions(
     redis: AioRedis,
     log: Any,
-    router: DomainRouter | None = None,
-    notifier: NotificationPublisher | None = None,
+    router: DomainRouter | None,
+    notifier: NotificationPublisher,
 ) -> None:
     """Background consumer for ACTIONS_STREAM.
 
@@ -349,6 +347,7 @@ async def run(config: AlfredConfig) -> None:
             context_reader=ContextReader(redis=r),
             agent=system2,
             model=resolve_model("SYSTEM2_MODEL", config.system2_model),
+            notifier=notifier,
             routine_store=routine_store,
             context_index=context_index,
             config=ConsciousConfig(

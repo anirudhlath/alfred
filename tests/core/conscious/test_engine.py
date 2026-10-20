@@ -120,6 +120,7 @@ def _deps(script: Script | None = None, *, who: str = "sir", **overrides: Any) -
             spend=spend,
         ),
         "model": script.model if script is not None else None,
+        "notifier": AsyncMock(),
     }
     fields.update(overrides)
     return ConsciousDeps(**fields)

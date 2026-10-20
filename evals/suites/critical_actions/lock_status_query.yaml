@@ -13,8 +13,6 @@ expect:
 - pending_action_absent:
     tool: home.lock_unlock
     at_step: 0
-- tool_not_called:
-    tool: confirm_pending_action
 - reply_contains:
     regex: '\blocked\b'
 - reply_not_contains:

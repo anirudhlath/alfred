@@ -340,7 +340,7 @@ def _offered_tools(world: World) -> dict[str, frozenset[str]]:
         wire_name(f"{TriggerFeature.feature_name}."): _trigger_tools(),
         "integration_": _integration_tools(),
         "memory_": frozenset(MEMORY_FUNCTIONS.tools),
-        "confirm_pending_": frozenset(ATTENTION_FUNCTIONS.tools),
+        "attention_": frozenset(ATTENTION_FUNCTIONS.tools),
     }
 
 

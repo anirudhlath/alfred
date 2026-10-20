@@ -87,7 +87,7 @@ One Pydantic AI agent per request (`agent.py`); see `docs/llm.md`.
 ### Tools (one catalog, five toolsets in priority order)
 1. Trigger tools (`tools/triggers.py`) → in-process `TriggerFeature` methods, arguments validated and coerced first by the tool's `ToolMeta.validate_arguments`; a `ToolArgumentError` becomes a `ModelRetry` naming each field (a retry prompt, up to `TOOL_RETRIES`)
 2. Memory tools (`tools/memory.py`, prefix `memory_`) → `memory_tools.py`; sir-only
-3. Attention + `confirm_pending_action` (`tools/attention.py`); sir-only
+3. Attention (`tools/attention.py`); sir-only. No tool approves anything: a critical registry call defers (`ApprovalRequired`) and the run is parked for the owner (`approvals.py`)
 4. Integration tools (`tools/integrations.py`, prefix `integration_`) → `IntegrationRegistry.execute()`; sir-only
 5. Registry tools (`tools/registry.py`) → `DomainRouter` to external services; a guest is offered `benign` risk only; non-reflex tools are deferred and found through `search_tools` (`tools/search.py`)
 - `__main__.py` runs a 15-min background loop (`asyncio.wait_for`) for proactive routine suggestions; ignored suggestions have confidence decremented over time

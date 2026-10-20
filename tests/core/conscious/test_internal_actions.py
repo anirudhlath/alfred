@@ -22,7 +22,8 @@ async def _drive_once(
     log: object | None = None,
     redis: AsyncMock | None = None,
 ) -> tuple[AsyncMock, list[object]]:
-    """Run one dispatch cycle of the real consumer with `run_librarian` registered."""
+    """Run one dispatch cycle of the real consumer with `run_librarian` registered; the
+    notifier is a mock unless the test passes its own."""
     from core.conscious import __main__ as cmain
 
     called = AsyncMock()
@@ -47,7 +48,10 @@ async def _drive_once(
     cmain._shutdown.clear()
     try:
         await cmain._consume_internal_actions(
-            redis, log if log is not None else MagicMock(), router, notifier
+            redis,
+            log if log is not None else MagicMock(),
+            router,
+            notifier if notifier is not None else AsyncMock(),
         )
     finally:
         cmain._shutdown.clear()

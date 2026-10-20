@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import AsyncMock, MagicMock
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
@@ -82,10 +82,17 @@ def make_deps(who: Literal["sir", "guest"] = "sir", **overrides: Any) -> TurnDep
     return TurnDeps(**fields)
 
 
-def tool_agent(script: Script, *toolsets: AbstractToolset[TurnDeps]) -> Agent[TurnDeps, str]:
-    """An agent with *toolsets* in one catalog, as System 2 has, answering from *script*."""
+def tool_agent(
+    script: Script, *toolsets: AbstractToolset[TurnDeps]
+) -> Agent[TurnDeps, str | DeferredToolRequests]:
+    """An agent with *toolsets* in one catalog, as System 2 has, answering from *script*:
+    a run whose critical calls wait for approval ends in ``DeferredToolRequests``."""
     return Agent(
-        script.model, deps_type=TurnDeps, toolsets=[CatalogToolset(list(toolsets))], retries=2
+        script.model,
+        deps_type=TurnDeps,
+        output_type=[str, DeferredToolRequests],
+        toolsets=[CatalogToolset(list(toolsets))],
+        retries=2,
     )
 
 

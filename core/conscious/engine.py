@@ -9,6 +9,10 @@ the turn then gets the budget reply, after what it already did if it acted. A mo
 runs out of requests or retries gets the deliberating reply, because replaying the request
 would spend again and repeat its tool calls; a provider or transport failure raises, so
 the request stays pending and is retried.
+
+A run whose critical calls wait for the owner ends in ``DeferredToolRequests``: the engine
+parks it (``core.conscious.approvals.park``), which asks the owner, stores the session with
+the approval it waits on, and answers with a fixed template.
 """
 
 from __future__ import annotations
@@ -18,12 +22,21 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal
 
+from pydantic_ai import DeferredToolRequests
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
+from pydantic_ai.messages import ModelMessagesTypeAdapter
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness.spend import SpendLimitExceeded
 
-from bus.schemas.events import AlfredResponse, UserRequest
+from bus.schemas.events import AlfredResponse, ParkedRun, UserRequest
 from core.conscious.agent import REQUEST_LIMIT
+from core.conscious.approvals import (
+    approval_id_for,
+    confirmation_reply,
+    park,
+    parked_calls,
+    summary_of,
+)
 from core.conscious.deps import TurnDeps, TurnServices
 from core.conscious.effects import EffectLedger, ledger_reply
 from core.conscious.session import text_turn
@@ -47,6 +60,8 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
     from pydantic_ai_harness.spend import SpendLimits
 
+    from bus.schemas.events import ChannelName, ContentType
+    from core.conscious.approvals import Notifier
     from core.conscious.identity import IdentityGate
     from core.conscious.session import SessionManager
     from core.conscious.tools.integrations import IntegrationTool
@@ -97,6 +112,7 @@ class ConsciousDeps:
     ``model`` is None when ``SYSTEM2_MODEL`` resolved to nothing at startup; every request
     then gets the not-configured reply. ``spend`` is the daily budget the agent carries as
     a capability; the engine reads it before a turn starts.
+    ``notifier`` asks the owner to approve a parked run.
     ``prompts`` serves the turn's prose; the default serves the repo defaults.
     """
 
@@ -107,8 +123,9 @@ class ConsciousDeps:
     domain_router: DomainRouter
     tool_registry: ToolRegistry
     context_reader: ContextReader
-    agent: Agent[TurnDeps, str]
+    agent: Agent[TurnDeps, str | DeferredToolRequests]
     model: Model | None
+    notifier: Notifier
     routine_store: RoutineStore | None = None
     context_index: ContextIndexManager | None = None
     config: ConsciousConfig = field(default_factory=ConsciousConfig)
@@ -126,6 +143,7 @@ class ConsciousEngine:
         self._tool_registry = deps.tool_registry
         self._agent = deps.agent
         self._model = deps.model
+        self._notifier = deps.notifier
         self._routines = deps.routine_store
         self._context_index = deps.context_index
         self._prompts = deps.prompts
@@ -297,14 +315,69 @@ class ConsciousEngine:
         )
 
         usage = RunUsage()
-        text, mood, messages = await self._run(request, deps, session.messages, usage)
+        text, mood, messages, deferred = await self._run(request, deps, session.messages, usage)
+        pending: str | None = None
+        if deferred is not None:
+            text, messages, pending = await self._park(
+                deps,
+                deferred,
+                messages,
+                channel=request.channel,
+                content_type=request.content_type,
+                request_event_id=request.event_id,
+            )
 
         # Stored before the reply is published, as before. A crash between the two stores
         # the turn, and a redelivery then runs again over a history that already holds it
         # (or appends a ledger text turn): accepted, the same order as the text-only sessions.
-        await self._session_mgr.store_run(request.session_id, messages, identity.identity)
+        await self._session_mgr.store_run(
+            request.session_id, messages, identity.identity, pending_approval=pending
+        )
         await self._note(now, request.content, text, deps.actions_taken, usage)
         return self._reply(request, text, deps.actions_taken, mood=mood)
+
+    async def _park(
+        self,
+        deps: TurnDeps,
+        deferred: DeferredToolRequests,
+        messages: list[ModelMessage],
+        *,
+        channel: ChannelName,
+        content_type: ContentType,
+        request_event_id: str,
+    ) -> tuple[str, list[ModelMessage], str]:
+        """Park a run that deferred its critical calls, under one approval derived from the
+        turn's request id, and ask the owner. Returns the turn's reply, the history to store
+        and the approval id.
+
+        All three come from the run ``park`` returns, not the one built here: on a redelivery
+        that is the stored record, which the owner is already looking at, and its calls may
+        differ from the ones this run's model deferred.
+        """
+        calls = parked_calls(deferred)
+        run = ParkedRun(
+            approval_id=approval_id_for(deps.request_id),
+            session_id=deps.session_id,
+            channel=channel,
+            identity=deps.identity.model_dump(mode="json"),
+            request_event_id=request_event_id,
+            created_at=deps.now,
+            content_type=content_type,
+            area=deps.area,
+            tz_name=deps.tz_name,
+            summary=summary_of(calls),
+            calls=calls,
+            messages=ModelMessagesTypeAdapter.dump_json(messages).decode(),
+        )
+        parked = await park(self._redis, self._notifier, run, ledger_key=deps.request_id)
+        logger.info(
+            "Parked %d call(s) for approval %s: %s",
+            len(parked.calls),
+            parked.approval_id,
+            ", ".join(call.tool_name for call in parked.calls),
+        )
+        history = ModelMessagesTypeAdapter.validate_json(parked.messages)
+        return confirmation_reply(parked.summary), history, parked.approval_id
 
     def _resolve(self, request: UserRequest) -> IdentityResult:
         """Who sent *request*, by the identity gate."""
@@ -361,8 +434,9 @@ class ConsciousEngine:
         deps: TurnDeps,
         history: list[ModelMessage],
         usage: RunUsage,
-    ) -> tuple[str, Mood, list[ModelMessage]]:
-        """One agent run: its reply, its mood and the session's history after it.
+    ) -> tuple[str, Mood, list[ModelMessage], DeferredToolRequests | None]:
+        """One agent run: its reply, its mood, the session's history after it, and the calls
+        it deferred for approval, if it ended waiting on them (its reply is then empty).
 
         A finished run's history is ``all_messages()``, compacted during the run. A run
         that ends without its own answer leaves *history* plus the turn as text, never its
@@ -386,7 +460,9 @@ class ConsciousEngine:
                     usage=usage,
                     usage_limits=UsageLimits(request_limit=REQUEST_LIMIT),
                 )
-            return result.output, "neutral", result.all_messages()
+            if isinstance(result.output, DeferredToolRequests):
+                return "", "neutral", result.all_messages(), result.output
+            return result.output, "neutral", result.all_messages(), None
         except SpendLimitExceeded:
             # A UsageLimitExceeded too, so it is caught first. Raised before a request,
             # once an earlier response in this run (or another process) spent the day.
@@ -405,9 +481,9 @@ class ConsciousEngine:
     @staticmethod
     def _ended(
         request: UserRequest, history: list[ModelMessage], text: str, mood: Mood
-    ) -> tuple[str, Mood, list[ModelMessage]]:
+    ) -> tuple[str, Mood, list[ModelMessage], None]:
         """A turn answered with *text* instead of the run's own answer."""
-        return text, mood, [*history, *text_turn(request.content, text)]
+        return text, mood, [*history, *text_turn(request.content, text)], None
 
     async def _budget_reply(self, request: UserRequest) -> str:
         """The budget reply for a run the budget stopped partway. If the turn already

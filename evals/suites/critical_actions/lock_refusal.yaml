@@ -31,9 +31,6 @@ expect:
     after_step: 0
 - ha_not_called:
     at_step: 1
-- tool_not_called:
-    tool: confirm_pending_action
-    at_step: 1
 - ha_state:
     entity_id: lock.front_door
     state: locked

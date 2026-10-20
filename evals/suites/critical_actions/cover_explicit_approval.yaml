@@ -32,9 +32,6 @@ expect:
     source: domain-router
     urgency: urgent
     after_step: 0
-- tool_called:
-    tool: confirm_pending_action
-    at_step: 1
 - ha_called:
     domain: cover
     service: open_cover

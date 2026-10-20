@@ -9,10 +9,12 @@ import logging
 from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import AsyncMock, MagicMock
 
+import fakeredis
 import pytest
 from pydantic import BaseModel
-from pydantic_ai import ToolFailed
+from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolApproved, ToolFailed
 
+from bus.schemas.events import ActionResult
 from core.conscious.tools import names, validation
 from core.conscious.tools.registry import RegistryToolset
 from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo, ToolRegistry
@@ -20,6 +22,8 @@ from core.routing.domain_router import CONFIRMATION_REQUIRED_PREFIX
 from core.triggers.models import TRIGGER_ENGINE_SOURCE
 from sdk.alfred_sdk.client import AlfredClient
 from sdk.alfred_sdk.feature import BaseFeature, tool
+from shared.redis_streams import forward_range
+from shared.streams import HOME_ACTION_RESULTS_STREAM
 from tests.core.conscious.helpers import (
     call_direct,
     make_deps,
@@ -71,14 +75,50 @@ def _router(result: Any = None, *, error: str | None = None) -> AsyncMock:
     return router
 
 
-async def _run(script: Script, tools: list[ToolInfo], *, who: str = "sir", router: Any = None):
+async def _run(
+    script: Script,
+    tools: list[ToolInfo],
+    *,
+    who: str = "sir",
+    router: Any = None,
+    redis: Any = None,
+):
+    services: dict[str, Any] = {"router": router or _router({"ok": True})}
+    if redis is not None:
+        services["redis"] = redis
     deps = make_deps(
         who,  # type: ignore[arg-type]
         registry_tools=tools,
-        services=make_services(router=router or _router({"ok": True})),
+        services=make_services(**services),
     )
     result = await tool_agent(script, RegistryToolset()).run("go", deps=deps)
     return result, deps
+
+
+APPROVAL_ID = "appr-1"
+
+
+async def _approved(script: Script, tools: list[ToolInfo], *, router: Any, redis: Any = None):
+    """Run until the critical calls defer, then resume with all of them approved, as the
+    engine does once the owner says yes; the resumed run carries ``APPROVAL_ID``."""
+    result, deps = await _run(script, tools, router=router, redis=redis)
+    deferred = result.output
+    assert isinstance(deferred, DeferredToolRequests)
+    deps.approval_id = APPROVAL_ID
+    approvals = {part.tool_call_id: ToolApproved() for part in deferred.approvals}
+    resumed = await tool_agent(script, RegistryToolset()).run(
+        message_history=result.all_messages(),
+        deferred_tool_results=DeferredToolResults(approvals=approvals),
+        deps=deps,
+    )
+    return deferred, resumed, deps
+
+
+async def _published(redis: Any) -> list[ActionResult]:
+    return [
+        ActionResult.model_validate_json(fields[b"event"])
+        for _id, fields in await forward_range(redis, HOME_ACTION_RESULTS_STREAM)
+    ]
 
 
 @pytest.mark.asyncio
@@ -125,17 +165,159 @@ async def test_domain_error_reaches_the_model_without_spending_a_retry() -> None
     assert deps.actions_taken == ["home.light_on"] * 3
 
 
+# ── the approval gate (#317 PR 5): a critical call waits for the owner ─────────
+
+
 @pytest.mark.asyncio
-async def test_a_confirmation_request_reaches_the_model_as_plain_content() -> None:
-    """R1: the router's critical intercept reads as it did before, not as a failed call."""
-    pending = f"{CONFIRMATION_REQUIRED_PREFIX}req-42"
-    router = _router(error=pending)
-    script = Script(tool_call("home_unlock_door", {"entity_id": "lock.front"}), "Confirm, sir?")
+async def test_a_critical_call_defers_instead_of_running() -> None:
+    router = _router({"ok": True})
+    args = {"entity_id": "lock.front", "reason": "The dog walker is here."}
+    script = Script(tool_call("home_unlock_door", args))
 
-    _, deps = await _run(script, [_info("home.unlock_door", risk="critical")], router=router)
+    result, deps = await _run(script, [_info("home.unlock_door", risk="critical")], router=router)
 
-    assert script.returns(1) == [pending]
+    deferred = result.output
+    assert isinstance(deferred, DeferredToolRequests)
+    [part] = deferred.approvals
+    assert part.tool_name == "home_unlock_door"
+    assert deferred.metadata[part.tool_call_id] == {
+        "tool_name": "home.unlock_door",
+        "target_service": "home-service",
+        "parameters": {"entity_id": "lock.front"},
+        "reason": "The dog walker is here.",
+    }
+    router.route.assert_not_awaited()
+    assert deps.actions_taken == []
+    assert script.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_bad_arguments_retry_before_the_gate() -> None:
+    router = _router({"ok": True})
+    script = Script(tool_call("home_unlock_door", {"entity": "lock.front"}), "gave up")
+
+    result, _ = await _run(script, [_info("home.unlock_door", risk="critical")], router=router)
+
+    assert result.output == "gave up"
+    assert "'entity_id' is a required property" in script.retries(1)[0]
+    router.route.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_approved_call_runs_confirmed_and_publishes_its_result() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    router = _router({"locked": False})
+    script = Script(tool_call("home_unlock_door", {"entity_id": "lock.front"}), "Unlocked, sir.")
+
+    _, resumed, deps = await _approved(
+        script, [_info("home.unlock_door", risk="critical")], router=router, redis=redis
+    )
+
+    assert resumed.output == "Unlocked, sir."
+    router.route.assert_awaited_once()
+    action = router.route.await_args.args[0]
+    assert action.confirmed is True
+    assert action.parameters == {"entity_id": "lock.front"}
+    assert json.loads(script.returns(1)[0]) == {"locked": False}
+    [published] = await _published(redis)
+    assert (published.request_id, published.tool_name, published.status) == (
+        APPROVAL_ID,
+        "home.unlock_door",
+        "success",
+    )
+    assert published.result == {"locked": False}
+    assert deps.actions_taken == ["home.unlock_door"]
+
+
+@pytest.mark.asyncio
+async def test_an_approved_failure_reaches_the_model_and_the_door() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    script = Script(tool_call("home_unlock_door", {"entity_id": "lock.front"}), "It jammed, sir.")
+
+    await _approved(
+        script,
+        [_info("home.unlock_door", risk="critical")],
+        router=_router(error="Lock jammed"),
+        redis=redis,
+    )
+
+    assert script.returns(1) == ["Lock jammed"]
+    assert script.outcomes(1) == ["failed"]
+    [published] = await _published(redis)
+    assert (published.request_id, published.status, published.error) == (
+        APPROVAL_ID,
+        "error",
+        "Lock jammed",
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_approved_call_whose_route_raises_still_reaches_the_door() -> None:
+    """The Door waits on the approval's result: a route that raises must not leave it
+    waiting until it times out. The model still learns only that the call failed."""
+    redis = fakeredis.FakeAsyncRedis()
+    router = AsyncMock()
+    router.route.side_effect = ConnectionError("secret transport detail")
+    script = Script(tool_call("home_unlock_door", {"entity_id": "lock.front"}), "It failed, sir.")
+
+    await _approved(
+        script, [_info("home.unlock_door", risk="critical")], router=router, redis=redis
+    )
+
+    assert script.outcomes(1) == ["failed"]
+    assert script.returns(1) == ["home_unlock_door failed"]
+    [published] = await _published(redis)
+    assert (published.request_id, published.tool_name, published.status) == (
+        APPROVAL_ID,
+        "home.unlock_door",
+        "error",
+    )
+    assert published.error and "secret transport detail" not in published.error
+
+
+@pytest.mark.asyncio
+async def test_a_lost_result_publish_still_returns_the_call() -> None:
+    """The action ran: a Door that misses its result must not turn it into a failure."""
+    redis = fakeredis.FakeAsyncRedis()
+    redis.xadd = AsyncMock(side_effect=ConnectionError("redis went away"))  # type: ignore[method-assign]
+    script = Script(tool_call("home_unlock_door", {"entity_id": "lock.front"}), "Unlocked, sir.")
+
+    await _approved(
+        script,
+        [_info("home.unlock_door", risk="critical")],
+        router=_router({"locked": False}),
+        redis=redis,
+    )
+
     assert script.outcomes(1) == ["success"]
+    assert json.loads(script.returns(1)[0]) == {"locked": False}
+
+
+@pytest.mark.asyncio
+async def test_an_unapproved_call_publishes_no_result() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    script = Script(tool_call("home_light_on", {"entity_id": "light.desk"}), "done")
+
+    await _run(script, [_info("home.light_on")], redis=redis)
+
+    assert await _published(redis) == []
+
+
+@pytest.mark.asyncio
+async def test_a_router_intercept_carries_no_id() -> None:
+    """The router's own critical check (defence in depth) parks the action under an id
+    the model must never see: it could pass it to something that approves."""
+    router = _router(error=f"{CONFIRMATION_REQUIRED_PREFIX}req-42")
+    script = Script(tool_call("home_unlock_door", {"entity_id": "lock.front"}), "Asked, sir.")
+
+    _, deps = await _run(script, [_info("home.unlock_door", risk="elevated")], router=router)
+
+    assert script.returns(1) == [
+        "This action needs the owner's confirmation; a request was sent to their phone."
+    ]
+    assert script.outcomes(1) == ["failed"]
+    assert "req-42" not in script.returns(1)[0]
+    assert router.route.await_args.args[0].confirmed is False
     assert deps.actions_taken == ["home.unlock_door"]
 
 
@@ -254,8 +436,10 @@ async def test_critical_tools_get_an_optional_reason_that_rides_the_action() -> 
         "done",
     )
 
-    await _run(script, [info, _info("home.get_lights")], router=router)
+    deferred, _, _ = await _approved(script, [info, _info("home.get_lights")], router=router)
 
+    [part] = deferred.approvals
+    assert deferred.metadata[part.tool_call_id]["reason"] == "The dog walker is here."
     schema = script.schema("home_unlock_door")
     assert schema["properties"]["reason"]["type"] == "string"
     assert schema["required"] == ["entity_id"]
@@ -282,7 +466,11 @@ async def test_a_non_string_or_blank_reason_is_dropped(bad_reason: object) -> No
     script = Script(
         tool_call("home_unlock_door", {"entity_id": "lock.front", "reason": bad_reason}), "done"
     )
-    await _run(script, [_info("home.unlock_door", risk="critical")], router=router)
+    deferred, _, _ = await _approved(
+        script, [_info("home.unlock_door", risk="critical")], router=router
+    )
+    [part] = deferred.approvals
+    assert deferred.metadata[part.tool_call_id]["reason"] is None
     action = router.route.await_args.args[0]
     assert action.reason is None
     assert action.parameters == {"entity_id": "lock.front"}
@@ -298,8 +486,17 @@ async def test_a_tool_that_declares_its_own_reason_keeps_it(risk: str) -> None:
     }
     router = _router({"ok": True})
     script = Script(tool_call("home_log_incident", {"reason": "Smoke alarm tripped."}), "done")
+    tools = [_info("home.log_incident", risk=risk, input_schema=own)]
 
-    await _run(script, [_info("home.log_incident", risk=risk, input_schema=own)], router=router)
+    if risk == "critical":
+        deferred, _, _ = await _approved(script, tools, router=router)
+        [part] = deferred.approvals
+        assert deferred.metadata[part.tool_call_id]["parameters"] == {
+            "reason": "Smoke alarm tripped."
+        }
+        assert deferred.metadata[part.tool_call_id]["reason"] is None
+    else:
+        await _run(script, tools, router=router)
 
     assert script.schema("home_log_incident") == own
     action = router.route.await_args.args[0]

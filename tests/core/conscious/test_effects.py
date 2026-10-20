@@ -16,14 +16,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis
 import pytest
-from pydantic_ai import Agent
+from pydantic_ai import Agent, Tool
 from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.toolsets import FunctionToolset
 
-from bus.schemas.events import ActionRequest, UserRequest
+from bus.schemas.events import UserRequest
 from core.conscious.agent import build_system2_agent, system2_toolsets
 from core.conscious.deps import TurnDeps
 from core.conscious.effects import (
     EFFECTS_TTL_S,
+    SIDE_EFFECT,
     Effect,
     EffectLedger,
     RecordEffects,
@@ -39,8 +41,6 @@ from core.conscious.tools.registry import RegistryToolset
 from core.conscious.tools.triggers import TriggerToolset
 from core.integrations.base import IntegrationResult
 from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo
-from core.routing.domain_router import CONFIRMATION_REQUIRED_PREFIX
-from core.routing.pending import store_pending_action
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
 from shared.redis_streams import MAX_REPLAY_AGE_MS, forward_range
@@ -58,6 +58,8 @@ from tests.llm_fakes import Script, tool_call, tool_calls
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelResponse
+
+    from bus.schemas.events import ActionRequest
 
 _GROUP = "conscious-engine"
 _CONSUMER = "worker-1"
@@ -89,13 +91,6 @@ async def test_an_unfinished_call_reads_as_started() -> None:
     ledger = EffectLedger(fakeredis.FakeAsyncRedis())
     await ledger.started("req-1", "home.lock_unlock", {})
     assert await ledger.read("req-1") == [Effect("home.lock_unlock", {}, "started")]
-
-
-async def test_a_parked_call_reads_as_parked() -> None:
-    ledger = EffectLedger(fakeredis.FakeAsyncRedis())
-    index = await ledger.started("req-1", "home.lock_unlock", {})
-    await ledger.parked("req-1", index)
-    assert await ledger.read("req-1") == [Effect("home.lock_unlock", {}, "parked")]
 
 
 async def test_a_parked_call_is_recorded_in_one_write() -> None:
@@ -280,19 +275,27 @@ async def test_a_failed_registry_call_is_recorded_failed() -> None:
     assert [e.status for e in await EffectLedger(redis).read("req-1")] == ["failed"]
 
 
-async def test_a_call_parked_for_confirmation_is_recorded_parked() -> None:
+async def test_a_returned_call_settles_ok() -> None:
+    """Whatever a side-effecting tool returns, it returned: the call is settled ``ok``.
+    Nothing reads a returned text as "held for confirmation" any more; a critical call
+    waits at the approval gate instead, before it is ever recorded."""
     redis = fakeredis.FakeAsyncRedis()
-    deps = make_deps(
-        services=make_services(
-            redis=redis, router=_router("error", f"{CONFIRMATION_REQUIRED_PREFIX}abc")
-        ),
-        registry_tools=[_info("home.lock_unlock", risk="critical")],
+
+    async def lock_unlock(entity_id: str) -> str:
+        return "confirmation_required:abc"
+
+    toolset: FunctionToolset[TurnDeps] = FunctionToolset(
+        [Tool(lock_unlock, takes_ctx=False, metadata={SIDE_EFFECT: True})]
     )
-    script = Script(tool_call("home_lock_unlock", {"entity_id": "lock.front"}), "asked")
+    script = Script(tool_call("lock_unlock", {"entity_id": "lock.front"}), "done")
 
-    await _recording_agent(script, RegistryToolset()).run("go", deps=deps)
+    await _recording_agent(script, toolset).run(
+        "go", deps=make_deps(services=make_services(redis=redis))
+    )
 
-    assert [e.status for e in await EffectLedger(redis).read("req-1")] == ["parked"]
+    assert await EffectLedger(redis).read("req-1") == [
+        Effect("lock_unlock", {"entity_id": "lock.front"}, "ok")
+    ]
 
 
 async def test_a_call_with_bad_arguments_is_not_recorded() -> None:
@@ -346,15 +349,12 @@ async def test_trigger_mutations_are_recorded_and_listing_is_not(
         ("attention_add", True),
         ("attention_remove", True),
         ("attention_list", False),
-        ("confirm_pending_action", True),
     ],
 )
 async def test_attention_changes_are_recorded_and_listing_is_not(name: str, recorded: bool) -> None:
     redis = fakeredis.FakeAsyncRedis()
     args: dict[str, Any] = {"domain": "home"}
-    if name == "confirm_pending_action":
-        args = {"request_id": "p-1"}
-    elif name != "attention_list":
+    if name != "attention_list":
         args["entity_id"] = "sensor.x"
     script = Script(tool_call(name, args), "ok")
 
@@ -567,6 +567,7 @@ def _engine(
                 spend=spend,
             ),
             model=script.model,
+            notifier=AsyncMock(),
         )
     )
 
@@ -657,32 +658,6 @@ async def test_a_redelivery_after_a_crash_answers_from_the_ledger_without_runnin
     responses = await forward_range(redis, USER_RESPONSES_STREAM)
     assert [json.loads(f[b"event"])["text"] for _id, f in responses] == [_PORCH_REPLY]
     assert int((await redis.xpending(USER_REQUESTS_STREAM, _GROUP))["pending"]) == 0
-
-
-async def test_a_turn_that_confirmed_an_action_and_then_failed_answers_from_its_ledger() -> None:
-    """Confirming runs a parked critical action: a turn that did so must not be answered
-    as though nothing happened."""
-    redis = fakeredis.FakeAsyncRedis()
-    action = ActionRequest(
-        source="conscious-engine", target_service="home-service", tool_name="home.unlock_door"
-    )
-    await store_pending_action(redis, action)
-    script = Script(
-        tool_call("confirm_pending_action", {"request_id": action.request_id}),
-        ModelHTTPError(503, "m"),
-    )
-    request = _request()
-    entry_id = await _pending(redis, request)
-
-    await _deliver(redis, entry_id, _engine(redis, script, _router()), delivery=1)
-
-    responses = await forward_range(redis, USER_RESPONSES_STREAM)
-    assert [json.loads(f[b"event"])["text"] for _id, f in responses] == [
-        "I'd started on that — I did: confirm pending action — then ran into a problem "
-        "before I could finish, sir."
-    ]
-    letters = [f[b"reason"] for _id, f in await forward_range(redis, DEAD_LETTER_STREAM)]
-    assert letters == [b"partial"]
 
 
 async def test_an_integration_write_then_a_transient_failure_is_never_repeated(
