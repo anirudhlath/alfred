@@ -190,6 +190,49 @@ async def test_a_satellite_followup_is_spoken_on_its_satellite() -> None:
 
 
 @pytest.mark.usefixtures("no_tts")
+async def test_a_satellite_followup_with_no_bridge_goes_to_the_notifier() -> None:
+    """A late answer to a spoken request is not lost because nothing can speak it."""
+    redis = fakeredis.FakeAsyncRedis()
+
+    await _followup_sink(_notifier(redis), lambda: None)(
+        _followup("satellite", satellite_session_id("kitchen"))
+    )
+
+    [notification] = await _notifications(redis)
+    assert notification.title == "Alfred"
+    assert notification.body == "The door is locked, sir."
+    assert notification.source == "channels"
+    assert notification.urgency is Urgency.IMPORTANT
+
+
+@pytest.mark.usefixtures("no_tts")
+async def test_a_satellite_followup_with_no_tts_goes_to_the_notifier() -> None:
+    bridge = AsyncMock()
+    redis = fakeredis.FakeAsyncRedis()
+
+    await _followup_sink(_notifier(redis), lambda: bridge)(
+        _followup("satellite", satellite_session_id("kitchen"))
+    )
+
+    bridge.play_wav_to.assert_not_awaited()
+    [notification] = await _notifications(redis)
+    assert (notification.title, notification.source) == ("Alfred", "channels")
+    assert notification.body == "The door is locked, sir."
+
+
+async def test_a_satellite_followup_with_no_satellite_name_goes_to_the_notifier() -> None:
+    bridge = AsyncMock()
+    redis = fakeredis.FakeAsyncRedis()
+
+    sink = _followup_sink(_notifier(redis), lambda: bridge)
+    await sink(_followup("satellite", "not-a-satellite"))
+
+    bridge.play_wav_to.assert_not_awaited()
+    [notification] = await _notifications(redis)
+    assert notification.body == "The door is locked, sir."
+
+
+@pytest.mark.usefixtures("no_tts")
 async def test_a_signal_followup_is_left_to_the_bridge(
     session_sockets: dict[str, set[Any]],
 ) -> None:

@@ -159,7 +159,7 @@ def _followup_sink(
             case "web_pwa" | "voice" | "ios":
                 await _deliver_to_session(response, notifier)
             case "satellite":
-                await _speak_on_satellite(response, get_bridge())
+                await _speak_on_satellite(response, get_bridge(), notifier)
             case "signal":
                 pass  # the bridge already sends every Signal response
 
@@ -185,23 +185,32 @@ async def _deliver_to_session(response: AlfredResponse, notifier: NotificationPu
                     "Follow-up to session {} not sent on a socket: {}", response.session_id, exc
                 )
     if not sent:
-        await notifier.publish(
-            title="Alfred", body=response.text, source="channels", urgency=Urgency.IMPORTANT
-        )
+        await _notify_followup(response, notifier)
 
 
-async def _speak_on_satellite(response: AlfredResponse, bridge: SatelliteBridge | None) -> None:
-    """Speak the reply on the satellite the session names."""
+async def _notify_followup(response: AlfredResponse, notifier: NotificationPublisher) -> None:
+    """Tell the owner a follow-up's text by notification, for a channel that cannot take it."""
+    await notifier.publish(
+        title="Alfred", body=response.text, source="channels", urgency=Urgency.IMPORTANT
+    )
+
+
+async def _speak_on_satellite(
+    response: AlfredResponse, bridge: SatelliteBridge | None, notifier: NotificationPublisher
+) -> None:
+    """Speak the reply on the satellite the session names; with none that can, notify."""
     name = satellite_name(response.session_id)
     if name is None or bridge is None:
         logger.warning(
-            "Follow-up for session {} not spoken: no satellite bridge or name",
+            "Follow-up for session {} not spoken: no satellite bridge or name; notifying",
             response.session_id,
         )
+        await _notify_followup(response, notifier)
         return
     tts = await aget_tts()
     if tts is None:
-        logger.warning("Satellite '{}': TTS unavailable — follow-up not spoken", name)
+        logger.warning("Satellite '{}': TTS unavailable — notifying instead", name)
+        await _notify_followup(response, notifier)
         return
     await bridge.play_wav_to(name, await synthesize_async(tts, response.text))
 

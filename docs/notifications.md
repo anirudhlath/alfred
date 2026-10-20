@@ -122,14 +122,14 @@ session), never a registration.
 ### Sources
 
 `source` says who raised a notification. Clients should not branch on it, but it is what
-the logs and the Room's act rows show. The approval and follow-up paths currently use
-these, for example; other notifications can carry other sources:
+the logs and the Room's act rows show. The approval and follow-up paths use the sources
+below; other notifications can carry other sources:
 
 | Source | Raised for |
 |--------|------------|
 | `conscious-engine` | the `Confirmation required` prompt of a System 2 run that parked its critical calls, and the `Done` / `That didn't work` outcome of an action the router held |
 | `domain-router` | the `Confirmation required` prompt for an action `DomainRouter` intercepted, not a parked run ([`autonomy.md`](autonomy.md#an-action-the-router-intercepts)) |
-| `channels` | a follow-up that found no socket to carry it (below) |
+| `channels` | a follow-up that found no socket, satellite bridge or TTS to carry it (below) |
 
 ## Follow-ups: late answers and Door resumes
 
@@ -156,7 +156,7 @@ request came from:
 | `channel` | Delivery |
 |-----------|----------|
 | `web_pwa`, `voice`, `ios` | A `response` frame to every socket joined to the session. With no socket that takes it, a notification instead: title `Alfred`, `IMPORTANT`, source `channels`. |
-| `satellite` | The text is synthesised and spoken on the satellite the session names (`play_wav_to`). |
+| `satellite` | The text is synthesised and spoken on the satellite the session names (`play_wav_to`). With no bridge, no satellite name or no TTS, a notification instead, as for the web channels. |
 | `signal` | Nothing: the Signal bridge already sends every response. |
 
 Every frame the worker sends to a socket carries `followup: true`, a late answer included.

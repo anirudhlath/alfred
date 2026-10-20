@@ -268,8 +268,8 @@ For single-device delivery (future presence-aware targeting, timers), the bridge
 offline or unknown); the announcement adapter only uses the broadcast path. The channels'
 follow-up sink uses `play_wav_to`: a late answer, or the reply to a run the owner approved
 or declined on the Door, is spoken on the one satellite whose session asked
-(`satellite_name(session_id)`), never broadcast. If that satellite is offline the follow-up is
-dropped with a WARNING ([`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes)).
+(`satellite_name(session_id)`), never broadcast. With no bridge or no TTS it goes out as a
+notification instead; if that satellite is offline the follow-up is dropped with a WARNING ([`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes)).
 
 ## False Wakes
 
