@@ -3,15 +3,17 @@
 System 2 can no longer confirm its own critical action (#317 PR 5): the approval gate
 defers the call, the engine parks the run in the pending store, notifies the owner and
 replies with a fixed template. A redelivery answers from the side-effect ledger. The
-owner's next turn in the conversation approves, declines or moves on from the parked run.
+owner's next turn in the conversation approves, declines or moves on from the parked run;
+the Door's decision resumes it as a turn of its own, answered as a follow-up.
 """
 
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis
@@ -21,25 +23,44 @@ from pydantic_ai.messages import (
     ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
+    TextPart,
     ToolCallPart,
     ToolReturnPart,
+    UserPromptPart,
 )
 from pydantic_ai_harness.spend import SpendEntry
 
-from bus.schemas.events import ParkedCall, ParkedRun, UserRequest
+from bus.schemas.events import (
+    AlfredResponse,
+    ApprovalDecision,
+    ParkedCall,
+    ParkedRun,
+    UserRequest,
+)
 from core.conscious.agent import build_system2_agent, system2_toolsets
 from core.conscious.approval_classifier import ApprovalClassifier
 from core.conscious.approvals import Decision, approval_id_for, confirmation_reply
 from core.conscious.effects import Effect, EffectLedger, ledger_reply
-from core.conscious.engine import BUDGET_AFTER_ACTING, ConsciousDeps, ConsciousEngine
-from core.conscious.runner import process_request_entry
+from core.conscious.engine import (
+    APPROVED_MARKER,
+    BUDGET_AFTER_ACTING,
+    BUDGET_REPLY,
+    DECLINED_MARKER,
+    DELIBERATING_REPLY,
+    ConsciousDeps,
+    ConsciousEngine,
+)
+from core.conscious.failures import FAILED_REPLY
+from core.conscious.runner import process_approval_entry, process_request_entry
 from core.conscious.session import SessionManager, text_turn
 from core.notifications.schema import Urgency
 from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo
-from core.routing.pending import claim_pending, park_run, pending_key, read_pending
+from core.routing.pending import claim_pending, decide, park_run, pending_key, read_pending
 from shared.redis_streams import forward_range
 from shared.spend import build_spend_limits, local_clock
 from shared.streams import (
+    ANSWERED_KEY,
+    APPROVALS_STREAM,
     HOME_ACTION_RESULTS_STREAM,
     USER_REQUESTS_STREAM,
     USER_RESPONSES_STREAM,
@@ -902,3 +923,364 @@ async def test_a_budget_spent_mid_resume_says_what_was_done() -> None:
     assert await read_pending(redis, approval_id) is None
     session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
     assert session.pending_approval is None
+
+
+# ── the owner's decision from the Door ───────────────────────────────────────
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+async def _door(
+    redis: fakeredis.FakeAsyncRedis, approval_id: str, decision: Literal["approve", "deny"]
+) -> ApprovalDecision:
+    """The Door's tap: ``decide`` claims the record and publishes the decision, which is
+    returned as the conscious process reads it."""
+    assert await decide(redis, approval_id, decision)
+    [(_id, fields)] = await forward_range(redis, APPROVALS_STREAM)
+    return ApprovalDecision.model_validate_json(fields[b"event"])
+
+
+def _tail(messages: list[Any]) -> list[tuple[type, str]]:
+    """The last two messages as (type, text): a text turn's user words and reply."""
+    return [(type(m), m.parts[0].content) for m in messages[-2:]]
+
+
+@pytest.mark.asyncio
+async def test_a_door_approval_runs_under_the_approval_id() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK), "The door is unlocked, sir.")
+    engine = _engine(redis, script, router, notifier)
+    request = _request()
+    approval_id = await _park(engine, request)
+    decision = await _door(redis, approval_id, "approve")
+
+    response = await engine.resume_approval(decision, received_ms=_now_ms())
+
+    router.route.assert_awaited_once()
+    action = router.route.await_args.args[0]
+    assert (action.tool_name, action.parameters, action.confirmed) == (
+        "home.lock_unlock",
+        {"entity_id": "lock.front"},
+        True,
+    )
+    assert script.call_count == 2
+    assert script.outcomes(1) == ["success"]
+    # The Door says nothing: the resumed run carries the call's result and no new prompt.
+    resumed = script.requests[1][0][-1]
+    assert isinstance(resumed, ModelRequest)
+    assert not any(isinstance(p, UserPromptPart) for p in resumed.parts)
+    assert response.text == "The door is unlocked, sir."
+    assert response.actions_taken == ["home.lock_unlock"]
+    assert (response.followup, response.in_reply_to) == (True, request.event_id)
+    assert (response.source, response.channel, response.session_id) == (
+        "conscious-engine",
+        "web_pwa",
+        "sess-1",
+    )
+    effects = await EffectLedger(redis).read(approval_id)
+    assert [(effect.tool, effect.status) for effect in effects] == [("home.lock_unlock", "ok")]
+    [(_id, fields)] = await forward_range(redis, HOME_ACTION_RESULTS_STREAM)
+    assert json.loads(fields[b"event"])["request_id"] == approval_id
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval is None
+    [returned] = _returns_for(session.messages, decision.run.calls[0].tool_call_id)
+    assert returned.outcome == "success"
+    assert not _synthesized(returned)
+    assert session.messages[-1].parts == [TextPart("The door is unlocked, sir.")]
+    notifier.publish.assert_awaited_once()  # the park's; nothing new to ask
+
+
+@pytest.mark.asyncio
+async def test_a_door_decision_past_the_window_is_refused() -> None:
+    """The replay guard measures from the owner's tap: a decision read five minutes
+    later never unlocks the door, and the model is told why."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK), "It was too late to act, sir.")
+    engine = _engine(redis, script, router, notifier)
+    approval_id = await _park(engine)
+    decision = await _door(redis, approval_id, "approve")
+
+    response = await engine.resume_approval(decision, received_ms=_now_ms() - 301_000)
+
+    router.route.assert_not_awaited()
+    assert script.outcomes(1) == ["failed"]
+    [refusal] = script.returns(1)
+    assert "home.lock_unlock was not run" in refusal
+    assert response.text == "It was too late to act, sir."
+    assert response.followup is True
+    assert await EffectLedger(redis).read(approval_id) == []
+
+
+@pytest.mark.asyncio
+async def test_a_door_denial_is_acknowledged() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK), "Very well, sir. It stays locked.")
+    engine = _engine(redis, script, router, notifier)
+    request = _request()
+    approval_id = await _park(engine, request)
+    decision = await _door(redis, approval_id, "deny")
+
+    response = await engine.resume_approval(decision, received_ms=_now_ms())
+
+    assert script.returns(1) == ["The user declined."]
+    router.route.assert_not_awaited()
+    assert response.text == "Very well, sir. It stays locked."
+    assert response.actions_taken == []
+    assert (response.followup, response.in_reply_to) == (True, request.event_id)
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval is None
+
+
+@pytest.mark.asyncio
+async def test_a_door_approval_that_parks_again_asks_again() -> None:
+    """Approval is per call: a critical call the resumed run makes defers again, under a
+    new approval the session now waits on."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    tools = [*_TOOLS, _info("home.garage_door_open", risk="critical")]
+    script = Script(
+        tool_call("home_lock_unlock", _LOCK),
+        tool_call("home_garage_door_open", {"entity_id": "cover.garage"}),
+    )
+    engine = _engine(redis, script, router, notifier, tools=tools)
+    request = _request()
+    first_id = await _park(engine, request)
+    decision = await _door(redis, first_id, "approve")
+
+    response = await engine.resume_approval(decision, received_ms=_now_ms())
+
+    router.route.assert_awaited_once()
+    assert router.route.await_args.args[0].tool_name == "home.lock_unlock"
+    second_id = approval_id_for(first_id)
+    record = await read_pending(redis, second_id)
+    assert isinstance(record, ParkedRun)
+    assert [call.tool_name for call in record.calls] == ["home.garage_door_open"]
+    assert record.request_event_id == request.event_id
+    assert response.text == confirmation_reply("garage door open")
+    assert response.actions_taken == ["home.lock_unlock"]
+    assert (response.followup, response.in_reply_to) == (True, request.event_id)
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval == second_id
+    # The session holds the re-parked run, ending in the call the new approval decides.
+    assert len(session.messages) == len(ModelMessagesTypeAdapter.validate_json(record.messages))
+    [open_call] = [p for p in session.messages[-1].parts if isinstance(p, ToolCallPart)]
+    assert open_call.tool_call_id == record.calls[0].tool_call_id
+    assert notifier.publish.await_count == 2
+    assert notifier.publish.await_args.kwargs["metadata"]["pending_action_id"] == second_id
+
+
+@pytest.mark.asyncio
+async def test_a_door_decision_after_another_turn_keeps_that_turn() -> None:
+    """Ruling P13: a turn between the park and the decision closed the open call, stored
+    its own history and cleared the approval. The resume adds its answer to that history
+    as text rather than replacing it."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(
+        tool_call("home_lock_unlock", _LOCK), "Sunny, sir.", "The door is unlocked, sir."
+    )
+    engine = _engine(redis, script, router, notifier)
+    sessions = SessionManager(redis)
+    approval_id = await _park(engine)
+    decision = await _door(redis, approval_id, "approve")
+    await engine.process_request(_request("what's the weather?"))
+    between = (await sessions.load("sess-1", "web_pwa", "sir")).messages
+
+    response = await engine.resume_approval(decision, received_ms=_now_ms())
+
+    router.route.assert_awaited_once()
+    assert response.text == "The door is unlocked, sir."
+    session = await sessions.load("sess-1", "web_pwa", "sir")
+    assert session.messages[: len(between)] == between
+    assert len(session.messages) == len(between) + 2
+    assert _tail(session.messages) == [
+        (ModelRequest, APPROVED_MARKER),
+        (ModelResponse, "The door is unlocked, sir."),
+    ]
+    assert session.pending_approval is None
+
+
+@pytest.mark.asyncio
+async def test_a_door_decision_after_another_turn_parks_again_without_the_session() -> None:
+    """Ruling P13: after an intervening turn a re-park leaves the session's approval unset;
+    the new record is still answerable from the Door."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    tools = [*_TOOLS, _info("home.garage_door_open", risk="critical")]
+    script = Script(
+        tool_call("home_lock_unlock", _LOCK),
+        "Sunny, sir.",
+        tool_call("home_garage_door_open", {"entity_id": "cover.garage"}),
+    )
+    engine = _engine(redis, script, router, notifier, tools=tools)
+    sessions = SessionManager(redis)
+    approval_id = await _park(engine)
+    decision = await _door(redis, approval_id, "approve")
+    await engine.process_request(_request("what's the weather?"))
+    between = (await sessions.load("sess-1", "web_pwa", "sir")).messages
+
+    response = await engine.resume_approval(decision, received_ms=_now_ms())
+
+    assert response.text == confirmation_reply("garage door open")
+    assert isinstance(await read_pending(redis, approval_id_for(approval_id)), ParkedRun)
+    session = await sessions.load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval is None
+    assert session.messages[: len(between)] == between
+    assert _tail(session.messages) == [
+        (ModelRequest, APPROVED_MARKER),
+        (ModelResponse, confirmation_reply("garage door open")),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_door_resume_without_its_own_answer_stores_the_marker() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK), "", "", "")
+    engine = _engine(redis, script, router, notifier)
+    approval_id = await _park(engine)
+    decision = await _door(redis, approval_id, "deny")
+    parked = ModelMessagesTypeAdapter.validate_json(decision.run.messages)
+
+    response = await engine.resume_approval(decision, received_ms=_now_ms())
+
+    assert response.text == DELIBERATING_REPLY
+    assert response.followup is True
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert len(session.messages) == len(parked) + 2
+    assert _tail(session.messages) == [
+        (ModelRequest, DECLINED_MARKER),
+        (ModelResponse, DELIBERATING_REPLY),
+    ]
+    assert session.pending_approval is None
+
+
+@pytest.mark.asyncio
+async def test_a_door_decision_on_a_spent_budget_gets_the_budget_reply() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK), "never sent")
+    engine = _engine(redis, script, router, notifier)
+    request = _request()
+    approval_id = await _park(engine, request)
+    decision = await _door(redis, approval_id, "approve")
+    spend = build_spend_limits(redis, cap_usd=5.0, clock=local_clock(lambda: "UTC"))
+    (status,) = await spend.status()
+    await spend.store.add_many(  # type: ignore[union-attr]
+        [SpendEntry(key=status.key, usd=Decimal(6), requests=1)]
+    )
+
+    response = await engine.resume_approval(decision, received_ms=_now_ms())
+
+    assert response.text == BUDGET_REPLY
+    assert (response.followup, response.in_reply_to, response.mood) == (
+        True,
+        request.event_id,
+        "concerned",
+    )
+    assert script.call_count == 1
+    router.route.assert_not_awaited()
+
+
+async def _pending_decision(redis: fakeredis.FakeAsyncRedis, decision: ApprovalDecision) -> bytes:
+    await redis.xgroup_create(APPROVALS_STREAM, _GROUP, id="0", mkstream=True)
+    entry_id: bytes = await redis.xadd(APPROVALS_STREAM, {"event": decision.model_dump_json()})
+    await redis.xreadgroup(_GROUP, _CONSUMER, {APPROVALS_STREAM: ">"})
+    return entry_id
+
+
+async def _deliver_decision(
+    redis: fakeredis.FakeAsyncRedis, entry_id: bytes, engine: Any, delivery: int
+) -> None:
+    eid = entry_id.decode()
+    [(_id, fields)] = await forward_range(redis, APPROVALS_STREAM, min_id=eid, max_id=eid)
+    await process_approval_entry(
+        entry_id,
+        fields,
+        engine=engine,
+        redis=redis,
+        stream=APPROVALS_STREAM,
+        group=_GROUP,
+        consumer=_CONSUMER,
+        delivery=delivery,
+    )
+
+
+async def _approval_responses(redis: fakeredis.FakeAsyncRedis) -> list[AlfredResponse]:
+    return [
+        AlfredResponse.model_validate_json(fields[b"event"])
+        for _id, fields in await forward_range(redis, USER_RESPONSES_STREAM)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_door_decision_whose_history_no_longer_reads_fails_once() -> None:
+    """Ruling P17: the Door already claimed the record, so a retry cannot help. The
+    decision is answered once and leaves the stream; nothing runs."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK))
+    engine = _engine(redis, script, router, notifier)
+    request = _request()
+    approval_id = await _park(engine, request)
+    record = await claim_pending(redis, approval_id)
+    assert isinstance(record, ParkedRun)
+    broken = record.model_copy(update={"messages": '[{"kind": "no such message"}]'})
+    decision = ApprovalDecision(
+        source="channels", approval_id=approval_id, decision="approve", run=broken
+    )
+    entry_id = await _pending_decision(redis, decision)
+
+    await _deliver_decision(redis, entry_id, engine, delivery=1)
+
+    [reply] = await _approval_responses(redis)
+    assert reply.text == FAILED_REPLY
+    assert (reply.followup, reply.in_reply_to, reply.mood) == (
+        True,
+        request.event_id,
+        "concerned",
+    )
+    assert int((await redis.xpending(APPROVALS_STREAM, _GROUP))["pending"]) == 0
+    assert script.call_count == 1
+    router.route.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_door_approval_through_the_loop_never_runs_twice() -> None:
+    """The approved call ran and the answer was lost: the redelivered decision answers
+    from the approval's ledger, and the door is unlocked once."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK), "The door is unlocked, sir.")
+    engine = _engine(redis, script, router, notifier)
+    request = _request()
+    approval_id = await _park(engine, request)
+    await redis.xgroup_create(APPROVALS_STREAM, _GROUP, id="0", mkstream=True)
+    await _door(redis, approval_id, "approve")
+    [[_stream, [(entry_id, _fields)]]] = await redis.xreadgroup(
+        _GROUP, _CONSUMER, {APPROVALS_STREAM: ">"}
+    )
+    _first_publish_is_lost(redis)
+
+    await _deliver_decision(redis, entry_id, engine, delivery=1)
+    assert await forward_range(redis, USER_RESPONSES_STREAM) == []
+    await _deliver_decision(redis, entry_id, engine, delivery=2)
+
+    router.route.assert_awaited_once()
+    assert script.call_count == 2
+    [reply] = await _approval_responses(redis)
+    effects = await EffectLedger(redis).read(approval_id)
+    assert reply.text == ledger_reply(effects)
+    assert (reply.followup, reply.in_reply_to) == (True, request.event_id)
+    assert await redis.exists(ANSWERED_KEY.format(approval_id))
+    assert int((await redis.xpending(APPROVALS_STREAM, _GROUP))["pending"]) == 0
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert _tail(session.messages) == [
+        (ModelRequest, APPROVED_MARKER),
+        (ModelResponse, ledger_reply(effects)),
+    ]

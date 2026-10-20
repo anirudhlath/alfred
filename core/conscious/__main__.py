@@ -9,7 +9,7 @@ import asyncio
 import os
 import signal
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 # Import modules to trigger @register decorators
 import core.integrations.apple_calendar
@@ -22,7 +22,7 @@ from core.conscious.agent import build_system2_agent, system2_toolsets
 from core.conscious.approval_classifier import ApprovalClassifier
 from core.conscious.engine import ConsciousConfig, ConsciousDeps, ConsciousEngine
 from core.conscious.identity import IdentityGate
-from core.conscious.runner import process_request_entry
+from core.conscious.runner import process_approval_entry, process_request_entry
 from core.conscious.session import SessionManager
 from core.memory.context_index import ContextIndexManager
 from core.memory.embedding_backend import build_embedding_provider
@@ -59,12 +59,15 @@ from shared.redis_streams import create_redis, read_group, reclaim_due
 from shared.spend import ALERT_SOURCE, alert_if_needed, build_spend_limits, local_clock
 from shared.streams import (
     ACTIONS_STREAM,
+    APPROVALS_STREAM,
     USER_REQUESTS_STREAM,
     decode_stream_value,
 )
 from shared.usertime import last_user_timezone
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from shared.types import AioRedis
 
 _shutdown = asyncio.Event()
@@ -74,6 +77,13 @@ _INTERNAL_HANDLERS: dict[str, Any] = {}
 
 # The source of a confirmed action's outcome: its notification, or a failure result.
 OUTCOME_SOURCE = "conscious-engine"
+
+# The streams the conscious loop answers, each with the runner function for its entries:
+# a user's request, and the owner's decision from the Door on a parked run.
+_ENTRY_RUNNERS: Final[dict[str, Callable[..., Awaitable[None]]]] = {
+    USER_REQUESTS_STREAM: process_request_entry,
+    APPROVALS_STREAM: process_approval_entry,
+}
 
 
 def _handle_signal() -> None:
@@ -194,6 +204,56 @@ async def _consume_internal_actions(
                 await asyncio.sleep(1)
 
 
+async def _serve_once(
+    redis: AioRedis,
+    engine: ConsciousEngine,
+    *,
+    group: str,
+    consumer: str,
+    after_answer: Callable[[], Awaitable[object]] | None,
+) -> None:
+    """One pass of the conscious loop over requests and Door decisions.
+
+    One read covers both streams; then each stream's due redeliveries are reclaimed
+    (XREADGROUP '>' never redelivers, so a failed turn left un-ACKed only comes back
+    through a reclaim, once its backoff has elapsed). Every entry goes to its stream's
+    runner, which caps its deliveries, one at a time: a decision and a turn on the same
+    session never race.
+    """
+    entries = await read_group(
+        redis,
+        group,
+        consumer,
+        {USER_REQUESTS_STREAM: ">", APPROVALS_STREAM: ">"},
+        count=1,
+        block=5000,
+    )
+    # (stream, entry id, fields, delivery): a live read is the first delivery.
+    batch = [
+        (decode_stream_value(stream_key), entry_id, entry_data, 1)
+        for stream_key, stream_entries in entries
+        for entry_id, entry_data in stream_entries
+    ]
+    for stream in _ENTRY_RUNNERS:
+        batch.extend(
+            (stream, red.entry_id, red.fields, red.delivery)
+            for red in await reclaim_due(redis, stream, group, consumer)
+        )
+
+    for stream, entry_id, entry_data, delivery in batch:
+        await _ENTRY_RUNNERS[stream](
+            entry_id,
+            entry_data,
+            engine=engine,
+            redis=redis,
+            stream=stream,
+            group=group,
+            consumer=consumer,
+            delivery=delivery,
+            after_answer=after_answer,
+        )
+
+
 async def run(config: AlfredConfig) -> None:
     log = configure_logging(service="conscious")
     init_tracing(
@@ -209,11 +269,11 @@ async def run(config: AlfredConfig) -> None:
     prompts = PromptStore.from_config(config, redis=r)
     log.info("Prompts: {}", prompts.describe())
 
-    stream = USER_REQUESTS_STREAM
     group = "conscious-engine"
     consumer = "worker-1"
 
-    await ensure_consumer_group(r, stream, group)
+    for stream in _ENTRY_RUNNERS:
+        await ensure_consumer_group(r, stream, group)
 
     # Setup components
     # Memory components
@@ -464,38 +524,11 @@ async def run(config: AlfredConfig) -> None:
         notification_delivery_worker(r, group="conscious-delivery", shutdown=_shutdown)
     )
 
-    log.info("Conscious Engine started. Listening on '{}'...", stream)
+    log.info("Conscious Engine started. Listening on {}...", ", ".join(_ENTRY_RUNNERS))
 
     try:
         while not _shutdown.is_set():
-            entries = await read_group(r, group, consumer, {stream: ">"}, count=1, block=5000)
-            # (entry id, fields, delivery): a live read is the first delivery.
-            batch = [
-                (entry_id, entry_data, 1)
-                for _stream_key, stream_entries in entries
-                for entry_id, entry_data in stream_entries
-            ]
-
-            # XREADGROUP '>' never redelivers, so a failed turn left un-ACKed only comes
-            # back through a reclaim — every iteration, once its backoff has elapsed, and
-            # processed by the same runner, which caps its deliveries.
-            batch.extend(
-                (red.entry_id, red.fields, red.delivery)
-                for red in await reclaim_due(r, stream, group, consumer)
-            )
-
-            for entry_id, entry_data, delivery in batch:
-                await process_request_entry(
-                    entry_id,
-                    entry_data,
-                    engine=engine,
-                    redis=r,
-                    stream=stream,
-                    group=group,
-                    consumer=consumer,
-                    delivery=delivery,
-                    after_answer=alert,
-                )
+            await _serve_once(r, engine, group=group, consumer=consumer, after_answer=alert)
     finally:
         log.info("Shutting down Conscious Engine...")
         # Tasks are awaited, not merely cancelled: librarian_task runs consolidate()
