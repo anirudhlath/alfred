@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis
 import pytest
+from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.messages import (
     ModelMessagesTypeAdapter,
     ModelRequest,
@@ -22,13 +24,14 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
 )
+from pydantic_ai_harness.spend import SpendEntry
 
 from bus.schemas.events import ParkedCall, ParkedRun, UserRequest
 from core.conscious.agent import build_system2_agent, system2_toolsets
 from core.conscious.approval_classifier import ApprovalClassifier
 from core.conscious.approvals import Decision, approval_id_for, confirmation_reply
 from core.conscious.effects import Effect, EffectLedger, ledger_reply
-from core.conscious.engine import ConsciousDeps, ConsciousEngine
+from core.conscious.engine import BUDGET_AFTER_ACTING, ConsciousDeps, ConsciousEngine
 from core.conscious.runner import process_request_entry
 from core.conscious.session import SessionManager, text_turn
 from core.notifications.schema import Urgency
@@ -43,6 +46,9 @@ from shared.streams import (
 )
 from tests.core.conscious.helpers import identity
 from tests.llm_fakes import Script, tool_call, tool_calls
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 _GROUP = "conscious-engine"
 _CONSUMER = "worker-1"
@@ -71,7 +77,7 @@ def _info(name: str, risk: str = "benign", audience: str = REFLEX_AUDIENCE) -> T
     )
 
 
-_TOOLS = [_info("home.light_turn_on"), _info("home.lock_unlock", risk="critical")]
+_TOOLS = (_info("home.light_turn_on"), _info("home.lock_unlock", risk="critical"))
 
 
 def _router() -> AsyncMock:
@@ -108,7 +114,7 @@ def _engine(
     notifier: AsyncMock,
     *,
     approval: AsyncMock | None = None,
-    tools: list[ToolInfo] = _TOOLS,
+    tools: Sequence[ToolInfo] = _TOOLS,
 ) -> ConsciousEngine:
     """A real engine, System 2 agent and session store over fakeredis. The identity gate
     resolves a request by its claim: ``sir`` or a guest."""
@@ -117,7 +123,7 @@ def _engine(
         "sir" if kw["identity_claim"] == "sir" else "guest"
     )
     registry = AsyncMock()
-    registry.get_tools.return_value = tools
+    registry.get_tools.return_value = list(tools)
     spend = build_spend_limits(redis, cap_usd=5.0, clock=local_clock(lambda: "UTC"))
     return ConsciousEngine(
         deps=ConsciousDeps(
@@ -764,3 +770,135 @@ async def test_a_yes_resumes_from_the_parked_record_after_a_ledger_turn() -> Non
     assert router.route.await_args.args[0].confirmed is True
     assert response.text == "The door is unlocked, sir."
     assert await read_pending(redis, approval_id) is None
+
+
+# ── what goes wrong around a reply ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_approval_leaves_a_normal_turn() -> None:
+    """Ruling P15: a record that no longer parses is not claimable, so the owner's turn runs
+    as a normal one instead of failing on every delivery until the record expires."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier, approval = _router(), AsyncMock(), _classifier("approve")
+    script = Script(tool_call("home_lock_unlock", _LOCK), "Of course, sir.")
+    engine = _engine(redis, script, router, notifier, approval=approval)
+    approval_id = await _park(engine)
+    await redis.set(pending_key(approval_id), b"not a pending record", ex=300)
+
+    response = await engine.process_request(_request(_YES))
+
+    assert response.text == "Of course, sir."
+    approval.classify.assert_not_awaited()
+    router.route.assert_not_awaited()
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval is None
+
+
+@pytest.mark.asyncio
+async def test_an_approval_whose_history_no_longer_reads_stays_unclaimed() -> None:
+    """The record's history is read before the claim, so one that no longer decodes leaves
+    the approval where it was and the turn normal, rather than consuming it and failing."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier, approval = _router(), AsyncMock(), _classifier("approve")
+    script = Script(tool_call("home_lock_unlock", _LOCK), "Of course, sir.")
+    engine = _engine(redis, script, router, notifier, approval=approval)
+    approval_id = await _park(engine)
+    record = await read_pending(redis, approval_id)
+    assert isinstance(record, ParkedRun)
+    broken = record.model_copy(update={"messages": '[{"kind": "no such message"}]'})
+    await redis.set(pending_key(approval_id), broken.model_dump_json(), ex=300)
+
+    response = await engine.process_request(_request(_YES))
+
+    assert response.text == "Of course, sir."
+    approval.classify.assert_not_awaited()
+    router.route.assert_not_awaited()
+    assert await read_pending(redis, approval_id) == broken
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval is None
+
+
+@pytest.mark.asyncio
+async def test_a_record_changed_under_the_reply_runs_nothing() -> None:
+    """Defence in depth: the claim takes a record other than the one the reply was read
+    against, so nothing runs for it; it is consumed, which fails closed."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK), "Of course, sir.")
+    approval = _classifier("approve")
+    engine = _engine(redis, script, router, notifier, approval=approval)
+    approval_id = await _park(engine)
+
+    async def swapped(calls: list[ParkedCall], reply: str) -> Decision:
+        record = await claim_pending(redis, approval_id)
+        assert isinstance(record, ParkedRun)
+        assert await park_run(redis, record.model_copy(update={"summary": "something else"}))
+        return "approve"
+
+    approval.classify.side_effect = swapped
+
+    response = await engine.process_request(_request(_YES))
+
+    approval.classify.assert_awaited_once()
+    router.route.assert_not_awaited()
+    assert response.text == "Of course, sir."
+    assert await read_pending(redis, approval_id) is None
+
+
+@pytest.mark.asyncio
+async def test_a_classifier_outage_leaves_the_approval_for_the_retry() -> None:
+    """A provider failure in the classifier raises before the claim: the turn is retried
+    and the owner's yes is still there to be read."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK))
+    approval = _classifier("approve")
+    approval.classify.side_effect = ModelAPIError("m", "connection reset")
+    engine = _engine(redis, script, router, notifier, approval=approval)
+    approval_id = await _park(engine)
+    record = await read_pending(redis, approval_id)
+
+    with pytest.raises(ModelAPIError):
+        await engine.process_request(_request(_YES))
+
+    assert await read_pending(redis, approval_id) == record
+    router.route.assert_not_awaited()
+    assert script.call_count == 1
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval == approval_id
+
+
+@pytest.mark.asyncio
+async def test_a_budget_spent_mid_resume_says_what_was_done() -> None:
+    """The classifier's call (or another process) spends the day after the turn's budget
+    check: the approved call runs, the resumed run's model request is refused, and the
+    budget reply says what was done. The approval is spent; nothing ran unapproved."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK), "never sent")
+    approval = _classifier("approve")
+
+    async def spends_the_day(calls: list[ParkedCall], reply: str) -> Decision:
+        spend = build_spend_limits(redis, cap_usd=5.0, clock=local_clock(lambda: "UTC"))
+        (status,) = await spend.status()
+        await spend.store.add_many(  # type: ignore[union-attr]
+            [SpendEntry(key=status.key, usd=Decimal(6), requests=1)]
+        )
+        return "approve"
+
+    approval.classify.side_effect = spends_the_day
+    engine = _engine(redis, script, router, notifier, approval=approval)
+    approval_id = await _park(engine)
+    reply = _request(_YES)
+
+    response = await engine.process_request(reply)
+
+    assert script.call_count == 1
+    assert [call.args[0].confirmed for call in router.route.await_args_list] == [True]
+    effects = await EffectLedger(redis).read(reply.event_id)
+    assert response.text == f"{ledger_reply(effects)} {BUDGET_AFTER_ACTING}"
+    assert response.mood == "concerned"
+    assert await read_pending(redis, approval_id) is None
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval is None

@@ -111,6 +111,15 @@ class ConsciousConfig:
     involuntary_recall_threshold: float = DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 
 
+@dataclass(frozen=True)
+class _Resume:
+    """A parked run a reply decided: the history to continue and the verdict on its calls."""
+
+    approval_id: str
+    history: list[ModelMessage]
+    results: DeferredToolResults
+
+
 @dataclass
 class ConsciousDeps:
     """The engine's services, its agent and the model the agent runs on.
@@ -324,14 +333,10 @@ class ConsciousEngine:
         )
 
         history, results = session.messages, None
-        decided = await self._decided_run(request, identity.identity, session.pending_approval)
-        if decided is not None:
-            # The claimed record's history, not the session's: it ends in the open calls
-            # being answered, where the session may hold a text turn after them.
-            run, decision = decided
-            history = ModelMessagesTypeAdapter.validate_json(run.messages)
-            results = results_for(run, decision)
-            deps.approval_id = run.approval_id
+        resume = await self._resume_for(request, identity.identity, session.pending_approval)
+        if resume is not None:
+            history, results = resume.history, resume.results
+            deps.approval_id = resume.approval_id
 
         usage = RunUsage()
         text, mood, messages, deferred = await self._run(request, deps, history, usage, results)
@@ -355,32 +360,51 @@ class ConsciousEngine:
         await self._note(now, request.content, text, deps.actions_taken, usage)
         return self._reply(request, text, deps.actions_taken, mood=mood)
 
-    async def _decided_run(
+    async def _resume_for(
         self, request: UserRequest, who: str, approval_id: str | None
-    ) -> tuple[ParkedRun, Decision] | None:
-        """The parked run *request* decides, claimed, and the decision its words make.
+    ) -> _Resume | None:
+        """The parked run *request* decides, claimed, with the verdict its words give.
 
         Only the owner decides by reply, and only a run parked for them on this session
-        (``claimable_run``). The reply is classified before the record is claimed
-        (``GETDEL``), so a slow classifier never holds a claimed record and a crash after the
-        claim costs a re-ask, never an unapproved run. With no classifier every reply moves
-        on. None when there is nothing to decide, or when the Door decided first or the
-        approval lapsed: the turn is then a normal one.
+        (``claimable_run``). The record's history is read and the reply classified before
+        the record is claimed (``GETDEL``): a slow classifier never holds a claimed record,
+        and a history that no longer reads leaves the approval unclaimed. A crash after the
+        claim loses the reply, never runs anything unapproved: the retry is a normal turn in
+        which the open call reads as interrupted, and the owner is asked again only if the
+        model proposes the call again. With no classifier every reply moves on. None when
+        there is nothing to decide or it cannot be read, or when the Door decided first or
+        the approval lapsed: the turn is then a normal one.
+
+        The history is the record's, not the session's: it ends in the open calls being
+        answered, where the session may hold a text turn after them.
         """
         if approval_id is None or who != "sir":
             return None
         run = await claimable_run(self._redis, approval_id)
         if run is None or run.session_id != request.session_id:
             return None
+        try:
+            history = ModelMessagesTypeAdapter.validate_json(run.messages)
+        except ValueError:
+            logger.warning(
+                "Approval %s holds a history that no longer reads; a normal turn",
+                approval_id,
+                exc_info=True,
+            )
+            return None
         decision: Decision = "other"
         if self._approval is not None:
             decision = await self._approval.classify(run.calls, request.content)
         claimed = await claim_pending(self._redis, approval_id)
-        if not isinstance(claimed, ParkedRun):
+        if claimed is None:
             logger.info("Approval %s was settled before this reply could claim it", approval_id)
             return None
+        if claimed != run:
+            # Never expected: a record is written once (SET NX) and never changed.
+            logger.warning("Approval %s changed under the reply; nothing runs", approval_id)
+            return None
         logger.info("Reply decides approval %s: %s", approval_id, decision)
-        return claimed, decision
+        return _Resume(approval_id, history, results_for(run, decision))
 
     async def _park(
         self,

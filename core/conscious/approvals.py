@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
+from loguru import logger
 from pydantic_ai import DeferredToolResults, ToolApproved, ToolDenied
 
 from bus.schemas.events import REASON_MAX_LEN, ParkedCall, ParkedRun
@@ -158,9 +159,15 @@ async def park(
 async def claimable_run(redis: AioRedis, approval_id: str) -> ParkedRun | None:
     """The parked run behind *approval_id*, if it is the owner's to decide; unclaimed.
 
-    A run parked for anyone else is never resumed by a reply in the conversation.
+    A run parked for anyone else is never resumed by a reply in the conversation. Nor is a
+    record that no longer reads (a format change with a record in flight): the turn goes on
+    as a normal one rather than failing on every delivery until the record expires.
     """
-    record = await read_pending(redis, approval_id)
+    try:
+        record = await read_pending(redis, approval_id)
+    except ValueError:  # malformed JSON or a payload that no longer validates
+        logger.warning("Pending record {} is unreadable — not claimable", approval_id)
+        return None
     if isinstance(record, ParkedRun) and record.identity.get("identity") == _OWNER:
         return record
     return None

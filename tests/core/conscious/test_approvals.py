@@ -323,3 +323,9 @@ async def test_a_guest_record_is_not_claimable(redis: fakeredis.FakeAsyncRedis) 
     claimable = await claimable_run(redis, "appr-2")
     assert claimable is not None and claimable.approval_id == "appr-2"
     assert await claimable_run(redis, "missing") is None
+
+
+async def test_an_unreadable_record_is_not_claimable(redis: fakeredis.FakeAsyncRedis) -> None:
+    await redis.set(pending_key("appr-1"), b"not a pending record", ex=300)
+
+    assert await claimable_run(redis, "appr-1") is None
