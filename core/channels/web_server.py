@@ -31,17 +31,18 @@ from pydantic import BaseModel, Field
 from redis.exceptions import RedisError
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
+    from core.channels.followups import FollowupSink
     from core.channels.service_credentials import ServiceCredentialManifest
     from core.integrations.base import CredentialSchema
 
-from bus.schemas.events import UserRequest
+from bus.schemas.events import AlfredResponse, UserRequest
 from core.channels.admin_api import aclose_episodic, create_admin_router, require_authenticated
 from core.channels.request_bus import publish_and_wait
 from core.channels.satellite.bridge import SatelliteBridge
 from core.channels.satellite.config import load_satellites
-from core.channels.satellite.pipeline import SatellitePipeline
+from core.channels.satellite.pipeline import SatellitePipeline, satellite_name
 from core.channels.spa import SpaCacheMiddleware
 from core.channels.telemetry_ws import register_telemetry_ws
 from core.channels.voice_models import (  # re-exported for tests (see __all__)
@@ -57,6 +58,10 @@ from core.identity.credentials import CredentialStore
 from core.identity.ws_auth import require_ws_auth
 from core.notifications.adapters.satellite import SatelliteChannelAdapter
 from core.notifications.channels import ChannelRegistry
+from core.notifications.dispatcher import NotificationDispatcher
+from core.notifications.dnd import DNDChecker
+from core.notifications.publisher import NotificationPublisher
+from core.notifications.schema import Urgency
 from core.routing.pending import (
     decide,
     get_pending,
@@ -86,6 +91,8 @@ _SPA_DIST: Path = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
 
 
 _active_websockets: dict[WebSocket, str] = {}
+# The sockets on each chat session, so a follow-up reaches the session that asked (#307).
+_session_sockets: dict[str, set[WebSocket]] = {}
 _CHANNEL_SOURCE_MAP: dict[str, str] = {
     "ios": "ios-app",
     "web_pwa": "web-pwa",
@@ -105,6 +112,94 @@ def get_web_websockets() -> list[WebSocket]:
     adapters should only push to web clients to avoid duplicates.
     """
     return [ws for ws, ch in _active_websockets.items() if ch != "ios"]
+
+
+def _join_session(websocket: WebSocket, session_id: str) -> None:
+    _session_sockets.setdefault(session_id, set()).add(websocket)
+
+
+def _leave_session(websocket: WebSocket, session_id: str) -> None:
+    sockets = _session_sockets.get(session_id)
+    if sockets is None:
+        return
+    sockets.discard(websocket)
+    if not sockets:
+        del _session_sockets[session_id]
+
+
+async def _response_frame(response: AlfredResponse, session_id: str) -> dict[str, Any]:
+    """The chat socket's ``response`` frame for *response*, with its TTS audio when a voice
+    is loaded. One builder for the answer a socket waited for and for a follow-up."""
+    frame: dict[str, Any] = {
+        "type": "response",
+        "text": response.text,
+        "session_id": session_id,
+        "actions_taken": response.actions_taken,
+        "mood": response.mood,
+        "followup": response.followup,
+    }
+    tts = await aget_tts()
+    if tts is not None:
+        try:
+            wav_bytes = await synthesize_async(tts, response.text)
+            frame["audio"] = base64.b64encode(wav_bytes).decode()
+        except Exception as exc:
+            logger.error("TTS synthesis failed: {}", exc)
+    return frame
+
+
+def _followup_sink(
+    notifier: NotificationPublisher,
+    get_bridge: Callable[[], SatelliteBridge | None],
+) -> FollowupSink:
+    """Deliver a follow-up on the channel its request came from (#307)."""
+
+    async def deliver(response: AlfredResponse) -> None:
+        match response.channel:
+            case "web_pwa" | "voice" | "ios":
+                await _deliver_to_session(response, notifier)
+            case "satellite":
+                await _speak_on_satellite(response, get_bridge())
+            case "signal":
+                pass  # the bridge already sends every Signal response
+
+    return deliver
+
+
+async def _deliver_to_session(response: AlfredResponse, notifier: NotificationPublisher) -> None:
+    """Send the frame to the session's sockets; with none that takes it, notify instead."""
+    sent = 0
+    sockets = list(_session_sockets.get(response.session_id, ()))
+    if sockets:
+        frame = await _response_frame(response, response.session_id)
+        for websocket in sockets:
+            try:
+                await websocket.send_json(frame)
+                sent += 1
+            except Exception as exc:
+                logger.warning(
+                    "Follow-up to session {} not sent on a socket: {}", response.session_id, exc
+                )
+    if not sent:
+        await notifier.publish(
+            title="Alfred", body=response.text, source="channels", urgency=Urgency.IMPORTANT
+        )
+
+
+async def _speak_on_satellite(response: AlfredResponse, bridge: SatelliteBridge | None) -> None:
+    """Speak the reply on the satellite the session names."""
+    name = satellite_name(response.session_id)
+    if name is None or bridge is None:
+        logger.warning(
+            "Follow-up for session {} not spoken: no satellite bridge or name",
+            response.session_id,
+        )
+        return
+    tts = await aget_tts()
+    if tts is None:
+        logger.warning("Satellite '{}': TTS unavailable — follow-up not spoken", name)
+        return
+    await bridge.play_wav_to(name, await synthesize_async(tts, response.text))
 
 
 _ALLOWED_AUDIO_FORMATS = {"wav", "webm", "aac", "m4a", "mp4", "ogg", "mp3"}
@@ -357,6 +452,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     except Exception as exc:
         logger.warning("APNs adapter init failed ({}): {}", type(exc).__name__, exc)
 
+    from core.channels.followups import followup_worker
     from core.channels.service_credentials import credential_push_worker
 
     shutdown = asyncio.Event()
@@ -365,6 +461,19 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     )
     credential_push_task = asyncio.create_task(
         credential_push_worker(pool, app.state.http, shutdown=shutdown)
+    )
+    # Replies that land after a channel stopped waiting (#307). The bridge is read per
+    # delivery: it starts below, and may not start at all.
+    notifier = NotificationPublisher(
+        NotificationDispatcher(redis=pool, dnd_checker=DNDChecker(pool, calendar_adapter=None))
+    )
+    followup_task = asyncio.create_task(
+        followup_worker(
+            pool,
+            deliver=_followup_sink(notifier, lambda: getattr(app.state, "satellite_bridge", None)),
+            consumer="worker-1",
+            shutdown=shutdown,
+        )
     )
 
     # Load voice models in the background so the first audio message doesn't
@@ -417,7 +526,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     # behind the one before it, so a single raiser (or a cancellation during shutdown)
     # silently skipped the rest — leaking the http client and the Redis pool.
     await teardown(
-        tasks=[delivery_task, credential_push_task, warmup_task],
+        tasks=[delivery_task, credential_push_task, followup_task, warmup_task],
         closers={
             "satellite bridge": satellite_bridge.stop if satellite_bridge is not None else None,
             "apns adapter": getattr(apns, "close", None) if apns is not None else None,
@@ -514,6 +623,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         session_id = str(uuid4())
         session_locked = False
         await websocket.send_json({"type": "session", "session_id": session_id})
+        _join_session(websocket, session_id)
 
         try:
             while True:
@@ -548,8 +658,11 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                     continue
 
                 # Allow client to restore a previous session on its first message only
-                if not session_locked and (client_sid := data.get("session_id")):
+                client_sid = data.get("session_id")
+                if not session_locked and isinstance(client_sid, str) and client_sid:
+                    _leave_session(websocket, session_id)
                     session_id = client_sid
+                    _join_session(websocket, session_id)
                 session_locked = True
 
                 raw_type = data.get("type", "text")
@@ -623,30 +736,13 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                 )
 
                 alfred_resp = await publish_and_wait(r, request, session_id, timeout=60.0)
-
-                response_payload: dict[str, Any] = {
-                    "type": "response",
-                    "text": alfred_resp.text,
-                    "session_id": session_id,
-                    "actions_taken": alfred_resp.actions_taken,
-                    "mood": alfred_resp.mood,
-                }
-
-                # Synthesise audio for the response
-                tts = await aget_tts()
-                if tts is not None:
-                    try:
-                        wav_bytes = await synthesize_async(tts, alfred_resp.text)
-                        response_payload["audio"] = base64.b64encode(wav_bytes).decode()
-                    except Exception as exc:
-                        logger.error("TTS synthesis failed: {}", exc)
-
-                await websocket.send_json(response_payload)
+                await websocket.send_json(await _response_frame(alfred_resp, session_id))
 
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected (session={})", session_id)
         finally:
             _active_websockets.pop(websocket, None)
+            _leave_session(websocket, session_id)
 
     @app.get("/api/integrations", dependencies=[Depends(require_authenticated)])
     async def list_integrations(response: Response) -> list[dict[str, Any]]:

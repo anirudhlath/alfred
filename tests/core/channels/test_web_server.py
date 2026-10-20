@@ -322,6 +322,7 @@ def test_lifespan_shutdown_closes_everything_past_a_failing_closer(tmp_path: Pat
             "core.channels.service_credentials.credential_push_worker",
             new=AsyncMock(return_value=None),
         ),
+        patch("core.channels.followups.followup_worker", new=AsyncMock(return_value=None)),
         # None, not a MagicMock: a mock never fires add_done_callback, so asyncio.wait
         # in teardown burns its full timeout. teardown skips None tasks.
         patch("core.channels.web_server.start_warmup", return_value=None),
@@ -369,6 +370,7 @@ def test_lifespan_closes_a_real_redis_pool_without_a_deprecation_warning(tmp_pat
             "core.channels.service_credentials.credential_push_worker",
             new=AsyncMock(return_value=None),
         ),
+        patch("core.channels.followups.followup_worker", new=AsyncMock(return_value=None)),
         patch("core.channels.web_server.start_warmup", return_value=None),
         warnings.catch_warnings(record=True) as caught,
     ):

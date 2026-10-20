@@ -168,10 +168,16 @@ async def ensure_consumer_group(
     redis: AioRedis,
     stream: str,
     group: str,
+    *,
+    start_id: str = "0",
 ) -> None:
-    """Create a consumer group if it doesn't already exist."""
+    """Create a consumer group if it doesn't already exist.
+
+    A new group reads from *start_id*: ``"0"``, the default, delivers the stream's whole
+    history; ``"$"`` only what is added after the group is created.
+    """
     try:
-        await redis.xgroup_create(stream, group, id="0", mkstream=True)
+        await redis.xgroup_create(stream, group, id=start_id, mkstream=True)
         logger.info("Created consumer group '%s' on stream '%s'", group, stream)
     except aioredis.ResponseError as e:
         if "BUSYGROUP" in str(e):

@@ -461,6 +461,7 @@ def test_lifespan_starts_credential_push_worker() -> None:
             new=AsyncMock(return_value=None),
         ),
         patch("core.channels.service_credentials.credential_push_worker", new=fake_worker),
+        patch("core.channels.followups.followup_worker", new=AsyncMock(return_value=None)),
         patch("httpx.AsyncClient.aclose", new=AsyncMock()),
     ):
         app = create_app(redis_url="redis://localhost:6379")

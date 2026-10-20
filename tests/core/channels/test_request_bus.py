@@ -2,12 +2,15 @@
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import AsyncMock
 
+import fakeredis
+
 from bus.schemas.events import AlfredResponse, UserRequest
-from core.channels.request_bus import publish_and_wait
-from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM
+from core.channels.request_bus import FOLLOWUP_TTL_S, LATE_REPLY, publish_and_wait
+from shared.streams import FOLLOWUP_KEY, USER_REQUESTS_STREAM, USER_RESPONSES_STREAM
 
 
 def _request(session_id: str = "sat-kitchen") -> UserRequest:
@@ -196,3 +199,125 @@ async def test_the_timeout_fallback_names_the_request() -> None:
     result = await publish_and_wait(redis, request, "sat-kitchen", timeout=0.05)
 
     assert result.in_reply_to == request.event_id
+
+
+class _Bus(fakeredis.FakeAsyncRedis):
+    """A real stream store, with a stand-in for the conscious engine's timing.
+
+    ``on_request`` runs when the channel publishes its request, and ``on_give_up`` when it
+    marks its wait late: the two moments an answer lands in these tests. A blocking read
+    answers at once (fakeredis would sit out its whole second past a 50 ms timeout), so the
+    wait loop simply spins until its timeout.
+    """
+
+    on_request: Callable[[], Awaitable[None]] | None = None
+    on_give_up: Callable[[], Awaitable[None]] | None = None
+
+    async def xread(self, streams: Any, count: Any = None, block: Any = None, **kw: Any) -> Any:
+        return await super().xread(streams, count=count, **kw)
+
+    async def xadd(self, name: Any, fields: Any, *args: Any, **kwargs: Any) -> Any:
+        entry_id = await super().xadd(name, fields, *args, **kwargs)
+        if name == USER_REQUESTS_STREAM and self.on_request is not None:
+            await self.on_request()
+        return entry_id
+
+    async def set(self, name: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
+        result = await super().set(name, value, *args, **kwargs)
+        if kwargs.get("xx") and self.on_give_up is not None:
+            await self.on_give_up()
+        return result
+
+
+def _answer(request: UserRequest, text: str = "Done, sir.", **kw: Any) -> AlfredResponse:
+    return AlfredResponse(
+        source="conscious-engine",
+        channel=request.channel,
+        session_id=request.session_id,
+        text=text,
+        in_reply_to=request.event_id,
+        **kw,
+    )
+
+
+async def _publish(bus: _Bus, response: AlfredResponse) -> None:
+    await bus.xadd(USER_RESPONSES_STREAM, {"event": response.model_dump_json()})
+
+
+async def test_an_in_time_answer_clears_the_registration() -> None:
+    bus, request = _Bus(), _request()
+    key = FOLLOWUP_KEY.format(request.event_id)
+    seen_at_publish: list[bytes | None] = []
+
+    async def engine() -> None:
+        seen_at_publish.append(await bus.get(key))
+        await _publish(bus, _answer(request))
+
+    bus.on_request = engine
+
+    result = await publish_and_wait(bus, request, "sat-kitchen", timeout=5.0)
+
+    assert result.text == "Done, sir."
+    assert seen_at_publish == [b"waiting"]  # registered before the request went out
+    assert await bus.exists(key) == 0
+
+
+async def test_a_timeout_marks_the_registration_late_and_says_so() -> None:
+    bus, request = _Bus(), _request()
+    key = FOLLOWUP_KEY.format(request.event_id)
+
+    result = await publish_and_wait(bus, request, "sat-kitchen", timeout=0.05)
+
+    assert result.text == LATE_REPLY
+    assert result.in_reply_to == request.event_id
+    assert not result.followup
+    assert await bus.get(key) == b"late"
+    assert 0 < await bus.ttl(key) <= FOLLOWUP_TTL_S == 600
+
+
+async def test_an_answer_landing_at_the_timeout_is_returned_once() -> None:
+    """The answer lands as the channel gives up: its final read returns it, and the key
+    is gone, so the follow-up worker skips the same entry."""
+    bus, request = _Bus(), _request()
+    key = FOLLOWUP_KEY.format(request.event_id)
+
+    async def answer_now() -> None:
+        await _publish(bus, _answer(request, "Just in time, sir."))
+
+    bus.on_give_up = answer_now
+
+    result = await publish_and_wait(bus, request, "sat-kitchen", timeout=0.05)
+
+    assert result.text == "Just in time, sir."
+    assert await bus.exists(key) == 0
+
+
+async def test_an_answer_the_worker_claimed_first_is_not_returned_again() -> None:
+    """The worker won the DEL for the answer the final read also finds: the channel gives
+    the fallback, so the answer is shown once, by the worker."""
+    bus, request = _Bus(), _request()
+    key = FOLLOWUP_KEY.format(request.event_id)
+
+    async def worker_wins() -> None:
+        await _publish(bus, _answer(request, "Delivered by the worker."))
+        await bus.delete(key)
+
+    bus.on_give_up = worker_wins
+
+    result = await publish_and_wait(bus, request, "sat-kitchen", timeout=0.05)
+
+    assert result.text == LATE_REPLY
+
+
+async def test_a_followup_never_answers_a_waiting_request() -> None:
+    bus, request = _Bus(), _request()
+
+    async def engine() -> None:
+        await _publish(bus, _answer(request, "A resumed run's reply.", followup=True))
+        await _publish(bus, _answer(request, "The answer."))
+
+    bus.on_request = engine
+
+    result = await publish_and_wait(bus, request, "sat-kitchen", timeout=5.0)
+
+    assert result.text == "The answer."

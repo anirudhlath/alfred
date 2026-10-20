@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from loguru import logger
 
@@ -17,6 +17,20 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from core.channels.satellite.bridge import SatelliteConnection
+
+# A satellite's conversation is one session per device, named after it.
+_SESSION_PREFIX: Final = "sat-"
+
+
+def satellite_session_id(name: str) -> str:
+    """The session id of the satellite configured as *name*."""
+    return f"{_SESSION_PREFIX}{name}"
+
+
+def satellite_name(session_id: str) -> str | None:
+    """The satellite a ``satellite_session_id`` names, or None for any other session."""
+    name = session_id.removeprefix(_SESSION_PREFIX)
+    return name if name and name != session_id else None
 
 
 class SatellitePipeline:
@@ -78,7 +92,7 @@ class SatellitePipeline:
             except Exception as exc:
                 logger.warning("Satellite '{}': speaker ID failed: {}", entry.name, exc)
 
-        session_id = f"sat-{entry.name}"
+        session_id = satellite_session_id(entry.name)
         request = UserRequest(
             source="satellite",
             channel="satellite",
