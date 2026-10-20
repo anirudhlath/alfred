@@ -17,7 +17,7 @@ import core.integrations.apple_health
 import core.integrations.robinhood
 import core.integrations.weather
 import core.triggers.types  # noqa: F401  # trigger type registrations
-from bus.schemas.events import ActionRequest
+from bus.schemas.events import ActionRequest, ActionResult
 from core.conscious.agent import build_system2_agent, system2_toolsets
 from core.conscious.engine import ConsciousConfig, ConsciousDeps, ConsciousEngine
 from core.conscious.identity import IdentityGate
@@ -38,9 +38,11 @@ from core.memory.scratchpad_writer import ScratchpadWriter
 from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
 from core.notifications.publisher import NotificationPublisher
+from core.notifications.schema import Urgency
 from core.reflex.context_reader import ContextReader
 from core.reflex.runner import ensure_consumer_group
 from core.reflex.tool_registry import ToolRegistry
+from core.routing.action_results import publish_action_result
 from core.routing.domain_router import DomainRouter
 from core.shutdown import teardown
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
@@ -69,15 +71,62 @@ _shutdown = asyncio.Event()
 # Internal action handlers: tool_name → async callable
 _INTERNAL_HANDLERS: dict[str, Any] = {}
 
+# The source of a confirmed action's outcome: its notification, or a failure result.
+OUTCOME_SOURCE = "conscious-engine"
+
 
 def _handle_signal() -> None:
     _shutdown.set()
+
+
+async def _report_outcome(
+    redis: AioRedis,
+    log: Any,
+    notifier: NotificationPublisher | None,
+    action: ActionRequest,
+    result: ActionResult,
+) -> None:
+    """Tell the clients and the owner how a confirmed action went.
+
+    The result goes to the stream the PWA's Door waits on; the owner is notified either
+    way, and a failure is logged at WARNING. Neither delivery can fail the consumer: the
+    action has already run, so its entry is acked regardless.
+    """
+    if result.status == "error":
+        log.warning(
+            "Confirmed action '{}' on {} failed: {}",
+            action.tool_name,
+            action.target_service,
+            result.error,
+        )
+        title = "That didn't work"
+        body = (
+            f"'{action.tool_name}' on {action.target_service} failed: "
+            f"{result.error or 'no reason given'}"
+        )
+    else:
+        log.info("Confirmed action '{}' executed (status={})", action.tool_name, result.status)
+        title = "Done"
+        body = f"I ran '{action.tool_name}' on {action.target_service}, sir."
+    try:
+        await publish_action_result(redis, result)
+    except Exception as e:
+        log.error("Could not publish the result of confirmed action '{}': {}", action.tool_name, e)
+    if notifier is None:
+        return
+    try:
+        await notifier.publish(
+            title=title, body=body, source=OUTCOME_SOURCE, urgency=Urgency.IMPORTANT
+        )
+    except Exception as e:
+        log.error("Could not notify the outcome of confirmed action '{}': {}", action.tool_name, e)
 
 
 async def _consume_internal_actions(
     redis: AioRedis,
     log: Any,
     router: DomainRouter | None = None,
+    notifier: NotificationPublisher | None = None,
 ) -> None:
     """Background consumer for ACTIONS_STREAM.
 
@@ -85,7 +134,8 @@ async def _consume_internal_actions(
     drain_deferred_notifications) to registered handlers, and executes
     CONFIRMED domain actions (republished by the confirmation flow) via the
     DomainRouter — which passes confirmed requests through without
-    re-interception. All other target_services are acked and skipped.
+    re-interception — then reports the outcome (result stream + notification).
+    All other target_services are acked and skipped.
     """
     stream = ACTIONS_STREAM
     group = "conscious-engine"
@@ -115,13 +165,16 @@ async def _consume_internal_actions(
                         ):
                             try:
                                 result = await router.route(action)
-                                log.info(
-                                    "Confirmed action '{}' executed (status={})",
-                                    action.tool_name,
-                                    result.status,
-                                )
                             except Exception as e:
-                                log.error("Confirmed action '{}' failed: {}", action.tool_name, e)
+                                log.error("Confirmed action '{}' raised: {}", action.tool_name, e)
+                                result = ActionResult(
+                                    source=OUTCOME_SOURCE,
+                                    request_id=action.request_id,
+                                    tool_name=action.tool_name,
+                                    status="error",
+                                    error=str(e) or type(e).__name__,
+                                )
+                            await _report_outcome(redis, log, notifier, action, result)
                         # Ack either way — not-ours or handled above
                         await redis.xack(stream, group, entry_id)
                         continue
@@ -360,7 +413,7 @@ async def run(config: AlfredConfig) -> None:
         log.warning("Librarian skipped — memory system unavailable")
 
     # Start internal actions consumer (handles drain_deferred_notifications from triggers)
-    internal_actions_task = asyncio.create_task(_consume_internal_actions(r, log, router))
+    internal_actions_task = asyncio.create_task(_consume_internal_actions(r, log, router, notifier))
 
     # Trigger cache reconciliation net (60s), mirroring the triggers process:
     # pub/sub keeps the cache coherent; the periodic refresh heals any missed message.

@@ -45,10 +45,10 @@ def test_confirmed_roundtrip_sdk_to_bus() -> None:
 
 
 def test_pending_and_attention_prefixes_exist() -> None:
-    from shared.streams import ATTENTION_PREFIX, PENDING_ACTIONS_PREFIX
+    from shared.streams import ATTENTION_PREFIX, PENDING_PREFIX
 
     assert ATTENTION_PREFIX == "alfred:attention:"
-    assert PENDING_ACTIONS_PREFIX == "alfred:pending_actions:"
+    assert PENDING_PREFIX == "alfred:pending:"
 
 
 def test_reason_defaults_to_none_and_roundtrips_bus_to_sdk() -> None:

@@ -12,7 +12,7 @@ from core.conscious.effects import SIDE_EFFECT
 from core.conscious.tools.catalog import TOOL_RETRIES
 from core.conscious.tools.sir_only import SirOnlyToolset
 from core.reflex import attention
-from core.routing.pending import confirm_pending_action as confirm_pending
+from core.routing.pending import decide
 
 
 async def confirm_pending_action(ctx: RunContext[TurnDeps], request_id: str) -> dict[str, str]:
@@ -22,10 +22,9 @@ async def confirm_pending_action(ctx: RunContext[TurnDeps], request_id: str) -> 
     Args:
         request_id: The pending action id from the confirmation notification.
     """
-    confirmed = await confirm_pending(ctx.deps.services.redis, request_id)
-    if confirmed is None:
+    if not await decide(ctx.deps.services.redis, request_id, "approve"):
         raise ToolFailed(f"No pending action '{request_id}' — it may have expired")
-    return {"status": "confirmed", "request_id": request_id, "tool_name": confirmed.tool_name}
+    return {"status": "confirmed", "request_id": request_id}
 
 
 async def attention_add(ctx: RunContext[TurnDeps], domain: str, entity_id: str) -> dict[str, str]:

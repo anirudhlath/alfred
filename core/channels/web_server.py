@@ -12,7 +12,7 @@ import time
 from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import httpx
@@ -58,11 +58,11 @@ from core.identity.ws_auth import require_ws_auth
 from core.notifications.adapters.satellite import SatelliteChannelAdapter
 from core.notifications.channels import ChannelRegistry
 from core.routing.pending import (
-    confirm_pending_action,
-    get_pending_action,
-    list_pending_actions,
-    pending_action_payload,
+    decide,
+    get_pending,
+    list_pending,
     pending_key,
+    pending_payload,
 )
 from core.shutdown import teardown
 from core.warmup import start_warmup
@@ -918,24 +918,24 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     # Must stay above /api/actions/{request_id} — FastAPI matches in registration order.
     @app.get("/api/actions/pending", dependencies=[Depends(require_authenticated)])
-    async def list_pending() -> dict[str, list[dict[str, Any]]]:
-        """Every critical action still waiting for confirmation, oldest first."""
+    async def list_pending_approvals() -> dict[str, list[dict[str, Any]]]:
+        """Every critical action still waiting for a decision, oldest first."""
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
         try:
-            items = await list_pending_actions(r)
+            items = await list_pending(r)
         except Exception as e:
             logger.warning("Could not list the pending actions: {}", e)
             raise HTTPException(status_code=503, detail=_ACTION_STORE_DOWN) from e
-        return {"actions": [pending_action_payload(a, ttl) for a, ttl in items]}
+        return {"actions": [pending_payload(record, ttl) for record, ttl in items]}
 
     @app.get("/api/actions/{request_id}", dependencies=[Depends(require_authenticated)])
-    async def get_pending(request_id: str) -> dict[str, Any]:
-        """One pending action with its remaining fuse. Does not consume it."""
+    async def get_pending_approval(request_id: str) -> dict[str, Any]:
+        """One pending record with its remaining fuse. Does not consume it."""
         if not _REQUEST_ID_RE.fullmatch(request_id):
             raise HTTPException(status_code=400, detail="Invalid request id")
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
         try:
-            item = await get_pending_action(r, request_id)
+            item = await get_pending(r, request_id)
         except ValueError:
             # Same tombstone the list gives an unreadable entry (core/routing/pending.py):
             # a value that no longer parses is gone as far as a client is concerned, and
@@ -949,24 +949,37 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             raise HTTPException(status_code=503, detail=_ACTION_STORE_DOWN) from e
         if item is None:
             raise HTTPException(status_code=404, detail="Pending action not found or expired")
-        action, ttl = item
-        return pending_action_payload(action, ttl)
+        record, ttl = item
+        return pending_payload(record, ttl)
+
+    async def _decide_pending(request_id: str, decision: Literal["approve", "deny"]) -> None:
+        """Claim a pending record and act on the decision; 404 when there is none."""
+        if not _REQUEST_ID_RE.fullmatch(request_id):
+            raise HTTPException(status_code=400, detail="Invalid request id")
+        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
+        try:
+            decided = await decide(r, request_id, decision)
+        except Exception as e:
+            logger.warning("Could not {} pending action {}: {}", decision, request_id, e)
+            raise HTTPException(status_code=503, detail=_ACTION_STORE_DOWN) from e
+        if not decided:
+            raise HTTPException(status_code=404, detail="Pending action not found or expired")
 
     @app.post("/api/actions/{request_id}/confirm", dependencies=[Depends(require_authenticated)])
     async def confirm_action(request_id: str) -> dict[str, str]:
-        """Confirm a pending critical action — republishes it with confirmed=True.
+        """Approve a pending critical action.
 
-        The pending entry was stored by the DomainRouter's critical-action
-        interception (TTL 5 min). Expired or unknown IDs return 404.
+        A router-held action is republished with confirmed=True; a parked System 2 run
+        is handed to the conscious process to resume. Expired or unknown IDs return 404.
         """
-        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
-        confirmed = await confirm_pending_action(r, request_id)
-        if confirmed is None:
-            raise HTTPException(status_code=404, detail="Pending action not found or expired")
-        logger.info(
-            "Pending action {} confirmed via web (tool={})", request_id, confirmed.tool_name
-        )
+        await _decide_pending(request_id, "approve")
         return {"status": "confirmed"}
+
+    @app.post("/api/actions/{request_id}/deny", dependencies=[Depends(require_authenticated)])
+    async def deny_action(request_id: str) -> dict[str, str]:
+        """Deny a pending critical action. Expired or unknown IDs return 404."""
+        await _decide_pending(request_id, "deny")
+        return {"status": "denied"}
 
     @app.post(
         "/api/voice/enroll",

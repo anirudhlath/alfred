@@ -93,9 +93,8 @@ SPEND_ALERT_KEY = "alfred:spend:alert:{}"
 # Phase 3: Integration registry
 INTEGRATION_REGISTRY_KEY = "alfred:integration_registry"
 
-# Attention set + pending critical actions (Real-Home HA Integration, Plan 3)
+# Attention set (Real-Home HA Integration, Plan 3)
 ATTENTION_PREFIX = "alfred:attention:"  # + domain → Redis SET of entity_ids
-PENDING_ACTIONS_PREFIX = "alfred:pending_actions:"  # + request_id → ActionRequest JSON, TTL 300s
 
 # Deferred approvals. + approval id -> PendingRecord JSON (a parked run or a router-held
 # action), TTL 300 s; every resolution path claims it with GETDEL, so it resolves once.

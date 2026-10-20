@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from bus.schemas.events import ActionRequest
+from bus.schemas.events import ActionRequest, ParkedAction
 from core.conscious.tools.attention import ATTENTION_FUNCTIONS, attention_toolset
 from tests.core.conscious.helpers import make_deps, make_services, tool_agent
 from tests.llm_fakes import Script, tool_call
@@ -40,7 +40,7 @@ async def test_confirm_republishes_the_pending_action() -> None:
         source="conscious-engine", target_service="home-service", tool_name="home.unlock_door"
     )
     redis = _redis()
-    redis.getdel = AsyncMock(return_value=action.model_dump_json().encode())
+    redis.getdel = AsyncMock(return_value=ParkedAction(action=action).model_dump_json().encode())
     script = Script(tool_call("confirm_pending_action", {"request_id": action.request_id}), "ok")
 
     await tool_agent(script, attention_toolset()).run(
@@ -50,7 +50,6 @@ async def test_confirm_republishes_the_pending_action() -> None:
     assert json.loads(script.returns(1)[0]) == {
         "status": "confirmed",
         "request_id": action.request_id,
-        "tool_name": "home.unlock_door",
     }
     stream, fields = redis.xadd.call_args[0]
     assert stream == "alfred:actions"
