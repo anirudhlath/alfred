@@ -33,6 +33,8 @@ classDiagram
     BaseEvent <|-- ToolRegistration
     BaseEvent <|-- TriggerFired
     BaseEvent <|-- TriggerCreated
+    BaseEvent <|-- AlfredResponse
+    BaseEvent <|-- ApprovalDecision
 
     class BaseEvent {
         event_id: str [uuid4]
@@ -78,7 +80,7 @@ A request to execute an MCP tool on a target microservice. Produced by the Refle
 | `tool_name`      | `str`                | MCP tool name, e.g. `smart_home.dim_lights`       |
 | `parameters`     | `dict[str, Any]`     | Tool-specific parameters                          |
 | `reason`         | `str \| None`        | Why the actor wants this; shown on the confirmation prompt. Null unless a conscious-engine critical call supplied it. **Truncated at 500 characters** (`REASON_MAX_LEN`) — it rides into APNs metadata, whose payload ceiling is 4 KB; a wordy reason is cut, never a dropped action |
-| `confirmed`      | `bool`               | Default false; set true only by the confirmation flow (contract C3) |
+| `confirmed`      | `bool`               | Default false; set true only by the confirmation flow (contract C3): a resumed run's approved call (`ctx.tool_call_approved`), or the Door's approval of an action the router held |
 
 ### ActionResult
 
@@ -145,6 +147,45 @@ Published by the Trigger Engine when a new trigger is dynamically created via CR
 | `conditions`   | `dict[str, Any]`      | Trigger-type-specific conditions                   |
 | `action`       | `dict[str, Any]\|None`| Action payload, if set                             |
 | `one_shot`     | `bool`                | Whether the trigger deletes itself after firing    |
+
+### AlfredResponse
+
+Alfred's outbound answer to a user channel, on `alfred:user:responses`. Produced by the Conscious Engine.
+
+| Field          | Type                | Description                                                              |
+|----------------|---------------------|--------------------------------------------------------------------------|
+| `event_type`   | `"alfred_response"` | Fixed                                                                    |
+| `channel`      | `ChannelName`       | Which channel the request came from                                      |
+| `session_id`   | `str`               | The conversation                                                         |
+| `text`         | `str`               | The reply                                                                |
+| `actions_taken`| `list[str]`         | Tools the turn called                                                    |
+| `mood`         | `str`               | `neutral`, `pleased`, `concerned`, `amused` or `serious`                 |
+| `in_reply_to`  | `str \| None`       | The answered request's `event_id`; a channel matches on it when set       |
+| `followup`     | `bool`              | Default false. True for an answer nobody waited for: the resumed run of an approved or declined action. A late answer to a request whose caller already got a fallback is not marked here, the channels' follow-up worker recognises it by its registration (`docs/notifications.md`) |
+
+### ParkedRun and ParkedAction
+
+Not events: the two records a held critical action is stored as, at `alfred:pending:{id}`
+(TTL 300 s), told apart by `kind` (the `PENDING_RECORD` union). Every path that answers
+one claims it with `GETDEL`. Flow and diagram: [`autonomy.md`](autonomy.md).
+
+| Record | `kind` | Fields |
+|--------|--------|--------|
+| `ParkedRun` | `"parked_run"` | `approval_id`, `session_id`, `channel`, `identity`, `request_event_id`, `created_at`, `content_type`, `area`, `tz_name`, `summary`, `calls` (at least one `ParkedCall`: `tool_call_id`, `tool_name`, `target_service`, `parameters`, `reason`), `messages` (the run's history, opaque JSON) |
+| `ParkedAction` | `"action"` | `action`: the `ActionRequest` the router intercepted |
+
+### ApprovalDecision
+
+The owner's decision on a parked run, added to `alfred:approvals` when the Door confirms or
+denies it. The conscious process reads that stream (group `conscious-engine`) next to
+`alfred:user:requests` and resumes the run.
+
+| Field         | Type                  | Description                                    |
+|---------------|-----------------------|------------------------------------------------|
+| `event_type`  | `"approval_decision"` | Fixed                                          |
+| `approval_id` | `str`                 | The approval, the same id the Door shows       |
+| `decision`    | `"approve" \| "deny"` | What the owner chose                           |
+| `run`         | `ParkedRun`           | The claimed record, so the resume needs no second lookup |
 
 ## MQTT-Redis Bridge
 

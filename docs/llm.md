@@ -14,6 +14,7 @@ traces are recorded, and how the eval harness tells the roles apart.
 | System 1 (Reflex) | `core/reflex/openai_client.py` | `OPENAI_COMPAT_HOST` + `OPENAI_COMPAT_MODEL` | none (raw HTTP) | `system1` |
 | System 2 (Conscious) | `core/conscious/agent.py`, `engine.py` | `SYSTEM2_MODEL` | `system2` | `system2` |
 | Librarian | `core/librarian/agents.py` | `LIBRARIAN_MODEL` | `librarian-analyse`, `librarian-extract`, `librarian-resolve`, `librarian-compress`, `librarian-patterns` | `librarian` |
+| Approval classifier | `core/conscious/approval_classifier.py` | `APPROVAL_MODEL` | `approval-classifier` | `approval` |
 
 The header name and values live in `shared/llm_roles.py`, which has no dependencies so the
 Reflex process can import it without loading Pydantic AI. Every chat request Alfred sends
@@ -25,10 +26,10 @@ backend send none.
 ```mermaid
 flowchart LR
     Env[".env / environment"] --> R["resolve_llm_settings()<br/>shared/config.py"]
-    R -->|legacy CLAUDE_MODEL translated,<br/>one warning| C["AlfredConfig<br/>system2_model, librarian_model,<br/>vllm_base_url, openrouter_api_key"]
+    R -->|legacy CLAUDE_MODEL translated,<br/>one warning| C["AlfredConfig<br/>system2_model, librarian_model,<br/>approval_model, vllm_base_url,<br/>openrouter_api_key"]
     C --> A["apply_model_env()<br/>exports VLLM_BASE_URL,<br/>OPENROUTER_API_KEY"]
     A --> M["resolve_model(setting, value)<br/>shared/agents.py"]
-    M -->|Model| Agents["System 2 / Librarian agents"]
+    M -->|Model| Agents["System 2 / Librarian /<br/>approval classifier agents"]
     M -->|None, one ERROR| Fallback["not-configured reply /<br/>Librarian fallbacks"]
 ```
 
@@ -38,6 +39,7 @@ A model is a Pydantic AI model string; there is no model factory.
 |---|---|---|
 | `SYSTEM2_MODEL` | the translated `CLAUDE_MODEL`, else `openrouter:anthropic/claude-sonnet-4` | `openrouter:<vendor>/<model>` or `vllm:<served-name>` |
 | `LIBRARIAN_MODEL` | `SYSTEM2_MODEL` | the same forms |
+| `APPROVAL_MODEL` | `SYSTEM2_MODEL` | the same forms; reads the owner's reply to a pending confirmation (see [Approvals](#approvals)) |
 | `VLLM_BASE_URL` | the first set of `OPENAI_BASE_URL` (legacy only, see below), `OPENAI_COMPAT_HOST`, `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended | where `vllm:` models are served |
 | `OPENROUTER_API_KEY` | `CLAUDE_API_KEY` | the key `openrouter:` models use |
 | `SYSTEM2_MAX_TOKENS` | `CLAUDE_MAX_TOKENS`, else 2048 | System 2's per-request output cap |
@@ -61,6 +63,8 @@ the role runs without a model:
   sir."*
 - The Librarian keeps its deterministic fallbacks: no analysis, concatenated compression
   summaries, no pattern detection.
+- The approval classifier reads every reply as `other`: no reply approves anything. The
+  Door still works.
 
 The production System 2 model is set in the deploy `.env` only; the repo never names it.
 `VLLM_BASE_URL` and `LANGFUSE_HOST` are in `GATEWAY_REWRITE_KEYS`, so a `localhost` value
@@ -88,12 +92,13 @@ sequenceDiagram
     T-->>A: result, or ModelRetry with the reason
     A->>M: tool results
     M-->>A: final text
-    A-->>E: output (str) + usage
+    A-->>E: output (str, or DeferredToolRequests when a critical call waits) + usage
     E->>E: store the session's messages, scratchpad note
 ```
 
 **The agent** is built once per process by `build_system2_agent()`
-(`core/conscious/agent.py`): output type `str`, two output retries, model settings
+(`core/conscious/agent.py`): output type `[str, DeferredToolRequests]` (the run ends in text,
+or in the critical calls awaiting the owner, see [Approvals](#approvals)), two output retries, model settings
 `max_tokens`, `timeout` and the role header, and the instructions assembled per turn by
 `assemble()` (`core/conscious/context_assembler.py`) from `TurnDeps`, whose prose sections
 the engine rendered from the prompt store before the run (see [Prompts](#prompts)). Its capabilities are
@@ -156,7 +161,7 @@ name the framework reserves for its tool search (see [Tool search](#tool-search)
 |---|---|---|---|
 | 1 | `TriggerToolset` (over `TriggerFeature`'s metas) | `tools/triggers.py` | sir: all; guest: `create_trigger` (benign actions only) |
 | 2 | memory (`memory_recall_memories`, `memory_get_live_state`) | `tools/memory.py` | sir, when the turn has a context index |
-| 3 | attention + `confirm_pending_action` | `tools/attention.py` | sir |
+| 3 | attention (`attention_add`, `attention_remove`, `attention_list`) | `tools/attention.py` | sir |
 | 4 | integrations | `tools/integrations.py` | sir |
 | 5 | `RegistryToolset` (every SDK-registered tool except the `trigger-engine` service's, which `TriggerToolset` serves; non-reflex tools load on demand, see [Tool search](#tool-search)) | `tools/registry.py` | sir: all; guest: `benign` risk only |
 
@@ -187,9 +192,11 @@ drops only that tool, with one ERROR across requests.
 ([#303](https://github.com/anirudhlath/alfred/issues/303)). A domain error reaches it as a
 failed tool result with the service's exact text and does not spend a retry. Critical tools
 take an optional `reason` argument, which `RegistryToolset` moves onto
-`ActionRequest.reason` so the service never sees it. Confirmations still go through the
-router's critical intercept and `confirm_pending_action` until PR 5; the intercept's
-`confirmation_required:<id>` text reaches the model as plain content, not as a failed call.
+`ActionRequest.reason` so the service never sees it. A critical tool does not run on its
+first call: its validator raises `ApprovalRequired` and the run parks (see
+[Approvals](#approvals)). If the router parks an action itself anyway, the model reads a
+failed tool result, `INTERCEPTED` ("This action needs the owner's confirmation; a request was
+sent to their phone."), with no approval id in it to hand to anything.
 An unexpected exception in a toolset is logged with its traceback, and the model reads only
 *"`{name}` failed"*: the exception's text can carry hosts or paths.
 
@@ -230,6 +237,61 @@ exchange and the model searches again.
 Embedding search over the tool descriptions, ranked by cosine, is the planned follow-up if
 keyword search misses; it plugs into `ToolSearch` as a strategy function.
 
+### Approvals
+
+A `critical` registry tool never runs on the model's say-so
+([#317](https://github.com/anirudhlath/alfred/issues/317) PR 5). The flow end to end,
+with its diagram, is in [`autonomy.md`](autonomy.md#confirmation-flow-for-critical-actions);
+this is the part that belongs to the LLM layer.
+
+- **The gate.** Once a critical call's arguments are valid, `RegistryToolset`'s validator
+  raises `ApprovalRequired` unless `ctx.tool_call_approved` is set. The call is neither
+  recorded in the effect ledger nor dispatched, and the run ends in `DeferredToolRequests`.
+  `confirmed` on the routed `ActionRequest` is that same flag; the model has no argument
+  that sets it and never sees an approval id.
+- **Parking.** `core/conscious/approvals.py` holds the run in **one** record for all the
+  calls it deferred: its message history, the calls, the identity and the request that
+  started it, at `alfred:pending:{id}` for 300 s, `SET NX`. The id is a `uuid5` of the
+  request's key, so a redelivered turn parks the same approval. The turn's reply is a fixed
+  template (*"Before I do that, I need your confirmation: ... Shall I, sir?"*), with no
+  model call. The session stores the id as `pending_approval`.
+- **A reply is read by the classifier** (`ApprovalClassifier`). While a session has a
+  `pending_approval`, the next message from **sir** on it is classified against the pending
+  calls: `approve`, `deny` or `other`, by the `approval-classifier` prompt
+  (`{{actions}}`: what Alfred asked to do) on `APPROVAL_MODEL`. The classifier runs before
+  the record is claimed, so a slow model never holds a claimed record; if the Door answered
+  first, the reply is a normal turn. A missing model, an output that never validates
+  (one retry) and the daily budget all read as `other`: the call is left unconfirmed rather
+  than guessed at. A guest never reaches it.
+- **Resuming.** The run resumes from the record's history with a `DeferredToolResults`:
+  `ToolApproved()` on `approve`, `ToolDenied("The user declined.")` on `deny`,
+  `ToolDenied("Not confirmed; the user moved on.")` on `other`. The reply is also the
+  resumed run's user prompt. A resumed run can park again.
+- **A Door decision** arrives on `alfred:approvals` and is read by the same loop and runner
+  as a request (`process_approval_entry`): the same reclaim, `MAX_DELIVERIES` and dead
+  letters ([Retries](#retries)). Its request id is the approval id and its age is measured
+  from the stream entry, so the replay window runs from the decision. Its reply is a
+  follow-up (`AlfredResponse.followup`), delivered per
+  [`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes). A
+  decision that cannot be decoded is answered once with a follow-up failure reply and
+  dead-lettered `permanent`.
+- **Storing the resumed run.** A Door resume writes the resumed messages into the session
+  only if the session's `pending_approval` still equals that approval id. Otherwise a newer
+  approval was parked since: a marker turn is appended and the newer one stays pending.
+- **Unreadable records.** A pending record that cannot be read never blocks the
+  conversation: the turn proceeds as a normal one, and the record expires.
+- **Expiry** is silent. The next turn closes the open call with `repair_messages`.
+
+**Operating note: `APPROVAL_MODEL`.** It defaults to `SYSTEM2_MODEL`, so leaving it blank
+inherits a model `alfredctl doctor` already checks. Set it only to use a smaller model for
+yes/no, and set it right: a provider or transport failure is not a verdict, it propagates
+and the turn is retried like any other. A permanent 4xx, such as a typo'd model, is
+classified permanent (see [Retries](#retries)), so **every `sir` turn on a session answers
+`FAILED_REPLY` while that session has a pending approval**, for up to 300 s, until the
+record expires and turns stop reaching the classifier. The Door is unaffected. `alfredctl
+doctor` does not check `APPROVAL_MODEL` yet; when replies to a confirmation fail, read
+`alfred:conscious:dead_letters` for the error.
+
 ## The Librarian
 
 `build_librarian_agents(model)` (`core/librarian/agents.py`) builds five agents, one per
@@ -254,7 +316,8 @@ call fails, each caller keeps its deterministic fallback.
 
 ## Prompts
 
-The prose of System 2's instructions and of the Librarian's five agents is served by the
+The prose of System 2's instructions, of the Librarian's five agents and of the approval
+classifier is served by the
 prompt store (`shared/prompts/`). In production it lives in a self-hosted Langfuse, where
 it can be edited and versioned without a deploy; without Langfuse, Alfred serves the repo
 defaults in `shared/prompts/defaults/<name>.md`, which are versioned in git. Langfuse is
@@ -274,6 +337,7 @@ optional (see [Deployment](deployment.md#prompts-from-langfuse-optional)).
 | `librarian-compress` | none |
 | `librarian-resolve` | `{{min_observations}}`, `{{min_days}}` |
 | `librarian-patterns` | `{{min_occurrences}}`, `{{min_days}}`, `{{tz_name}}` |
+| `approval-classifier` | `{{actions}}` |
 
 A name is also its default's file name and its name in Langfuse. Variables use Langfuse's
 `{{name}}` syntax. **The store renders only the prose; code renders the data**: the
@@ -406,13 +470,14 @@ it is never retried.
   ACKing leaves the marker, so the redelivery only ACKs and never answers twice.
 - **Side-effect ledger** (`core/conscious/effects.py`). A toolset marks a side-effecting
   tool with `SIDE_EFFECT` in its `ToolDefinition` metadata: every registry tool, the trigger
-  and attention mutations, `confirm_pending_action`, and every integration capability its
+  and attention mutations, and every integration capability its
   adapter does not mark a read (`IntegrationCapability.side_effect`, default True, so an
   unmarked one counts as a write; the calendar's `create_event` and `delete_event` are
   writes, the `get_*` and `list_*` capabilities reads). `RecordEffects` writes each such
   call to the list `alfred:conscious:effects:{event_id}` (TTL 3600 s) before it runs and
-  settles it after as `ok` or `failed`. A call held for the user's confirmation settles as
-  `parked`: nothing happened yet. A call refused by identity scope never acted, so its entry
+  settles it after as `ok` or `failed`. A critical call that waits for the owner never reaches
+  `RecordEffects` (the validator stops it first); the engine writes it with status `parked`
+  (`EffectLedger.parked_call`), after the confirmation notification: nothing happened yet. A call refused by identity scope never acted, so its entry
   is struck out. If the `started` write fails the call does not run. If settling fails the
   entry stays `started`, which reads as in doubt, never as not done.
 - **Answering from the ledger.** A turn that fails after acting, or a delivery that finds a
@@ -443,7 +508,8 @@ redis-cli XRANGE alfred:conscious:dead_letters - +
 
 ## Spend
 
-Every agent that calls a model — System 2 and the five Librarian agents — carries the
+Every agent that calls a model — System 2, the approval classifier and the five Librarian
+agents — carries the
 same `SpendLimits` capability from pydantic-ai-harness, built by `build_spend_limits`
 (`shared/spend.py`): one `day` budget of `DAILY_COST_CAP_USD`, `warn_at` 0.8.
 `DAILY_COST_CAP_USD` of 0 or less is the kill switch: every model request, a $0 vLLM one
@@ -506,7 +572,7 @@ one-toolset agent.
 |---|---|
 | 3 | prompts move to the self-hosted Langfuse, with repo defaults (done, see [Prompts](#prompts)) |
 | 4 | full session history, tool calls and results included (done, see Sessions under System 2) |
-| 5 | deferred tool approvals replace the critical intercept; late replies become follow-ups |
+| 5 | deferred tool approvals replace the chat confirmation tool; late replies become follow-ups (done, see [Approvals](#approvals) and [`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes)) |
 | 6 | retries, the turn ledger and spend on the harness's `SpendLimits` (done, see [Retries](#retries) and [Spend](#spend)) |
 | 7 | the judge uses Inspect's own OpenAI provider; `evals/harness/vllm_model.py` goes |
 | 8 | Reflex becomes an agent; Ollama is dropped |
@@ -519,15 +585,18 @@ one-toolset agent.
 | `shared/agents.py` | `resolve_model` (providers on the retrying client), `model_key`, `role_headers`, `instrumentation` |
 | `shared/config.py` | `resolve_llm_settings`, the LLM fields on `AlfredConfig`, `apply_model_env` |
 | `shared/otel.py` | `langfuse_attributes`, `LangfuseBaggageProcessor` |
-| `shared/prompts/` | `names` (the twelve prompts and their variables), `store.PromptStore`, `template`, `link` (the span link), `cli` (`alfred prompts`), `defaults/<name>.md` |
+| `shared/prompts/` | `names` (the thirteen prompts and their variables), `store.PromptStore`, `template`, `link` (the span link), `cli` (`alfred prompts`), `defaults/<name>.md` |
 | `core/conscious/system2_prompts.py` | `System2Prompts`: one turn's rendered sections |
 | `core/conscious/agent.py` | `build_system2_agent`, `system2_toolsets`, `REQUEST_LIMIT` |
-| `core/conscious/engine.py` | `ConsciousEngine`: one turn around one agent run |
+| `core/conscious/engine.py` | `ConsciousEngine`: one turn around one agent run, `resume_approval` for a Door decision |
+| `core/conscious/approvals.py` | `park`, `claimable_run`, `results_for`, `confirmation_reply`: holding a run for the owner and the verdicts |
+| `core/conscious/approval_classifier.py` | `ApprovalClassifier`: a reply read as `approve`, `deny` or `other` |
 | `core/conscious/deps.py` | `TurnServices`, `TurnDeps` |
 | `core/conscious/tools/` | `names`, `scope`, `catalog`, `sir_only`, `validation`, `registry`, `search`, `triggers`, `memory`, `attention`, `integrations` |
 | `core/librarian/agents.py` | the five Librarian agents and their output models |
 | `shared/llm_http.py` | `RetryingTransport`, `RetryPolicy`, `retrying_http_client` |
-| `core/conscious/runner.py` | `process_request_entry`: delivery, answered marker, ledger answers, dead letters |
+| `core/conscious/runner.py` | `process_request_entry` and `process_approval_entry`: delivery, answered marker, ledger answers, dead letters |
+| `core/channels/followups.py` | `followup_worker`: late answers and Door resumes delivered to the owner |
 | `core/conscious/failures.py` | `classify`, `dead_letter`, `FAILED_REPLY`, `MAX_DELIVERIES` |
 | `core/conscious/effects.py` | `RecordEffects`, `EffectLedger`, `ledger_reply` |
 | `shared/spend.py` | `build_spend_limits`, `price`, `alert_if_needed`, `spend_snapshot` |

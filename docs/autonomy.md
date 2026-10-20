@@ -63,75 +63,200 @@ stop the user from asking Alfred for something directly.
 
 ## Confirmation flow for critical actions
 
+A critical action never runs on the model's say-so, and never on the strength of a
+confirmation the model supplied itself. There are two doors into the same store, and
+one record shape per door (`core/routing/pending.py`, `bus/schemas/events.py`):
+
+| Record | Written by | Holds | Resolved by |
+|---|---|---|---|
+| `ParkedRun` (`kind="parked_run"`) | the conscious engine, when a System 2 run defers its critical calls | the run's message history, every deferred call (tool, service, parameters, reason), the identity it ran as, the request that started it | a reply in the conversation, or the Door; the **run resumes** |
+| `ParkedAction` (`kind="action"`) | `DomainRouter._intercept_critical`, for a critical `ActionRequest` that reaches the router unconfirmed (a trigger, or any caller that is not a parked run) | the `ActionRequest` itself | the Door only; the **action is republished** with `confirmed=True` |
+
+Both live at `alfred:pending:{id}` with a 300 s TTL (`PENDING_TTL_SECONDS`) and are
+read back through one discriminated union, `PENDING_RECORD`. Every path that answers one
+claims it with an atomic `GETDEL`, so two answers to the same approval can never both
+act: the second finds nothing. This is what keeps a door lock from running twice.
+
+### A System 2 run that wants a critical action
+
 ```mermaid
 sequenceDiagram
-    participant CE as Conscious/Trigger
-    participant DR as DomainRouter
-    participant R as Redis
-    participant N as NotificationDispatcher
-    participant U as User (web/chat)
-    participant IC as internal-actions consumer
+    participant Owner
+    participant Door as PWA Door
+    participant Web as Web server
+    participant Engine as Conscious engine
+    participant Redis
+    participant Dispatcher as Notification dispatcher
+    participant Router as DomainRouter
+    participant Home as Domain service
 
-    CE->>DR: ActionRequest (risk=critical, confirmed=false)
-    DR->>R: SET alfred:pending_actions:{id} EX 300
-    DR->>N: URGENT notification (metadata: pending_action_id, tool_name, parameters, reason)
-    DR-->>CE: ActionResult error "confirmation_required:{id}"
-    U->>R: POST /api/actions/{id}/confirm  OR  confirm_pending_action tool
-    R->>R: GETDEL pending key (atomic), republish to alfred:actions confirmed=true
-    IC->>DR: route(confirmed ActionRequest)
-    DR->>DR: risk=critical but confirmed → pass through
+    Owner->>Engine: "lock the front door" (alfred:user:requests)
+    Engine->>Engine: critical call raises ApprovalRequired, run ends with DeferredToolRequests
+    Engine->>Redis: SET NX alfred:pending:{id} ParkedRun, EX 300
+    Engine->>Redis: session.pending_approval = {id}
+    Engine->>Dispatcher: URGENT "Confirmation required" (source conscious-engine, pending_action_id)
+    Engine->>Redis: effect ledger: parked (written last)
+    Engine-->>Owner: "Before I do that, I need your confirmation: ... Shall I, sir?"
+    Dispatcher-->>Door: notification frame, the Door rises
+
+    alt Owner answers in the conversation
+        Owner->>Engine: "yes" / "no" / something else
+        Engine->>Engine: ApprovalClassifier reads the reply: approve, deny or other
+        Engine->>Redis: GETDEL alfred:pending:{id}
+        Engine->>Engine: resume the run with ToolApproved or ToolDenied
+    else Owner answers on the Door
+        Owner->>Door: slide to confirm, or Don't
+        Door->>Web: POST /api/actions/{id}/confirm or /deny
+        Web->>Redis: GETDEL alfred:pending:{id}, XADD alfred:approvals
+        Engine->>Redis: XREADGROUP alfred:approvals (group conscious-engine)
+        Engine->>Engine: resume the run with ToolApproved or ToolDenied
+    end
+
+    Engine->>Router: ActionRequest confirmed=true (approved calls only)
+    Router->>Home: execute
+    Home-->>Router: result
+    Engine->>Redis: XADD home_action_results ActionResult (request id = approval id)
+    alt resumed by a reply
+        Engine-->>Owner: the resumed run's answer
+    else resumed by the Door
+        Engine-->>Owner: late reply, followup=true (see notifications.md)
+    end
 ```
 
-- Confirmation metadata: the URGENT notification carries `pending_action_id`,
-  `tool_name`, `parameters` and `reason` — enough for a client to render the prompt
-  without a second lookup. `reason` is the actor's one-sentence justification, offered
-  as an extra argument on critical tools and moved off `parameters` by
-  `RegistryToolset` (`core/conscious/tools/registry.py`) so the domain service never sees it —
-  unless the tool declares `reason` as its own parameter, in which case it belongs
-  to the service and `ActionRequest.reason` stays null.
-  It is **null for every non-conscious source** (trigger-fired actions —
-  `core/triggers/engine.py` — and any caller that omits it), so clients must render
-  the prompt without a reason rather than assuming one is present.
-- Pending store helpers: `core/routing/pending.py` (`PENDING_TTL_SECONDS=300`).
-  `confirm_pending_action()` uses an atomic `GETDEL` (not GET-then-DELETE) so two
-  concurrent confirms of the same id can never both republish — only one caller ever
-  gets the ActionRequest back; every other confirm (concurrent or after) gets `None`.
-  This is what prevents a critical action (e.g. a door unlock) from executing twice.
-- Web confirm: `POST /api/actions/{request_id}/confirm` (auth cookie
-  required; 404 when expired). The PWA client raises the action as the Door
-  (`web/src/door/DoorProvider.tsx` + `web/src/lib/actions.ts`), which tracks it from
-  three independent feeds — the `/api/actions/pending` read, a `/ws` notification frame
-  carrying `metadata.pending_action_id`, and the `home_action_results` telemetry stream
-  — and confirms it with a slide, never a tap. A 200 here reads `Confirmed · queued`:
-  **applied** comes only from `home_action_results`, and a 404 reads `already answered`.
-  Notifications that carry no `pending_action_id` are not confirmable and render as act
+1. **Park.** `RegistryToolset` (`core/conscious/tools/registry.py`) checks each critical
+   call in its args validator and raises Pydantic AI's `ApprovalRequired` unless
+   `ctx.tool_call_approved` is set (once the call's arguments are valid). The agent's output type is
+   `[str, DeferredToolRequests]`, so the run ends with the deferred calls instead of an
+   answer. `core/conscious/approvals.py` turns them into **one** `ParkedRun` for the whole
+   run — one approval covers every call it deferred — keyed by a `uuid5` of the request's
+   key, so a redelivered turn finds the same approval and its `SET NX` loses to the first
+   write.
+2. **Notify.** An `URGENT` notification, title `Confirmation required`, source
+   `"conscious-engine"`, goes out through the dispatcher before the ledger is touched.
+   It carries `pending_action_id`, `tool_name`, `parameters` and `reason`. `reason` is the
+   actor's one-sentence justification, offered as an extra argument on critical tools and
+   moved off `parameters` by `RegistryToolset` so the domain service never sees it — unless
+   the tool declares `reason` as its own parameter, in which case it belongs to the service
+   and stays out of the metadata. It is **null for every non-conscious source**
+   (trigger-fired actions, `core/triggers/engine.py`, and any caller that omits it), so
+   clients render the prompt without a reason rather than assuming one. The router's own
+   confirmation notification, for an action it intercepted, has source `"domain-router"`.
+3. **Remember.** The session stores `pending_approval = {id}` (only `store_run` sets or
+   clears it, `append_text_turn` leaves it alone), and each parked call is written to the
+   request's effect ledger with status `parked`, **last**. A crash before the ledger is
+   written repeats the notification on redelivery, with the same id: at-least-once, never
+   lost. A redelivery that finds a `parked` ledger entry answers from it and does not run
+   the turn again.
+4. **Answer in the conversation.** While a session has a `pending_approval`, the next
+   message from **sir** is read by the `ApprovalClassifier`
+   (`core/conscious/approval_classifier.py`, role `approval`, prompt `approval-classifier`):
+   `approve`, `deny` or `other`. Any failure of the classifier, including a model error,
+   reads as `other`. The reply is *also* the resumed run's user prompt, so the model sees
+   what was said. A guest turn never reaches the classifier — a guest cannot approve
+   anything. `approve` resumes with `ToolApproved()`; `deny` with
+   `ToolDenied("The user declined.")`; `other` with
+   `ToolDenied("Not confirmed; the user moved on.")`, and the run carries on with the new
+   message as an ordinary turn.
+5. **Answer on the Door.** `POST /api/actions/{id}/confirm` and `/deny` call `decide()`
+   (`core/routing/pending.py`), which claims the record and, for a parked run, adds an
+   `ApprovalDecision` to `alfred:approvals`. The conscious loop reads that stream and
+   `alfred:user:requests` through one consumer group (`conscious-engine`), so a decision
+   gets the same reclaim, retry and dead-letter policy as a turn. The resumed run's request
+   id is the approval id; its `received_ms` is the stream entry's time, so the replay guard
+   measures from the decision, not from the original message. Its reply is an
+   `AlfredResponse` with `followup=True` and `in_reply_to` the original request, which
+   reaches the owner through the late-answer path in
+   [`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes).
+6. **Execute.** An approved call runs with `confirmed=True` (`ctx.tool_call_approved`) and
+   the registry publishes its `ActionResult` to `home_action_results` under the approval id
+   — that is what flips the Door's row from `queued` to `applied` or `failed`. A failed
+   action reaches the model as a failed tool result, so the reply says it failed
+   ([#306](https://github.com/anirudhlath/alfred/issues/306)). A denied call returns the
+   verdict text to the model as the tool's result.
+7. **Resume store.** The resumed messages go back into the session only if the session's
+   `pending_approval` still equals that approval id. Otherwise a newer approval has been
+   parked since: the engine appends a marker turn (`APPROVED_MARKER` / `DECLINED_MARKER`)
+   and leaves the newer one in place. A resumed run can itself park again.
+8. **Expire.** Silent (Redis TTL). Nothing is notified. The session still names the
+   approval; the next turn finds no record, the open call is closed by `repair_messages`,
+   and the conversation goes on. A reply to an expired approval is a normal turn.
+
+Failure handling on the Door's side of the stream:
+
+- A decision that cannot be decoded is answered once with a follow-up failure reply and
+  dead-lettered with reason `permanent`.
+- A pending record that cannot be read (malformed JSON, a format that no longer validates)
+  **never blocks the conversation**: the turn proceeds as a normal turn and the record
+  expires on its own.
+- A decision is keyed on its approval id, so the resumed run's effect ledger and answered
+  marker are its own: a redelivery answers once and cannot act twice. An entry that cannot be
+  parsed at all is ACKed and dropped, as everywhere else.
+
+### An action the router intercepts
+
+`DomainRouter.route()` still guards the dispatch layer for everything that is not a parked
+run. A critical `ActionRequest` with `confirmed=false` is parked as a `ParkedAction`
+(notification source `"domain-router"`, the same `Confirmation required` title and
+metadata) and the caller gets an `ActionResult` error `confirmation_required:{id}`. Only
+the Door can answer it: `decide()` republishes the action to `alfred:actions` with
+`confirmed=True` on approve and drops it on deny. The conscious process's
+`_consume_internal_actions` consumer (group `conscious-engine` on `alfred:actions`) runs
+`confirmed=True` domain actions through the DomainRouter, and reports the outcome:
+an `ActionResult` on `home_action_results` and a `Done` / `That didn't work`
+notification (source `conscious-engine`, `IMPORTANT`); a failure is also logged at
+WARNING. That notification is how the owner learns the outcome of an action nobody was
+waiting on ([#306](https://github.com/anirudhlath/alfred/issues/306)).
+
+### The Door
+
+The PWA raises both record kinds as the Door (`web/src/door/DoorProvider.tsx` +
+`web/src/lib/actions.ts`), tracked from three independent feeds — the
+`/api/actions/pending` read, a `/ws` notification frame carrying
+`metadata.pending_action_id`, and the `home_action_results` telemetry stream. Confirming
+is a slide, never a tap; declining is a separate **Don't** button. Phases: `pending`,
+`queued` (a 200 from confirm), `applied` and `failed` (only from `home_action_results`),
+`declined`, `expired`, `answered` (a 404: someone or something else answered first).
+Full behaviour in [`web-frontend.md`](web-frontend.md#the-door).
+
+- A confirm or deny that fails with anything other than 404 (a 503, no network) leaves the
+  item pending so the owner can retry while the fuse runs; the failure is logged to the
+  console.
+- A late `failed` result after a decline shows what the lock did, rather than hiding it.
+- Notifications that carry no `pending_action_id` are not confirmable and render as act
   rows in the Room's timeline instead (`web/src/room/rows/ActRow.tsx`).
-- Web reads: `GET /api/actions/pending` → `{"actions": [...]}`, oldest request first,
-  and `GET /api/actions/{request_id}` → one action (404 `Pending action not found or
-  expired` when it is missing, the TTL has run out, or the stored value no longer parses
-  — the list skips exactly that entry, so the two reads agree). A `request_id` outside
-  `[A-Za-z0-9_-]{1,128}` is **400** `Invalid request id` before Redis is touched, and a
-  store failure on either read is **503** `Action store unavailable`. Both are
-  session-gated by the same auth cookie as the confirm route, and both are
-  **non-consuming** — a plain `GET`,
-  never the `GETDEL` the confirm path uses — so a client may poll or re-open a push-tap
-  deep link without spending the confirmation. Each entry carries `request_id`,
-  `tool_name`, `target_service`, `parameters`, `reason`, `source`, `timestamp`,
-  `ttl_seconds` and `expires_at`. `ttl_seconds` is clamped at 0 (Redis reports -2 for a
-  key that vanished between the read and the TTL, -1 for one with no expiry), so clients
-  can render the remaining fuse directly without guarding for a negative.
-- Chat confirm: Conscious internal tool `confirm_pending_action(request_id)`
-  (`core/conscious/tools/attention.py`) — works over Signal/iOS/web chat. The confirm and
-  `attention_*` tools form a sir-only toolset: never offered on a guest turn, and refused
-  at call time if a guest turn names one anyway — defense-in-depth against a guest-turn
-  model hallucinating the call.
-- Execution: the conscious process's `_consume_internal_actions` consumer
-  (group `conscious-engine` on `alfred:actions`) routes `confirmed=True`
-  domain actions through the DomainRouter.
-- Expiry: silent (Redis TTL); confirming an expired action returns 404 /
-  a tool error.
-- **v1 rule:** critical actions require confirmation even when directly
-  user-initiated — the LLM never self-certifies.
+
+### HTTP surface
+
+- `POST /api/actions/{request_id}/confirm` and `/deny` — auth cookie required; 404 when
+  the approval is gone. A `request_id` outside `[A-Za-z0-9_-]{1,128}` is **400**
+  `Invalid request id` before Redis is touched.
+- `GET /api/actions/pending` → `{"actions": [...]}`, oldest request first, and
+  `GET /api/actions/{request_id}` → one action (404 `Pending action not found or expired`
+  when it is missing, the TTL has run out, or the stored value no longer parses — the list
+  skips exactly that entry, so the two reads agree). A store failure on either read is
+  **503** `Action store unavailable`. Both are session-gated by the same auth cookie and
+  **non-consuming** — a plain `GET`, never the `GETDEL` the answers use — so a client may
+  poll or re-open a push-tap deep link without spending the approval. Each entry carries
+  `request_id`, `tool_name`, `target_service`, `parameters`, `reason`, `source`,
+  `timestamp`, `ttl_seconds` and `expires_at`; a parked run lists its first deferred call.
+  `ttl_seconds` is clamped at 0 (Redis reports -2 for a key that vanished between the read
+  and the TTL, -1 for one with no expiry), so clients can render the remaining fuse
+  directly.
+
+### Rules that hold on every path
+
+- **Critical actions require confirmation even when the owner asked directly.** The model
+  never self-certifies: there is no tool that confirms an action, the model never sees an
+  approval id, and `confirmed` on a registry call is set from the approval the harness
+  holds (`ctx.tool_call_approved`), never from the model's arguments.
+- **Only sir answers.** The classifier and the confirm routes are owner-only; the
+  `attention_*` tools (`core/conscious/tools/attention.py`) form a sir-only toolset, never
+  offered on a guest turn and refused at call time if a guest turn names one anyway.
+- **One answer wins.** `GETDEL` is the arbiter on every path; the loser gets 404 on the
+  Door and nothing on the stream.
+- **Eval coverage.** The `critical_actions` suite drives the server half of this flow
+  (reply, Door and refusal paths); see [`evals.md`](evals.md). The PWA half is a manual
+  checklist: [`qa-backlog/critical-action-confirmation-flow.md`](qa-backlog/critical-action-confirmation-flow.md).
 
 ## Resilience
 
