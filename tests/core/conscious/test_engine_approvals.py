@@ -14,7 +14,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis
 import pytest
-from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, ModelResponse, ToolCallPart
+from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+)
 
 from bus.schemas.events import ParkedCall, ParkedRun, UserRequest
 from core.conscious.agent import build_system2_agent, system2_toolsets
@@ -68,7 +74,7 @@ def _router() -> AsyncMock:
     return router
 
 
-def _request() -> UserRequest:
+def _request(content: str = "let the dog walker in") -> UserRequest:
     return UserRequest(
         source="web-pwa",
         channel="web_pwa",
@@ -76,7 +82,7 @@ def _request() -> UserRequest:
         identity_claim="sir",
         authenticated=True,
         content_type="text",
-        content="let the dog walker in",
+        content=content,
     )
 
 
@@ -159,6 +165,60 @@ async def test_a_critical_call_parks_the_run() -> None:
     assert (note["source"], note["urgency"]) == ("conscious-engine", Urgency.URGENT)
     assert note["title"] == "Confirmation required"
     assert note["metadata"]["pending_action_id"] == approval_id
+
+
+@pytest.mark.asyncio
+async def test_the_next_turn_closes_a_parked_call() -> None:
+    """A run parked on a critical call alone ends in a response with an open call, and
+    Pydantic AI refuses a new prompt after one. The next turn that does not resume closes
+    it as interrupted, and nothing runs."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK), "Sunny, sir.")
+    engine = _engine(redis, script, router, notifier)
+    await engine.process_request(_request())
+
+    response = await engine.process_request(_request("what's the weather?"))
+
+    assert response.text == "Sunny, sir."
+    assert response.actions_taken == []
+    router.route.assert_not_awaited()
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval is None
+    [call] = [
+        p
+        for m in session.messages
+        if isinstance(m, ModelResponse)
+        for p in m.parts
+        if isinstance(p, ToolCallPart)
+    ]
+    [closed] = [
+        p
+        for m in session.messages
+        if isinstance(m, ModelRequest)
+        for p in m.parts
+        if isinstance(p, ToolReturnPart) and p.tool_call_id == call.tool_call_id
+    ]
+    assert (closed.metadata or {}).get("pydantic_ai_synthesized_tool_return") is True
+
+
+@pytest.mark.asyncio
+async def test_the_next_turn_keeps_an_ordinary_history() -> None:
+    """Closing open calls changes nothing in a history that has none."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    light = {"entity_id": "light.hall"}
+    script = Script(tool_call("home_light_turn_on", light), "On, sir.", "Sunny, sir.")
+    engine = _engine(redis, script, router, notifier)
+    sessions = SessionManager(redis)
+    await engine.process_request(_request("hall light on"))
+    first = (await sessions.load("sess-1", "web_pwa", "sir")).messages
+
+    await engine.process_request(_request("what's the weather?"))
+
+    second = (await sessions.load("sess-1", "web_pwa", "sir")).messages
+    assert second[: len(first)] == first
+    assert len(second) == len(first) + 2
 
 
 @pytest.mark.asyncio

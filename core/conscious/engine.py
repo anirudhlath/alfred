@@ -22,9 +22,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal
 
-from pydantic_ai import DeferredToolRequests
+from pydantic_ai import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
-from pydantic_ai.messages import ModelMessagesTypeAdapter
+from pydantic_ai.messages import ModelMessagesTypeAdapter, repair_messages
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness.spend import SpendLimitExceeded
 
@@ -434,6 +434,7 @@ class ConsciousEngine:
         deps: TurnDeps,
         history: list[ModelMessage],
         usage: RunUsage,
+        deferred_tool_results: DeferredToolResults | None = None,
     ) -> tuple[str, Mood, list[ModelMessage], DeferredToolRequests | None]:
         """One agent run: its reply, its mood, the session's history after it, and the calls
         it deferred for approval, if it ended waiting on them (its reply is then empty).
@@ -441,7 +442,14 @@ class ConsciousEngine:
         A finished run's history is ``all_messages()``, compacted during the run. A run
         that ends without its own answer leaves *history* plus the turn as text, never its
         half-finished messages. *usage* accumulates across it, for the note.
+
+        A run that resumes (*deferred_tool_results*) takes *history* as it is: its open
+        calls are the ones being answered. Any other run first closes open calls as
+        interrupted (``repair_messages``, a no-op on a history without them): a parked
+        run's history ends in its open call, and Pydantic AI refuses a new prompt after it.
         """
+        if deferred_tool_results is None:
+            history = repair_messages(history)
         model = self._model
         if model is None:
             return self._ended(request, history, NOT_CONFIGURED_REPLY, "neutral")
@@ -456,6 +464,7 @@ class ConsciousEngine:
                     request.content,
                     deps=deps,
                     message_history=history,
+                    deferred_tool_results=deferred_tool_results,
                     model=model,
                     usage=usage,
                     usage_limits=UsageLimits(request_limit=REQUEST_LIMIT),

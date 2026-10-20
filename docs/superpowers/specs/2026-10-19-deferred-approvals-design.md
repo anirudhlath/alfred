@@ -79,9 +79,12 @@ A run that ends in `DeferredToolRequests` is parked by the engine:
 - **The record** `alfred:pending:{approval_id}`, TTL 300 s, holds `kind="parked_run"`, the session id,
   channel, identity, request `event_id`, creation time, the deferred calls (tool call id, registry name,
   target service, arguments, reason) and the run's messages.
-- **The session** stores the run's messages as usual, plus a `pending_approval` field naming the id. A
-  history that ends in an open tool call is safe: Pydantic AI 2.55 answers a new prompt on it by closing
-  the call as interrupted (verified, see Verification).
+- **The session** stores the run's messages as usual, open call included, plus a `pending_approval`
+  field naming the id. Pydantic AI 2.55 refuses a new prompt on a history whose final response has an
+  unanswered call (`UserError`). It closes the call itself only when the history ends in a request, as it
+  does when a benign sibling's return follows the response. So the engine closes the open call
+  (`repair_messages`, which marks the return it synthesizes) on the next turn that does not resume. A turn
+  that resumes passes the history untouched, because its open calls are the ones being answered.
 - **The ledger** gets a `parked` entry per deferred call, so a redelivery answers "I've asked for your
   confirmation" from the ledger instead of re-running the turn.
 - **The notification** keeps today's title ("Confirmation required"), URGENT urgency and metadata keys
@@ -197,8 +200,10 @@ Elsewhere:
   - One run with `message_history`, `user_prompt` and `deferred_tool_results` executes the approved
     call and answers the prompt.
   - With `ToolDenied`, the model sees the denial message, followed by the prompt.
-  - A new prompt on the parked history without results does not raise. The open call is closed as
-    "interrupted before a result", and nothing runs.
+  - A new prompt on the parked history without results is refused (`UserError`) when the critical call
+    was the response's only call. The probe's history ended in a sibling's return, which Pydantic AI does
+    tolerate. The engine therefore closes the open call with `repair_messages` on the next turn that does
+    not resume, and nothing runs (`test_the_next_turn_closes_a_parked_call`).
 - **Unit and engine tests:**
   - park, approve, deny and other;
   - redelivery after parking;

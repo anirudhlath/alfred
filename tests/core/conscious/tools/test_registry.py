@@ -230,6 +230,24 @@ async def test_an_approved_call_runs_confirmed_and_publishes_its_result() -> Non
 
 
 @pytest.mark.asyncio
+async def test_approval_is_per_call() -> None:
+    """An approved run that makes a second critical call defers it again: the owner
+    approved one call, not the tool."""
+    router = _router({"locked": False})
+    lock = {"entity_id": "lock.front"}
+    script = Script(tool_call("home_unlock_door", lock), tool_call("home_unlock_door", lock))
+
+    deferred, resumed, _ = await _approved(
+        script, [_info("home.unlock_door", risk="critical")], router=router
+    )
+
+    router.route.assert_awaited_once()
+    assert isinstance(resumed.output, DeferredToolRequests)
+    [again] = resumed.output.approvals
+    assert again.tool_call_id != deferred.approvals[0].tool_call_id
+
+
+@pytest.mark.asyncio
 async def test_an_approved_failure_reaches_the_model_and_the_door() -> None:
     redis = fakeredis.FakeAsyncRedis()
     script = Script(tool_call("home_unlock_door", {"entity_id": "lock.front"}), "It jammed, sir.")

@@ -18,7 +18,7 @@ from __future__ import annotations
 import copy
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic_ai import ApprovalRequired, RunContext, ToolDefinition, ToolFailed
 from pydantic_ai.toolsets import AbstractToolset
@@ -50,11 +50,11 @@ REASON_SCHEMA: Final[dict[str, Any]] = {
     ),
 }
 SOURCE: Final = "conscious-engine"
-# What the model reads when the router parks an action itself: no id, so it has nothing to
-# hand to anything that approves.
 # What the Door is told when an approved call's route raises. The exception's text can
 # carry hosts, ports or paths, so it stays in the log.
 NO_RESULT: Final = "No result came back from the service."
+# What the model reads when the router parks an action itself: no id, so it has nothing to
+# hand to anything that approves.
 INTERCEPTED: Final = (
     "This action needs the owner's confirmation; a request was sent to their phone."
 )
@@ -178,17 +178,16 @@ class RegistryToolset(AbstractToolset[TurnDeps]):
             # The catalog turns this into a plain failure for the model; the Door waiting
             # on the approval still needs an outcome, or it waits until it times out.
             if ctx.tool_call_approved:
-                failed = ActionResult(
-                    source=SOURCE,
-                    request_id=action.request_id,
-                    tool_name=registry_name,
-                    status="error",
-                    error=NO_RESULT,
-                )
-                await _publish_outcome(ctx.deps, registry_name, failed)
+                await _publish_outcome(ctx.deps, registry_name, status="error", error=NO_RESULT)
             raise
         if ctx.tool_call_approved:
-            await _publish_outcome(ctx.deps, registry_name, result)
+            await _publish_outcome(
+                ctx.deps,
+                registry_name,
+                status=result.status,
+                result=result.result,
+                error=result.error,
+            )
         if result.status != "success":
             if result.error and result.error.startswith(CONFIRMATION_REQUIRED_PREFIX):
                 raise ToolFailed(INTERCEPTED)
@@ -196,16 +195,23 @@ class RegistryToolset(AbstractToolset[TurnDeps]):
         return result.result if result.result is not None else {"status": "success"}
 
 
-async def _publish_outcome(deps: TurnDeps, registry_name: str, result: ActionResult) -> None:
+async def _publish_outcome(
+    deps: TurnDeps,
+    registry_name: str,
+    *,
+    status: Literal["success", "error"],
+    result: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> None:
     """Publish an approved call's outcome under its approval, for the client that showed
     it. The action has already run: a lost publish is logged, never the call's failure."""
     outcome = ActionResult(
         source=SOURCE,
         request_id=deps.approval_id or deps.request_id,
         tool_name=registry_name,
-        status=result.status,
-        result=result.result,
-        error=result.error,
+        status=status,
+        result=result,
+        error=error,
     )
     try:
         await publish_action_result(deps.services.redis, outcome)
