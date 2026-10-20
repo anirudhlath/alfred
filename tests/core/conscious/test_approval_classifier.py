@@ -13,6 +13,7 @@ from pydantic_ai_harness.spend import SpendEntry
 
 from bus.schemas.events import ParkedCall
 from core.conscious.approval_classifier import ApprovalClassifier, ApprovalVerdict
+from shared.config import DEFAULT_SYSTEM2_MAX_TOKENS, DEFAULT_SYSTEM2_TIMEOUT_S
 from shared.prompts.store import PromptStore
 from shared.spend import build_spend_limits, local_clock
 from tests.llm_fakes import Script
@@ -62,7 +63,7 @@ async def test_the_models_verdict_is_the_decision(verdict: str) -> None:
 @pytest.mark.asyncio
 async def test_the_prompt_names_the_actions() -> None:
     script = Script({"decision": "approve"})
-    calls = [_call("Unlock the front door."), _call(None).model_copy(update={"reason": "Arm away"})]
+    calls = [_call("Unlock the front door."), _call("Arm away")]
 
     await _classifier(script).classify(calls, "ok")
 
@@ -142,6 +143,28 @@ async def test_the_request_names_its_role() -> None:
     await _classifier(script).classify([_call()], "no")
 
     assert script.settings()["extra_headers"] == {"X-Alfred-Role": "approval"}
+
+
+@pytest.mark.asyncio
+async def test_the_request_carries_the_configured_cap_and_timeout() -> None:
+    script = Script({"decision": "deny"})
+    classifier = ApprovalClassifier(
+        model=script.model, prompts=PromptStore(), spend=_spend(), max_tokens=1234, timeout_s=7.5
+    )
+
+    await classifier.classify([_call()], "no")
+
+    assert (script.settings()["max_tokens"], script.settings()["timeout"]) == (1234, 7.5)
+
+
+@pytest.mark.asyncio
+async def test_the_defaults_are_system2s() -> None:
+    script = Script({"decision": "deny"})
+
+    await _classifier(script).classify([_call()], "no")
+
+    assert script.settings()["max_tokens"] == DEFAULT_SYSTEM2_MAX_TOKENS
+    assert script.settings()["timeout"] == DEFAULT_SYSTEM2_TIMEOUT_S
 
 
 @pytest.mark.asyncio

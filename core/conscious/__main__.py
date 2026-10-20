@@ -353,6 +353,8 @@ async def run(config: AlfredConfig) -> None:
                 model=resolve_model("APPROVAL_MODEL", config.approval_model),
                 prompts=prompts,
                 spend=spend,
+                max_tokens=config.system2_max_tokens,
+                timeout_s=config.system2_timeout_s,
             ),
             routine_store=routine_store,
             context_index=context_index,

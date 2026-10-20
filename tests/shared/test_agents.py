@@ -11,10 +11,16 @@ import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from pydantic_ai import Agent
+from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 
-from shared.agents import instrumentation, model_key, resolve_model, role_headers
+from shared.agents import (
+    instrumentation,
+    model_key,
+    resolve_model,
+    role_headers,
+    structured_output,
+)
 from shared.config import AlfredConfig, apply_model_env
 from shared.llm_http import RetryingTransport
 from shared.llm_roles import APPROVAL, LIBRARIAN, LLM_ROLES, ROLE_HEADER, SYSTEM1, SYSTEM2
@@ -46,6 +52,13 @@ def test_unusable_model_string_logs_and_yields_no_model(
     with caplog.at_level(logging.ERROR, logger="shared.agents"):
         assert resolve_model("LIBRARIAN_MODEL", "nope:x") is None
     assert "LIBRARIAN_MODEL='nope:x' cannot be used" in caplog.text
+
+
+@pytest.mark.parametrize("native", [True, False])
+def test_structured_output_follows_the_model_profile(native: bool) -> None:
+    spec = structured_output(Script(json_schema_output=native).model, dict)
+    assert isinstance(spec, NativeOutput) is native
+    assert native or spec is dict
 
 
 def test_a_model_string_resolves_and_keys_by_provider_and_name() -> None:
