@@ -158,6 +158,7 @@ Alfred's outbound answer to a user channel, on `alfred:user:responses`. Produced
 | `channel`      | `ChannelName`       | Which channel the request came from                                      |
 | `session_id`   | `str`               | The conversation                                                         |
 | `text`         | `str`               | The reply                                                                |
+| `voice_audio_ref` | `str \| None`    | Optional reference to a spoken rendering of the reply; nothing sets it today |
 | `actions_taken`| `list[str]`         | Tools the turn called                                                    |
 | `mood`         | `str`               | `neutral`, `pleased`, `concerned`, `amused` or `serious`                 |
 | `in_reply_to`  | `str \| None`       | The answered request's `event_id`; a channel matches on it when set       |
@@ -240,6 +241,10 @@ The bridge translates between MQTT topic separators (`/`) and Redis key separato
 | `media/state_changed`  | `alfred:media:state_changed`    |
 | `home/action_results`  | `alfred:home:action_results`    |
 | `reflex/actions`       | `alfred:reflex:actions`         |
+
+The telemetry and Admin API name for a stream is its Redis key without the `alfred:` prefix and
+with `_` for `:`. So `home_action_results` is `alfred:home:action_results`, the stream
+`ActionResult` events go to ([`admin-api.md`](admin-api.md) lists the aliases).
 
 Conversion functions in `bus/bridge.py`:
 - `mqtt_topic_to_stream_key("home/state_changed")` returns `"alfred:home:state_changed"`

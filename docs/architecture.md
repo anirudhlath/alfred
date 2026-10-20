@@ -293,7 +293,7 @@ graph TB
     ActionTools -->|SADD/SREM alfred:attention:*| Redis
     ConsEngine -->|critical calls| Approvals
     Approvals -->|SET NX / GETDEL<br/>alfred:pending:*| Redis
-    Approvals --> Classifier
+    ConsEngine -->|reply to a pending confirmation| Classifier
     CtxAssembler --> IntRegistry
     CtxAssembler --> EpisodicStore
     CtxAssembler --> MemReader

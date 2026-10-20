@@ -242,7 +242,7 @@ answer one at a time.
 
 **Near** — land what's in review (instant reminders #27, credential flow #28, voice
 satellites #29); then the Home Assistant integration Plans 2–3: full-home discovery,
-followed by the attention set, tiered autonomy, and critical-action confirmations (live
+followed by the attention set and tiered autonomy (live
 state has shipped). Outcome: the real apartment becomes Alfred's body.
 
 **Mid** — the satellite hardware line (Raspberry Pi provisioning, custom "hey Alfred"

@@ -612,7 +612,7 @@ expect:
 
 | Step | Fields | What the driver does |
 |---|---|---|
-| `user: <text>` | `variants: [<text>, …]`, `as: {…}`, `pending_action: {at_step, tool}` (rarely used, see below) | Sends the utterance and waits for System 2's reply, then 2 s for side effects. `as` overrides the golden's actor for this step, which is how a conversation moves between channels |
+| `user: <text>` | `variants: [<text>, …]`, `as: {…}`, `pending_action: {at_step, tool}` (used by no golden now, see below) | Sends the utterance and waits for System 2's reply, then 2 s for side effects. `as` overrides the golden's actor for this step, which is how a conversation moves between channels |
 | `ha_event: {entity_id, state, attributes}` | `settle: <seconds>` | Pushes a state change through the fake HA, merging `attributes` into the entity's current ones. While an `ha_called` check that could count a call from this step (it has no `after_step`, or one at or before this step) is still unmet, it then waits for a `call_service` that check wants, up to 30 s, and 2 s more for side effects once one arrives; any other call does not end the wait. With no such check outstanding it waits a 5 s window. In a golden that watches Reflex (see [One sample](#one-sample)) it waits instead for System 1's answer to this change, up to 15 s. `settle` replaces the 30 s, the 5 s or the 15 s |
 | `wait: <seconds>` | — | Lets time pass (more than 0, at most 600) |
 | `clock: {hour: H}` | — | Sets the user's zone to the `Etc/GMT±N` zone whose local hour is H now. Reflex's clock is UTC shown in that zone. Never runs in an hour's last two minutes: there it first waits for the next hour. The reflex checks error if the prompt showed another hour |
@@ -719,7 +719,7 @@ scans every reply. These checks do not accept an empty trace as a privacy pass.
 
 Slice 3 added 25 goldens: seven shipped guest identity cases, two pending guest-policy
 cases, eleven critical-action cases and five shipped privacy cases (the critical-action
-goldens have been reworked and extended since, see below). Web guest
+suite now has twelve goldens, reworked and extended for deferred approvals, see below). Web guest
 identity is a synthetic channel claim; Signal guests use an unregistered fictional number.
 Sir controls verify both privileged tools offered and a real lamp action. The transition
 checks catalogs separately on the sir and guest turns. Guest onboarding choices are

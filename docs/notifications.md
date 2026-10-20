@@ -122,7 +122,8 @@ session), never a registration.
 ### Sources
 
 `source` says who raised a notification. Clients should not branch on it, but it is what
-the logs and the Room's act rows show:
+the logs and the Room's act rows show. The approval and follow-up paths currently use
+these, for example; other notifications can carry other sources:
 
 | Source | Raised for |
 |--------|------------|

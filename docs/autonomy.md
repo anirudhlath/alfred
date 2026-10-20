@@ -93,9 +93,9 @@ sequenceDiagram
     Owner->>Engine: "lock the front door" (alfred:user:requests)
     Engine->>Engine: critical call raises ApprovalRequired, run ends with DeferredToolRequests
     Engine->>Redis: SET NX alfred:pending:{id} ParkedRun, EX 300
-    Engine->>Redis: session.pending_approval = {id}
     Engine->>Dispatcher: URGENT "Confirmation required" (source conscious-engine, pending_action_id)
-    Engine->>Redis: effect ledger: parked (written last)
+    Engine->>Redis: effect ledger: parked (written after the notification)
+    Engine->>Redis: session.pending_approval = {id}
     Engine-->>Owner: "Before I do that, I need your confirmation: ... Shall I, sir?"
     Dispatcher-->>Door: notification frame, the Door rises
 
@@ -125,7 +125,7 @@ sequenceDiagram
 
 1. **Park.** `RegistryToolset` (`core/conscious/tools/registry.py`) checks each critical
    call in its args validator and raises Pydantic AI's `ApprovalRequired` unless
-   `ctx.tool_call_approved` is set (once the call's arguments are valid). The agent's output type is
+   `ctx.tool_call_approved` is set, after argument validation. The agent's output type is
    `[str, DeferredToolRequests]`, so the run ends with the deferred calls instead of an
    answer. `core/conscious/approvals.py` turns them into **one** `ParkedRun` for the whole
    run — one approval covers every call it deferred — keyed by a `uuid5` of the request's
@@ -150,8 +150,11 @@ sequenceDiagram
 4. **Answer in the conversation.** While a session has a `pending_approval`, the next
    message from **sir** is read by the `ApprovalClassifier`
    (`core/conscious/approval_classifier.py`, role `approval`, prompt `approval-classifier`):
-   `approve`, `deny` or `other`. Any failure of the classifier, including a model error,
-   reads as `other`. The reply is *also* the resumed run's user prompt, so the model sees
+   `approve`, `deny` or `other`. A classification that never validates (after one retry),
+   a missing model, and an exhausted daily budget read as `other`. A provider or transport
+   error is not a verdict: it fails the delivery, which is retried up to `MAX_DELIVERIES` and
+   then dead-lettered (the `APPROVAL_MODEL` note in [`llm.md`](llm.md#approvals)). The reply
+   is *also* the resumed run's user prompt, so the model sees
    what was said. A guest turn never reaches the classifier — a guest cannot approve
    anything. `approve` resumes with `ToolApproved()`; `deny` with
    `ToolDenied("The user declined.")`; `other` with
@@ -168,23 +171,26 @@ sequenceDiagram
    reaches the owner through the late-answer path in
    [`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes).
 6. **Execute.** An approved call runs with `confirmed=True` (`ctx.tool_call_approved`) and
-   the registry publishes its `ActionResult` to `home_action_results` under the approval id
+   the registry publishes its `ActionResult` to `home_action_results` (the telemetry name of
+   `alfred:home:action_results`, see [`event-bus.md`](event-bus.md#topic-and-stream-naming-convention)) under the approval id
    — that is what flips the Door's row from `queued` to `applied` or `failed`. A failed
    action reaches the model as a failed tool result, so the reply says it failed
    ([#306](https://github.com/anirudhlath/alfred/issues/306)). A denied call returns the
    verdict text to the model as the tool's result.
 7. **Resume store.** The resumed messages go back into the session only if the session's
-   `pending_approval` still equals that approval id. Otherwise a newer approval has been
-   parked since: the engine appends a marker turn (`APPROVED_MARKER` / `DECLINED_MARKER`)
-   and leaves the newer one in place. A resumed run can itself park again.
+   `pending_approval` still equals that approval id. Otherwise a turn has come in since (it
+   closed the open call and cleared the approval, or parked a newer one): the engine appends
+   a marker turn (`APPROVED_MARKER` / `DECLINED_MARKER`) and nothing else changes, so a
+   newer approval, if there is one, stays pending. A resumed run can itself park again.
 8. **Expire.** Silent (Redis TTL). Nothing is notified. The session still names the
    approval; the next turn finds no record, the open call is closed by `repair_messages`,
    and the conversation goes on. A reply to an expired approval is a normal turn.
 
 Failure handling on the Door's side of the stream:
 
-- A decision that cannot be decoded is answered once with a follow-up failure reply and
-  dead-lettered with reason `permanent`.
+- A decision whose stored run no longer reads (its history or identity does not validate any
+  more) cannot be resumed, and a retry never could: it is answered once with a follow-up
+  failure reply and dead-lettered with reason `permanent`.
 - A pending record that cannot be read (malformed JSON, a format that no longer validates)
   **never blocks the conversation**: the turn proceeds as a normal turn and the record
   expires on its own.

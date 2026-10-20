@@ -73,7 +73,7 @@ One Pydantic AI agent per request (`agent.py`); see `docs/llm.md`.
 
 - `engine.py` — one turn: budget check → identity/session → involuntary recall → `TurnDeps` → agent run → session, scratchpad note (the agent's `SpendLimits` counts spend). A run that defers critical calls is parked (`_park`) instead of answered; `resume_approval()` resumes one on a Door decision, and a sir reply while the session has a `pending_approval` is classified and resumes it
 - `approvals.py` — parking a run and resuming it: `park()` (the `ParkedRun` record, the notification, the `parked` ledger entries), `claimable_run()`, `results_for()` (`ToolApproved` / `ToolDenied`), `confirmation_reply()`
-- `approval_classifier.py` — `ApprovalClassifier.classify()`: a reply read as approve / deny / other on `APPROVAL_MODEL`; any failure to reach a verdict is `other`
+- `approval_classifier.py` — `ApprovalClassifier.classify()`: a reply read as approve / deny / other on `APPROVAL_MODEL`; an unvalidated output, a missing model or an exhausted budget is `other`, while a provider or transport error propagates (the delivery is retried, then dead-lettered)
 - `runner.py` — `process_request_entry()` and `process_approval_entry()`: one delivery of one request or one Door decision from `alfred:approvals`, live or redelivered (`reclaim_due`, per stream); answers once (answered marker), caps at `MAX_DELIVERIES`, answers expired and exhausted turns with `FAILED_REPLY` and dead-letters them
 - `failures.py` — `classify()` (permanent vs transient), `dead_letter()`, `FAILED_REPLY`, `MAX_DELIVERIES`
 - `effects.py` — the side-effect ledger: `RecordEffects` capability, `EffectLedger`, `ledger_reply()`; a toolset marks a side-effecting tool with `SIDE_EFFECT` in its `ToolDefinition` metadata

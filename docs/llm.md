@@ -262,7 +262,8 @@ this is the part that belongs to the LLM layer.
   the record is claimed, so a slow model never holds a claimed record; if the Door answered
   first, the reply is a normal turn. A missing model, an output that never validates
   (one retry) and the daily budget all read as `other`: the call is left unconfirmed rather
-  than guessed at. A guest never reaches it.
+  than guessed at. A provider or transport error is not a verdict and reads as nothing: it
+  fails the delivery (see the operating note below). A guest never reaches it.
 - **Resuming.** The run resumes from the record's history with a `DeferredToolResults`:
   `ToolApproved()` on `approve`, `ToolDenied("The user declined.")` on `deny`,
   `ToolDenied("Not confirmed; the user moved on.")` on `other`. The reply is also the
@@ -273,11 +274,13 @@ this is the part that belongs to the LLM layer.
   from the stream entry, so the replay window runs from the decision. Its reply is a
   follow-up (`AlfredResponse.followup`), delivered per
   [`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes). A
-  decision that cannot be decoded is answered once with a follow-up failure reply and
-  dead-lettered `permanent`.
+  decision whose stored run no longer reads (its history or identity does not validate any
+  more) cannot be resumed and a retry never could: it is answered once with a follow-up
+  failure reply and dead-lettered `permanent`.
 - **Storing the resumed run.** A Door resume writes the resumed messages into the session
-  only if the session's `pending_approval` still equals that approval id. Otherwise a newer
-  approval was parked since: a marker turn is appended and the newer one stays pending.
+  only if the session's `pending_approval` still equals that approval id. Otherwise a turn
+  has come in since (it closed the open call and cleared the approval, or parked a newer
+  one): a marker turn is appended and nothing else changes.
 - **Unreadable records.** A pending record that cannot be read never blocks the
   conversation: the turn proceeds as a normal one, and the record expires.
 - **Expiry** is silent. The next turn closes the open call with `repair_messages`.
