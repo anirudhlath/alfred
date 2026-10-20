@@ -40,6 +40,6 @@ PROMPTS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         LIBRARIAN_COMPRESS: frozenset(),
         LIBRARIAN_RESOLVE: frozenset({"min_observations", "min_days"}),
         LIBRARIAN_PATTERNS: frozenset({"min_occurrences", "min_days", "tz_name"}),
-        APPROVAL_CLASSIFIER: frozenset({"actions"}),
+        APPROVAL_CLASSIFIER: frozenset(),
     }
 )

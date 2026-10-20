@@ -254,11 +254,16 @@ this is the part that belongs to the LLM layer.
   started it, at `alfred:pending:{id}` for 300 s, `SET NX`. The id is a `uuid5` of the
   request's key, so a redelivered turn parks the same approval. The turn's reply is a fixed
   template (*"Before I do that, I need your confirmation: ... Shall I, sir?"*), with no
-  model call. The session stores the id as `pending_approval`.
+  model call. What it asks about is described by code, not by the model: each call reads
+  `<tool> <target>` (the humanised tool name and its `entity_id`, else its service), and the
+  model's `reason` is only a quoted aside of at most 120 characters on one line
+  (`describe_call`). The session stores the id as `pending_approval`.
 - **A reply is read by the classifier** (`ApprovalClassifier`). While a session has a
   `pending_approval`, the next message from **sir** on it is classified against the pending
-  calls: `approve`, `deny` or `other`, by the `approval-classifier` prompt
-  (`{{actions}}`: what Alfred asked to do) on `APPROVAL_MODEL`. The classifier runs before
+  calls: `approve`, `deny` or `other`, by the `approval-classifier` prompt on
+  `APPROVAL_MODEL`. The prompt is static; the calls (one `describe_call` line each) and the
+  reply go in the user message as `<actions>` and `<reply>` blocks of data, with `<` and `>`
+  stripped so neither can close its block early. The classifier runs before
   the record is claimed, so a slow model never holds a claimed record; if the Door answered
   first, the reply is a normal turn. A missing model, an output that never validates
   (one retry) and the daily budget all read as `other`: the call is left unconfirmed rather
@@ -340,7 +345,7 @@ optional (see [Deployment](deployment.md#prompts-from-langfuse-optional)).
 | `librarian-compress` | none |
 | `librarian-resolve` | `{{min_observations}}`, `{{min_days}}` |
 | `librarian-patterns` | `{{min_occurrences}}`, `{{min_days}}`, `{{tz_name}}` |
-| `approval-classifier` | `{{actions}}` |
+| `approval-classifier` | none |
 
 A name is also its default's file name and its name in Langfuse. Variables use Langfuse's
 `{{name}}` syntax. **The store renders only the prose; code renders the data**: the

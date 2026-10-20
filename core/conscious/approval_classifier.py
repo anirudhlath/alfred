@@ -1,11 +1,12 @@
 """Reading the owner's reply to a pending confirmation as yes, no or neither.
 
-One small model call on ``APPROVAL_MODEL``, built once per process: the prompt says what Alfred
-asked to do (``approval-classifier``), the reply is the user prompt, and the answer is a
-``Decision``. The engine runs a parked call only on ``"approve"``; a model that is missing,
-gives up or is out of budget answers ``"other"``, so the call is left unconfirmed rather than
-guessed at. A provider or transport failure propagates, so the request stays pending and is
-retried (``docs/llm.md``, "Retries").
+One small model call on ``APPROVAL_MODEL``, built once per process: the prompt is fixed
+(``approval-classifier``); what Alfred asked to do and the owner's reply travel in the user
+prompt, as delimited data, and the answer is a ``Decision``. The engine runs a parked call
+only on ``"approve"``; a model that is missing, gives up or is out of budget answers
+``"other"``, so the call is left unconfirmed rather than guessed at. A provider or transport
+failure propagates, so the request stays pending and is retried (``docs/llm.md``,
+"Retries").
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from pydantic_ai import Agent
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
 from pydantic_ai.settings import ModelSettings
 
-from core.conscious.approvals import Decision, summary_of
+from core.conscious.approvals import Decision, describe_call
 from shared.agents import instrumentation, role_headers, structured_output
 from shared.config import DEFAULT_SYSTEM2_MAX_TOKENS, DEFAULT_SYSTEM2_TIMEOUT_S
 from shared.llm_roles import APPROVAL
@@ -38,6 +39,22 @@ logger = logging.getLogger(__name__)
 AGENT_NAME: Final = "approval-classifier"
 # One more try when the output fails validation; after that the reply counts as "other".
 OUTPUT_RETRIES: Final = 1
+
+
+def _data(text: str) -> str:
+    """*text* with its angle brackets dropped, so it cannot close a delimited block."""
+    return text.replace("<", "").replace(">", "")
+
+
+def _user_message(calls: list[ParkedCall], reply: str) -> str:
+    """The actions and the reply as two blocks of data (the prompt says they are data).
+
+    Both carry text the classified party wrote (the model's reason, the owner's reply), so
+    neither may reach the instructions, and neither may hold a ``<`` or ``>`` that closes
+    its block early. One line per call, whatever a reason held.
+    """
+    actions = "\n".join(f"- {_data(describe_call(call))}" for call in calls)
+    return f"<actions>\n{actions}\n</actions>\n<reply>\n{_data(reply)}\n</reply>"
 
 
 class ApprovalVerdict(BaseModel):
@@ -89,11 +106,11 @@ class ApprovalClassifier:
         """
         if self._agent is None:
             return "other"
-        instructions = await self._prompts.get(APPROVAL_CLASSIFIER, actions=summary_of(calls))
+        instructions = await self._prompts.get(APPROVAL_CLASSIFIER)
         try:
             with linked_prompts(instructions.ref):
                 result = await self._agent.run(
-                    reply,
+                    _user_message(calls, reply),
                     instructions=instructions.text,
                     model=self._model,
                     model_settings=self._settings,

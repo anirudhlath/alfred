@@ -10,6 +10,7 @@ primitives; the engine decides when to use them.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
@@ -34,11 +35,13 @@ if TYPE_CHECKING:
 
 __all__ = [
     "APPROVAL_NAMESPACE",
+    "REASON_CLAUSE_MAX",
     "Decision",
     "Notifier",
     "approval_id_for",
     "claimable_run",
     "confirmation_reply",
+    "describe_call",
     "park",
     "parked_calls",
     "results_for",
@@ -49,6 +52,9 @@ APPROVAL_NAMESPACE: Final = uuid5(NAMESPACE_URL, "alfred:approvals")
 # The owner's answer to a parked run; "other" is a reply that is neither yes nor no.
 Decision = Literal["approve", "deny", "other"]
 
+# The model's reason is shown as a quoted aside this long at most, ellipsis included.
+REASON_CLAUSE_MAX: Final = 120
+_WHITESPACE: Final = re.compile(r"\s+")
 _DENIED: Final = "The user declined."
 _NOT_CONFIRMED: Final = "Not confirmed; the user moved on."
 _SOURCE: Final = "conscious-engine"
@@ -92,11 +98,36 @@ def parked_calls(requests: DeferredToolRequests) -> list[ParkedCall]:
     return calls
 
 
+def _one_line(text: str) -> str:
+    """*text* with every run of whitespace, newlines included, as a single space."""
+    return _WHITESPACE.sub(" ", text).strip()
+
+
+def _target_of(call: ParkedCall) -> str:
+    """What the call acts on: its ``entity_id`` (one, or a list) or else its service."""
+    entity = call.parameters.get("entity_id")
+    ids = entity if isinstance(entity, list) else [entity]
+    named = ", ".join(i for i in ids if isinstance(i, str))
+    return _one_line(named) or call.target_service
+
+
+def describe_call(call: ParkedCall) -> str:
+    """What one deferred call will do, in words the owner approves and the classifier reads.
+
+    The tool and its target are facts the code owns; the model's reason is only a quoted
+    aside after them, on one short line, so it can add context but never stand in for what
+    runs (I1: a reason of "turn on the hallway light" on an unlock still reads as an unlock).
+    """
+    described = f"{humanise(call.tool_name)} {_target_of(call)}"
+    reason = _one_line((call.reason or "").replace('"', ""))
+    if len(reason) > REASON_CLAUSE_MAX:
+        reason = reason[: REASON_CLAUSE_MAX - 1].rstrip() + "…"
+    return f'{described} ("{reason}")' if reason else described
+
+
 def summary_of(calls: list[ParkedCall]) -> str:
-    """What the owner is asked to confirm: each call's reason, or its tool's name."""
-    return "; ".join(
-        call.reason.rstrip(". ") if call.reason else humanise(call.tool_name) for call in calls
-    )
+    """What the owner is asked to confirm: every call, as ``describe_call`` words it."""
+    return "; ".join(describe_call(call) for call in calls)
 
 
 def confirmation_reply(summary: str) -> str:
@@ -166,7 +197,9 @@ async def claimable_run(redis: AioRedis, approval_id: str) -> ParkedRun | None:
     try:
         record = await read_pending(redis, approval_id)
     except ValueError:  # malformed JSON or a payload that no longer validates
-        logger.warning("Pending record {} is unreadable — not claimable", approval_id)
+        logger.opt(exception=True).warning(
+            "Pending record {} is unreadable — not claimable", approval_id
+        )
         return None
     if isinstance(record, ParkedRun) and record.identity.get("identity") == _OWNER:
         return record

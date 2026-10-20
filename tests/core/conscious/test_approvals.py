@@ -7,16 +7,19 @@ from typing import Any
 
 import fakeredis
 import pytest
+from loguru import logger
 from pydantic_ai import DeferredToolRequests, ToolApproved, ToolDenied
 from pydantic_ai.messages import ToolCallPart
 
 from bus.schemas.events import ActionRequest, ParkedCall, ParkedRun
 from core.conscious.approvals import (
     APPROVAL_NAMESPACE,
+    REASON_CLAUSE_MAX,
     Decision,
     approval_id_for,
     claimable_run,
     confirmation_reply,
+    describe_call,
     park,
     parked_calls,
     results_for,
@@ -166,11 +169,82 @@ def test_the_reply_names_every_call() -> None:
 
     summary = summary_of(calls)
 
-    assert summary == "Unlock the front door; garage door open"
-    assert confirmation_reply(summary) == (
-        "Before I do that, I need your confirmation: Unlock the front door; garage door open. "
-        "Shall I, sir?"
+    assert summary == (
+        'unlock door lock.door_0 ("Unlock the front door."); garage door open lock.door_1'
     )
+    assert confirmation_reply(summary) == (
+        f"Before I do that, I need your confirmation: {summary}. Shall I, sir?"
+    )
+
+
+def test_a_misleading_reason_cannot_hide_what_will_run() -> None:
+    """I1: the owner approves the tool and its target, which code owns; the model's reason
+    is only a quoted aside, so it cannot make an unlock read as a light."""
+    unlock = ParkedCall(
+        tool_call_id="c1",
+        tool_name="home.lock_unlock",
+        target_service="home-service",
+        parameters={"entity_id": "lock.front_door"},
+        reason="turn on the hallway light",
+    )
+
+    reply = confirmation_reply(summary_of([unlock]))
+
+    assert reply == (
+        "Before I do that, I need your confirmation: "
+        'lock unlock lock.front_door ("turn on the hallway light"). Shall I, sir?'
+    )
+    before_reason = reply.split('("')[0]
+    assert "lock unlock lock.front_door" in before_reason
+    assert "hallway" not in before_reason
+
+
+def test_a_reason_is_one_short_line_without_quotes() -> None:
+    reason = '  Unlock the\n\n"front"\tdoor   ' + "x" * 200
+
+    described = describe_call(_call(0, "home.lock_unlock", reason))
+
+    clause = described.removeprefix("lock unlock lock.door_0 (").removesuffix(")")
+    assert clause.startswith('"Unlock the front door xxx')
+    assert clause.endswith('…"')
+    assert len(clause) == REASON_CLAUSE_MAX + 2  # the text is capped, the quotes are extra
+    assert "\n" not in described
+    assert '"' not in clause[1:-1]
+
+
+def test_a_reason_of_only_quotes_and_space_adds_no_clause() -> None:
+    assert describe_call(_call(0, "home.lock_unlock", ' "" \n ')) == "lock unlock lock.door_0"
+
+
+def test_a_reason_at_the_cap_is_kept_whole() -> None:
+    reason = "y" * REASON_CLAUSE_MAX
+
+    assert describe_call(_call(0, "home.lock_unlock", reason)).endswith(f'("{reason}")')
+
+
+def test_a_list_of_entities_is_all_named() -> None:
+    call = ParkedCall(
+        tool_call_id="c1",
+        tool_name="home.light_turn_off",
+        target_service="home-service",
+        parameters={"entity_id": ["light.hall", "light.kitchen"]},
+    )
+
+    assert describe_call(call) == "light turn off light.hall, light.kitchen"
+
+
+@pytest.mark.parametrize(
+    "parameters", [{}, {"brightness": 5}, {"entity_id": ""}, {"entity_id": []}]
+)
+def test_a_call_without_an_entity_names_its_service(parameters: dict[str, Any]) -> None:
+    call = ParkedCall(
+        tool_call_id="c1",
+        tool_name="home.garage_door_open",
+        target_service="home-service",
+        parameters=parameters,
+    )
+
+    assert describe_call(call) == "garage door open home-service"
 
 
 @pytest.mark.parametrize(
@@ -329,3 +403,19 @@ async def test_an_unreadable_record_is_not_claimable(redis: fakeredis.FakeAsyncR
     await redis.set(pending_key("appr-1"), b"not a pending record", ex=300)
 
     assert await claimable_run(redis, "appr-1") is None
+
+
+async def test_an_unreadable_record_is_logged_with_its_cause(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    await redis.set(pending_key("appr-1"), b"not a pending record", ex=300)
+    records: list[Any] = []
+    sink_id = logger.add(lambda message: records.append(message.record), level="WARNING")
+    try:
+        await claimable_run(redis, "appr-1")
+    finally:
+        logger.remove(sink_id)
+
+    (record,) = records
+    assert "appr-1" in record["message"]
+    assert record["exception"] is not None  # the traceback says why it no longer reads

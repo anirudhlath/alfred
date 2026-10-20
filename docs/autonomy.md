@@ -139,18 +139,21 @@ sequenceDiagram
    the tool declares `reason` as its own parameter, in which case it belongs to the service
    and stays out of the metadata. It is **null for every non-conscious source**
    (trigger-fired actions, `core/triggers/engine.py`, and any caller that omits it), so
-   clients render the prompt without a reason rather than assuming one. The router's own
+   clients render the prompt without a reason rather than assuming one. For a parked run
+   the `reason` is the run's summary, which names every deferred call (see "The owner
+   approves what will run" below), not the model's own reason. The router's own
    confirmation notification, for an action it intercepted, has source `"domain-router"`.
-3. **Remember.** The session stores `pending_approval = {id}` (only `store_run` sets or
-   clears it, `append_text_turn` leaves it alone), and each parked call is written to the
-   request's effect ledger with status `parked`, **last**. A crash before the ledger is
-   written repeats the notification on redelivery, with the same id: at-least-once, never
-   lost. A redelivery that finds a `parked` ledger entry answers from it and does not run
-   the turn again.
+3. **Remember.** `park()` writes each parked call to the request's effect ledger with status
+   `parked`, after the record and the notification; then the engine stores
+   `pending_approval = {id}` in the session (only `store_run` sets or clears it,
+   `append_text_turn` leaves it alone). A crash before the ledger is written repeats the
+   notification on redelivery, with the same id: at-least-once, never lost. A redelivery
+   that finds a `parked` ledger entry answers from it and does not run the turn again.
 4. **Answer in the conversation.** While a session has a `pending_approval`, the next
    message from **sir** is read by the `ApprovalClassifier`
    (`core/conscious/approval_classifier.py`, role `approval`, prompt `approval-classifier`):
-   `approve`, `deny` or `other`. A classification that never validates (after one retry),
+   `approve`, `deny` or `other`. Its instructions are static; the pending calls and the
+   reply are passed as data in the user message. A classification that never validates (after one retry),
    a missing model, and an exhausted daily budget read as `other`. A provider or transport
    error is not a verdict: it fails the delivery, which is retried up to `MAX_DELIVERIES` and
    then dead-lettered (the `APPROVAL_MODEL` note in [`llm.md`](llm.md#approvals)). The reply
@@ -251,6 +254,15 @@ Full behaviour in [`web-frontend.md`](web-frontend.md#the-door).
 
 ### Rules that hold on every path
 
+- **The owner approves what will run, not what the model says.** The confirmation text, the
+  Door's reason line and the classifier's input all describe each deferred call from facts
+  the code owns: `describe_call` (`core/conscious/approvals.py`) writes
+  `<humanised tool> <target>`, where the target is the call's `entity_id` (a list is
+  joined with `, `) or else its service. The model's `reason` is appended only as a quoted
+  clause (`lock unlock lock.front_door ("…")`), collapsed to one line, without double
+  quotes and capped at 120 characters, so a reason cannot make an unlock read as a light or
+  carry text aimed at the classifier. The Door keeps showing a parked run's first call
+  (tool and parameters); its reason line is the summary of every call.
 - **Critical actions require confirmation even when the owner asked directly.** The model
   never self-certifies: there is no tool that confirms an action, the model never sees an
   approval id, and `confirmed` on a registry call is set from the approval the harness
