@@ -356,8 +356,9 @@ Phases: `pending` → `queued` → `applied` or `failed`, plus `declined`, `expi
 the endpoint hands the approval on and returns before anything runs. `applied` comes
 only from `home_action_results`, and so does `failed`: the same report with
 `status: "error"` (the owner said yes, the lock said it could not; the footer then offers
-to ask again). A 404 on confirm or deny means someone or something else answered first:
-the phase becomes `answered`.
+to ask again). One approval can cover several calls, each publishing its own result under
+the same id; a `failed` item stays `failed` when a later call succeeds. A 404 on confirm or
+deny means someone or something else answered first: the phase becomes `answered`.
 
 **Declining.** The layer has a **Don't** button next to the slide (`POST
 /api/actions/{request_id}/deny`). A 200 sets `declined`, which outranks what the phone merely

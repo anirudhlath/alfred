@@ -150,9 +150,12 @@ export function actionReducer(state: TrackedAction[], ev: ActionEvent): TrackedA
     case "result":
       // Applied even from `expired` or `declined`: if the lock reported, it
       // happened, and the tombstone or the decline was wrong about it. The same
-      // holds for a failure: it was tried.
+      // holds for a failure: it was tried. One approval can cover several calls,
+      // each publishing a result under the same id; a failure among them is the
+      // news, so a later success never demotes it.
       return state.map((item) =>
-        item.action.request_id === ev.result.request_id
+        item.action.request_id === ev.result.request_id &&
+        !(item.phase === "failed" && ev.result.status !== "error")
           ? {
               ...item,
               phase: ev.result.status === "error" ? "failed" : "applied",

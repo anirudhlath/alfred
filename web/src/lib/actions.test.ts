@@ -259,6 +259,36 @@ describe("actionReducer — answering", () => {
     expect(state[0].result).toEqual(failure);
   });
 
+  it("a later success does not hide an earlier failure under the same approval", () => {
+    // One approval can cover several calls, and each publishes its own result under
+    // the same id: a failure among them is the news.
+    const failure = { ...actionResultFixture, status: "error" as const, error: "lock jammed" };
+    const failed = actionReducer([tracked("queued")], {
+      type: "result",
+      result: failure,
+      at: "2026-09-07T07:42:10Z",
+    });
+    const state = actionReducer(failed, {
+      type: "result",
+      result: { ...actionResultFixture, status: "success" },
+      at: "2026-09-07T07:42:11Z",
+    });
+    expect(state[0].phase).toBe("failed");
+    expect(state[0].appliedAt).toBe("2026-09-07T07:42:10Z");
+    expect(state[0].result).toEqual(failure);
+  });
+
+  it("a later failure still fails an applied action", () => {
+    const failure = { ...actionResultFixture, status: "error" as const, error: "lock jammed" };
+    const state = actionReducer([tracked("applied")], {
+      type: "result",
+      result: failure,
+      at: "2026-09-07T07:42:11Z",
+    });
+    expect(state[0].phase).toBe("failed");
+    expect(state[0].result).toEqual(failure);
+  });
+
   it("believes an error result even after the fuse lapsed", () => {
     const state = actionReducer([tracked("expired")], {
       type: "result",
