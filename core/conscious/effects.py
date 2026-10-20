@@ -51,6 +51,7 @@ __all__ = [
     "EffectLedger",
     "RecordEffects",
     "TooLate",
+    "humanise",
     "ledger_reply",
 ]
 
@@ -126,13 +127,13 @@ class EffectLedger:
         await self._redis.lset(key, index, json.dumps(entry))  # type: ignore[misc,unused-ignore]
 
 
-def _humanise(tool: str) -> str:
+def humanise(tool: str) -> str:
     """``home.light_turn_on`` -> ``light turn on``."""
     return tool.rpartition(".")[2].replace("_", " ")
 
 
 def _names(effects: list[Effect]) -> str:
-    return ", ".join(dict.fromkeys(_humanise(e.tool) for e in effects))
+    return ", ".join(dict.fromkeys(humanise(e.tool) for e in effects))
 
 
 def ledger_reply(effects: list[Effect]) -> str:

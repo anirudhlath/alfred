@@ -22,6 +22,7 @@ from core.conscious.session import (
     IDENTITY_FIELD,
     LEGACY_HISTORY_FIELD,
     MESSAGES_FIELD,
+    PENDING_APPROVAL_FIELD,
     SessionManager,
     legacy_messages,
     stored_messages,
@@ -123,6 +124,65 @@ async def test_another_speakers_history_is_not_read(redis: fakeredis.FakeAsyncRe
     session = await mgr.load("sat-kitchen", "satellite", "guest")
 
     assert session.messages == []
+
+
+async def test_store_run_with_a_pending_approval_round_trips(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    mgr = SessionManager(redis)
+
+    await mgr.store_run("sess-1", _tool_turn(), "sir", pending_approval="appr-1")
+
+    session = await mgr.load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval == "appr-1"
+    assert await redis.hget(KEY, PENDING_APPROVAL_FIELD) == b"appr-1"
+    assert len(session.messages) == 4
+
+
+async def test_store_run_without_one_clears_it(redis: fakeredis.FakeAsyncRedis) -> None:
+    mgr = SessionManager(redis)
+    await mgr.store_run("sess-1", _tool_turn(), "sir", pending_approval="appr-1")
+
+    await mgr.store_run("sess-1", text_turn("Hello", "Good evening, sir."), "sir")
+
+    assert (await mgr.load("sess-1", "web_pwa", "sir")).pending_approval is None
+    assert await redis.hget(KEY, PENDING_APPROVAL_FIELD) is None
+
+
+async def test_another_speaker_never_sees_the_pending_approval(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    mgr = SessionManager(redis)
+    await mgr.store_run("sat-kitchen", _tool_turn(), "sir", pending_approval="appr-1")
+
+    session = await mgr.load("sat-kitchen", "satellite", "guest")
+
+    assert session.pending_approval is None
+    assert session.messages == []
+
+
+async def test_append_text_turn_keeps_the_pending_approval(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    mgr = SessionManager(redis)
+    await mgr.store_run("sess-1", _tool_turn(), "sir", pending_approval="appr-1")
+
+    await mgr.append_text_turn("sess-1", "sir", "Unlock the door", "I've asked, sir.")
+
+    session = await mgr.load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval == "appr-1"
+    assert len(session.messages) == 6
+
+
+async def test_append_text_turn_by_another_speaker_drops_the_pending_approval(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    mgr = SessionManager(redis)
+    await mgr.store_run("sat-kitchen", _tool_turn(), "sir", pending_approval="appr-1")
+
+    await mgr.append_text_turn("sat-kitchen", "guest", "Lights on", "Done.")
+
+    assert await redis.hget(f"{SESSIONS_KEY_PREFIX}sat-kitchen", PENDING_APPROVAL_FIELD) is None
 
 
 async def test_a_legacy_text_history_is_converted_and_dropped_on_the_next_write(
