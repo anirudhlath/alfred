@@ -256,13 +256,23 @@ Full behaviour in [`web-frontend.md`](web-frontend.md#the-door).
 
 - **The owner approves what will run, not what the model says.** The confirmation text, the
   Door's reason line and the classifier's input all describe each deferred call from facts
-  the code owns: `describe_call` (`core/conscious/approvals.py`) writes
-  `<humanised tool> <target>`, where the target is the call's `entity_id` (a list is
-  joined with `, `) or else its service. The model's `reason` is appended only as a quoted
-  clause (`lock unlock lock.front_door ("…")`), collapsed to one line, without double
-  quotes and capped at 120 characters, so a reason cannot make an unlock read as a light or
-  carry text aimed at the classifier. The Door keeps showing a parked run's first call
-  (tool and parameters); its reason line is the summary of every call.
+  the code owns: `describe_call` (`core/conscious/approvals.py`) writes the humanised tool
+  name and **every** parameter the call will run with, as `key=value` pairs in the
+  parameters' own order (the real tools take a `target`, or a `domain`, `service` and
+  `entity_id`; none is singled out). The model's `reason` is appended only as a quoted
+  clause:
+
+  ```
+  call service (domain=lock, service=unlock, entity_id=lock.front_door) ("lock the door")
+  ```
+
+  Each name, value and reason is cleaned to one plain line: whitespace runs collapsed,
+  quote marks and Unicode format characters (bidi controls, zero-width) removed, a value
+  that is not text shown as compact JSON, and the text cut with "…" at 40 characters for a
+  name, 60 for a value and 120 for the reason. So a reason cannot make an unlock read as a
+  light, fake the end of its quotes, or carry text aimed at the classifier. The Door keeps
+  showing a parked run's first call (tool and parameters); its reason line is the summary of
+  every call.
 - **Critical actions require confirmation even when the owner asked directly.** The model
   never self-certifies: there is no tool that confirms an action, the model never sees an
   approval id, and `confirmed` on a registry call is set from the approval the harness
