@@ -10,7 +10,9 @@ primitives; the engine decides when to use them.
 
 from __future__ import annotations
 
+import json
 import re
+import unicodedata
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
@@ -35,6 +37,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "APPROVAL_NAMESPACE",
+    "PARAM_KEY_MAX",
+    "PARAM_VALUE_MAX",
     "REASON_CLAUSE_MAX",
     "Decision",
     "Notifier",
@@ -52,9 +56,15 @@ APPROVAL_NAMESPACE: Final = uuid5(NAMESPACE_URL, "alfred:approvals")
 # The owner's answer to a parked run; "other" is a reply that is neither yes nor no.
 Decision = Literal["approve", "deny", "other"]
 
-# The model's reason is shown as a quoted aside this long at most, ellipsis included.
+# What a description shows of a call, each cut at this many characters, ellipsis included:
+# the model's reason as a quoted aside, and every parameter's name and value.
 REASON_CLAUSE_MAX: Final = 120
+PARAM_KEY_MAX: Final = 40
+PARAM_VALUE_MAX: Final = 60
 _WHITESPACE: Final = re.compile(r"\s+")
+# Quote marks that could visually end the quoted reason early; format characters (Unicode
+# category Cf: bidi controls, zero-width characters) are dropped as well.
+_QUOTES: Final = frozenset('"“”„‟«»')
 _DENIED: Final = "The user declined."
 _NOT_CONFIRMED: Final = "Not confirmed; the user moved on."
 _SOURCE: Final = "conscious-engine"
@@ -98,30 +108,45 @@ def parked_calls(requests: DeferredToolRequests) -> list[ParkedCall]:
     return calls
 
 
-def _one_line(text: str) -> str:
-    """*text* with every run of whitespace, newlines included, as a single space."""
-    return _WHITESPACE.sub(" ", text).strip()
+def _clean(text: str, cap: int) -> str:
+    """*text* as one plain line of at most *cap* characters.
+
+    Quote marks and format characters (bidi controls, zero-width characters) are removed,
+    runs of whitespace, newlines included, become a single space, and a longer text is cut
+    and ends with an ellipsis. What is shown cannot hide where it ends, or break the line.
+    """
+    kept = "".join(ch for ch in text if ch not in _QUOTES and unicodedata.category(ch) != "Cf")
+    line = _WHITESPACE.sub(" ", kept).strip()
+    return line if len(line) <= cap else line[: cap - 1].rstrip() + "…"
 
 
-def _target_of(call: ParkedCall) -> str:
-    """What the call acts on: its ``entity_id`` (one, or a list) or else its service."""
-    entity = call.parameters.get("entity_id")
-    ids = entity if isinstance(entity, list) else [entity]
-    named = ", ".join(i for i in ids if isinstance(i, str))
-    return _one_line(named) or call.target_service
+def _shown(value: object) -> str:
+    """A parameter's value as text: a string as it is, anything else as compact JSON."""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False, default=str)
 
 
 def describe_call(call: ParkedCall) -> str:
     """What one deferred call will do, in words the owner approves and the classifier reads.
 
-    The tool and its target are facts the code owns; the model's reason is only a quoted
-    aside after them, on one short line, so it can add context but never stand in for what
-    runs (I1: a reason of "turn on the hallway light" on an unlock still reads as an unlock).
+    The tool and every parameter it will run with are facts the code owns (the real tools
+    take a ``target``, or a ``domain``, ``service`` and ``entity_id``; none is singled out
+    here, so none can be missed). The model's reason is only a quoted aside after them, on
+    one short line, so it can add context but never stand in for what runs: a reason of
+    "lock the front door" on an unlock still reads as an unlock (I1)::
+
+        call service (domain=lock, service=unlock, entity_id=lock.front_door) ("lock the door")
     """
-    described = f"{humanise(call.tool_name)} {_target_of(call)}"
-    reason = _one_line((call.reason or "").replace('"', ""))
-    if len(reason) > REASON_CLAUSE_MAX:
-        reason = reason[: REASON_CLAUSE_MAX - 1].rstrip() + "…"
+    described = humanise(call.tool_name)
+    pairs = ", ".join(
+        f"{_clean(key, PARAM_KEY_MAX)}={_clean(_shown(value), PARAM_VALUE_MAX)}"
+        for key, value in call.parameters.items()
+        if key != "reason"
+    )
+    if pairs:
+        described = f"{described} ({pairs})"
+    reason = _clean(call.reason or "", REASON_CLAUSE_MAX)
     return f'{described} ("{reason}")' if reason else described
 
 
@@ -196,9 +221,13 @@ async def claimable_run(redis: AioRedis, approval_id: str) -> ParkedRun | None:
     """
     try:
         record = await read_pending(redis, approval_id)
-    except ValueError:  # malformed JSON or a payload that no longer validates
-        logger.opt(exception=True).warning(
-            "Pending record {} is unreadable — not claimable", approval_id
+    except ValueError as exc:  # malformed JSON or a payload that no longer validates
+        # The type only: the record holds the owner's history and the calls' parameters, and
+        # a validation message (like a traceback's frames) quotes them.
+        logger.warning(
+            "Pending record {} is unreadable ({}) — not claimable",
+            approval_id,
+            type(exc).__name__,
         )
         return None
     if isinstance(record, ParkedRun) and record.identity.get("identity") == _OWNER:

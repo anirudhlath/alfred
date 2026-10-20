@@ -179,7 +179,7 @@ async def test_a_critical_call_parks_the_run() -> None:
     response = await _engine(redis, script, router, notifier).process_request(request)
 
     approval_id = approval_id_for(request.event_id)
-    summary = 'lock unlock lock.front ("The dog walker is here.")'
+    summary = 'lock unlock (entity_id=lock.front) ("The dog walker is here.")'
     assert response.text == confirmation_reply(summary)
     assert response.actions_taken == []
     assert response.in_reply_to == request.event_id
@@ -297,7 +297,7 @@ async def test_a_benign_sibling_runs_before_the_park() -> None:
     record = await read_pending(redis, approval_id_for(request.event_id))
     assert isinstance(record, ParkedRun)
     assert [call.tool_name for call in record.calls] == ["home.lock_unlock"]
-    assert response.text == confirmation_reply("lock unlock lock.front")
+    assert response.text == confirmation_reply("lock unlock (entity_id=lock.front)")
     # What ran is reported; the parked call never reached the catalog.
     assert response.actions_taken == ["home.light_turn_on"]
     assert await EffectLedger(redis).read(request.event_id) == [
@@ -338,7 +338,7 @@ async def test_a_rerun_replies_from_the_run_already_pending() -> None:
         created_at=datetime(2026, 10, 19, 12, 0, tzinfo=UTC),
         content_type="text",
         tz_name="UTC",
-        summary="garage door open cover.garage",
+        summary="garage door open (entity_id=cover.garage)",
         calls=[
             ParkedCall(
                 tool_call_id="call-garage",
@@ -354,7 +354,7 @@ async def test_a_rerun_replies_from_the_run_already_pending() -> None:
 
     response = await _engine(redis, script, _router(), notifier).process_request(request)
 
-    assert response.text == confirmation_reply("garage door open cover.garage")
+    assert response.text == confirmation_reply("garage door open (entity_id=cover.garage)")
     session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
     assert session.pending_approval == approval_id
     assert [type(m) for m in session.messages] == [ModelRequest, ModelResponse]
@@ -763,7 +763,7 @@ async def test_a_resumed_run_that_parks_again_gets_a_new_approval() -> None:
     assert [call.tool_name for call in record.calls] == ["home.garage_door_open"]
     session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
     assert session.pending_approval == second_id
-    assert response.text == confirmation_reply("garage door open cover.garage")
+    assert response.text == confirmation_reply("garage door open (entity_id=cover.garage)")
     assert response.actions_taken == ["home.lock_unlock"]
     assert notifier.publish.await_count == 2
     assert notifier.publish.await_args.kwargs["metadata"]["pending_action_id"] == second_id
@@ -1064,7 +1064,7 @@ async def test_a_door_approval_that_parks_again_asks_again() -> None:
     assert isinstance(record, ParkedRun)
     assert [call.tool_name for call in record.calls] == ["home.garage_door_open"]
     assert record.request_event_id == request.event_id
-    assert response.text == confirmation_reply("garage door open cover.garage")
+    assert response.text == confirmation_reply("garage door open (entity_id=cover.garage)")
     assert response.actions_taken == ["home.lock_unlock"]
     assert (response.followup, response.in_reply_to) == (True, request.event_id)
     session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
@@ -1129,14 +1129,14 @@ async def test_a_door_decision_after_another_turn_parks_again_without_the_sessio
 
     response = await engine.resume_approval(decision, received_ms=_now_ms())
 
-    assert response.text == confirmation_reply("garage door open cover.garage")
+    assert response.text == confirmation_reply("garage door open (entity_id=cover.garage)")
     assert isinstance(await read_pending(redis, approval_id_for(approval_id)), ParkedRun)
     session = await sessions.load("sess-1", "web_pwa", "sir")
     assert session.pending_approval is None
     assert session.messages[: len(between)] == between
     assert _tail(session.messages) == [
         (ModelRequest, APPROVED_MARKER),
-        (ModelResponse, confirmation_reply("garage door open cover.garage")),
+        (ModelResponse, confirmation_reply("garage door open (entity_id=cover.garage)")),
     ]
 
 

@@ -14,6 +14,8 @@ from pydantic_ai.messages import ToolCallPart
 from bus.schemas.events import ActionRequest, ParkedCall, ParkedRun
 from core.conscious.approvals import (
     APPROVAL_NAMESPACE,
+    PARAM_KEY_MAX,
+    PARAM_VALUE_MAX,
     REASON_CLAUSE_MAX,
     Decision,
     approval_id_for,
@@ -164,47 +166,127 @@ def test_parked_calls_read_the_gate_metadata() -> None:
     )
 
 
+def _tool(
+    tool: str, parameters: dict[str, Any] | None = None, reason: str | None = None
+) -> ParkedCall:
+    """A call shaped like the real tools': ``target``, or ``domain``/``service``/``entity_id``."""
+    return ParkedCall(
+        tool_call_id="c1",
+        tool_name=tool,
+        target_service="home-service",
+        parameters=parameters or {},
+        reason=reason,
+    )
+
+
 def test_the_reply_names_every_call() -> None:
     calls = [_call(0, reason="Unlock the front door."), _call(1, "home.garage_door_open", None)]
 
     summary = summary_of(calls)
 
     assert summary == (
-        'unlock door lock.door_0 ("Unlock the front door."); garage door open lock.door_1'
+        'unlock door (entity_id=lock.door_0) ("Unlock the front door."); '
+        "garage door open (entity_id=lock.door_1)"
     )
     assert confirmation_reply(summary) == (
         f"Before I do that, I need your confirmation: {summary}. Shall I, sir?"
     )
 
 
-def test_a_misleading_reason_cannot_hide_what_will_run() -> None:
-    """I1: the owner approves the tool and its target, which code owns; the model's reason
-    is only a quoted aside, so it cannot make an unlock read as a light."""
-    unlock = ParkedCall(
-        tool_call_id="c1",
-        tool_name="home.lock_unlock",
-        target_service="home-service",
-        parameters={"entity_id": "lock.front_door"},
-        reason="turn on the hallway light",
+def test_a_targeted_tool_names_its_target_not_its_service() -> None:
+    """I1: the real critical tools take ``target`` (an area, a name or an entity id)."""
+    call = _tool(
+        "home.lock_unlock", {"target": "Garage"}, "Unlock the front door for the dog walker"
     )
 
-    reply = confirmation_reply(summary_of([unlock]))
+    assert describe_call(call) == (
+        'lock unlock (target=Garage) ("Unlock the front door for the dog walker")'
+    )
+
+
+def test_call_service_names_the_service_it_will_call() -> None:
+    """I1's original attack: a lock told to unlock, with a reason that says it will lock."""
+    call = _tool(
+        "home.call_service",
+        {"domain": "lock", "service": "unlock", "entity_id": "lock.front_door"},
+        "lock the front door for the night",
+    )
+
+    reply = confirmation_reply(summary_of([call]))
 
     assert reply == (
-        "Before I do that, I need your confirmation: "
-        'lock unlock lock.front_door ("turn on the hallway light"). Shall I, sir?'
+        "Before I do that, I need your confirmation: call service "
+        "(domain=lock, service=unlock, entity_id=lock.front_door) "
+        '("lock the front door for the night"). Shall I, sir?'
     )
-    before_reason = reply.split('("')[0]
-    assert "lock unlock lock.front_door" in before_reason
-    assert "hallway" not in before_reason
+    before_reason = reply.split(' ("')[0]
+    assert "service=unlock" in before_reason
+    assert "night" not in before_reason
+
+
+def test_every_parameter_is_named_in_its_own_order() -> None:
+    call = _tool("home.light_turn_on", {"target": "hall", "brightness": 40, "data": {"a": [1]}})
+
+    assert describe_call(call) == "light turn on (target=hall, brightness=40, data={a:[1]})"
+
+
+def test_a_parameter_that_is_not_text_is_compact_json() -> None:
+    call = _tool(
+        "home.cover_open",
+        {"entity_id": ["cover.garage", "cover.gate"], "tilt": None, "fast": True, "note": "é"},
+    )
+
+    assert describe_call(call) == (
+        "cover open (entity_id=[cover.garage,cover.gate], tilt=null, fast=true, note=é)"
+    )
+
+
+def test_a_parameter_named_reason_is_left_to_the_reason() -> None:
+    call = _tool("home.lock_unlock", {"target": "Garage", "reason": "turn on the light"})
+
+    assert describe_call(call) == "lock unlock (target=Garage)"
+
+
+def test_a_call_with_no_parameters_has_no_parentheses() -> None:
+    assert describe_call(_tool("home.garage_door_open")) == "garage door open"
+    assert describe_call(_tool("home.garage_door_open", None, "Open it")) == (
+        'garage door open ("Open it")'
+    )
+
+
+def test_a_value_is_one_short_line_without_quotes_or_format_characters() -> None:
+    call = _tool(
+        "home.lock_unlock",
+        {"target": '  Front\n\n"door"\t\u202e\u200bGarage ' + "x" * 100},
+    )
+
+    described = describe_call(call)
+
+    value = described.removeprefix("lock unlock (target=").removesuffix(")")
+    assert value.startswith("Front door Garage xxx")
+    assert value.endswith("…")
+    assert len(value) == PARAM_VALUE_MAX
+    assert "\n" not in described
+    assert not any(ch in described for ch in '"“”„‟«»\u202e\u200b')
+
+
+def test_a_key_is_cleaned_and_capped_like_a_value() -> None:
+    call = _tool("home.lock_unlock", {'tar\u202e"get\n' + "k" * 100: "Garage"})
+
+    described = describe_call(call)
+
+    key = described.removeprefix("lock unlock (").removesuffix("=Garage)")
+    assert key.startswith("target kkk")
+    assert key.endswith("…")
+    assert len(key) == PARAM_KEY_MAX
 
 
 def test_a_reason_is_one_short_line_without_quotes() -> None:
     reason = '  Unlock the\n\n"front"\tdoor   ' + "x" * 200
 
-    described = describe_call(_call(0, "home.lock_unlock", reason))
+    described = describe_call(_tool("home.lock_unlock", {"target": "Garage"}, reason))
 
-    clause = described.removeprefix("lock unlock lock.door_0 (").removesuffix(")")
+    clause = described.removeprefix("lock unlock (target=Garage) (").removesuffix(")")
     assert clause.startswith('"Unlock the front door xxx')
     assert clause.endswith('…"')
     assert len(clause) == REASON_CLAUSE_MAX + 2  # the text is capped, the quotes are extra
@@ -212,39 +294,29 @@ def test_a_reason_is_one_short_line_without_quotes() -> None:
     assert '"' not in clause[1:-1]
 
 
+def test_a_reason_cannot_fake_the_end_of_its_quotes() -> None:
+    """Curly and angle quotes and bidi controls would visually close the clause early."""
+    reason = "Unlock the door” (target=Hall) “\u202e\u2066 «ok» „fine‟"
+
+    described = describe_call(_tool("home.lock_unlock", {"target": "Garage"}, reason))
+
+    clause = described.removeprefix("lock unlock (target=Garage) (").removesuffix(")")
+    assert clause == '"Unlock the door (target=Hall) ok fine"'
+    assert not any(ch in clause[1:-1] for ch in '"“”„‟«»\u202e\u2066')
+
+
 def test_a_reason_of_only_quotes_and_space_adds_no_clause() -> None:
-    assert describe_call(_call(0, "home.lock_unlock", ' "" \n ')) == "lock unlock lock.door_0"
+    assert describe_call(_tool("home.lock_unlock", {"target": "Garage"}, ' "" \n ')) == (
+        "lock unlock (target=Garage)"
+    )
 
 
 def test_a_reason_at_the_cap_is_kept_whole() -> None:
     reason = "y" * REASON_CLAUSE_MAX
 
-    assert describe_call(_call(0, "home.lock_unlock", reason)).endswith(f'("{reason}")')
+    described = describe_call(_tool("home.lock_unlock", {"target": "Garage"}, reason))
 
-
-def test_a_list_of_entities_is_all_named() -> None:
-    call = ParkedCall(
-        tool_call_id="c1",
-        tool_name="home.light_turn_off",
-        target_service="home-service",
-        parameters={"entity_id": ["light.hall", "light.kitchen"]},
-    )
-
-    assert describe_call(call) == "light turn off light.hall, light.kitchen"
-
-
-@pytest.mark.parametrize(
-    "parameters", [{}, {"brightness": 5}, {"entity_id": ""}, {"entity_id": []}]
-)
-def test_a_call_without_an_entity_names_its_service(parameters: dict[str, Any]) -> None:
-    call = ParkedCall(
-        tool_call_id="c1",
-        tool_name="home.garage_door_open",
-        target_service="home-service",
-        parameters=parameters,
-    )
-
-    assert describe_call(call) == "garage door open home-service"
+    assert described.endswith(f'("{reason}")')
 
 
 @pytest.mark.parametrize(
@@ -405,10 +477,23 @@ async def test_an_unreadable_record_is_not_claimable(redis: fakeredis.FakeAsyncR
     assert await claimable_run(redis, "appr-1") is None
 
 
-async def test_an_unreadable_record_is_logged_with_its_cause(
-    redis: fakeredis.FakeAsyncRedis,
+@pytest.mark.parametrize(
+    ("raw", "kind"),
+    [
+        (b"not a pending record", "ValidationError"),
+        (
+            b'{"kind": "parked_run", "approval_id": "appr-1", "calls": [{"parameters": '
+            b'{"target": "hunter2"}}], "summary": 7}',
+            "ValidationError",
+        ),
+    ],
+)
+async def test_an_unreadable_record_is_logged_by_type_only(
+    redis: fakeredis.FakeAsyncRedis, raw: bytes, kind: str
 ) -> None:
-    await redis.set(pending_key("appr-1"), b"not a pending record", ex=300)
+    """The record holds the owner's history and the calls' parameters, and a validation
+    message quotes the input, so the log names the kind of failure and nothing else (P37)."""
+    await redis.set(pending_key("appr-1"), raw, ex=300)
     records: list[Any] = []
     sink_id = logger.add(lambda message: records.append(message.record), level="WARNING")
     try:
@@ -418,4 +503,6 @@ async def test_an_unreadable_record_is_logged_with_its_cause(
 
     (record,) = records
     assert "appr-1" in record["message"]
-    assert record["exception"] is not None  # the traceback says why it no longer reads
+    assert kind in record["message"]
+    assert "hunter2" not in record["message"]
+    assert record["exception"] is None  # no traceback: loguru renders frame values in one

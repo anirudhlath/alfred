@@ -41,9 +41,13 @@ AGENT_NAME: Final = "approval-classifier"
 OUTPUT_RETRIES: Final = 1
 
 
+_BRACKETS: Final = str.maketrans("", "", "<>\uff1c\uff1e")
+
+
 def _data(text: str) -> str:
-    """*text* with its angle brackets dropped, so it cannot close a delimited block."""
-    return text.replace("<", "").replace(">", "")
+    """*text* with its angle brackets (and their full-width look-alikes) dropped, so it
+    cannot close a delimited block."""
+    return text.translate(_BRACKETS)
 
 
 def _user_message(calls: list[ParkedCall], reply: str) -> str:
