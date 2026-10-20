@@ -1,5 +1,7 @@
 """Redis stream and key constants — single source of truth."""
 
+from typing import Final
+
 EVENTS_STREAM = "alfred:events"
 # Approximate cap on EVENTS_STREAM (XADD MAXLEN ~), passed by every producer — the same
 # value and style as bus/bridge.py's FORWARD_MAXLEN. alfred-sdk keeps a copy
@@ -94,6 +96,17 @@ INTEGRATION_REGISTRY_KEY = "alfred:integration_registry"
 # Attention set + pending critical actions (Real-Home HA Integration, Plan 3)
 ATTENTION_PREFIX = "alfred:attention:"  # + domain → Redis SET of entity_ids
 PENDING_ACTIONS_PREFIX = "alfred:pending_actions:"  # + request_id → ActionRequest JSON, TTL 300s
+
+# Deferred approvals. + approval id -> PendingRecord JSON (a parked run or a router-held
+# action), TTL 300 s; every resolution path claims it with GETDEL, so it resolves once.
+PENDING_PREFIX: Final = "alfred:pending:"
+# ApprovalDecision events, published by the API when the owner taps Confirm or Deny.
+APPROVALS_STREAM: Final = "alfred:approvals"
+# + request_id -> marker (SET with a 600 s TTL) when a caller stopped waiting for it, so its
+# late answer is delivered as a follow-up instead of being dropped.
+FOLLOWUP_KEY: Final = "alfred:followup:{}"
+# Approximate cap (XADD MAXLEN ~) on HOME_ACTION_RESULTS_STREAM, passed by every producer.
+ACTION_RESULTS_MAXLEN: Final = 1000
 
 # Trigger cache coherence + user timezone
 TRIGGERS_CHANGED_CHANNEL = "alfred:triggers:changed"
