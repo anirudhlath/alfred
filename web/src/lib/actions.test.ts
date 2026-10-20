@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   actionReducer,
   confirmAction,
+  denyAction,
   fetchAction,
   fetchPending,
   fuseLength,
@@ -221,6 +222,69 @@ describe("actionReducer — answering", () => {
     expect(state[0].result).toEqual(actionResultFixture);
   });
 
+  it("a success result applies it", () => {
+    const state = actionReducer([tracked("queued")], {
+      type: "result",
+      result: { ...actionResultFixture, status: "success" },
+      at: "2026-09-07T07:42:10Z",
+    });
+    expect(state[0].phase).toBe("applied");
+  });
+
+  it("an error result fails the action", () => {
+    const failure = { ...actionResultFixture, status: "error" as const, error: "lock jammed" };
+    const state = actionReducer([tracked("queued")], {
+      type: "result",
+      result: failure,
+      at: "2026-09-07T07:42:10Z",
+    });
+    expect(state[0].phase).toBe("failed");
+    expect(state[0].appliedAt).toBe("2026-09-07T07:42:10Z");
+    expect(state[0].result).toEqual(failure);
+  });
+
+  it("believes an error result even after the fuse lapsed", () => {
+    const state = actionReducer([tracked("expired")], {
+      type: "result",
+      result: { ...actionResultFixture, status: "error" },
+      at: "2026-09-07T07:47:10Z",
+    });
+    expect(state[0].phase).toBe("failed");
+  });
+
+  it("a decline declines a pending action", () => {
+    const state = actionReducer([tracked()], { type: "declined", id: "a91f3c2e" });
+    expect(state[0].phase).toBe("declined");
+  });
+
+  it("declines only the id the decline named", () => {
+    const state = actionReducer(pair(), { type: "declined", id: "7c2e0b1d" });
+    expect(state.map((item) => item.phase)).toEqual(["pending", "declined"]);
+  });
+
+  it.each(["expired", "answered"] as const)(
+    "takes the server's word for a decline over the phone's guess of %s",
+    (phase) => {
+      // A 200 on deny is the house's own answer. `expired` is the phone's clock
+      // running ahead; `answered` is a racing confirm that 404ed first.
+      const state = actionReducer([tracked(phase)], { type: "declined", id: "a91f3c2e" });
+      expect(state[0].phase).toBe("declined");
+    },
+  );
+
+  it.each(["queued", "applied", "failed"] as const)(
+    "does not let a decline unsay a %s approval",
+    (phase) => {
+      const state = actionReducer([tracked(phase)], { type: "declined", id: "a91f3c2e" });
+      expect(state[0].phase).toBe(phase);
+    },
+  );
+
+  it("does not let a tick revive or expire a declined action", () => {
+    const before = [tracked("declined")];
+    expect(actionReducer(before, { type: "tick", now: T0750 })).toBe(before);
+  });
+
   it("ignores a result for something it is not tracking", () => {
     const before = [tracked("queued")];
     const state = actionReducer(before, {
@@ -303,6 +367,24 @@ describe("the three reads", () => {
     expect((mock.mock.calls[0][1] as RequestInit).method).toBe("POST");
   });
 
+  it("denyAction posts to deny", async () => {
+    const mock = vi.fn<typeof fetch>(async () => new Response('{"status":"denied"}', { status: 200 }));
+    vi.stubGlobal("fetch", mock);
+
+    await denyAction("a91f3c2e");
+
+    expect(mock.mock.calls[0][0]).toBe("/api/actions/a91f3c2e/deny");
+    expect((mock.mock.calls[0][1] as RequestInit).method).toBe("POST");
+  });
+
+  it("throws the deny 404 through too, so the caller can tombstone it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response('{"detail":"Pending action not found or expired"}', { status: 404 })),
+    );
+    await expect(denyAction("a91f3c2e")).rejects.toMatchObject({ status: 404 });
+  });
+
   it("throws the 404 through so the caller can tombstone it", async () => {
     vi.stubGlobal(
       "fetch",
@@ -333,8 +415,16 @@ describe("tombstoneItems", () => {
     );
   });
 
-  it("leaves live, queued and applied approvals out of the thread", () => {
-    expect(tombstoneItems([tracked("pending"), tracked("queued"), tracked("applied")])).toEqual([]);
+  it("leaves live, queued, applied, failed and declined approvals out of the thread", () => {
+    expect(
+      tombstoneItems([
+        tracked("pending"),
+        tracked("queued"),
+        tracked("applied"),
+        tracked("failed"),
+        tracked("declined"),
+      ]),
+    ).toEqual([]);
   });
 
   it("returns one row per action", () => {

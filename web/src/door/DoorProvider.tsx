@@ -12,6 +12,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   actionReducer,
   confirmAction,
+  denyAction,
   fetchAction,
   fetchPending,
   type TrackedAction,
@@ -35,6 +36,8 @@ export interface DoorValue {
   openAction: (id: string) => void;
   close: () => void;
   confirm: (id: string) => void;
+  /** "Don't": the owner declines. The run waiting on it is told so by the house. */
+  deny: (id: string) => void;
   /** Push an action in from outside — the `/actions/:id` deep link uses this. */
   arrived: (action: PendingAction) => void;
   /**
@@ -132,6 +135,19 @@ export function DoorProvider({ children }: { children: ReactNode }) {
       });
   }, []);
 
+  const deny = useCallback((id: string) => {
+    void denyAction(id)
+      .then(() => dispatch({ type: "declined", id }))
+      .catch((error: unknown) => {
+        // The same answers as a confirm: 404 is "someone else got there first"
+        // and takes the same event; anything else (a 503 while the store is
+        // down, no network) leaves it pending to try again while the fuse runs.
+        if (error instanceof ApiError && error.status === 404) {
+          dispatch({ type: "confirm-404", id });
+        }
+      });
+  }, []);
+
   const value = useMemo<DoorValue>(() => {
     const current = actions.find((item) => item.action.request_id === openId) ?? null;
     return {
@@ -142,11 +158,12 @@ export function DoorProvider({ children }: { children: ReactNode }) {
       openAction: setOpenId,
       close: () => setOpenId(null),
       confirm,
+      deny,
       arrived,
       answered,
       now,
     };
-  }, [actions, openId, now, confirm, arrived, answered]);
+  }, [actions, openId, now, confirm, deny, arrived, answered]);
 
   return <DoorContext.Provider value={value}>{children}</DoorContext.Provider>;
 }

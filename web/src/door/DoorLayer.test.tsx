@@ -21,6 +21,7 @@ function at(phase: TrackedAction["phase"], extra: Partial<TrackedAction> = {}): 
 function renderDoor(tracked: TrackedAction, options: { online?: boolean; now?: number } = {}) {
   const onClose = vi.fn();
   const onConfirm = vi.fn();
+  const onDeny = vi.fn();
   const props: DoorLayerProps = {
     tracked,
     open: true,
@@ -28,11 +29,13 @@ function renderDoor(tracked: TrackedAction, options: { online?: boolean; now?: n
     now: options.now ?? T0742,
     onClose,
     onConfirm,
+    onDeny,
   };
   const view = render(<DoorLayer {...props} />);
   return {
     onClose,
     onConfirm,
+    onDeny,
     rerender: (next: Partial<DoorLayerProps>) => view.rerender(<DoorLayer {...props} {...next} />),
   };
 }
@@ -224,6 +227,50 @@ describe("DoorLayer — pending", () => {
   });
 });
 
+describe("DoorLayer — declining", () => {
+  it("Don't calls onDeny while pending", async () => {
+    const user = userEvent.setup();
+    const { onDeny, onConfirm, onClose } = renderDoor(at("pending"));
+
+    await user.click(screen.getByRole("button", { name: "Don't" }));
+
+    expect(onDeny).toHaveBeenCalledTimes(1);
+    expect(onDeny).toHaveBeenCalledWith("a91f3c2e");
+    // It is an answer, not a way out: the Door stays open until the house replies.
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("keeps Leave it as the way out", () => {
+    renderDoor(at("pending"));
+    expect(screen.getByRole("button", { name: "Leave it" })).toBeInTheDocument();
+  });
+
+  it("sits under the slide", () => {
+    renderDoor(at("pending"));
+    const slide = screen.getByTestId("slide-track");
+    const decline = screen.getByRole("button", { name: "Don't" });
+    expect(slide.compareDocumentPosition(decline) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it.each(["queued", "applied", "failed", "declined", "expired", "answered"] as const)(
+    "offers no Don't once the phase is %s",
+    (phase) => {
+      renderDoor(at(phase));
+      expect(screen.queryByRole("button", { name: "Don't" })).toBeNull();
+    },
+  );
+
+  it("is out of reach while offline, like the slider", () => {
+    const { onDeny } = renderDoor(at("pending"), { online: false });
+    const decline = screen.getByRole("button", { name: "Don't" });
+
+    expect(decline).toBeDisabled();
+    fireEvent.click(decline);
+    expect(onDeny).not.toHaveBeenCalled();
+  });
+});
+
 describe("DoorLayer — the slider without a finger", () => {
   it("is a slider by name, at nought, and in the tab order", () => {
     renderDoor(at("pending"));
@@ -410,6 +457,47 @@ describe("DoorLayer — after the answer", () => {
     expect(screen.getByText(/^The time ran out/)).toBeInTheDocument();
   });
 
+  it("the failed pill reads Failed, and says it did not go through", () => {
+    renderDoor(
+      at("failed", {
+        confirmedAt: "2026-09-07T07:42:00Z",
+        appliedAt: "2026-09-07T07:42:10Z",
+        result: {
+          request_id: "a91f3c2e",
+          tool_name: "home.lock_unlock",
+          status: "error",
+          error: "lock jammed",
+        },
+      }),
+    );
+
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+    expect(screen.queryByText("Applied")).toBeNull();
+    expect(screen.getByText("didn't go through")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `home.lock_unlock reported error at ${hhmm("2026-09-07T07:42:10Z")}. Ask again to try once more.`,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("slide-track")).toBeNull();
+    expect(screen.getByRole("button", { name: "Back to the room" })).toBeInTheDocument();
+  });
+
+  it("says less, not more, when failed arrives without its facts", () => {
+    renderDoor(at("failed"));
+    expect(screen.getByText("home.lock_unlock reported back. Ask again to try once more.")).toBeInTheDocument();
+  });
+
+  it("the declined pill reads Declined, and says nothing was done", () => {
+    renderDoor(at("declined"));
+
+    expect(screen.getByText("Declined")).toBeInTheDocument();
+    expect(screen.getByText("declined")).toBeInTheDocument();
+    expect(screen.getByText("You declined it. Nothing was done.")).toBeInTheDocument();
+    expect(screen.queryByTestId("slide-track")).toBeNull();
+    expect(screen.getByRole("button", { name: "Back to the room" })).toBeInTheDocument();
+  });
+
   it("says when something else got there first", () => {
     renderDoor(at("answered"));
     expect(screen.getByText("Answered")).toBeInTheDocument();
@@ -458,6 +546,7 @@ describe("DoorLayer — leaving", () => {
         now={T0742}
         onClose={() => {}}
         onConfirm={() => {}}
+        onDeny={() => {}}
       />,
     );
     expect(screen.queryByRole("dialog")).toBeNull();

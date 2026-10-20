@@ -96,6 +96,12 @@ export type ChatServerMessage =
       session_id: string;
       actions_taken?: string[];
       mood?: Mood;
+      /**
+       * Pushed by the server's follow-up worker rather than answering the turn
+       * this socket is waiting on: a late answer, or the reply to a run the
+       * owner approved or declined from the Door. Absent from older servers.
+       */
+      followup?: boolean;
     }
   | {
       type: "notification";

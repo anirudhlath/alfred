@@ -70,6 +70,7 @@ interface FakeTelemetry {
 let pendingBody: unknown = { actions: [] };
 let getStatus = 200;
 let confirmStatus = 200;
+let denyStatus = 200;
 const calls: string[] = [];
 
 function stubFetch(): void {
@@ -80,6 +81,13 @@ function stubFetch(): void {
       calls.push(`${init?.method ?? "GET"} ${url}`);
       if (url === "/api/actions/pending")
         return new Response(JSON.stringify(pendingBody), { status: 200 });
+      if (url.endsWith("/deny"))
+        return new Response(
+          denyStatus === 200
+            ? '{"status":"denied"}'
+            : '{"detail":"Pending action not found or expired"}',
+          { status: denyStatus },
+        );
       if (url.endsWith("/confirm"))
         return new Response(
           confirmStatus === 200
@@ -120,6 +128,9 @@ function Probe() {
       </button>
       <button type="button" onClick={() => door.confirm("a91f3c2e")}>
         confirm
+      </button>
+      <button type="button" onClick={() => door.deny("a91f3c2e")}>
+        deny
       </button>
       <button type="button" onClick={() => door.answered("a91f3c2e")}>
         answered
@@ -175,6 +186,7 @@ beforeEach(() => {
   pendingBody = { actions: [] };
   getStatus = 200;
   confirmStatus = 200;
+  denyStatus = 200;
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(new Date("2026-09-07T07:42:00Z"));
   stubFetch();
@@ -326,6 +338,78 @@ describe("DoorProvider", () => {
     await user.click(screen.getByRole("button", { name: "confirm" }));
 
     await waitFor(() => expect(phases()).toBe("a91f3c2e:answered"));
+  });
+
+  it("deny posts and declines", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    pendingBody = { actions: [pendingActionFixture] };
+    renderDoor();
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+
+    await user.click(screen.getByRole("button", { name: "deny" }));
+
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:declined"));
+    expect(calls).toContain("POST /api/actions/a91f3c2e/deny");
+    expect(calls).not.toContain("POST /api/actions/a91f3c2e/confirm");
+    expect(screen.getByTestId("pending")).toHaveTextContent("0");
+  });
+
+  it("marks a 404 deny as already answered", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    denyStatus = 404;
+    pendingBody = { actions: [pendingActionFixture] };
+    renderDoor();
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+
+    await user.click(screen.getByRole("button", { name: "deny" }));
+
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:answered"));
+  });
+
+  it("leaves a deny the house could not take pending, so it can be tried again", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    denyStatus = 503;
+    pendingBody = { actions: [pendingActionFixture] };
+    renderDoor();
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+
+    await user.click(screen.getByRole("button", { name: "deny" }));
+
+    await waitFor(() => expect(calls).toContain("POST /api/actions/a91f3c2e/deny"));
+    expect(phases()).toBe("a91f3c2e:pending");
+  });
+
+  it("lets a deny that lost the race to our own confirm leave it queued", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    denyStatus = 404;
+    pendingBody = { actions: [pendingActionFixture] };
+    renderDoor();
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+
+    await user.click(screen.getByRole("button", { name: "confirm" }));
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:queued"));
+    await user.click(screen.getByRole("button", { name: "deny" }));
+
+    await waitFor(() => expect(calls).toContain("POST /api/actions/a91f3c2e/deny"));
+    expect(phases()).toBe("a91f3c2e:queued");
+  });
+
+  it("fails the action when the result says error", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    pendingBody = { actions: [pendingActionFixture] };
+    const { telemetry } = renderDoor();
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+    await user.click(screen.getByRole("button", { name: "confirm" }));
+    await waitFor(() => expect(phases()).toBe("a91f3c2e:queued"));
+
+    deliverResult(telemetry, {
+      event: { ...actionResultFixture, status: "error", error: "lock jammed" } as unknown as Record<
+        string,
+        unknown
+      >,
+    });
+
+    expect(phases()).toBe("a91f3c2e:failed");
   });
 
   it("marks an approval the deep link found gone as already answered", async () => {

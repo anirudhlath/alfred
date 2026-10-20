@@ -9,9 +9,18 @@ import type { ActionResultEvent, PendingAction } from "./types";
  * `queued` is deliberately not `applied`: `POST /api/actions/{id}/confirm`
  * republishes the action and returns immediately, so a 200 proves only that the
  * house accepted the answer (spec §5.2.1). `applied` comes from the
- * `home_action_results` stream and nowhere else.
+ * `home_action_results` stream and nowhere else — and so does `failed`, the same
+ * report with `status: "error"`: the owner said yes, the lock said it could not.
+ * `declined` is the owner's own "Don't", taken by `POST /api/actions/{id}/deny`.
  */
-export type ActionPhase = "pending" | "queued" | "applied" | "expired" | "answered";
+export type ActionPhase =
+  | "pending"
+  | "queued"
+  | "applied"
+  | "failed"
+  | "declined"
+  | "expired"
+  | "answered";
 
 export interface TrackedAction {
   action: PendingAction;
@@ -28,6 +37,7 @@ export type ActionEvent =
   | { type: "arrived"; action: PendingAction }
   | { type: "confirm-sent"; id: string; at: string }
   | { type: "confirm-404"; id: string }
+  | { type: "declined"; id: string }
   | { type: "result"; result: ActionResultEvent; at: string }
   | { type: "tick"; now: number };
 
@@ -113,19 +123,36 @@ export function actionReducer(state: TrackedAction[], ev: ActionEvent): TrackedA
       // Only a live approval can turn out to have been answered elsewhere.
       // `queued` and `applied` know better — a second confirm of our own 404s
       // too — and `expired` already has the honest tombstone: a 404 after the
-      // fuse ran out almost always means the server's ran out as well.
+      // fuse ran out almost always means the server's ran out as well. A 404 on
+      // deny is the same fact and takes this same event.
       return state.map((item) =>
         item.action.request_id === ev.id && item.phase === "pending"
           ? { ...item, phase: "answered" }
           : item,
       );
 
+    case "declined":
+      // The house's own 200 on deny outranks what the phone merely inferred: a
+      // clock that ran ahead (`expired`), or a racing confirm that 404ed first
+      // (`answered`). It cannot unsay a decision the house has already acted on.
+      return state.map((item) =>
+        item.action.request_id === ev.id &&
+        (item.phase === "pending" || item.phase === "expired" || item.phase === "answered")
+          ? { ...item, phase: "declined" }
+          : item,
+      );
+
     case "result":
       // Applied even from `expired`: if the lock reported, it happened, and the
-      // tombstone was wrong.
+      // tombstone was wrong. The same holds for a failure: it was tried.
       return state.map((item) =>
         item.action.request_id === ev.result.request_id
-          ? { ...item, phase: "applied", appliedAt: ev.at, result: ev.result }
+          ? {
+              ...item,
+              phase: ev.result.status === "error" ? "failed" : "applied",
+              appliedAt: ev.at,
+              result: ev.result,
+            }
           : item,
       );
 
@@ -159,6 +186,11 @@ export function fetchAction(id: string): Promise<PendingAction> {
 /** `POST /api/actions/{id}/confirm` — 200 is `queued`, 404 is already answered. */
 export async function confirmAction(id: string): Promise<void> {
   await post<{ status: string }>(`/api/actions/${encodeURIComponent(id)}/confirm`);
+}
+
+/** `POST /api/actions/{id}/deny` — 200 is `declined`, 404 is already answered. */
+export async function denyAction(id: string): Promise<void> {
+  await post<{ status: string }>(`/api/actions/${encodeURIComponent(id)}/deny`);
 }
 
 /**

@@ -41,6 +41,12 @@ function fuseWords(seconds: number): string {
 const PILL: Record<Exclude<ActionPhase, "pending">, { word: string; dot: string }> = {
   queued: { word: "Confirmed · queued", dot: "var(--accent)" },
   applied: { word: "Applied", dot: "var(--green)" },
+  // The Room's error rows have no hue of their own — only the word "error" and
+  // the quieter `--fg2` — and `--fg2` is a Room colour, near-invisible on the
+  // Door's inverted ink. Its counterpart here is the full-strength `--paper`,
+  // which also keeps the dot apart from queued's accent and applied's green.
+  failed: { word: "Failed", dot: "var(--paper)" },
+  declined: { word: "Declined", dot: "var(--paper-muted)" },
   expired: { word: "Expired", dot: "var(--paper-muted)" },
   answered: { word: "Answered", dot: "var(--paper-muted)" },
 };
@@ -49,6 +55,8 @@ function subLabel(tracked: TrackedAction): string {
   if (tracked.phase === "pending") return "until it lapses";
   if (tracked.phase === "expired") return "lapsed";
   if (tracked.phase === "answered") return "answered elsewhere";
+  if (tracked.phase === "declined") return "declined";
+  if (tracked.phase === "failed") return "didn't go through";
   return tracked.confirmedAt ? `confirmed ${hhmm(tracked.confirmedAt)}` : "confirmed";
 }
 
@@ -61,13 +69,17 @@ function footLine(tracked: TrackedAction, online: boolean): string {
         : "Cannot confirm while offline; the fuse is still running on the server.";
     case "queued":
       return `Sent to Home Assistant. Waiting for it to report (request ${shortId(action.request_id)}).`;
-    case "applied": {
-      // The result event is the only road to `applied` and it sets both; if
+    case "applied":
+    case "failed": {
+      // The result event is the only road to either and it sets both; if
       // either were ever missing, say less rather than make a status up.
       const what = tracked.result ? `reported ${tracked.result.status}` : "reported back";
       const when = tracked.appliedAt ? ` at ${hhmm(tracked.appliedAt)}` : "";
-      return `${action.tool_name} ${what}${when}.`;
+      const report = `${action.tool_name} ${what}${when}.`;
+      return phase === "failed" ? `${report} Ask again to try once more.` : report;
     }
+    case "declined":
+      return "You declined it. Nothing was done.";
     case "expired":
       return `The ${fuseWords(fuseLength(action))} ran out at ${hhmm(
         action.expires_at,
@@ -85,9 +97,10 @@ export interface DoorLayerProps {
   now: number;
   onClose: () => void;
   onConfirm: (id: string) => void;
+  onDeny: (id: string) => void;
 }
 
-export function DoorLayer({ tracked, open, online, now, onClose, onConfirm }: DoorLayerProps) {
+export function DoorLayer({ tracked, open, online, now, onClose, onConfirm, onDeny }: DoorLayerProps) {
   // Hold the last action through the 420 ms leave animation: `close()` clears
   // the current one immediately, and an empty ink panel sliding away is worse
   // than the one you just dismissed sliding away.
@@ -184,7 +197,18 @@ export function DoorLayer({ tracked, open, online, now, onClose, onConfirm }: Do
             {footLine(item, online)}
           </div>
 
-          {phase === "pending" ? null : (
+          {phase === "pending" ? (
+            // Offline it is out of reach like the slider: the POST could not leave.
+            <button
+              type="button"
+              disabled={!online}
+              onClick={() => onDeny(action.request_id)}
+              className="h-[50px] rounded-[25px] border-0 bg-transparent text-[15px] font-medium"
+              style={{ color: "var(--paper)", opacity: online ? 1 : 0.5 }}
+            >
+              Don't
+            </button>
+          ) : (
             <button
               type="button"
               onClick={onClose}
