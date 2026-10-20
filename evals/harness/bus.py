@@ -7,13 +7,15 @@ Reads:
 - the notification dispatch stream;
 - the deferred list;
 - the registry's reflex-audience tools, which are what Reflex's prompt shows;
-- the stored user timezone.
+- the stored user timezone;
+- the user responses stream: its tail, and the follow-up a resumed run publishes.
 
 Acts:
 - pulls a time trigger's ``run_at`` to now;
 - deletes triggers;
 - sets the user timezone, which is Reflex's clock;
 - sets do-not-disturb through the admin API, as the PWA does;
+- confirms or denies a pending action through the web channel's API, as the Door does;
 - clears do-not-disturb.
 
 Entries come back raw; ``collect.py`` parses them. The Redis client is read through a
@@ -33,17 +35,18 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Concatenate, Protocol
+from typing import TYPE_CHECKING, Any, Concatenate, Literal, Protocol
 from uuid import uuid4
 
 import httpx
+from pydantic import ValidationError
 from redis.exceptions import RedisError
 
-from bus.schemas.events import PENDING_RECORD, ActionRequest
+from bus.schemas.events import PENDING_RECORD, ActionRequest, AlfredResponse
 from core.identity.auth_middleware import COOKIE_NAME
 from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolRegistry
 from shared import usertime
-from shared.redis_streams import forward_range, read
+from shared.redis_streams import forward_range, read, revrange
 from shared.streams import (
     ACTIONS_STREAM,
     AUTH_SESSION_PREFIX,
@@ -57,6 +60,7 @@ from shared.streams import (
     TRIGGER_SYNC_OP_TZ_CHANGED,
     TRIGGERS_CHANGED_CHANNEL,
     TRIGGERS_KEY,
+    USER_RESPONSES_STREAM,
     USER_TIMEZONE_KEY,
     decode_stream_value,
 )
@@ -99,12 +103,31 @@ class Bus(Protocol):
     async def set_user_timezone(self, tz: str | None) -> None: ...
     async def set_dnd(self, active: bool) -> None: ...
     async def clear_dnd(self) -> None: ...
+    async def decide_pending(
+        self, request_id: str, decision: Literal["confirm", "deny"]
+    ) -> int: ...
+    async def responses_tail(self) -> str: ...
+    async def followup(
+        self, in_reply_to: str, *, since_id: str, timeout_s: float
+    ) -> AlfredResponse | None: ...
 
 
 def _entry(entry_id: bytes | str, fields: dict[bytes | str, bytes | str]) -> Entry:
     ms = int(decode_stream_value(entry_id).split("-", 1)[0])
     data = {decode_stream_value(k): decode_stream_value(v) for k, v in fields.items()}
     return Entry(wall=ms / 1000, data=data)
+
+
+def _response(entry_id: str, fields: dict[bytes | str, bytes | str]) -> AlfredResponse | None:
+    """The response in a user responses entry: None for an entry that carries none, a
+    ``BusError`` for one that carries a response the harness cannot read."""
+    raw = fields.get(b"event") or fields.get("event")
+    if not raw:
+        return None
+    try:
+        return AlfredResponse.model_validate_json(decode_stream_value(raw))
+    except ValidationError as exc:
+        raise BusError(f"unreadable response {entry_id} on {USER_RESPONSES_STREAM}: {exc}") from exc
 
 
 def window_start_ms(since_wall: float) -> int:
@@ -251,6 +274,47 @@ class ContainerBus:
                 return False
 
     @_bounded
+    async def responses_tail(self) -> str:
+        """The id of the user responses stream's last entry, or ``0-0`` for an empty one: the
+        point ``followup`` reads on from, as ``publish_and_wait`` anchors its own reads."""
+        tail = await revrange(self._redis(), USER_RESPONSES_STREAM, count=1)
+        return decode_stream_value(tail[0][0]) if tail else "0-0"
+
+    async def followup(
+        self, in_reply_to: str, *, since_id: str, timeout_s: float
+    ) -> AlfredResponse | None:
+        """Wait for the follow-up to the request *in_reply_to*: a response with ``followup``
+        set that names it, after the entry *since_id*. Anything else on the stream (a
+        follow-up to another request, a reply someone was waiting for) is passed over.
+        None after *timeout_s*.
+
+        Each read blocks until an entry lands, so the wait wakes as the response is
+        published. A container that answers no read within *timeout_s* plus the bus's
+        ``timeout_s`` is a ``BusError``, as is an entry that is not a readable response.
+        """
+        async with self.answered("followup", wait_s=timeout_s):
+            return await self._followup(in_reply_to, since_id, timeout_s)
+
+    async def _followup(
+        self, in_reply_to: str, since_id: str, timeout_s: float
+    ) -> AlfredResponse | None:
+        r = self._redis()
+        last_id = since_id
+        deadline = time.monotonic() + timeout_s
+        while True:
+            remaining_ms = math.ceil((deadline - time.monotonic()) * 1000)
+            # BLOCK 0 blocks for ever, so past the deadline the last read does not block.
+            block = remaining_ms if remaining_ms > 0 else None
+            for _stream, entries in await read(r, {USER_RESPONSES_STREAM: last_id}, block=block):
+                for entry_id, fields in entries:
+                    last_id = decode_stream_value(entry_id)
+                    response = _response(last_id, fields)
+                    if response and response.followup and response.in_reply_to == in_reply_to:
+                        return response
+            if block is None:
+                return None
+
+    @_bounded
     async def notifications(self, since_wall: float) -> list[Entry]:
         return await self._range(NOTIFICATION_DISPATCH_STREAM, since_wall)
 
@@ -328,11 +392,13 @@ class ContainerBus:
             raise BusError(f"{tz!r} is not a time zone the harness's Python knows")
         await usertime.set_user_timezone(r, tz)
 
-    async def set_dnd(self, active: bool) -> None:
-        """Turn do-not-disturb on or off through the admin API, as the PWA does. Turning it
-        off queues the drain of held notifications, which deleting the key would not. The
-        admin session is minted for this one call and deleted after it. Each Redis step is
-        bounded by ``timeout_s``, and so is the request."""
+    async def _post_signed_in(
+        self, what: str, path: str, body: dict[str, Any] | None = None
+    ) -> httpx.Response:
+        """POST *path* on the web channel as the signed-in owner and return the response,
+        whatever its status. The session is minted for this one call and deleted after it.
+        Each Redis step is bounded by ``timeout_s``, and so is the request. *what* names
+        the bus method, for the bound's message."""
         r = self._redis()
         session_id = uuid4().hex
         key = f"{AUTH_SESSION_PREFIX}{session_id}"
@@ -340,7 +406,7 @@ class ContainerBus:
             # One transaction, so the session never exists without its TTL; inside the
             # try, so a write whose reply is lost is still deleted.
             async with (
-                self.answered("set_dnd's session write"),
+                self.answered(f"{what}'s session write"),
                 r.pipeline(transaction=True) as pipe,
             ):
                 pipe.hset(
@@ -355,22 +421,34 @@ class ContainerBus:
                 pipe.expire(key, _SESSION_TTL_S)
                 await pipe.execute()
             async with self._http() as client:
-                response = await client.post(
-                    f"{self._web_url()}/api/admin/dnd",
-                    json={"active": active},
+                return await client.post(
+                    f"{self._web_url()}{path}",
+                    json=body,
                     headers={"Cookie": f"{COOKIE_NAME}={session_id}"},
                     timeout=self._timeout_s,
                 )
         except httpx.HTTPError as exc:
-            raise BusError(f"POST /api/admin/dnd failed: {exc}") from exc
+            raise BusError(f"POST {path} failed: {exc}") from exc
         finally:
             # Bounded too, or a frozen container hangs the cleanup of the error above.
-            async with self.answered("set_dnd's session delete"):
+            async with self.answered(f"{what}'s session delete"):
                 await r.delete(key)
+
+    async def set_dnd(self, active: bool) -> None:
+        """Turn do-not-disturb on or off through the admin API, as the PWA does. Turning it
+        off queues the drain of held notifications, which deleting the key would not."""
+        path = "/api/admin/dnd"
+        response = await self._post_signed_in("set_dnd", path, {"active": active})
         if not response.is_success:
-            raise BusError(
-                f"POST /api/admin/dnd answered {response.status_code}: {response.text[:200]}"
-            )
+            raise BusError(f"POST {path} answered {response.status_code}: {response.text[:200]}")
+
+    async def decide_pending(self, request_id: str, decision: Literal["confirm", "deny"]) -> int:
+        """Confirm or deny a pending action through the web channel, as the Door does, and
+        return the HTTP status: 200, 404 when the record is gone, 400, 503 when the store is
+        down. No status raises, because what a refusal means is for the driver to record;
+        a request that gets no answer does."""
+        path = f"/api/actions/{request_id}/{decision}"
+        return (await self._post_signed_in("decide_pending", path)).status_code
 
     @_bounded
     async def clear_dnd(self) -> None:

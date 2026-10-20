@@ -12,6 +12,7 @@ from evals.harness.scenario import (
     AdvanceTriggerStep,
     CheckSpec,
     DndStep,
+    DoorStep,
     HaEventStep,
     Scenario,
     ScenarioError,
@@ -501,3 +502,52 @@ def test_ha_counting_scopes_to_one_step_and_normalizes_negative_index(at: int) -
     normalized = at % 2
     assert [bool(s.ha_called_counting(i)) for i in range(2)] == [i == normalized for i in range(2)]
     assert s.ha_called_counting(normalized)[0].at_step == normalized
+
+
+EXPECT: dict[str, Any] = {"ha_not_called": {}}
+DOOR: dict[str, Any] = {
+    "door": "confirm",
+    "pending_action": {"at_step": 0, "tool": "home.lock_unlock"},
+}
+
+
+def test_a_door_step_loads_with_its_selector_and_a_default_settle() -> None:
+    s = golden([{"user": "Unlock it."}, DOOR, {**DOOR, "door": "deny", "settle": 0}], [EXPECT])
+    confirm, deny = s.steps[1], s.steps[2]
+    assert isinstance(confirm, DoorStep) and isinstance(deny, DoorStep)
+    assert [step_kind(step) for step in s.steps] == ["user", "door", "door"]
+    assert (confirm.door, confirm.pending_action.tool, confirm.settle) == (
+        "confirm",
+        "home.lock_unlock",
+        3.0,
+    )
+    assert (deny.door, deny.settle) == ("deny", 0)
+    assert [type(v.steps[1]) for v in expand_variants(s)] == [DoorStep]
+
+
+def test_a_door_step_needs_a_selector() -> None:
+    with pytest.raises(ValidationError, match="pending_action"):
+        golden([{"user": "Unlock it."}, {"door": "confirm"}], [EXPECT])
+
+
+@pytest.mark.parametrize("decision", ["approve", "yes", "Confirm", "", None, True])
+def test_a_door_steps_decision_is_confirm_or_deny(decision: object) -> None:
+    with pytest.raises(ValidationError):
+        golden([{"user": "Unlock it."}, {**DOOR, "door": decision}], [EXPECT])
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"settle": -1},
+        {"extra": 1},
+        {"pending_action": {"at_step": 0, "tool": "home.lock_unlock", "parameters": {}}},
+        {"pending_action": {"at_step": -1, "tool": "home.lock_unlock"}},
+        {"pending_action": {"at_step": 1, "tool": "home.lock_unlock"}},  # itself
+        {"pending_action": {"at_step": 2, "tool": "home.lock_unlock"}},  # a later step
+        {"user": "Yes."},  # two kinds in one step
+    ],
+)
+def test_an_invalid_door_step_fails_before_play(bad: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        golden([{"user": "Unlock it."}, {**DOOR, **bad}, {"wait": 1}], [EXPECT])

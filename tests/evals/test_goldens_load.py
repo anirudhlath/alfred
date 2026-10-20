@@ -6,6 +6,7 @@ import inspect
 import pkgutil
 from datetime import UTC, datetime
 from functools import cache
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -39,6 +40,7 @@ from evals.harness.evidence import (
 from evals.harness.reflex import reflex_event
 from evals.harness.scenario import (
     CheckSpec,
+    DoorStep,
     HaEventStep,
     Scenario,
     UserStep,
@@ -223,14 +225,15 @@ def _step_indexes(s: Scenario) -> list[tuple[str, object, int]]:
     The loader does not check these, so a bad one would only error in a live run. Any check
     whose params model has a ``step`` field is covered, including checks added later.
     ``step`` (reply and latency checks today) indexes ``Evidence.replies``, which holds one
-    reply per *user* step (``checks/reply.py``, ``checks/latency.py``), so n counts user
-    steps; ``"any"`` means every reply. It is a plain Python list index, so a valid one
+    reply per *user* step and one per *door* step whose decision was answered
+    (``checks/reply.py``, ``checks/latency.py``), so n counts those steps; ``"any"`` means
+    every reply. It is a plain Python list index, so a valid one
     lies in ``-n <= i < n``.
 
     ``after_step`` counts every step, which the loader knows, so the loader rejects a bad
     one (``Scenario._coherent``): the driver reads it mid-play.
     """
-    users = sum(isinstance(step, UserStep) for step in s.steps)
+    users = sum(isinstance(step, UserStep | DoorStep) for step in s.steps)
     spaces = {"step": users}
     out: list[tuple[str, object, int]] = []
     for check in s.expect:
@@ -293,6 +296,15 @@ def test_bad_step_indexes_counts_user_steps_for_replies() -> None:
         called = {"domain": "light", "service": "turn_on", "after_step": after_step}
         with pytest.raises(ValidationError, match=f"after_step is {after_step}, but the golden"):
             _scenario(steps, [{"ha_called": called}])
+
+
+def test_a_door_steps_followup_is_a_reply_the_index_guard_counts() -> None:
+    door = {"door": "confirm", "pending_action": {"at_step": 0, "tool": "home.lock_unlock"}}
+    steps: list[dict[str, Any]] = [{"user": "a"}, door]
+    ok = _scenario(steps, [{"reply_contains": {"text": "x", "step": 1}}])
+    assert _bad_step_indexes(ok) == []
+    bad = _scenario(steps, [{"reply_contains": {"text": "x", "step": 2}}])
+    assert len(_bad_step_indexes(bad)) == 1
 
 
 class _FutureParams(BaseModel):
@@ -398,7 +410,7 @@ def _unknown_services(s: Scenario, world: World) -> list[str]:
             if name not in tools_offered:
                 bad.append(f"{check.name}: tool {tool}")
     for i, step in enumerate(s.steps):
-        if isinstance(step, UserStep) and step.pending_action is not None:
+        if isinstance(step, UserStep | DoorStep) and step.pending_action is not None:
             tool = step.pending_action.tool
             if wire_name(tool) not in tools_offered:
                 bad.append(f"steps.{i}.pending_action: tool {tool}")
@@ -562,7 +574,7 @@ def test_unknown_services_flags_a_misspelt_service_or_tool() -> None:
 def _reply_checks_pass(s: Scenario, text: str) -> bool:
     """Whether every reply_contains/reply_not_contains check in ``s`` passes when Alfred
     answers each user step with ``text``."""
-    users = sum(isinstance(step, UserStep) for step in s.steps)
+    users = sum(isinstance(step, UserStep | DoorStep) for step in s.steps)
     replies = [
         Reply(step=i, text=text, source="conscious-engine", latency_ms=1) for i in range(users)
     ]
@@ -859,3 +871,29 @@ def test_integration_catalog_survives_cached_modules_and_registry_reset(
         assert IntegrationRegistry.available() == []  # Validation must not mutate the registry.
     finally:
         _integration_tools.cache_clear()
+
+
+EVALS = Path(__file__).resolve().parents[2] / "evals"
+
+
+def test_nothing_in_evals_names_the_retired_confirmation_tool() -> None:
+    """The model no longer approves anything: an approval is a reply or a Door decision."""
+    files = [p for p in EVALS.rglob("*") if p.is_file() and p.suffix in {".py", ".yaml", ".md"}]
+    assert files
+    assert [str(p) for p in files if "confirm_pending_action" in p.read_text()] == []
+
+
+def test_critical_goldens_approve_by_reply_and_by_the_door() -> None:
+    goldens = {s.id: s for s in load_suites(["critical_actions"])["critical_actions"]}
+    assert "critical_actions.lock.wrong_id" not in goldens
+    assert {"critical_actions.lock.door_confirm", "critical_actions.lock.self_approval"} <= set(
+        goldens
+    )
+    with_door = {i for i, s in goldens.items() if any(isinstance(x, DoorStep) for x in s.steps)}
+    assert with_door == {
+        "critical_actions.lock.door_confirm",
+        "critical_actions.lock.repeated_approval",
+    }
+    for golden in goldens.values():
+        sources = [c.params.source for c in golden.expect if c.name == "notification"]
+        assert set(sources) <= {"conscious-engine"}, golden.path

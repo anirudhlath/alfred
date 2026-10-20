@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
+from http import HTTPStatus
 from typing import TYPE_CHECKING, assert_never
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -41,6 +42,7 @@ from evals.harness.scenario import (
     AdvanceTriggerStep,
     ClockStep,
     DndStep,
+    DoorStep,
     HaEventStep,
     ScenarioVariant,
     UserStep,
@@ -60,7 +62,7 @@ if TYPE_CHECKING:
     from evals.harness.evidence import HaCall, LlmCall, Role
     from evals.harness.fake_ha import FakeHA
     from evals.harness.proxy import LlmProxy
-    from evals.harness.scenario import Scenario
+    from evals.harness.scenario import PendingActionSelector, Scenario
 
 SendFn = Callable[[UserRequest, float], Awaitable[AlfredResponse]]
 TIMES = "\N{MULTIPLICATION SIGN}"
@@ -369,10 +371,11 @@ async def _pending_cleanup(
         raise cancelled
 
 
-def _user_text(ev: Evidence, index: int, step: UserStep) -> str:
-    selector = step.pending_action
-    if selector is None:
-        return step.user
+def _pending_id(ev: Evidence, index: int, selector: PendingActionSelector) -> str:
+    """The request id of the one pending action *selector* names in an earlier step's
+    settled snapshot, or the fixed nonexistent id when that snapshot is missing or the
+    selector matches none or several: the step then still runs, and its checks score the
+    product's answer. The lookup is written to the transcript."""
     snapshot = ev.pending_at_step(selector.at_step)
     actions = (
         []
@@ -387,7 +390,62 @@ def _user_text(ev: Evidence, index: int, step: UserStep) -> str:
             f"{selector.tool} matched {len(actions)} actions; selected {request_id}",
         )
     )
-    return step.user.replace(PENDING_ACTION_PLACEHOLDER, request_id)
+    return request_id
+
+
+def _user_text(ev: Evidence, index: int, step: UserStep) -> str:
+    if step.pending_action is None:
+        return step.user
+    return step.user.replace(
+        PENDING_ACTION_PLACEHOLDER, _pending_id(ev, index, step.pending_action)
+    )
+
+
+async def _door(
+    ctx: PlayContext,
+    ev: Evidence,
+    scenario: Scenario,
+    index: int,
+    step: DoorStep,
+    request_ids: dict[int, str],
+) -> None:
+    """Decide the selected pending action through the web channel, as the PWA's Door does.
+
+    The tail of the responses stream is taken first, so the follow-up read starts after
+    what was already there. On a 200 the run resumes in the conscious process and publishes
+    its reply as a follow-up to the request that parked it (the user step the selector
+    names): that reply is this step's. Any other status, or a follow-up that does not come
+    in ``reply_timeout_s``, records no reply and fails no run: the checks score the
+    evidence. Then it waits for the HA calls a check still wants, and settles.
+    """
+    pending_id = _pending_id(ev, index, step.pending_action)
+    since_id = await ctx.bus.responses_tail()
+    decided = time.monotonic()
+    status = await ctx.bus.decide_pending(pending_id, step.door)
+    ev.transcript.append(TranscriptTurn(role="event", text=f"door {step.door} → {status}"))
+    parked_by = request_ids.get(step.pending_action.at_step)
+    if status == HTTPStatus.OK and parked_by is not None:
+        response = await ctx.bus.followup(
+            parked_by, since_id=since_id, timeout_s=ctx.reply_timeout_s
+        )
+        if response is not None:
+            ev.replies.append(
+                Reply(
+                    step=index,
+                    text=response.text,
+                    source=response.source,
+                    actions_taken=list(response.actions_taken),
+                    latency_ms=(time.monotonic() - decided) * 1000,
+                )
+            )
+            ev.transcript.append(TranscriptTurn(role="alfred", text=response.text))
+    if outstanding := outstanding_calls(scenario, index, ev, ctx.fake_ha):
+        await ctx.fake_ha.wait_for_call(
+            decided,
+            ctx.ha_call_timeout_s,
+            partial(_satisfies_any, outstanding, ev, ctx.fake_ha),
+        )
+    await asyncio.sleep(step.settle)
 
 
 async def _play(
@@ -413,6 +471,7 @@ async def _play(
     )
     tz_before = await ctx.bus.user_timezone()
     touched_dnd = False
+    request_ids: dict[int, str] = {}  # the event_id of each user step's request
     for index, step in enumerate(variant.steps):
         ev.step_started.append(time.monotonic())
         kind = step_kind(step)
@@ -425,6 +484,7 @@ async def _play(
                 ev.transcript.append(TranscriptTurn(role="user", text=text))
                 sent = time.monotonic()
                 request = build_request(actor, text, session_id, ctx.signal_number)
+                request_ids[index] = request.event_id
                 response = await ctx.send(request, ctx.reply_timeout_s)
                 if response.source != CONSCIOUS_SOURCE:
                     now = time.monotonic()
@@ -493,6 +553,8 @@ async def _play(
                 state = "on" if step.dnd else "off"
                 ev.transcript.append(TranscriptTurn(role="event", text=f"do not disturb {state}"))
                 await asyncio.sleep(step.settle)
+            case DoorStep():
+                await _door(ctx, ev, scenario, index, step, request_ids)
             case _:
                 assert_never(step)
         actions = [a for a in await ctx.bus.pending_actions() if a.request_id not in initial]

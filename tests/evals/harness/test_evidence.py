@@ -100,7 +100,7 @@ def test_reflex_call_done_is_when_the_reply_came_back() -> None:
 
 
 def test_step_kinds_are_the_scenario_step_keys() -> None:
-    assert STEP_KINDS == ("user", "ha_event", "wait", "clock", "advance_trigger", "dnd")
+    assert STEP_KINDS == ("user", "ha_event", "wait", "clock", "advance_trigger", "dnd", "door")
 
 
 def test_new_evidence_round_trips_through_json() -> None:

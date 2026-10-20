@@ -1,4 +1,4 @@
-# Refusal must never execute. Pending deletion is not asserted: the current API has no cancel tool.
+# A refusal in the conversation never executes, and it settles the approval: the record is gone.
 id: critical_actions.lock.refusal
 prd:
 - 4.4.critical-confirmation
@@ -26,10 +26,13 @@ expect:
         regex: ^(?:lock\.front_door|Front Door Lock|Entryway)$
     at_step: 0
 - notification:
-    source: domain-router
+    source: conscious-engine
     urgency: urgent
     after_step: 0
 - ha_not_called:
+    at_step: 1
+- pending_action_absent:
+    tool: home.lock_unlock
     at_step: 1
 - ha_state:
     entity_id: lock.front_door
