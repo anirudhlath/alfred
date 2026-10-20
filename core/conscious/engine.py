@@ -12,7 +12,9 @@ the request stays pending and is retried.
 
 A run whose critical calls wait for the owner ends in ``DeferredToolRequests``: the engine
 parks it (``core.conscious.approvals.park``), which asks the owner, stores the session with
-the approval it waits on, and answers with a fixed template.
+the approval it waits on, and answers with a fixed template. The owner's next turn in that
+session is read as approving, declining or moving on from it, and resumes the parked run
+with the verdict and the turn's words in one run.
 """
 
 from __future__ import annotations
@@ -32,9 +34,11 @@ from bus.schemas.events import AlfredResponse, ParkedRun, UserRequest
 from core.conscious.agent import REQUEST_LIMIT
 from core.conscious.approvals import (
     approval_id_for,
+    claimable_run,
     confirmation_reply,
     park,
     parked_calls,
+    results_for,
     summary_of,
 )
 from core.conscious.deps import TurnDeps, TurnServices
@@ -42,6 +46,7 @@ from core.conscious.effects import EffectLedger, ledger_reply
 from core.conscious.session import text_turn
 from core.conscious.system2_prompts import fetch_system2_prompts
 from core.conscious.tools.integrations import fetch_integration_tools
+from core.routing.pending import claim_pending
 from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 from shared.otel import langfuse_attributes
 from shared.prompts.link import linked_prompts
@@ -62,7 +67,7 @@ if TYPE_CHECKING:
 
     from bus.schemas.events import ChannelName, ContentType
     from core.conscious.approval_classifier import ApprovalClassifier
-    from core.conscious.approvals import Notifier
+    from core.conscious.approvals import Decision, Notifier
     from core.conscious.identity import IdentityGate
     from core.conscious.session import SessionManager
     from core.conscious.tools.integrations import IntegrationTool
@@ -147,6 +152,7 @@ class ConsciousEngine:
         self._agent = deps.agent
         self._model = deps.model
         self._notifier = deps.notifier
+        self._approval = deps.approval
         self._routines = deps.routine_store
         self._context_index = deps.context_index
         self._prompts = deps.prompts
@@ -317,8 +323,18 @@ class ConsciousEngine:
             integration_tools=integration_tools,
         )
 
+        history, results = session.messages, None
+        decided = await self._decided_run(request, identity.identity, session.pending_approval)
+        if decided is not None:
+            # The claimed record's history, not the session's: it ends in the open calls
+            # being answered, where the session may hold a text turn after them.
+            run, decision = decided
+            history = ModelMessagesTypeAdapter.validate_json(run.messages)
+            results = results_for(run, decision)
+            deps.approval_id = run.approval_id
+
         usage = RunUsage()
-        text, mood, messages, deferred = await self._run(request, deps, session.messages, usage)
+        text, mood, messages, deferred = await self._run(request, deps, history, usage, results)
         pending: str | None = None
         if deferred is not None:
             text, messages, pending = await self._park(
@@ -338,6 +354,33 @@ class ConsciousEngine:
         )
         await self._note(now, request.content, text, deps.actions_taken, usage)
         return self._reply(request, text, deps.actions_taken, mood=mood)
+
+    async def _decided_run(
+        self, request: UserRequest, who: str, approval_id: str | None
+    ) -> tuple[ParkedRun, Decision] | None:
+        """The parked run *request* decides, claimed, and the decision its words make.
+
+        Only the owner decides by reply, and only a run parked for them on this session
+        (``claimable_run``). The reply is classified before the record is claimed
+        (``GETDEL``), so a slow classifier never holds a claimed record and a crash after the
+        claim costs a re-ask, never an unapproved run. With no classifier every reply moves
+        on. None when there is nothing to decide, or when the Door decided first or the
+        approval lapsed: the turn is then a normal one.
+        """
+        if approval_id is None or who != "sir":
+            return None
+        run = await claimable_run(self._redis, approval_id)
+        if run is None or run.session_id != request.session_id:
+            return None
+        decision: Decision = "other"
+        if self._approval is not None:
+            decision = await self._approval.classify(run.calls, request.content)
+        claimed = await claim_pending(self._redis, approval_id)
+        if not isinstance(claimed, ParkedRun):
+            logger.info("Approval %s was settled before this reply could claim it", approval_id)
+            return None
+        logger.info("Reply decides approval %s: %s", approval_id, decision)
+        return claimed, decision
 
     async def _park(
         self,

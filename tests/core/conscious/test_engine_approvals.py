@@ -2,7 +2,8 @@
 
 System 2 can no longer confirm its own critical action (#317 PR 5): the approval gate
 defers the call, the engine parks the run in the pending store, notifies the owner and
-replies with a fixed template. A redelivery answers from the side-effect ledger.
+replies with a fixed template. A redelivery answers from the side-effect ledger. The
+owner's next turn in the conversation approves, declines or moves on from the parked run.
 """
 
 from __future__ import annotations
@@ -24,17 +25,22 @@ from pydantic_ai.messages import (
 
 from bus.schemas.events import ParkedCall, ParkedRun, UserRequest
 from core.conscious.agent import build_system2_agent, system2_toolsets
-from core.conscious.approvals import approval_id_for, confirmation_reply
+from core.conscious.approval_classifier import ApprovalClassifier
+from core.conscious.approvals import Decision, approval_id_for, confirmation_reply
 from core.conscious.effects import Effect, EffectLedger, ledger_reply
 from core.conscious.engine import ConsciousDeps, ConsciousEngine
 from core.conscious.runner import process_request_entry
 from core.conscious.session import SessionManager, text_turn
 from core.notifications.schema import Urgency
 from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo
-from core.routing.pending import park_run, pending_key, read_pending
+from core.routing.pending import claim_pending, park_run, pending_key, read_pending
 from shared.redis_streams import forward_range
 from shared.spend import build_spend_limits, local_clock
-from shared.streams import USER_REQUESTS_STREAM, USER_RESPONSES_STREAM
+from shared.streams import (
+    HOME_ACTION_RESULTS_STREAM,
+    USER_REQUESTS_STREAM,
+    USER_RESPONSES_STREAM,
+)
 from tests.core.conscious.helpers import identity
 from tests.llm_fakes import Script, tool_call, tool_calls
 
@@ -48,14 +54,14 @@ def _no_integrations(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("core.conscious.engine.fetch_integration_tools", AsyncMock(return_value=[]))
 
 
-def _info(name: str, risk: str = "benign") -> ToolInfo:
+def _info(name: str, risk: str = "benign", audience: str = REFLEX_AUDIENCE) -> ToolInfo:
     return ToolInfo(
         name=name,
         description=f"{name} does a thing",
         feature_name=name.split(".")[0],
         feature_description="Home control",
         target_service="home-service",
-        audience=REFLEX_AUDIENCE,
+        audience=audience,
         risk=risk,
         input_schema={
             "type": "object",
@@ -74,26 +80,44 @@ def _router() -> AsyncMock:
     return router
 
 
-def _request(content: str = "let the dog walker in") -> UserRequest:
+def _request(
+    content: str = "let the dog walker in", *, who: str = "sir", session_id: str = "sess-1"
+) -> UserRequest:
     return UserRequest(
         source="web-pwa",
         channel="web_pwa",
-        session_id="sess-1",
-        identity_claim="sir",
-        authenticated=True,
+        session_id=session_id,
+        identity_claim=who,
+        authenticated=who == "sir",
         content_type="text",
         content=content,
     )
 
 
+def _classifier(decision: Decision) -> AsyncMock:
+    """An approval classifier that reads every reply as *decision*."""
+    classifier = AsyncMock(spec=ApprovalClassifier)
+    classifier.classify.return_value = decision
+    return classifier
+
+
 def _engine(
-    redis: fakeredis.FakeAsyncRedis, script: Script, router: AsyncMock, notifier: AsyncMock
+    redis: fakeredis.FakeAsyncRedis,
+    script: Script,
+    router: AsyncMock,
+    notifier: AsyncMock,
+    *,
+    approval: AsyncMock | None = None,
+    tools: list[ToolInfo] = _TOOLS,
 ) -> ConsciousEngine:
-    """A real engine, System 2 agent and session store over fakeredis."""
+    """A real engine, System 2 agent and session store over fakeredis. The identity gate
+    resolves a request by its claim: ``sir`` or a guest."""
     identity_gate = MagicMock()
-    identity_gate.resolve.return_value = identity("sir")
+    identity_gate.resolve.side_effect = lambda **kw: identity(
+        "sir" if kw["identity_claim"] == "sir" else "guest"
+    )
     registry = AsyncMock()
-    registry.get_tools.return_value = _TOOLS
+    registry.get_tools.return_value = tools
     spend = build_spend_limits(redis, cap_usd=5.0, clock=local_clock(lambda: "UTC"))
     return ConsciousEngine(
         deps=ConsciousDeps(
@@ -112,6 +136,7 @@ def _engine(
             ),
             model=script.model,
             notifier=notifier,
+            approval=approval,
         )
     )
 
@@ -170,13 +195,15 @@ async def test_a_critical_call_parks_the_run() -> None:
 @pytest.mark.asyncio
 async def test_the_next_turn_closes_a_parked_call() -> None:
     """A run parked on a critical call alone ends in a response with an open call, and
-    Pydantic AI refuses a new prompt after one. The next turn that does not resume closes
-    it as interrupted, and nothing runs."""
+    Pydantic AI refuses a new prompt after one. The next turn that does not resume (here
+    the approval lapsed) closes it as interrupted, and nothing runs."""
     redis = fakeredis.FakeAsyncRedis()
     router, notifier = _router(), AsyncMock()
     script = Script(tool_call("home_lock_unlock", _LOCK), "Sunny, sir.")
     engine = _engine(redis, script, router, notifier)
-    await engine.process_request(_request())
+    request = _request()
+    await engine.process_request(request)
+    await redis.delete(pending_key(approval_id_for(request.event_id)))
 
     response = await engine.process_request(_request("what's the weather?"))
 
@@ -388,3 +415,352 @@ async def test_a_redelivered_turn_parks_and_notifies_once() -> None:
     assert isinstance(await read_pending(redis, approval_id), ParkedRun)
     session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
     assert session.pending_approval == approval_id
+
+
+# ── the owner's reply in the conversation ────────────────────────────────────
+
+_YES = "Yes, go ahead"
+
+
+async def _park(engine: ConsciousEngine, request: UserRequest | None = None) -> str:
+    """Park a run on the lock, as the owner's first turn; returns its approval id."""
+    request = request or _request()
+    await engine.process_request(request)
+    return approval_id_for(request.event_id)
+
+
+def _returns_for(messages: list[Any], tool_call_id: str) -> list[ToolReturnPart]:
+    """The results *messages* hold for one call."""
+    return [
+        p
+        for m in messages
+        if isinstance(m, ModelRequest)
+        for p in m.parts
+        if isinstance(p, ToolReturnPart) and p.tool_call_id == tool_call_id
+    ]
+
+
+def _synthesized(part: ToolReturnPart) -> bool:
+    """Whether *part* is a return Pydantic AI made up to close an interrupted call."""
+    return (part.metadata or {}).get("pydantic_ai_synthesized_tool_return") is True
+
+
+@pytest.mark.asyncio
+async def test_a_yes_runs_the_parked_call_in_the_same_turn() -> None:
+    """The approved call really runs. A resume passes the parked history as it is, so its
+    open call is the one answered; closing it first as interrupted (as a turn that does not
+    resume does) would leave the approval nothing to run."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier, approval = _router(), AsyncMock(), _classifier("approve")
+    script = Script(tool_call("home_lock_unlock", _LOCK), "The door is unlocked, sir.")
+    engine = _engine(redis, script, router, notifier, approval=approval)
+    approval_id = await _park(engine)
+    record = await read_pending(redis, approval_id)
+    assert isinstance(record, ParkedRun)
+    reply = _request(_YES)
+
+    response = await engine.process_request(reply)
+
+    approval.classify.assert_awaited_once_with(record.calls, _YES)
+    router.route.assert_awaited_once()
+    action = router.route.await_args.args[0]
+    assert (action.tool_name, action.parameters, action.confirmed) == (
+        "home.lock_unlock",
+        {"entity_id": "lock.front"},
+        True,
+    )
+    assert response.text == "The door is unlocked, sir."
+    assert response.actions_taken == ["home.lock_unlock"]
+    assert response.in_reply_to == reply.event_id
+    # One run takes the call's result and the reply's words together.
+    assert script.call_count == 2
+    assert script.outcomes(1) == ["success"]
+    assert script.prompt(1) == _YES
+    assert await read_pending(redis, approval_id) is None
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval is None
+    [returned] = _returns_for(session.messages, record.calls[0].tool_call_id)
+    assert returned.outcome == "success"
+    assert not _synthesized(returned)
+    # Under this turn's request id, and published under the approval for the Door.
+    effects = await EffectLedger(redis).read(reply.event_id)
+    assert [(effect.tool, effect.status) for effect in effects] == [("home.lock_unlock", "ok")]
+    [(_id, fields)] = await forward_range(redis, HOME_ACTION_RESULTS_STREAM)
+    assert json.loads(fields[b"event"])["request_id"] == approval_id
+    notifier.publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_no_denies_and_the_model_acknowledges() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK), "Very well, sir. It stays locked.")
+    engine = _engine(redis, script, router, notifier, approval=_classifier("deny"))
+    approval_id = await _park(engine)
+
+    response = await engine.process_request(_request("No, leave it locked"))
+
+    assert script.returns(1) == ["The user declined."]
+    router.route.assert_not_awaited()
+    assert response.text == "Very well, sir. It stays locked."
+    assert response.actions_taken == []
+    assert await read_pending(redis, approval_id) is None
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval is None
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_reply_moves_on_and_is_answered() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK), "Sunny, sir.")
+    engine = _engine(redis, script, router, notifier, approval=_classifier("other"))
+    approval_id = await _park(engine)
+
+    response = await engine.process_request(_request("what's the weather?"))
+
+    assert script.call_count == 2
+    assert script.returns(1) == ["Not confirmed; the user moved on."]
+    assert script.prompt(1) == "what's the weather?"
+    router.route.assert_not_awaited()
+    assert response.text == "Sunny, sir."
+    assert await read_pending(redis, approval_id) is None
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval is None
+
+
+@pytest.mark.asyncio
+async def test_without_a_classifier_a_reply_moves_on() -> None:
+    """Ruling P3: with no classifier configured, every reply reads as "other". The record
+    is still claimed, and the run hears that the owner moved on: nothing runs."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK), "Of course, sir.")
+    engine = _engine(redis, script, router, notifier)
+    approval_id = await _park(engine)
+
+    await engine.process_request(_request(_YES))
+
+    assert script.returns(1) == ["Not confirmed; the user moved on."]
+    assert script.prompt(1) == _YES
+    router.route.assert_not_awaited()
+    assert await read_pending(redis, approval_id) is None
+
+
+@pytest.mark.asyncio
+async def test_a_guest_reply_never_classifies() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier, approval = _router(), AsyncMock(), _classifier("approve")
+    script = Script(tool_call("home_lock_unlock", _LOCK), "Good evening.")
+    engine = _engine(redis, script, router, notifier, approval=approval)
+    approval_id = await _park(engine)
+    record = await read_pending(redis, approval_id)
+
+    response = await engine.process_request(_request(_YES, who="guest"))
+
+    approval.classify.assert_not_awaited()
+    assert await read_pending(redis, approval_id) == record
+    router.route.assert_not_awaited()
+    assert response.text == "Good evening."
+
+
+@pytest.mark.asyncio
+async def test_a_guest_never_classifies_even_an_approval_it_can_read() -> None:
+    """The engine's own guard, not only the session's: a guest turn that reads a pending
+    approval (a session stored under the guest's name with the field set) still never
+    reaches the classifier."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier, approval = _router(), AsyncMock(), _classifier("approve")
+    script = Script(tool_call("home_lock_unlock", _LOCK), "Good evening.")
+    engine = _engine(redis, script, router, notifier, approval=approval)
+    approval_id = await _park(engine)
+    record = await read_pending(redis, approval_id)
+    sessions = SessionManager(redis)
+    await sessions.store_run("sess-1", [], "guest", pending_approval=approval_id)
+    assert (await sessions.load("sess-1", "web_pwa", "guest")).pending_approval == approval_id
+
+    await engine.process_request(_request(_YES, who="guest"))
+
+    approval.classify.assert_not_awaited()
+    assert await read_pending(redis, approval_id) == record
+    router.route.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_run_parked_on_another_session_is_not_resumed() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier, approval = _router(), AsyncMock(), _classifier("approve")
+    script = Script(tool_call("home_lock_unlock", _LOCK), "Of course, sir.")
+    engine = _engine(redis, script, router, notifier, approval=approval)
+    approval_id = await _park(engine, _request(session_id="sess-2"))
+    record = await read_pending(redis, approval_id)
+    await SessionManager(redis).store_run("sess-1", [], "sir", pending_approval=approval_id)
+
+    await engine.process_request(_request(_YES))
+
+    approval.classify.assert_not_awaited()
+    assert await read_pending(redis, approval_id) == record
+    router.route.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_door_decision_first_leaves_the_chat_yes_a_normal_turn() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier, approval = _router(), AsyncMock(), _classifier("approve")
+    script = Script(tool_call("home_lock_unlock", _LOCK), "Of course, sir.")
+    engine = _engine(redis, script, router, notifier, approval=approval)
+    approval_id = await _park(engine)
+    record = await claim_pending(redis, approval_id)  # the Door's tap
+    assert isinstance(record, ParkedRun)
+
+    response = await engine.process_request(_request(_YES))
+
+    approval.classify.assert_not_awaited()
+    router.route.assert_not_awaited()
+    assert response.text == "Of course, sir."
+    # No results: the open call was closed as interrupted, not answered.
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    [returned] = _returns_for(session.messages, record.calls[0].tool_call_id)
+    assert _synthesized(returned)
+    assert session.pending_approval is None
+
+
+@pytest.mark.asyncio
+async def test_a_door_decision_during_classification_leaves_a_normal_turn() -> None:
+    """The reply is classified before the record is claimed, so the Door can take it in
+    between; the claim then finds nothing, and the "yes" runs nothing."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK), "Of course, sir.")
+    approval = _classifier("approve")
+    engine = _engine(redis, script, router, notifier, approval=approval)
+    approval_id = await _park(engine)
+
+    async def door_taps_first(calls: list[ParkedCall], reply: str) -> Decision:
+        assert await claim_pending(redis, approval_id) is not None
+        return "approve"
+
+    approval.classify.side_effect = door_taps_first
+
+    response = await engine.process_request(_request(_YES))
+
+    approval.classify.assert_awaited_once()
+    router.route.assert_not_awaited()
+    assert response.text == "Of course, sir."
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    [call] = [
+        p
+        for m in session.messages
+        if isinstance(m, ModelResponse)
+        for p in m.parts
+        if isinstance(p, ToolCallPart)
+    ]
+    [returned] = _returns_for(session.messages, call.tool_call_id)
+    assert _synthesized(returned)
+
+
+@pytest.mark.asyncio
+async def test_a_yes_after_expiry_runs_nothing_unapproved() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier, approval = _router(), AsyncMock(), _classifier("approve")
+    script = Script(tool_call("home_lock_unlock", _LOCK), "That request has lapsed, sir.")
+    engine = _engine(redis, script, router, notifier, approval=approval)
+    approval_id = await _park(engine)
+    await redis.delete(pending_key(approval_id))  # the TTL lapsed
+
+    response = await engine.process_request(_request(_YES))
+
+    approval.classify.assert_not_awaited()
+    router.route.assert_not_awaited()
+    assert response.text == "That request has lapsed, sir."
+    # A normal turn over the parked history.
+    assert script.prompt(1) == _YES
+    first = script.requests[1][0][0]
+    assert isinstance(first, ModelRequest)
+    assert first.parts[0].content == "let the dog walker in"  # type: ignore[union-attr]
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval is None
+
+
+@pytest.mark.asyncio
+async def test_a_searched_critical_tool_resumes() -> None:
+    """The parked run found the critical tool through ``search_tools``; the resumed run
+    re-derives found tools from its history, so the approved call is still callable."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    tools = [_info("home.lock_unlock", risk="critical", audience="conscious")]
+    script = Script(
+        tool_call("search_tools", {"queries": ["lock unlock"]}),
+        tool_call("home_lock_unlock", _LOCK),
+        "The door is unlocked, sir.",
+    )
+    engine = _engine(redis, script, router, notifier, approval=_classifier("approve"), tools=tools)
+    approval_id = await _park(engine)
+    assert "home_lock_unlock" not in script.offered(0)
+    assert isinstance(await read_pending(redis, approval_id), ParkedRun)
+
+    response = await engine.process_request(_request(_YES))
+
+    router.route.assert_awaited_once()
+    action = router.route.await_args.args[0]
+    assert (action.tool_name, action.confirmed) == ("home.lock_unlock", True)
+    assert response.text == "The door is unlocked, sir."
+    assert script.call_count == 3  # no second search
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_run_that_parks_again_gets_a_new_approval() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    tools = [*_TOOLS, _info("home.garage_door_open", risk="critical")]
+    script = Script(
+        tool_call("home_lock_unlock", _LOCK),
+        tool_call("home_garage_door_open", {"entity_id": "cover.garage"}),
+    )
+    engine = _engine(redis, script, router, notifier, approval=_classifier("approve"), tools=tools)
+    first_id = await _park(engine)
+    reply = _request(_YES)
+
+    response = await engine.process_request(reply)
+
+    router.route.assert_awaited_once()
+    assert router.route.await_args.args[0].tool_name == "home.lock_unlock"
+    second_id = approval_id_for(reply.event_id)
+    assert second_id != first_id
+    assert await read_pending(redis, first_id) is None
+    record = await read_pending(redis, second_id)
+    assert isinstance(record, ParkedRun)
+    assert [call.tool_name for call in record.calls] == ["home.garage_door_open"]
+    session = await SessionManager(redis).load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval == second_id
+    assert response.text == confirmation_reply("garage door open")
+    assert response.actions_taken == ["home.lock_unlock"]
+    assert notifier.publish.await_count == 2
+    assert notifier.publish.await_args.kwargs["metadata"]["pending_action_id"] == second_id
+
+
+@pytest.mark.asyncio
+async def test_a_yes_resumes_from_the_parked_record_after_a_ledger_turn() -> None:
+    """Ruling P12: a redelivered parked turn answered from its ledger appends a text turn
+    after the open call and keeps the approval. The resume continues the claimed record's
+    history, which ends in the open call, so the approved call still runs."""
+    redis = fakeredis.FakeAsyncRedis()
+    router, notifier = _router(), AsyncMock()
+    script = Script(tool_call("home_lock_unlock", _LOCK), "The door is unlocked, sir.")
+    engine = _engine(redis, script, router, notifier, approval=_classifier("approve"))
+    request = _request()
+    approval_id = await _park(engine, request)
+    sessions = SessionManager(redis)
+    await sessions.append_text_turn(
+        "sess-1", "sir", request.content, "I've asked for your confirmation before: lock unlock."
+    )
+    session = await sessions.load("sess-1", "web_pwa", "sir")
+    assert session.pending_approval == approval_id
+    assert not any(isinstance(p, ToolCallPart) for p in session.messages[-1].parts)
+
+    response = await engine.process_request(_request(_YES))
+
+    router.route.assert_awaited_once()
+    assert router.route.await_args.args[0].confirmed is True
+    assert response.text == "The door is unlocked, sir."
+    assert await read_pending(redis, approval_id) is None
