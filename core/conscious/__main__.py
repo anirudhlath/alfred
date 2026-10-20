@@ -215,11 +215,12 @@ async def _serve_once(
 ) -> None:
     """One pass of the conscious loop over requests and Door decisions.
 
-    One read covers both streams; then each stream's due redeliveries are reclaimed
-    (XREADGROUP '>' never redelivers, so a failed turn left un-ACKed only comes back
-    through a reclaim, once its backoff has elapsed). Every entry goes to its stream's
-    runner, which caps its deliveries, one at a time: a decision and a turn on the same
-    session never race.
+    One read covers both streams and takes up to one new entry from each (``count`` is per
+    stream); then each stream's due redeliveries are reclaimed (XREADGROUP '>' never
+    redelivers, so a failed turn left un-ACKed only comes back through a reclaim, once its
+    backoff has elapsed). The entries then run one after another, the live ones first and
+    requests before decisions among each kind, each through its stream's runner, which caps
+    its deliveries: a decision and a turn on the same session never race.
     """
     entries = await read_group(
         redis,

@@ -242,9 +242,9 @@ The bridge translates between MQTT topic separators (`/`) and Redis key separato
 | `home/action_results`  | `alfred:home:action_results`    |
 | `reflex/actions`       | `alfred:reflex:actions`         |
 
-The telemetry and Admin API name for a stream is its Redis key without the `alfred:` prefix and
-with `_` for `:`. So `home_action_results` is `alfred:home:action_results`, the stream
-`ActionResult` events go to ([`admin-api.md`](admin-api.md) lists the aliases).
+The telemetry and Admin API give some streams a short name: `home_action_results` is
+`alfred:home:action_results`, the stream `ActionResult` events go to. The names do not follow one
+rule; [`admin-api.md`](admin-api.md#streams) lists them all.
 
 Conversion functions in `bus/bridge.py`:
 - `mqtt_topic_to_stream_key("home/state_changed")` returns `"alfred:home:state_changed"`
