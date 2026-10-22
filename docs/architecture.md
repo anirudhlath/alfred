@@ -930,7 +930,10 @@ One loop deliberately does not reclaim: the channels' follow-up worker (`channel
 `alfred:user:responses`) ACKs every entry, delivered or not. Its delivery is best effort and a
 late reply is worthless once its 600 s registration lapses, so there is no PEL to reclaim. Its
 group is created at the stream's end and resumes from its last read after a restart (see
-[notifications.md](notifications.md#follow-ups-late-answers-and-door-resumes)).
+[notifications.md](notifications.md#follow-ups-late-answers-and-door-resumes)). The worker
+makes the group inside its retry loop, so a Redis that is not up yet is retried, and makes it
+again at the stream's end when a flush or a restore drops it (`NOGROUP`); what was published
+while it was gone is not delivered.
 
 ## 6. Configuration
 

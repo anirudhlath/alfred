@@ -46,13 +46,19 @@ async def followup_worker(
     The group is created at the stream's end, so its first start replays none of the
     stream's history. After that it resumes from the last entry it read: what landed while
     the process was down is delivered when it comes back, a late answer only while its
-    registration lives. Same worker pattern as
+    registration lives. The group is made inside the retry loop, so a Redis that is not up
+    yet is retried, and made again, at the stream's end, when a flush or a restore drops it
+    (``NOGROUP``). Same worker pattern as
     core/notifications/delivery.py::notification_delivery_worker.
     """
-    await ensure_consumer_group(redis, USER_RESPONSES_STREAM, FOLLOWUP_GROUP, start_id="$")
-
+    has_group = False
     while not shutdown.is_set():
         try:
+            if not has_group:
+                await ensure_consumer_group(
+                    redis, USER_RESPONSES_STREAM, FOLLOWUP_GROUP, start_id="$"
+                )
+                has_group = True
             entries = await read_group(
                 redis,
                 FOLLOWUP_GROUP,
@@ -75,6 +81,8 @@ async def followup_worker(
                         # exception to the reclaim rule in the root CLAUDE.md's Gotchas.
                         await redis.xack(USER_RESPONSES_STREAM, FOLLOWUP_GROUP, entry_id)
         except Exception as exc:
+            if "NOGROUP" in str(exc):
+                has_group = False
             if not shutdown.is_set():
                 logger.error("Follow-up worker error: {}", exc)
                 await asyncio.sleep(1)
