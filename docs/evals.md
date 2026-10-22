@@ -936,25 +936,24 @@ wins.
 
 ### The model
 
-The judge is the same vLLM model as every other role, reached through the harness's own
-Inspect model provider, `alfred-vllm` (`evals/harness/vllm_model.py`): a plain httpx
-`POST <base_url>/chat/completions`, text in and text out. Inspect's own `openai-api` provider
-could not load beside the old LLM client's `openai<3` pin; PR 7 of the Pydantic AI adoption
-moves the judge onto it and deletes `alfred-vllm`.
+The judge is the same vLLM model as every other role, reached through Inspect's own
+OpenAI-compatible provider under vLLM's service name (`openai-api/vllm/<model>`,
+`JUDGE_PROVIDER` in `evals/harness/judge.py`). Not Inspect's `vllm` provider: that one starts
+a vLLM server of its own when it has no address, and the judge only ever talks to the server
+it is given. `make_judge_model()` refuses an empty base URL, where Inspect would otherwise
+fall back to `VLLM_BASE_URL`, and `--vllm-url` must be `http(s)://` with a host before the
+run starts.
 
 | Setting | Value |
 |---|---|
 | Temperature | 0 |
 | `max_tokens` | 600 |
 | Connections | 2 |
-| Retries | 2 (transport errors, HTTP 429 and 5xx; never another 4xx or a malformed reply) |
+| Retries | 2, by Inspect (transport errors, timeouts, HTTP 429 and server errors; never another 4xx); the OpenAI client's own retries are off, or they would multiply Inspect's |
 | Timeout | 120 s per request |
 
-The provider forwards the sampling settings vLLM understands (temperature, `max_tokens`,
-seed, `top_p`, `top_k`, stop sequences and the two penalties) and refuses any other one, or
-any model arg, rather than dropping it; it also refuses a base URL that is not `http(s)://`
-with a host, which would otherwise be retried for seconds before failing. A judge out of
-retries raises the last attempt's error, noted with the number of attempts.
+A judge out of retries raises the last attempt's error (an `openai` exception, such as
+`APIConnectionError` for a server that is down), noted with the number of attempts.
 `alfred evals calibrate` words a failure by what happened: an HTTP 4xx other than 429 is
 "refused the request" (most likely a `--model` the server does not serve), anything else
 "did not answer".
@@ -1124,8 +1123,7 @@ goldens are public. Everything about it is fake or fenced.
 | `evals/harness/reflex.py` | System 1's recorded calls into Reflex's decisions, with Reflex's `parse_decision` |
 | `evals/harness/evidence.py` | `Evidence` and its parts: the checks' only input |
 | `evals/harness/checks/` | `home.py`, `llm.py`, `reply.py`, `latency.py`, `reflex.py`, `triggers.py`, `notifications.py`, `matching.py`, `judge_spec.py`, `result.py`; the registry in `__init__.py` |
-| `evals/harness/judge.py` | `Judge`, `judge_check()`, calibration sets and report, `TRUST_THRESHOLD` |
-| `evals/harness/vllm_model.py` | The `alfred-vllm` Inspect model provider |
+| `evals/harness/judge.py` | `Judge`, `make_judge_model()`, `judge_check()`, calibration sets and report, `TRUST_THRESHOLD` |
 | `evals/harness/tasks.py` | Inspect wiring: setup (restart/recover), solver, scorer, verdict |
 | `evals/harness/report.py` | The scorecard: `runs_from_logs()`, `summarize()`, `render_markdown()`, `log_problems()` |
 | `evals/harness/display.py` | `--display` choices and how Inspect's display is pinned |

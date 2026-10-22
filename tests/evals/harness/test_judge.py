@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import httpx
+import httpx2
+import openai
 import pytest
 import yaml
 from inspect_ai.model import GenerateConfig, ModelOutput, get_model
@@ -29,7 +31,6 @@ from evals.harness.judge import (
     render_prompt,
     save_report,
 )
-from evals.harness.vllm_model import PROVIDER as VLLM_PROVIDER
 from tests.evals.harness.factories import evidence
 
 if TYPE_CHECKING:
@@ -152,33 +153,47 @@ async def test_a_judge_that_gave_up_raises_its_last_error_with_the_attempt_count
 
 
 async def test_an_unreachable_vllm_is_reported_by_its_own_error() -> None:
-    def refuse(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("connection refused", request=request)
+    def refuse(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("connection refused", request=request)
 
     judge = Judge(
         get_model(
-            f"{VLLM_PROVIDER}/m",
+            "openai-api/vllm/m",
             base_url="http://vllm.test/v1",
+            api_key="k",
             config=GenerateConfig(max_retries=0),
             memoize=False,
-            transport=httpx.MockTransport(refuse),
+            max_retries=0,
+            http_client=openai.DefaultAsyncHttpxClient(transport=httpx2.MockTransport(refuse)),
         )
     )
     res = await judge_check(judge, conversation("ok"), SPEC, trusted={"tone"})
     assert res.status == "error" and res.counted
-    assert res.reason == "[tone] judge failed: ConnectError: connection refused"
+    assert res.reason == "[tone] judge failed: APIConnectionError: Connection error."
 
 
 def test_the_real_judge_model_builds_and_gives_up_instead_of_retrying_forever() -> None:
-    # Builds the real provider: mocks hid that Inspect's own openai-api one cannot load
-    # here. Never generates, so nothing touches the network.
+    # Builds the real provider. Never generates, so nothing touches the network.
     model = make_judge_model("m", "http://127.0.0.1:9/v1")
-    assert str(model) == "alfred-vllm/m"
+    assert str(model) == "openai-api/vllm/m"
     assert model.api.base_url == "http://127.0.0.1:9/v1"
     assert model.api.api_key == "alfred-eval-not-a-key"
     config = model.config
     assert config.max_retries == 2 and config.timeout == 120
     assert config.max_connections == 2 and config.temperature == 0.0 and config.max_tokens == 600
+    # Inspect owns the retries; the OpenAI client's own would multiply them.
+    assert model.api.client.max_retries == 0  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("base_url", ["", "   "])
+def test_the_judge_model_refuses_to_build_without_a_server(
+    monkeypatch: pytest.MonkeyPatch, base_url: str
+) -> None:
+    # Inspect would fall back to VLLM_BASE_URL, and its vllm provider starts a server of its
+    # own when it has no address at all: the judge talks only to the server it is given.
+    monkeypatch.setenv("VLLM_BASE_URL", "http://elsewhere.test/v1")
+    with pytest.raises(ValueError, match="vLLM base URL"):
+        make_judge_model("m", base_url)
 
 
 async def test_calibration_counts_disagreements_and_round_trips(tmp_path: Path) -> None:
