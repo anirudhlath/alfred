@@ -7,13 +7,16 @@ each side-effecting call to the request's ledger (``core.conscious.effects``), a
 process's ``SpendLimits`` (``shared.spend``) gates and counts every model request against
 the daily budget. ``history_capabilities`` (``core.conscious.history``) bounds the session's
 history and each tool result in it.
+
+A run ends in text, or in ``DeferredToolRequests`` when a critical call waits for the
+owner's approval (``tools.registry``); the engine then parks the run.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Final
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 
@@ -62,7 +65,7 @@ def build_system2_agent(
     max_tokens: int,
     timeout_s: float,
     spend: SpendLimits[Any] | None,
-) -> Agent[TurnDeps, str]:
+) -> Agent[TurnDeps, str | DeferredToolRequests]:
     """The System 2 agent: *toolsets* in one catalog, instructions assembled per turn.
 
     *spend* is the process's daily budget; None only where nothing is billed (tests).
@@ -76,11 +79,12 @@ def build_system2_agent(
     ]
     if spend is not None:
         capabilities.append(spend)
-    agent: Agent[TurnDeps, str] = Agent(
+    agent: Agent[TurnDeps, str | DeferredToolRequests] = Agent(
         None,
         name=SYSTEM2_NAME,
         deps_type=TurnDeps,
-        output_type=str,
+        # With str alone, a deferred call would fail the run (UserError).
+        output_type=[str, DeferredToolRequests],
         toolsets=[CatalogToolset(list(toolsets))],
         retries=OUTPUT_RETRIES,
         model_settings=ModelSettings(

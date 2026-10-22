@@ -178,7 +178,9 @@ graph TB
         SessionMgr[SessionManager]
         Spend["SpendLimits<br/>(shared/spend.py)"]
         CtxAssembler["assemble()<br/>(context_assembler.py)"]
-        ActionTools["Action Tools<br/>confirm_pending_action +<br/>attention_* (sir-only)"]
+        ActionTools["Attention Tools<br/>attention_* (sir-only)"]
+        Approvals["Approvals<br/>park / resume<br/>(approvals.py)"]
+        Classifier["ApprovalClassifier<br/>(approval role)"]
     end
 
     subgraph "Memory System"
@@ -240,7 +242,7 @@ graph TB
     AttnSet --> Engine
     Runner --> DomRouter
     DomRouter --> HomeAgent
-    DomRouter -->|SET/GETDEL<br/>alfred:pending_actions:*| Redis
+    DomRouter -->|SET/GETDEL<br/>alfred:pending:*| Redis
     Runner --> ScratchWriter
     Runner --> TelCollector
     Runner -->|"action is None"| Observer
@@ -284,12 +286,14 @@ graph TB
     ConsMain --> Spend
     ConsEngine --> CtxAssembler
     ConsEngine -->|POST /v1/messages| Claude["Claude API"]
-    ConsEngine -->|XREAD requests| Redis
+    ConsEngine -->|XREADGROUP requests<br/>and approvals| Redis
     ConsEngine -->|XADD responses| Redis
     ConsEngine -->|domain tool calls| DomRouter
     ConsEngine -->|sir-only tool calls| ActionTools
-    ActionTools -->|GETDEL + XADD alfred:actions| Redis
     ActionTools -->|SADD/SREM alfred:attention:*| Redis
+    ConsEngine -->|critical calls| Approvals
+    Approvals -->|SET NX / GETDEL<br/>alfred:pending:*| Redis
+    ConsEngine -->|reply to a pending confirmation| Classifier
     CtxAssembler --> IntRegistry
     CtxAssembler --> EpisodicStore
     CtxAssembler --> MemReader
@@ -668,16 +672,17 @@ The Conscious Engine handles complex user requests with a Pydantic AI agent; [do
 2. **SessionManager** (`session.py`) -- manages conversation sessions in Redis (`alfred:sessions:{id}`). Stores each run's whole message history (tool calls and results included) per session, with compaction bounding it (`core/conscious/history.py`); a change of speaker starts the session over.
 3. **SpendLimits** (`shared/spend.py`) -- the daily budget every agent carries, a $0 local one included, on one atomic counter shared by all processes (`{alfred:spend}:*`). It refuses a model request once the day's spend reaches `DAILY_COST_CAP_USD` and sends the 80% alert once a day. See [docs/llm.md](llm.md#spend).
 4. **`assemble()`** (`context_assembler.py`) -- builds the system prompt for a turn from the rendered prose sections, with the current time, involuntary recall and the routine hint between them.
-5. **ConsciousEngine** (`engine.py`) -- runs the `system2` agent once per request: the agent offers the catalog's tools, validates and dispatches each call, feeds results back, and returns the final text, within ten model requests. Returns an `AlfredResponse`.
+5. **ConsciousEngine** (`engine.py`) -- runs the `system2` agent once per request: the agent offers the catalog's tools, validates and dispatches each call, feeds results back, and returns the final text, within ten model requests. Returns an `AlfredResponse`. A critical call does not dispatch: the run ends with the call deferred, and the engine parks it (below).
+6. **Approvals** (`approvals.py`, `approval_classifier.py`) -- holds a run that deferred critical calls in one pending record, and resumes it on the owner's decision: a reply in the conversation, read by the `ApprovalClassifier`, or a Door decision read from `alfred:approvals`. The conscious loop reads that stream and `alfred:user:requests` through one consumer group, so a decision gets the same reclaim and dead-letter policy as a turn.
 
 **System 2's prose** (personality, voice delivery, identity, location, integrations, proactivity) is served by the prompt store (`shared/prompts/`); the sir and guest identity sections are separate prompts, enforcing the privacy boundary.
 
-**Attention and confirm tools** (`core/conscious/tools/attention.py`) -- `confirm_pending_action`
-(republishes a parked critical action once the user approves) and
+**Attention tools** (`core/conscious/tools/attention.py`) --
 `attention_add`/`attention_remove`/`attention_list` (reshape the Reflex `AttentionSet`, see
 3.2.1). They form a sir-only toolset: never offered on a guest turn, and refused at call time
-if a guest turn names one anyway (defense-in-depth). See [docs/autonomy.md](autonomy.md) and
-[docs/llm.md](llm.md).
+if a guest turn names one anyway (defense-in-depth). There is no tool that confirms an
+action: confirmation is the owner's reply or the Door, never the model's. See
+[docs/autonomy.md](autonomy.md) and [docs/llm.md](llm.md).
 
 ### 3.9 Integration Registry
 
@@ -757,12 +762,14 @@ The `DomainRouter` maps `ActionRequest` events to the correct domain agent based
 Reflex prompt filter, 3.2.1): every `route()` call looks up the tool's risk
 (`tool_risk()`, default `"benign"`); a Reflex-sourced request above benign risk is rejected
 and recorded as a `ReflexObservation`, and an unconfirmed `risk == "critical"` request is
-parked (not executed) via the **pending-action store** (`core/routing/pending.py`,
-Redis key `alfred:pending_actions:{request_id}`, 5-minute TTL) while an URGENT notification
-asks the user to confirm. Confirmation -- via `POST /api/actions/{id}/confirm` or the
-`confirm_pending_action` action tool (3.8) -- atomically `GETDEL`s the pending entry and
-republishes it with `confirmed=True`, so concurrent confirms of the same id can never both
-execute. Full flow and sequence diagram: [docs/autonomy.md](autonomy.md).
+parked (not executed) via the **pending store** (`core/routing/pending.py`, Redis key
+`alfred:pending:{id}`, 5-minute TTL) while an URGENT notification asks the user to confirm.
+The store holds two kinds of record: a `ParkedAction` for an action the router itself
+intercepted, and a `ParkedRun` for a System 2 run that deferred its critical calls (3.8).
+Confirmation -- `POST /api/actions/{id}/confirm`, or for a parked run also a reply in the
+conversation -- atomically `GETDEL`s the record, so concurrent answers to the same id can never
+both execute; an action is then republished with `confirmed=True`, a run is resumed. Full flow
+and sequence diagram: [docs/autonomy.md](autonomy.md).
 
 ### 3.12 Telemetry
 
@@ -847,7 +854,8 @@ graph LR
 | `ToolRegistration` | Microservices | Announces available tools | `service_name`, `service_endpoint`, `tools` |
 | `TriggerFired` | Trigger Engine | A trigger's conditions were met (no direct action) | `trigger_id`, `trigger_name`, `trigger_type`, `context` |
 | `UserRequest` | Interaction channels | Inbound user interaction (text/audio) | `channel`, `session_id`, `identity_claim`, `content_type`, `content` |
-| `AlfredResponse` | Conscious Engine | Outbound response to user | `channel`, `session_id`, `text`, `actions_taken`, `mood`, `in_reply_to` (the answered request's `event_id`) |
+| `AlfredResponse` | Conscious Engine | Outbound response to user | `channel`, `session_id`, `text`, `actions_taken`, `mood`, `in_reply_to` (the answered request's `event_id`), `followup` (an answer nobody waited for) |
+| `ApprovalDecision` | Web channel | The owner's Door decision on a parked run | `approval_id`, `decision`, `run` |
 | `TriggerCreated` | Trigger Engine | A trigger was dynamically created | `trigger_type`, `name`, `conditions`, `action`, `one_shot` |
 | `ReflexObservation` | Reflex Runner, DomainRouter | Records what the reflex did — or saw and chose not to do (`action`/`result` are `None`) | `origin`, `trigger_event`, `action`, `result`, `decision_context` |
 
@@ -869,7 +877,9 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:triggers:changed` | Pub/Sub | Cross-process `TriggerStore` coherence (saved/deleted/tz-changed) |
 | `alfred:user:timezone` | String | User's IANA timezone (`shared/usertime.py`; resolution: stored → `ALFRED_TIMEZONE` env → UTC) |
 | `alfred:user:requests` | Stream | Inbound user requests from channels |
-| `alfred:user:responses` | Stream | Outbound Alfred responses to channels |
+| `alfred:user:responses` | Stream | Outbound Alfred responses to channels; the `channels-followups` group delivers the follow-ups among them (`core/channels/followups.py`) |
+| `alfred:approvals` | Stream | `ApprovalDecision`s from the Door, read by the Conscious Engine (group `conscious-engine`) next to `alfred:user:requests` |
+| `alfred:followup:{event_id}` | String | A channel's wait for a response (`waiting`, then `late` if it gave up; TTL 600s, `core/channels/request_bus.py`) |
 | `alfred:sessions:{id}` | Hash | Conversation session: `channel`, `created_at`, `identity`, `messages` (the run's message history as JSON; TTL `SESSION_TIMEOUT_MINUTES`) |
 | `{alfred:spend}:*` | String + Hash (harness `RedisSpendStore`) | Daily spend counter; `alfred:spend:alert:{day}` marks the 80% alert as sent |
 | `alfred:conscious:dead_letters` | Stream | Turns the Conscious Engine gave up on — `entry_id`, `event`, `error_type`, `error`, `deliveries`, `reason` (`permanent`, `exhausted`, `expired`, `stale`, `partial`); `MAXLEN ~ 1000` |
@@ -887,7 +897,7 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:notifications:queue` | Stream | Proactive notification queue |
 | `alfred:attention:{domain}` | Set | Tier-2 Reflex attention set membership (`core/reflex/attention.py`) |
 | `alfred:attention:{domain}:seen` | Set | Sticky removals -- entities the YAML seed must not re-add |
-| `alfred:pending_actions:{request_id}` | String (JSON) | Parked critical `ActionRequest` awaiting confirmation (TTL 300s, `core/routing/pending.py`) |
+| `alfred:pending:{id}` | String (JSON) | A held critical action awaiting the owner: a `ParkedRun` (System 2 run, id = approval id) or a `ParkedAction` (router-intercepted `ActionRequest`, id = request id); TTL 300s, written `SET NX`, claimed by `GETDEL` (`core/routing/pending.py`) |
 | `alfred:auth:{session_id}` | Hash | Passkey session: `authenticated`, `credential_id`, `created_at`, `ip`, `user_agent`, `channel` (TTL 8h, `core/identity/auth_routes.py`) |
 | `alfred:webauthn:pairing` | String | The active 6-digit device-pairing code (TTL 300s, single-use) |
 | `alfred:webauthn:pairing:fails:{bucket}` | String (int) | Wrong guesses from one client address — a single IPv4 address (`203.0.113.5`) or an IPv6 /64 (`2001:db8::/64`) (TTL 300s); at 10 that client is refused for the rest of the TTL, even with the correct code — the code itself stays live for every other client |
@@ -912,8 +922,15 @@ counts each entry's deliveries, redelivers on a doubling backoff (15 s, then 30 
 `MAX_DELIVERIES` (3) answers the user with a fixed apology and writes the turn to the
 `alfred:conscious:dead_letters` stream instead of dropping it. An entry past the 5-minute replay
 window is answered and dead-lettered rather than run; an answered marker and a side-effect ledger
-keep a redelivery from answering or acting twice (see [llm.md](llm.md#retries)). All of them ACK a
+keep a redelivery from answering or acting twice (see [llm.md](llm.md#retries)). The same loop
+reads Door decisions from `alfred:approvals` with the same policy. All of them ACK a
 payload that can never parse.
+
+One loop deliberately does not reclaim: the channels' follow-up worker (`channels-followups` on
+`alfred:user:responses`) ACKs every entry, delivered or not. Its delivery is best effort and a
+late reply is worthless once its 600 s registration lapses, so there is no PEL to reclaim. Its
+group is created at the stream's end and resumes from its last read after a restart (see
+[notifications.md](notifications.md#follow-ups-late-answers-and-door-resumes)).
 
 ## 6. Configuration
 

@@ -6,10 +6,14 @@ tool calls and results included, as ``ModelMessagesTypeAdapter`` JSON. Each turn
 ``messages``: compaction rewrites older messages during the run, so the run's history is
 the session. Sessions expire after the configured idle time.
 
-A turn by a different identity than the one that wrote the session reads no history, so a
-shared session (a satellite's ``sat-{name}``) starts over when the speaker changes. A
-session written before full history holds a ``history`` field of user and assistant text
-instead; it is read as text turns and deleted on the next write.
+``pending_approval`` names the approval a parked run is waiting on. Only ``store_run`` sets
+or clears it; ``append_text_turn`` only adds text and leaves it, so a turn answered from its
+ledger after parking cannot wipe the approval the owner is about to answer.
+
+A turn by a different identity than the one that wrote the session reads no history and no
+pending approval, so a shared session (a satellite's ``sat-{name}``) starts over when the
+speaker changes. A session written before full history holds a ``history`` field of user
+and assistant text instead; it is read as text turns and deleted on the next write.
 """
 
 from __future__ import annotations
@@ -41,14 +45,17 @@ logger = logging.getLogger(__name__)
 MESSAGES_FIELD: Final = "messages"
 IDENTITY_FIELD: Final = "identity"
 LEGACY_HISTORY_FIELD: Final = "history"
+PENDING_APPROVAL_FIELD: Final = "pending_approval"
 
 
 @dataclass(frozen=True)
 class Session:
-    """A session as a turn reads it: *messages* is the run's message history."""
+    """A session as a turn reads it: *messages* is the run's message history and
+    *pending_approval* the approval a parked run of the same speaker is waiting on."""
 
     channel: str
     messages: list[ModelMessage]
+    pending_approval: str | None = None
 
 
 def text_turn(user: str, reply: str) -> list[ModelMessage]:
@@ -131,6 +138,13 @@ class SessionManager:
             return []
         return stored_messages(fields)
 
+    @staticmethod
+    def _pending_for(fields: dict[str, str], identity: str) -> str | None:
+        """The approval waiting on *identity*: none unless they wrote the session."""
+        if fields.get(IDENTITY_FIELD) != identity:
+            return None
+        return fields.get(PENDING_APPROVAL_FIELD) or None
+
     async def load(self, session_id: str, channel: str, identity: str) -> Session:
         """The session a turn by *identity* continues, created when new. Refreshes the TTL."""
         key = self._key(session_id)
@@ -139,6 +153,7 @@ class SessionManager:
             session = Session(
                 channel=fields.get("channel", channel),
                 messages=self._history_for(fields, identity),
+                pending_approval=self._pending_for(fields, identity),
             )
         else:
             session = Session(channel=channel, messages=[])
@@ -150,21 +165,37 @@ class SessionManager:
         return session
 
     async def store_run(
-        self, session_id: str, messages: Sequence[ModelMessage], identity: str
+        self,
+        session_id: str,
+        messages: Sequence[ModelMessage],
+        identity: str,
+        *,
+        pending_approval: str | None = None,
     ) -> None:
         """Replace the session's history with a finished turn's *messages*, written by
-        *identity*. Instructions are dropped first; the legacy text field is deleted."""
+        *identity*. Instructions are dropped first; the legacy text field is deleted.
+        *pending_approval* is set when given and cleared otherwise."""
         key = self._key(session_id)
         payload = ModelMessagesTypeAdapter.dump_json(_without_instructions(messages)).decode()
-        await self._redis.hset(  # type: ignore[misc,unused-ignore]
-            key, mapping={MESSAGES_FIELD: payload, IDENTITY_FIELD: identity}
-        )
-        await self._redis.hdel(key, LEGACY_HISTORY_FIELD)  # type: ignore[misc,unused-ignore]
+        mapping = {MESSAGES_FIELD: payload, IDENTITY_FIELD: identity}
+        gone = [LEGACY_HISTORY_FIELD]
+        if pending_approval:
+            mapping[PENDING_APPROVAL_FIELD] = pending_approval
+        else:
+            gone.append(PENDING_APPROVAL_FIELD)
+        await self._redis.hset(key, mapping=mapping)  # type: ignore[misc,arg-type,unused-ignore]
+        await self._redis.hdel(key, *gone)  # type: ignore[misc,unused-ignore]
         await self._redis.expire(key, self._timeout_seconds)  # type: ignore[misc,unused-ignore]
 
     async def append_text_turn(self, session_id: str, identity: str, user: str, reply: str) -> None:
         """Add a turn known only as text (one answered from its side-effect ledger) to the
-        history *identity* may continue, and store the result."""
+        history *identity* may continue, and store the result. A pending approval of the
+        same speaker's is kept: this adds text, it does not settle the approval."""
         fields = await self._fields(self._key(session_id))
         history = self._history_for(fields, identity)
-        await self.store_run(session_id, [*history, *text_turn(user, reply)], identity)
+        await self.store_run(
+            session_id,
+            [*history, *text_turn(user, reply)],
+            identity,
+            pending_approval=self._pending_for(fields, identity),
+        )

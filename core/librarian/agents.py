@@ -18,10 +18,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, ModelRetry, NativeOutput, RunContext
+from pydantic_ai import Agent, ModelRetry, RunContext
 from pydantic_ai.settings import ModelSettings
 
-from shared.agents import instrumentation, role_headers
+from shared.agents import instrumentation, role_headers, structured_output
 from shared.config import DEFAULT_SYSTEM2_TIMEOUT_S
 from shared.llm_roles import LIBRARIAN
 from shared.prompts.link import linked_prompts
@@ -31,7 +31,6 @@ if TYPE_CHECKING:
 
     from pydantic_ai.capabilities import AbstractCapability
     from pydantic_ai.models import Model
-    from pydantic_ai.output import OutputSpec
     from pydantic_ai_harness.spend import SpendLimits
 
     from shared.prompts.template import RenderedPrompt
@@ -163,13 +162,6 @@ class LibrarianAgents:
             logger.warning("Librarian after-ask hook failed", exc_info=True)
 
 
-def _output[T](model: Model, kind: type[T]) -> OutputSpec[T]:
-    """JSON-schema output where the model supports it, an output tool where it does not."""
-    if model.profile.get("supports_json_schema_output", False):
-        return NativeOutput(kind)
-    return kind
-
-
 def _agent[T](
     model: Model, name: str, kind: type[T], spend: SpendLimits[Any] | None
 ) -> Agent[LibrarianTask, T]:
@@ -178,7 +170,7 @@ def _agent[T](
         capabilities.append(spend)
     agent: Agent[LibrarianTask, T] = Agent(
         None,
-        output_type=_output(model, kind),
+        output_type=structured_output(model, kind),
         deps_type=LibrarianTask,
         name=name,
         retries=OUTPUT_RETRIES,

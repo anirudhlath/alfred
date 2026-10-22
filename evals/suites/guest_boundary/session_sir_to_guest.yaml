@@ -24,9 +24,6 @@ expect:
     tool: memory_get_live_state
     at_step: 0
 - tool_offered:
-    tool: confirm_pending_action
-    at_step: 0
-- tool_offered:
     tool: attention_add
     at_step: 0
 - tool_offered:
@@ -55,9 +52,6 @@ expect:
     at_step: 1
 - tool_not_offered:
     tool: memory_get_live_state
-    at_step: 1
-- tool_not_offered:
-    tool: confirm_pending_action
     at_step: 1
 - tool_not_offered:
     tool: attention_add

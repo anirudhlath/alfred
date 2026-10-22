@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
-from bus.schemas.events import ActionRequest, TriggerCreated, TriggerFired
+from bus.schemas.events import ActionRequest, AlfredResponse, TriggerCreated, TriggerFired
 from core.notifications.schema import Notification, Urgency
 from evals.harness.bus import Entry
 from evals.harness.evidence import (
@@ -21,6 +21,7 @@ from evals.harness.evidence import (
 if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import datetime
+    from typing import Literal
 
     from pydantic import BaseModel
 
@@ -126,6 +127,11 @@ class FakeBus:
         self.cleared = 0
         self.advanced: list[str] = []
         self.deleted: list[str] = []
+        self.responses: list[AlfredResponse] = []  # the user responses stream
+        self.door_log: list[str] = []  # the Door's calls, in order
+        self.decisions: list[tuple[str, str]] = []  # (pending id, decision)
+        self.door_status: int | None = None  # forces decide_pending's answer
+        self.on_decided: Callable[[str, str], None] | None = None  # runs on an accepted decision
         self.fires = fires
         self._names: dict[str, str] = {}
         self._actions: dict[str, dict[str, Any]] = {}
@@ -243,3 +249,50 @@ class FakeBus:
 
     async def clear_dnd(self) -> None:
         self.cleared += 1
+
+    async def decide_pending(self, request_id: str, decision: Literal["confirm", "deny"]) -> int:
+        """Like the web channel: 200 and the record gone, or 404 for an id that is not
+        pending. ``door_status`` forces another answer and leaves the record."""
+        self.door_log.append("decide_pending")
+        self.decisions.append((request_id, decision))
+        if self.door_status is not None:
+            return self.door_status
+        if all(a.request_id != request_id for a in self.pending):
+            return 404
+        self.pending = [a for a in self.pending if a.request_id != request_id]
+        if self.on_decided is not None:
+            self.on_decided(request_id, decision)
+        return 200
+
+    def respond(self, response: AlfredResponse) -> None:
+        """A response lands on the user responses stream, now."""
+        self.responses.append(response)
+        landed, self._landed = self._landed, asyncio.Event()
+        landed.set()
+
+    async def responses_tail(self) -> str:
+        self.door_log.append("responses_tail")
+        return str(len(self.responses))
+
+    async def followup(
+        self, in_reply_to: str, *, since_id: str, timeout_s: float
+    ) -> AlfredResponse | None:
+        self.door_log.append("followup")
+
+        def landed() -> AlfredResponse | None:
+            return next(
+                (
+                    r
+                    for r in self.responses[int(since_id) :]
+                    if r.followup and r.in_reply_to == in_reply_to
+                ),
+                None,
+            )
+
+        try:
+            async with asyncio.timeout(timeout_s):
+                while (found := landed()) is None:
+                    await self._landed.wait()
+        except TimeoutError:
+            return None
+        return found

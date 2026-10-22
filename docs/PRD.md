@@ -1,6 +1,6 @@
 # Alfred — Product Requirements Document
 
-**Status:** Living document. Capability statuses current as of **2026-10-15**.
+**Status:** Living document. Capability statuses current as of **2026-10-20**.
 **Maintenance rule:** any PR that adds or changes a user-facing capability updates the
 relevant row(s) in the [Capability Catalog](#4-capability-catalog) in the same branch.
 
@@ -71,7 +71,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 
 | Capability | Status | Reference |
 |---|---|---|
-| Web app — a phone-first PWA, installable to the home screen: the Room (the conversation, hold-to-talk voice, notifications and what is held back), the Door (a critical action approved behind a slide, against its own fuse), and the passkey gates and first-run setup in front of both | Shipped | `docs/web-frontend.md`, spec `2026-09-04-mobile-first-pwa-client-design.md` |
+| Web app — a phone-first PWA, installable to the home screen: the Room (the conversation, hold-to-talk voice, notifications and what is held back), the Door (a critical action approved behind a slide, or declined, against its own fuse), and the passkey gates and first-run setup in front of both | Shipped | `docs/web-frontend.md`, spec `2026-09-04-mobile-first-pwa-client-design.md` |
 | Web app — the Workshop: the Activity bench over all eight live event streams (solo one, pause the feed, page back through history, read any event's whole payload), and *Why Alfred did that* — the causal thread joining one row to the activity around it by the ids the server holds | Shipped | `docs/web-frontend.md`, plan `2026-09-10-pwa-phase2-workshop-and-activity.md`, PRs #241 and #242 |
 | Web app — the Workshop's other three benches: Memory (episodic recall over hot and cold, semantic documents, the routine lifecycle, the scratchpad), Triggers (browse, filter, toggle and fire) and System (health, spend, quiet hours, sessions, connected services, passkeys and pairing, the reflex attention set, nightly consolidation) | In branch | `docs/web-frontend.md`, plan `2026-09-16-pwa-phase3-memory-triggers-system.md` |
 | Native iOS app (chat, notifications, settings, Face ID, push) | Shipped | `alfred-ios` repo |
@@ -129,7 +129,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Live state streaming without HA-side setup (WebSocket ingest) | Shipped | `alfred-home-service` repo (WebSocket ingest); [#281](https://github.com/anirudhlath/alfred/issues/281) (live state written per event, read fresh) |
 | Reflex judgment calls: the fast mind sees the time, who is home and the house by room, and decides act, ask or nothing on common sense and learned habits — recorded in shadow mode for a week of review before it acts | In review | [#285](https://github.com/anirudhlath/alfred/issues/285), spec `2026-10-07-reflex-context-design.md` |
 | Tiered autonomy: reflex touches only benign devices; risky domains need the conscious mind | Planned | HA integration spec, Plan 3 |
-| Confirmation required for critical actions (locks, alarm, garage) — even when you asked | Planned | same, Plan 3 |
+| Confirmation required for critical actions (locks, alarm, garage) — even when you asked. Alfred parks the action and asks; you answer in the conversation or on the Door, and he tells you what happened, even if it takes a while | Shipped | `docs/autonomy.md`, `docs/notifications.md`, [#317](https://github.com/anirudhlath/alfred/issues/317) |
 
 ### 4.5 Integrations & credentials
 
@@ -242,7 +242,7 @@ answer one at a time.
 
 **Near** — land what's in review (instant reminders #27, credential flow #28, voice
 satellites #29); then the Home Assistant integration Plans 2–3: full-home discovery,
-followed by the attention set, tiered autonomy, and critical-action confirmations (live
+followed by the attention set and tiered autonomy (live
 state has shipped). Outcome: the real apartment becomes Alfred's body.
 
 **Mid** — the satellite hardware line (Raspberry Pi provisioning, custom "hey Alfred"

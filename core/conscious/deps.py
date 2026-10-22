@@ -48,6 +48,10 @@ class TurnDeps:
     ``RecordEffects`` refuses a side-effecting call once it is past the window.
 
     ``prompts`` is the turn's prose sections, rendered from the prompt store before the run.
+
+    ``approval_id`` is set only on a run resumed after the owner approved or declined its
+    parked calls (``core.conscious.approvals``): an approved call's outcome is published
+    under it, so the client that showed the approval can tie the outcome to it.
     """
 
     identity: IdentityResult
@@ -66,6 +70,7 @@ class TurnDeps:
     registry_tools: list[ToolInfo] = field(default_factory=list)
     integration_tools: list[IntegrationTool] = field(default_factory=list)
     actions_taken: list[str] = field(default_factory=list)
+    approval_id: str | None = None
 
     @property
     def who(self) -> str:

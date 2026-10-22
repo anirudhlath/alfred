@@ -1,3 +1,5 @@
+# The owner says yes, then taps Confirm on the Door for the same approval. The first decision claims
+# the record, so the second finds nothing (404) and the door is unlocked once.
 id: critical_actions.lock.repeated_approval
 prd:
 - 4.4.critical-confirmation
@@ -8,12 +10,8 @@ tags:
 - negative
 steps:
 - user: Unlock the front door.
-- user: I approve pending action {pending_action_id}. Confirm that exact request.
-  pending_action:
-    at_step: 0
-    tool: home.lock_unlock
-- user: Confirm pending action {pending_action_id} again. I approve that same ID once
-    more.
+- user: Yes, go ahead.
+- door: confirm
   pending_action:
     at_step: 0
     tool: home.lock_unlock
@@ -34,7 +32,7 @@ expect:
         regex: ^(?:lock\.front_door|Front Door Lock|Entryway)$
     at_step: 0
 - notification:
-    source: domain-router
+    source: conscious-engine
     urgency: urgent
     after_step: 0
 - ha_called:

@@ -1,10 +1,14 @@
-"""Confirmation and attention tools, for the verified user (spec ruling R1)."""
+"""Attention tools, for the verified user.
+
+There is no tool that approves anything: a critical call waits for the owner outside the
+model (``core.conscious.approvals``).
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from pydantic_ai import RunContext, Tool, ToolFailed
+from pydantic_ai import RunContext, Tool
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
 from core.conscious.deps import TurnDeps  # noqa: TC001 — Pydantic AI reads tool signatures
@@ -12,20 +16,6 @@ from core.conscious.effects import SIDE_EFFECT
 from core.conscious.tools.catalog import TOOL_RETRIES
 from core.conscious.tools.sir_only import SirOnlyToolset
 from core.reflex import attention
-from core.routing.pending import confirm_pending_action as confirm_pending
-
-
-async def confirm_pending_action(ctx: RunContext[TurnDeps], request_id: str) -> dict[str, str]:
-    """Confirm a pending critical action (e.g. unlocking a door) that is awaiting user
-    approval. Only call this when the user has explicitly agreed in this conversation.
-
-    Args:
-        request_id: The pending action id from the confirmation notification.
-    """
-    confirmed = await confirm_pending(ctx.deps.services.redis, request_id)
-    if confirmed is None:
-        raise ToolFailed(f"No pending action '{request_id}' — it may have expired")
-    return {"status": "confirmed", "request_id": request_id, "tool_name": confirmed.tool_name}
 
 
 async def attention_add(ctx: RunContext[TurnDeps], domain: str, entity_id: str) -> dict[str, str]:
@@ -66,8 +56,6 @@ async def attention_list(ctx: RunContext[TurnDeps], domain: str) -> dict[str, An
 
 ATTENTION_FUNCTIONS: FunctionToolset[TurnDeps] = FunctionToolset(
     [
-        # Confirming runs the parked action.
-        Tool(confirm_pending_action, metadata={SIDE_EFFECT: True}),
         Tool(attention_add, metadata={SIDE_EFFECT: True}),
         Tool(attention_remove, metadata={SIDE_EFFECT: True}),
         attention_list,
@@ -78,5 +66,5 @@ ATTENTION_FUNCTIONS: FunctionToolset[TurnDeps] = FunctionToolset(
 
 
 def attention_toolset() -> AbstractToolset[TurnDeps]:
-    """The confirmation and attention tools, for the verified user."""
+    """The attention tools, for the verified user."""
     return SirOnlyToolset(ATTENTION_FUNCTIONS)

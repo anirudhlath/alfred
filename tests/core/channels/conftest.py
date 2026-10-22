@@ -100,6 +100,8 @@ def live_channels_client(dist: Path | None = None) -> Iterator[TestClient]:
             "core.channels.service_credentials.credential_push_worker",
             new=AsyncMock(return_value=None),
         ),
+        # Skip the follow-up worker, for the same reason.
+        patch("core.channels.followups.followup_worker", new=AsyncMock(return_value=None)),
         # Skip warmup — real Whisper/Piper loads in to_thread outlive the TestClient.
         # None, not a MagicMock: a mock never fires add_done_callback, so asyncio.wait
         # in teardown burns its full timeout. teardown skips None tasks.

@@ -11,13 +11,19 @@ import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from pydantic_ai import Agent
+from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 
-from shared.agents import instrumentation, model_key, resolve_model, role_headers
+from shared.agents import (
+    instrumentation,
+    model_key,
+    resolve_model,
+    role_headers,
+    structured_output,
+)
 from shared.config import AlfredConfig, apply_model_env
 from shared.llm_http import RetryingTransport
-from shared.llm_roles import LIBRARIAN, LLM_ROLES, ROLE_HEADER, SYSTEM1, SYSTEM2
+from shared.llm_roles import APPROVAL, LIBRARIAN, LLM_ROLES, ROLE_HEADER, SYSTEM1, SYSTEM2
 from tests.llm_fakes import Script
 
 
@@ -27,9 +33,10 @@ def test_conftest_blocks_real_model_requests() -> None:
     assert models.ALLOW_MODEL_REQUESTS is False
 
 
-def test_roles_are_the_three_the_proxy_knows() -> None:
+def test_roles_are_the_four_the_proxy_knows() -> None:
     assert ROLE_HEADER == "X-Alfred-Role"
-    assert {SYSTEM1, SYSTEM2, LIBRARIAN} == LLM_ROLES == {"system1", "system2", "librarian"}
+    assert {SYSTEM1, SYSTEM2, LIBRARIAN, APPROVAL} == LLM_ROLES
+    assert {"system1", "system2", "librarian", "approval"} == LLM_ROLES
     assert role_headers(SYSTEM2) == {"X-Alfred-Role": "system2"}
 
 
@@ -45,6 +52,13 @@ def test_unusable_model_string_logs_and_yields_no_model(
     with caplog.at_level(logging.ERROR, logger="shared.agents"):
         assert resolve_model("LIBRARIAN_MODEL", "nope:x") is None
     assert "LIBRARIAN_MODEL='nope:x' cannot be used" in caplog.text
+
+
+@pytest.mark.parametrize("native", [True, False])
+def test_structured_output_follows_the_model_profile(native: bool) -> None:
+    spec = structured_output(Script(json_schema_output=native).model, dict)
+    assert isinstance(spec, NativeOutput) is native
+    assert native or spec is dict
 
 
 def test_a_model_string_resolves_and_keys_by_provider_and_name() -> None:

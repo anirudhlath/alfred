@@ -7,9 +7,9 @@ depth — the Reflex prompt filter is the first layer):
    tool with risk above "benign" are rejected and recorded as a
    ReflexObservation — a hallucinated tool name cannot actuate a lock.
 2. Unconfirmed requests targeting a ``risk == "critical"`` tool are parked in
-   ``alfred:pending_actions:{request_id}`` (TTL 5 min) and an URGENT
-   notification asks the user to confirm. Confirmed requests
-   (``confirmed=True``) pass through without re-interception.
+   ``alfred:pending:{request_id}`` (TTL 5 min) and an URGENT notification asks
+   the user to confirm. Confirmed requests (``confirmed=True``) pass through
+   without re-interception.
 
 Enforcement requires a Redis handle; ``DomainRouter()`` without one routes
 unconditionally (offline/eval contexts and legacy tests).
@@ -24,7 +24,12 @@ from loguru import logger
 from bus.schemas.events import ActionRequest, ActionResult
 from core.notifications.schema import Urgency
 from core.reflex.runner import publish_observation
-from core.routing.pending import store_pending_action
+from core.routing.pending import (
+    CONFIRMATION_TITLE,
+    confirmation_body,
+    confirmation_metadata,
+    store_pending_action,
+)
 from core.routing.risk import tool_risk
 from shared.streams import REFLEX_OBSERVATIONS_STREAM
 
@@ -106,19 +111,13 @@ class DomainRouter:
         await store_pending_action(redis, action)
         if self._notifier is not None:
             await self._notifier.publish(
-                title="Confirmation required",
-                body=(
-                    f"Alfred wants to run '{action.tool_name}' on "
-                    f"{action.target_service} — confirm?"
-                ),
+                title=CONFIRMATION_TITLE,
+                body=confirmation_body(action.tool_name, action.target_service),
                 source="domain-router",
                 urgency=Urgency.URGENT,
-                metadata={
-                    "pending_action_id": action.request_id,
-                    "tool_name": action.tool_name,
-                    "parameters": action.parameters,
-                    "reason": action.reason,
-                },
+                metadata=confirmation_metadata(
+                    action.request_id, action.tool_name, action.parameters, action.reason
+                ),
             )
         else:
             logger.warning(

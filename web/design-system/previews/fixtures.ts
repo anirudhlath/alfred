@@ -66,6 +66,19 @@ export const appliedAction: TrackedAction = {
   confirmedAt: iso(-9),
   appliedAt: iso(-6),
 };
+export const failedAction: TrackedAction = {
+  ...pendingAction,
+  phase: "failed",
+  confirmedAt: iso(-9),
+  appliedAt: iso(-6),
+  result: {
+    request_id: pendingAction.action.request_id,
+    tool_name: pendingAction.action.tool_name,
+    status: "error",
+    error: "The lock did not respond.",
+  },
+};
+export const declinedAction: TrackedAction = { ...pendingAction, phase: "declined" };
 export const expiredAction: TrackedAction = {
   ...pendingAction,
   phase: "expired",

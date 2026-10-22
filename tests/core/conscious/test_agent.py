@@ -43,7 +43,7 @@ from tests.llm_fakes import Script, tool_call
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from pydantic_ai import Agent
+    from pydantic_ai import Agent, DeferredToolRequests
 
     from core.conscious.deps import TurnDeps
 
@@ -61,7 +61,9 @@ def _triggers() -> TriggerFeature:
     return TriggerFeature(TriggerFeatureContext(store=store))
 
 
-def _agent(*, max_tokens: int = 512, timeout_s: float = 15.0) -> Agent[TurnDeps, str]:
+def _agent(
+    *, max_tokens: int = 512, timeout_s: float = 15.0
+) -> Agent[TurnDeps, str | DeferredToolRequests]:
     return build_system2_agent(
         toolsets=system2_toolsets(_triggers()),
         max_tokens=max_tokens,
@@ -185,7 +187,6 @@ async def test_guest_is_offered_only_benign_tools_across_every_toolset() -> None
     assert set(guest.offered()) == guest_triggers | {"home_get_lights"}
     assert {
         "memory_recall_memories",
-        "confirm_pending_action",
         "attention_add",
         "home_light_on",
         "triggers_list_triggers",

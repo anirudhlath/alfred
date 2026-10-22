@@ -155,6 +155,17 @@ class DndStep(BaseModel):
     settle: float = Field(default=3.0, ge=0)
 
 
+class DoorStep(BaseModel):
+    """The owner decides a pending action on the Door, the PWA's confirm sheet: the
+    harness POSTs the decision to the web channel, as the PWA does."""
+
+    model_config = ConfigDict(extra="forbid")
+    door: Literal["confirm", "deny"]
+    pending_action: PendingActionSelector
+    # How long to wait after the decision, once the follow-up (if any) has arrived.
+    settle: float = Field(default=3.0, ge=0)
+
+
 def step_kind(value: Any) -> StepKind | None:
     """The step's tag: the one step key a mapping (or a step model's fields) carries."""
     if isinstance(value, BaseModel):
@@ -181,7 +192,8 @@ Step = Annotated[
     | Annotated[WaitStep, Tag("wait")]
     | Annotated[ClockStep, Tag("clock")]
     | Annotated[AdvanceTriggerStep, Tag("advance_trigger")]
-    | Annotated[DndStep, Tag("dnd")],
+    | Annotated[DndStep, Tag("dnd")]
+    | Annotated[DoorStep, Tag("door")],
     Discriminator(
         step_kind,
         custom_error_type="step_kind",
@@ -281,11 +293,17 @@ class Scenario(BaseModel):
         n = len(self.steps)
         for i, step in enumerate(self.steps):
             if (
-                isinstance(step, UserStep)
+                isinstance(step, UserStep | DoorStep)
                 and step.pending_action is not None
                 and step.pending_action.at_step >= i
             ):
                 raise ValueError(f"steps.{i}.pending_action.at_step must name an earlier step")
+            # A door step waits for the follow-up to the request that parked the action,
+            # which only a user step sends.
+            if isinstance(step, DoorStep) and not isinstance(
+                self.steps[step.pending_action.at_step], UserStep
+            ):
+                raise ValueError(f"steps.{i}.pending_action.at_step must name a user step")
         kinds = [step_kind(s) for s in self.steps]
         for i, check in enumerate(self.expect):
             for field in ("after_step", "at_step"):

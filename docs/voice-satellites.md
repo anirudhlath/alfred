@@ -265,7 +265,11 @@ bare `AudioStart`/`AudioChunk`/`AudioStop` stream, identical to a spoken reply.
 
 For single-device delivery (future presence-aware targeting, timers), the bridge also exposes
 `get_connection(name)` and `play_wav_to(name, wav) -> bool` (False when the named satellite is
-offline or unknown); v1's announcement adapter only uses the broadcast path.
+offline or unknown); the announcement adapter only uses the broadcast path. The channels'
+follow-up sink uses `play_wav_to`: a late answer, or the reply to a run the owner approved
+or declined on the Door, is spoken on the one satellite whose session asked
+(`satellite_name(session_id)`), never broadcast. With no bridge or no TTS it goes out as a
+notification instead; if that satellite is offline the follow-up is dropped with a WARNING ([`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes)).
 
 ## False Wakes
 

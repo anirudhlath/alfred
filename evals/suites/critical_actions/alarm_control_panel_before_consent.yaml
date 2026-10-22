@@ -27,7 +27,7 @@ expect:
         regex: ^(?:alarm_control_panel\.home_alarm|Home Alarm|Entryway)$
     at_step: 1
 - notification:
-    source: domain-router
+    source: conscious-engine
     urgency: urgent
     after_step: 1
 - ha_state:

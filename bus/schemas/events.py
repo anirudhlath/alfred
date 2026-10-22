@@ -7,12 +7,14 @@ MQTT and Redis Streams. All inter-agent communication uses these schemas.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, TypeAdapter, field_validator
 
 UrgencyLevel = Literal["informational", "important", "urgent"]
+ChannelName = Literal["web_pwa", "signal", "voice", "ios", "satellite"]
+ContentType = Literal["text", "audio"]
 
 # An ActionRequest's reason rides into APNs notification metadata, whose payload
 # ceiling is 4 KB. A model-generated reason has no natural bound, so cap it here —
@@ -112,11 +114,11 @@ class UserRequest(BaseEvent):
     """Inbound user interaction from any channel."""
 
     event_type: str = "user_request"
-    channel: Literal["web_pwa", "signal", "voice", "ios", "satellite"]
+    channel: ChannelName
     session_id: str
     identity_claim: str
     authenticated: bool = False
-    content_type: Literal["text", "audio"]
+    content_type: ContentType
     content: str
     audio_ref: str | None = None
     # Satellite metadata (None for non-satellite channels)
@@ -130,7 +132,7 @@ class AlfredResponse(BaseEvent):
     """Outbound response to a user channel."""
 
     event_type: str = "alfred_response"
-    channel: Literal["web_pwa", "signal", "voice", "ios", "satellite"]
+    channel: ChannelName
     session_id: str
     text: str
     voice_audio_ref: str | None = None
@@ -139,6 +141,89 @@ class AlfredResponse(BaseEvent):
     # The answered UserRequest's event_id. A channel matches on it when it is set, so a
     # late answer to an earlier request is never taken for the next one's.
     in_reply_to: str | None = None
+    # True for an answer that was not waited for: the resumed run of an approved action, or
+    # the late answer to a request whose caller already got a fallback.
+    followup: bool = False
+
+
+class ParkedCall(BaseModel):
+    """One tool call a run deferred for approval."""
+
+    tool_call_id: str
+    tool_name: str = Field(description="Registry name of the tool")
+    target_service: str
+    parameters: dict[str, Any]
+    reason: str | None = Field(default=None, max_length=REASON_MAX_LEN)
+
+
+class ParkedRun(BaseModel):
+    """A System 2 run parked until its deferred calls are approved or denied.
+
+    One approval covers every call the run deferred. ``messages`` is the run's message
+    history as the JSON Pydantic AI serialises it, kept opaque here so ``bus/`` needs
+    nothing from the agent framework.
+    """
+
+    kind: Literal["parked_run"] = "parked_run"
+    approval_id: str
+    session_id: str
+    channel: ChannelName
+    identity: dict[str, Any]
+    request_event_id: str
+    created_at: datetime
+    content_type: ContentType
+    area: str | None = None
+    tz_name: str
+    summary: str
+    calls: list[ParkedCall] = Field(min_length=1)
+    messages: str
+
+    @property
+    def record_id(self) -> str:
+        return self.approval_id
+
+    def action_requests(self) -> list[ActionRequest]:
+        """One unconfirmed ``ActionRequest`` per call, all under the approval id."""
+        return [
+            ActionRequest(
+                source="conscious-engine",
+                timestamp=self.created_at,
+                request_id=self.approval_id,
+                target_service=call.target_service,
+                tool_name=call.tool_name,
+                parameters=call.parameters,
+                reason=call.reason,
+                confirmed=False,
+            )
+            for call in self.calls
+        ]
+
+
+class ParkedAction(BaseModel):
+    """A critical action the router intercepted and is holding for confirmation."""
+
+    kind: Literal["action"] = "action"
+    action: ActionRequest
+
+    @property
+    def record_id(self) -> str:
+        return self.action.request_id
+
+    def action_requests(self) -> list[ActionRequest]:
+        return [self.action]
+
+
+PendingRecord = Annotated[ParkedRun | ParkedAction, Field(discriminator="kind")]
+PENDING_RECORD: TypeAdapter[PendingRecord] = TypeAdapter(PendingRecord)
+
+
+class ApprovalDecision(BaseEvent):
+    """The owner's decision on a parked run, published for the conscious process to resume."""
+
+    event_type: str = "approval_decision"
+    approval_id: str
+    decision: Literal["approve", "deny"]
+    run: ParkedRun
 
 
 class TriggerCreated(BaseEvent):

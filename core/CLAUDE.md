@@ -71,8 +71,10 @@ graph LR
 
 One Pydantic AI agent per request (`agent.py`); see `docs/llm.md`.
 
-- `engine.py` — one turn: budget check → identity/session → involuntary recall → `TurnDeps` → agent run → session, scratchpad note (the agent's `SpendLimits` counts spend)
-- `runner.py` — `process_request_entry()`: one delivery of one request, live or redelivered (`reclaim_due`); answers once (answered marker), caps at `MAX_DELIVERIES`, answers expired and exhausted turns with `FAILED_REPLY` and dead-letters them
+- `engine.py` — one turn: budget check → identity/session → involuntary recall → `TurnDeps` → agent run → session, scratchpad note (the agent's `SpendLimits` counts spend). A run that defers critical calls is parked (`_park`) instead of answered; `resume_approval()` resumes one on a Door decision, and a sir reply while the session has a `pending_approval` is classified and resumes it
+- `approvals.py` — parking a run and resuming it: `park()` (the `ParkedRun` record, the notification, the `parked` ledger entries), `claimable_run()`, `results_for()` (`ToolApproved` / `ToolDenied`), `describe_call()` / `summary_of()` (what the owner is asked to approve: each call's tool and every parameter, with the model's reason only as a short quoted aside), `confirmation_reply()`
+- `approval_classifier.py` — `ApprovalClassifier.classify()`: a reply read as approve / deny / other on `APPROVAL_MODEL` (static instructions; the calls and the reply travel as `<actions>` / `<reply>` data in the user message); an unvalidated output, a missing model or an exhausted budget is `other`, while a provider or transport error propagates (the delivery is retried, then dead-lettered)
+- `runner.py` — `process_request_entry()` and `process_approval_entry()`: one delivery of one request or one Door decision from `alfred:approvals`, live or redelivered (`reclaim_due`, per stream); answers once (answered marker), caps at `MAX_DELIVERIES`, answers expired and exhausted turns with `FAILED_REPLY` and dead-letters them
 - `failures.py` — `classify()` (permanent vs transient), `dead_letter()`, `FAILED_REPLY`, `MAX_DELIVERIES`
 - `effects.py` — the side-effect ledger: `RecordEffects` capability, `EffectLedger`, `ledger_reply()`; a toolset marks a side-effecting tool with `SIDE_EFFECT` in its `ToolDefinition` metadata
 - `agent.py` — `build_system2_agent()`, `system2_toolsets()` (priority order), `REQUEST_LIMIT`
@@ -87,10 +89,10 @@ One Pydantic AI agent per request (`agent.py`); see `docs/llm.md`.
 ### Tools (one catalog, five toolsets in priority order)
 1. Trigger tools (`tools/triggers.py`) → in-process `TriggerFeature` methods, arguments validated and coerced first by the tool's `ToolMeta.validate_arguments`; a `ToolArgumentError` becomes a `ModelRetry` naming each field (a retry prompt, up to `TOOL_RETRIES`)
 2. Memory tools (`tools/memory.py`, prefix `memory_`) → `memory_tools.py`; sir-only
-3. Attention + `confirm_pending_action` (`tools/attention.py`); sir-only
+3. Attention (`tools/attention.py`); sir-only. No tool approves anything: a critical registry call defers (`ApprovalRequired`) and the run is parked for the owner (`approvals.py`)
 4. Integration tools (`tools/integrations.py`, prefix `integration_`) → `IntegrationRegistry.execute()`; sir-only
 5. Registry tools (`tools/registry.py`) → `DomainRouter` to external services; a guest is offered `benign` risk only; non-reflex tools are deferred and found through `search_tools` (`tools/search.py`)
-- `__main__.py` runs a 15-min background loop (`asyncio.wait_for`) for proactive routine suggestions; ignored suggestions have confidence decremented over time
+- `__main__.py` reads `alfred:user:requests` and `alfred:approvals` through one consumer group (`conscious-engine`, `_ENTRY_RUNNERS`) and reclaims each; it also runs `_consume_internal_actions` on `alfred:actions` and reports the outcome of a router-held action it executes (`_report_outcome`), and a 15-min background loop (`asyncio.wait_for`) for proactive routine suggestions; ignored suggestions have confidence decremented over time
 
 ## Voice (`voice/`) — Voice I/O
 
@@ -114,10 +116,11 @@ One Pydantic AI agent per request (`agent.py`); see `docs/llm.md`.
 
 ## Channels (`channels/`) — User-Facing I/O
 
-- `web_server.py` — FastAPI + WebSocket on port 8081, STT/TTS loaded off the event loop (async getters + background warmup, `asyncio.to_thread` for transcribe/synthesize), onboarding wizard, session persistence, iOS channel support, device registration, trusted network auth. Lifespan also starts the satellite bridge (`load_satellites()` non-empty → `SatelliteBridge` + `SatelliteChannelAdapter` registration)
+- `web_server.py` — FastAPI + WebSocket on port 8081, STT/TTS loaded off the event loop (async getters + background warmup, `asyncio.to_thread` for transcribe/synthesize), onboarding wizard, session persistence, iOS channel support, device registration, trusted network auth, the Door's confirm/deny/pending routes and the follow-up channel sink (`_followup_sink`). Lifespan also starts the satellite bridge (`load_satellites()` non-empty → `SatelliteBridge` + `SatelliteChannelAdapter` registration)
 - `signal_bridge/` — Signal CLI subprocess, forwards inbound → `USER_REQUESTS_STREAM`, outbound via adapter
 - `satellite/` — Wyoming voice satellite bridge (physical devices, not the web/iOS voice pipeline): `config.py` (fleet loader, `SATELLITES_CONFIG`), `endpointing.py` (streaming VAD via `pysilero-vad`, `UtteranceCollector`), `bridge.py` (`SatelliteConnection`/`SatelliteBridge` — one persistent reconnecting TCP client per device), `pipeline.py` (`SatellitePipeline`: STT → Conscious round-trip → TTS). See `docs/voice-satellites.md`
-- `request_bus.py` — `publish_and_wait()`: shared XADD-then-XREAD request/response helper, used by both the WebSocket handler and `SatellitePipeline`
+- `request_bus.py` — `publish_and_wait()`: shared XADD-then-XREAD request/response helper, used by both the WebSocket handler and `SatellitePipeline`; it registers the wait under `alfred:followup:{event_id}` (600 s) before sending and marks it `late` on a timeout, so the answer can still be delivered
+- `followups.py` — `followup_worker()` (group `channels-followups` on `alfred:user:responses`): delivers late answers and Door resumes through the web server's channel sink; ACKs every entry (best effort, no reclaim)
 - `voice_models.py` — shared lazy Whisper/TTS/SpeakerID loaders for the channels process (`aget_stt`, `aget_tts`, `aget_speaker_id`). STT/TTS load through `Lazy` (`core/lazy.py`) on one shared lock, so they load one at a time — never a module-level `asyncio.Lock`, which binds to the first event loop that contends on it (#97); `aget_speaker_id` needs no lock because it never awaits
 - `__main__.py` — Port retry (5 attempts on EADDRINUSE with exponential backoff)
 

@@ -9,6 +9,13 @@ the turn then gets the budget reply, after what it already did if it acted. A mo
 runs out of requests or retries gets the deliberating reply, because replaying the request
 would spend again and repeat its tool calls; a provider or transport failure raises, so
 the request stays pending and is retried.
+
+A run whose critical calls wait for the owner ends in ``DeferredToolRequests``: the engine
+parks it (``core.conscious.approvals.park``), which asks the owner, stores the session with
+the approval it waits on, and answers with a fixed template. The owner's next turn in that
+session is read as approving, declining or moving on from it, and resumes the parked run
+with the verdict and the turn's words in one run. A decision from the Door resumes it as a
+turn of its own (``resume_approval``), under the approval id, answered as a follow-up.
 """
 
 from __future__ import annotations
@@ -18,17 +25,30 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal
 
-from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded
+from pydantic_ai import DeferredToolRequests, DeferredToolResults
+from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded, UserError
+from pydantic_ai.messages import ModelMessagesTypeAdapter, repair_messages
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness.spend import SpendLimitExceeded
 
-from bus.schemas.events import AlfredResponse, UserRequest
+from bus.schemas.events import AlfredResponse, ApprovalDecision, ParkedRun, UserRequest
 from core.conscious.agent import REQUEST_LIMIT
+from core.conscious.approvals import (
+    approval_id_for,
+    claimable_run,
+    confirmation_reply,
+    park,
+    parked_calls,
+    results_for,
+    summary_of,
+)
 from core.conscious.deps import TurnDeps, TurnServices
 from core.conscious.effects import EffectLedger, ledger_reply
 from core.conscious.session import text_turn
 from core.conscious.system2_prompts import fetch_system2_prompts
 from core.conscious.tools.integrations import fetch_integration_tools
+from core.identity.schemas import IdentityResult
+from core.routing.pending import claim_pending
 from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 from shared.otel import langfuse_attributes
 from shared.prompts.link import linked_prompts
@@ -47,10 +67,12 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
     from pydantic_ai_harness.spend import SpendLimits
 
+    from bus.schemas.events import ChannelName, ContentType
+    from core.conscious.approval_classifier import ApprovalClassifier
+    from core.conscious.approvals import Decision, Notifier
     from core.conscious.identity import IdentityGate
     from core.conscious.session import SessionManager
     from core.conscious.tools.integrations import IntegrationTool
-    from core.identity.schemas import IdentityResult
     from core.memory.context_index import ContextIndexManager
     from core.memory.routines.store import RoutineStore
     from core.memory.schemas import RoutineSpec
@@ -78,6 +100,9 @@ DELIBERATING_REPLY: Final = (
 NOT_CONFIGURED_REPLY: Final = (
     "I'm afraid my connection to the thinking engine is not configured, sir."
 )
+# The owner's side of a Door decision, as the session records it: the Door sends no words.
+APPROVED_MARKER: Final = "[Approved from the confirmation prompt]"
+DECLINED_MARKER: Final = "[Declined from the confirmation prompt]"
 
 Mood = Literal["neutral", "concerned"]
 
@@ -90,6 +115,15 @@ class ConsciousConfig:
     involuntary_recall_threshold: float = DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 
 
+@dataclass(frozen=True)
+class _Resume:
+    """A parked run a reply decided: the history to continue and the verdict on its calls."""
+
+    approval_id: str
+    history: list[ModelMessage]
+    results: DeferredToolResults
+
+
 @dataclass
 class ConsciousDeps:
     """The engine's services, its agent and the model the agent runs on.
@@ -97,6 +131,8 @@ class ConsciousDeps:
     ``model`` is None when ``SYSTEM2_MODEL`` resolved to nothing at startup; every request
     then gets the not-configured reply. ``spend`` is the daily budget the agent carries as
     a capability; the engine reads it before a turn starts.
+    ``notifier`` asks the owner to approve a parked run; ``approval`` reads the owner's reply
+    to it, and with None no reply approves anything.
     ``prompts`` serves the turn's prose; the default serves the repo defaults.
     """
 
@@ -107,8 +143,10 @@ class ConsciousDeps:
     domain_router: DomainRouter
     tool_registry: ToolRegistry
     context_reader: ContextReader
-    agent: Agent[TurnDeps, str]
+    agent: Agent[TurnDeps, str | DeferredToolRequests]
     model: Model | None
+    notifier: Notifier
+    approval: ApprovalClassifier | None = None
     routine_store: RoutineStore | None = None
     context_index: ContextIndexManager | None = None
     config: ConsciousConfig = field(default_factory=ConsciousConfig)
@@ -126,6 +164,8 @@ class ConsciousEngine:
         self._tool_registry = deps.tool_registry
         self._agent = deps.agent
         self._model = deps.model
+        self._notifier = deps.notifier
+        self._approval = deps.approval
         self._routines = deps.routine_store
         self._context_index = deps.context_index
         self._prompts = deps.prompts
@@ -296,15 +336,233 @@ class ConsciousEngine:
             integration_tools=integration_tools,
         )
 
+        history, results = session.messages, None
+        resume = await self._resume_for(request, identity.identity, session.pending_approval)
+        if resume is not None:
+            history, results = resume.history, resume.results
+            deps.approval_id = resume.approval_id
+
         usage = RunUsage()
-        text, mood, messages = await self._run(request, deps, session.messages, usage)
+        text, mood, messages, deferred = await self._run(
+            deps, history, usage, prompt=request.content, said=request.content, results=results
+        )
+        pending: str | None = None
+        if deferred is not None:
+            text, messages, pending = await self._park(
+                deps,
+                deferred,
+                messages,
+                channel=request.channel,
+                content_type=request.content_type,
+                request_event_id=request.event_id,
+            )
 
         # Stored before the reply is published, as before. A crash between the two stores
         # the turn, and a redelivery then runs again over a history that already holds it
         # (or appends a ledger text turn): accepted, the same order as the text-only sessions.
-        await self._session_mgr.store_run(request.session_id, messages, identity.identity)
+        await self._session_mgr.store_run(
+            request.session_id, messages, identity.identity, pending_approval=pending
+        )
         await self._note(now, request.content, text, deps.actions_taken, usage)
         return self._reply(request, text, deps.actions_taken, mood=mood)
+
+    @traced(name="conscious.resume_approval")
+    async def resume_approval(
+        self, decision: ApprovalDecision, *, received_ms: int
+    ) -> AlfredResponse:
+        """Resume the run the owner approved or declined from the Door, as a turn of its own.
+
+        The decision carries the whole parked run, already claimed by the Door. The run
+        resumes as the record's identity on the record's session, under the approval id as
+        its request id (its own ledger and answered marker), with the verdict on its
+        deferred calls and no new prompt. *received_ms* is when the decision entered its
+        stream, so the replay guard measures from the owner's tap. Only the calls the
+        record holds are decided: a critical call the resumed run makes defers again and is
+        parked as ``process_request`` parks one. The reply is a follow-up to the request
+        that parked the run.
+
+        Raises ``UserError`` when the run's history or identity no longer reads: the record
+        is gone, so a retry could never resume it, and the runner treats the error as
+        permanent (one ``FAILED_REPLY`` follow-up, then a dead letter holding the decision).
+        """
+        run = decision.run
+        if await self._spend.exhausted():
+            logger.warning("Daily budget exceeded — the Door's decision gets the budget reply")
+            return self._followup(run, BUDGET_REPLY, [], mood="concerned")
+        try:
+            history = ModelMessagesTypeAdapter.validate_json(run.messages)
+            identity = IdentityResult.model_validate(run.identity)
+        except ValueError as exc:
+            msg = f"Approval {decision.approval_id} holds a run that no longer reads"
+            raise UserError(msg) from exc
+
+        now = datetime.now(UTC)
+        integration_tools = await self._integration_tools(identity.identity)
+        prompts = await fetch_system2_prompts(
+            self._prompts,
+            who=identity.identity,
+            channel=run.channel,
+            content_type=run.content_type,
+            area=run.area,
+            integrations_available=bool(integration_tools),
+        )
+        deps = TurnDeps(
+            identity=identity,
+            session_id=run.session_id,
+            channel=run.channel,
+            request_id=decision.approval_id,
+            tz_name=run.tz_name,
+            now=now,
+            services=self._services,
+            received_ms=received_ms,
+            content_type=run.content_type,
+            area=run.area,
+            registry_tools=await self._tool_registry.get_tools(),
+            prompts=prompts,
+            integration_tools=integration_tools,
+            approval_id=decision.approval_id,
+        )
+        logger.info("Door decides approval %s: %s", decision.approval_id, decision.decision)
+
+        marker = _marker(decision.decision)
+        usage = RunUsage()
+        text, mood, messages, deferred = await self._run(
+            deps,
+            history,
+            usage,
+            prompt=None,
+            said=marker,
+            results=results_for(run, decision.decision),
+        )
+        pending: str | None = None
+        if deferred is not None:
+            text, messages, pending = await self._park(
+                deps,
+                deferred,
+                messages,
+                channel=run.channel,
+                content_type=run.content_type,
+                request_event_id=run.request_event_id,
+            )
+        await self._store_resumed(decision, identity.identity, messages, text, pending)
+        await self._note(now, marker, text, deps.actions_taken, usage)
+        return self._followup(run, text, deps.actions_taken, mood=mood)
+
+    async def _store_resumed(
+        self,
+        decision: ApprovalDecision,
+        who: str,
+        messages: list[ModelMessage],
+        text: str,
+        pending: str | None,
+    ) -> None:
+        """Store a Door resume (ruling P13). While the session still waits on this approval,
+        the resumed run's messages replace its history and *pending* (a re-park's approval)
+        is set. Otherwise a turn came in between: it closed the open call, replaced the
+        history and cleared the approval, so the resume is added to the current history as
+        text, and a re-park stays answerable from the Door alone."""
+        run = decision.run
+        session = await self._session_mgr.load(run.session_id, run.channel, who)
+        if session.pending_approval == decision.approval_id:
+            await self._session_mgr.store_run(
+                run.session_id, messages, who, pending_approval=pending
+            )
+            return
+        logger.info(
+            "A turn came before approval %s was decided; stored as text", decision.approval_id
+        )
+        await self._session_mgr.append_text_turn(
+            run.session_id, who, _marker(decision.decision), text
+        )
+
+    async def _resume_for(
+        self, request: UserRequest, who: str, approval_id: str | None
+    ) -> _Resume | None:
+        """The parked run *request* decides, claimed, with the verdict its words give.
+
+        Only the owner decides by reply, and only a run parked for them on this session
+        (``claimable_run``). The record's history is read and the reply classified before
+        the record is claimed (``GETDEL``): a slow classifier never holds a claimed record,
+        and a history that no longer reads leaves the approval unclaimed. A crash after the
+        claim loses the reply, never runs anything unapproved: the retry is a normal turn in
+        which the open call reads as interrupted, and the owner is asked again only if the
+        model proposes the call again. With no classifier every reply moves on. None when
+        there is nothing to decide or it cannot be read, or when the Door decided first or
+        the approval lapsed: the turn is then a normal one.
+
+        The history is the record's, not the session's: it ends in the open calls being
+        answered, where the session may hold a text turn after them.
+        """
+        if approval_id is None or who != "sir":
+            return None
+        run = await claimable_run(self._redis, approval_id)
+        if run is None or run.session_id != request.session_id:
+            return None
+        try:
+            history = ModelMessagesTypeAdapter.validate_json(run.messages)
+        except ValueError:
+            logger.warning(
+                "Approval %s holds a history that no longer reads; a normal turn",
+                approval_id,
+                exc_info=True,
+            )
+            return None
+        decision: Decision = "other"
+        if self._approval is not None:
+            decision = await self._approval.classify(run.calls, request.content)
+        claimed = await claim_pending(self._redis, approval_id)
+        if claimed is None:
+            logger.info("Approval %s was settled before this reply could claim it", approval_id)
+            return None
+        if claimed != run:
+            # Never expected: a record is written once (SET NX) and never changed.
+            logger.warning("Approval %s changed under the reply; nothing runs", approval_id)
+            return None
+        logger.info("Reply decides approval %s: %s", approval_id, decision)
+        return _Resume(approval_id, history, results_for(run, decision))
+
+    async def _park(
+        self,
+        deps: TurnDeps,
+        deferred: DeferredToolRequests,
+        messages: list[ModelMessage],
+        *,
+        channel: ChannelName,
+        content_type: ContentType,
+        request_event_id: str,
+    ) -> tuple[str, list[ModelMessage], str]:
+        """Park a run that deferred its critical calls, under one approval derived from the
+        turn's request id, and ask the owner. Returns the turn's reply, the history to store
+        and the approval id.
+
+        All three come from the run ``park`` returns, not the one built here: on a redelivery
+        that is the stored record, which the owner is already looking at, and its calls may
+        differ from the ones this run's model deferred.
+        """
+        calls = parked_calls(deferred)
+        run = ParkedRun(
+            approval_id=approval_id_for(deps.request_id),
+            session_id=deps.session_id,
+            channel=channel,
+            identity=deps.identity.model_dump(mode="json"),
+            request_event_id=request_event_id,
+            created_at=deps.now,
+            content_type=content_type,
+            area=deps.area,
+            tz_name=deps.tz_name,
+            summary=summary_of(calls),
+            calls=calls,
+            messages=ModelMessagesTypeAdapter.dump_json(messages).decode(),
+        )
+        parked = await park(self._redis, self._notifier, run, ledger_key=deps.request_id)
+        logger.info(
+            "Parked %d call(s) for approval %s: %s",
+            len(parked.calls),
+            parked.approval_id,
+            ", ".join(call.tool_name for call in parked.calls),
+        )
+        history = ModelMessagesTypeAdapter.validate_json(parked.messages)
+        return confirmation_reply(parked.summary), history, parked.approval_id
 
     def _resolve(self, request: UserRequest) -> IdentityResult:
         """Who sent *request*, by the identity gate."""
@@ -357,64 +615,81 @@ class ConsciousEngine:
 
     async def _run(
         self,
-        request: UserRequest,
         deps: TurnDeps,
         history: list[ModelMessage],
         usage: RunUsage,
-    ) -> tuple[str, Mood, list[ModelMessage]]:
-        """One agent run: its reply, its mood and the session's history after it.
+        *,
+        prompt: str | None,
+        said: str,
+        results: DeferredToolResults | None = None,
+    ) -> tuple[str, Mood, list[ModelMessage], DeferredToolRequests | None]:
+        """One agent run: its reply, its mood, the session's history after it, and the calls
+        it deferred for approval, if it ended waiting on them (its reply is then empty).
 
-        A finished run's history is ``all_messages()``, compacted during the run. A run
-        that ends without its own answer leaves *history* plus the turn as text, never its
-        half-finished messages. *usage* accumulates across it, for the note.
+        *prompt* is the turn's words, None when the run only takes *results* (a Door
+        decision). A finished run's history is ``all_messages()``, compacted during the
+        run. A run that ends without its own answer leaves *history* plus the turn as text,
+        *said* and the reply, never its half-finished messages. *usage* accumulates across
+        it, for the note.
+
+        A run that resumes (*results*) takes *history* as it is: its open calls are the
+        ones being answered. Any other run first closes open calls as interrupted
+        (``repair_messages``, a no-op on a history without them): a parked run's history
+        ends in its open call, and Pydantic AI refuses a new prompt after it.
         """
+        if results is None:
+            history = repair_messages(history)
         model = self._model
         if model is None:
-            return self._ended(request, history, NOT_CONFIGURED_REPLY, "neutral")
+            return self._ended(history, said, NOT_CONFIGURED_REPLY, "neutral")
         try:
             with (
                 langfuse_attributes(
-                    session_id=request.session_id, user_id=deps.who, tags=[request.channel]
+                    session_id=deps.session_id, user_id=deps.who, tags=[deps.channel]
                 ),
                 linked_prompts(*deps.prompts.refs()),
             ):
                 result = await self._agent.run(
-                    request.content,
+                    prompt,
                     deps=deps,
                     message_history=history,
+                    deferred_tool_results=results,
                     model=model,
                     usage=usage,
                     usage_limits=UsageLimits(request_limit=REQUEST_LIMIT),
                 )
-            return result.output, "neutral", result.all_messages()
+            if isinstance(result.output, DeferredToolRequests):
+                return "", "neutral", result.all_messages(), result.output
+            return result.output, "neutral", result.all_messages(), None
         except SpendLimitExceeded:
             # A UsageLimitExceeded too, so it is caught first. Raised before a request,
             # once an earlier response in this run (or another process) spent the day.
             logger.warning("Daily budget spent during the run — returning the budget reply")
-            return self._ended(request, history, await self._budget_reply(request), "concerned")
+            reply = await self._budget_reply(deps.request_id)
+            return self._ended(history, said, reply, "concerned")
         except UsageLimitExceeded:
             logger.warning("System 2 used its %d model requests without answering", REQUEST_LIMIT)
-            return self._ended(request, history, DELIBERATING_REPLY, "neutral")
+            return self._ended(history, said, DELIBERATING_REPLY, "neutral")
         except UnexpectedModelBehavior as exc:
             # Retries exhausted, blank replies, or the token limit hit before any output.
             # ModelAPIError (HTTP, connection, timeout) is a sibling, not a subclass, so a
             # provider failure still raises and the request is retried.
             logger.warning("System 2 gave up on the model's replies: %s", exc)
-            return self._ended(request, history, DELIBERATING_REPLY, "neutral")
+            return self._ended(history, said, DELIBERATING_REPLY, "neutral")
 
     @staticmethod
     def _ended(
-        request: UserRequest, history: list[ModelMessage], text: str, mood: Mood
-    ) -> tuple[str, Mood, list[ModelMessage]]:
+        history: list[ModelMessage], said: str, text: str, mood: Mood
+    ) -> tuple[str, Mood, list[ModelMessage], None]:
         """A turn answered with *text* instead of the run's own answer."""
-        return text, mood, [*history, *text_turn(request.content, text)]
+        return text, mood, [*history, *text_turn(said, text)], None
 
-    async def _budget_reply(self, request: UserRequest) -> str:
+    async def _budget_reply(self, request_id: str) -> str:
         """The budget reply for a run the budget stopped partway. If the turn already
         acted, say what it did first (``ledger_reply``), so a light that went on is never
         answered as though nothing happened; an unreadable ledger gets the plain reply."""
         try:
-            effects = await EffectLedger(self._redis).read(request.event_id)
+            effects = await EffectLedger(self._redis).read(request_id)
         except Exception:
             logger.warning("Could not read the ledger for the budget reply", exc_info=True)
             return BUDGET_REPLY
@@ -448,11 +723,46 @@ class ConsciousEngine:
         except Exception:
             logger.warning("Failed to store a partial turn in the session", exc_info=True)
 
+    async def record_partial_approval(self, decision: ApprovalDecision, text: str) -> None:
+        """Store a Door decision answered from its side-effect ledger (*text*) in the
+        record's session, as the decision's marker and *text*, as ``record_partial_turn``
+        does for a request. A failed write is logged, not raised."""
+        run = decision.run
+        try:
+            who = IdentityResult.model_validate(run.identity).identity
+            await self._session_mgr.append_text_turn(
+                run.session_id, who, _marker(decision.decision), text
+            )
+        except Exception:
+            logger.warning("Failed to store a partial Door decision in the session", exc_info=True)
+
     @staticmethod
     def failure_reply(request: UserRequest, text: str) -> AlfredResponse:
         """The answer to a turn that could not finish: a normal reply's channel, session,
         source and ``in_reply_to``, no actions, concerned."""
         return ConsciousEngine._reply(request, text, [], mood="concerned")
+
+    @staticmethod
+    def approval_failure_reply(run: ParkedRun, text: str) -> AlfredResponse:
+        """The answer to a Door decision that could not finish: a follow-up to the request
+        that parked *run*, no actions, concerned."""
+        return ConsciousEngine._followup(run, text, [], mood="concerned")
+
+    @staticmethod
+    def _followup(
+        run: ParkedRun, text: str, actions: list[str], *, mood: Mood = "neutral"
+    ) -> AlfredResponse:
+        """A reply nobody is waiting on, to the request that parked *run*."""
+        return AlfredResponse(
+            source=SOURCE,
+            channel=run.channel,
+            session_id=run.session_id,
+            text=text,
+            actions_taken=actions,
+            mood=mood,
+            in_reply_to=run.request_event_id,
+            followup=True,
+        )
 
     @staticmethod
     def _reply(
@@ -471,3 +781,8 @@ class ConsciousEngine:
             mood=mood,
             in_reply_to=request.event_id,
         )
+
+
+def _marker(decision: Literal["approve", "deny"]) -> str:
+    """The owner's side of a Door decision in the session: the Door sends no words."""
+    return APPROVED_MARKER if decision == "approve" else DECLINED_MARKER

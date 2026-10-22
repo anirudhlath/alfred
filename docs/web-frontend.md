@@ -245,7 +245,7 @@ Workshop's status line adds the handoff's `live · N ev/s`, `paused · N new` an
 `hot / cold` and `candidate · active · dormant · archived` on Memory,
 `takes effect within 60 s` on Triggers, `unknown since HH:MM` on System's health stamp.
 The one exception to mono-and-lower-case is
-the Door's phase pill (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in
+the Door's phase pill (`Confirmed · queued`, `Applied`, `Failed`, `Declined`, `Expired`, `Answered`), set in
 the inverted layer's own type. Do not invent new words — the vocabulary is the contract
 the spec's honesty rules (§5.2) are written against.
 
@@ -339,7 +339,9 @@ that is what makes a suspended PWA correct on return (constraint §4.10).
 
 ## The Door
 
-A critical action needing approval. It is tracked by `actionReducer` over
+A critical action needing approval: a System 2 run that parked its critical calls, or an
+action the router intercepted ([`autonomy.md`](autonomy.md#confirmation-flow-for-critical-actions)).
+It is tracked by `actionReducer` over
 `TrackedAction[]`, fed from three independent places so it survives a cold launch, a
 notification tap and a suspended app:
 
@@ -347,12 +349,28 @@ notification tap and a suspended app:
 2. A `/ws` `notification` frame carrying `metadata.pending_action_id`.
 3. The `home_action_results` telemetry stream.
 
-Phases: `pending` → `queued` → `applied`, plus `expired` and `answered`.
+Phases: `pending` → `queued` → `applied` or `failed`, plus `declined`, `expired` and
+`answered`.
 
 **A 200 from `POST /api/actions/{request_id}/confirm` means queued, never applied** —
-the endpoint republishes the action and returns before anything runs. `applied` comes
-only from `home_action_results`. A 404 on confirm means the approval was already
-consumed: the phase becomes `answered`.
+the endpoint hands the approval on and returns before anything runs. `applied` comes
+only from `home_action_results`, and so does `failed`: the same report with
+`status: "error"` (the owner said yes, the lock said it could not; the footer then offers
+to ask again). One approval can cover several calls, each publishing its own result under
+the same id; a `failed` item stays `failed` when a later call succeeds. A 404 on confirm or
+deny means someone or something else answered first: the phase becomes `answered`.
+
+**Declining.** The layer has a **Don't** button next to the slide (`POST
+/api/actions/{request_id}/deny`). A 200 sets `declined`, which outranks what the phone merely
+inferred (`expired` from a fast clock, `answered` from a racing 404). A declined run is told
+so by the house and says so in the Room. A late `home_action_results` entry after a decline
+still wins — `applied` or `failed` replaces `declined` — because if the lock reported, the
+decline was wrong about what happened, and the Door shows what the lock did.
+
+**A failed answer is not a lost one.** A confirm or deny that fails with anything other than
+404 (a 503, no network) leaves the item `pending` so the owner can retry while the fuse
+still runs; the failure is logged to the console (`door: could not answer {id}`), where
+Safari's inspector can see it.
 
 Confirmation is a slide with travel (`CONFIRM_RATIO = 0.85`), never a tap; iOS gives the
 client no haptics, so the resistance is the confirmation. An approval that lapses leaves
@@ -734,7 +752,7 @@ does, every time the app is backgrounded long enough.
 | { type: "session";       session_id: string }
 | { type: "transcription"; text: string; session_id: string }
 | { type: "response";      text: string; audio?: string; session_id: string;
-                            actions_taken?: string[]; mood?: Mood }
+                            actions_taken?: string[]; mood?: Mood; followup?: boolean }
 | { type: "notification";  title: string; body: string; urgency: Urgency;
                             notification_id: string; audio?: string;
                             metadata?: Record<string, unknown> }
@@ -747,6 +765,13 @@ does, every time the app is backgrounded long enough.
 - `response.mood` — affective tone label. An `error` frame has neither, and says
   `error · HH:MM` rather than inventing a mood.
 - `response.audio` — base64 WAV data URL, played through the one unlocked `AudioContext`.
+- `response.followup` — true for a reply nobody asked this socket for: the answer to a run
+  the owner approved or declined from the Door, or a late answer to a request that already got
+  the "taking a little longer" fallback. Every frame the server's follow-up worker sends has it
+  ([`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes)). The Room
+  treats it as unsolicited: an ordinary `response` clears the in-flight rows (thinking, the
+  countdown) because it answers the turn they stand for, a follow-up does not, and
+  `liftRepliesAboveTransients` seats it above whatever is still in flight.
 - `notification.metadata.pending_action_id`, when present, routes the frame to the Door
   instead of the thread. The frame carries no `source`, so a live act row reads
   `HH:MM · live · {urgency}`; the same notification re-read from the stream later shows
@@ -769,6 +794,11 @@ does, every time the app is backgrounded long enough.
   the third (`OFFLINE_AFTER_ATTEMPTS`), or at once while `navigator.onLine` is false —
   and keeps retrying either way; the next open makes it `"online"` again. The Room
   says `Reconnecting…` for the one and `Unreachable.` for the other.
+- **A reconnected socket is not back on its session until it sends a message.** The server
+  gives each new socket a fresh session id and adopts the client's previous one only with its
+  first message, so a follow-up that lands in that window reaches the app as a notification,
+  not as a `response` frame (known limitation, see
+  [`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes)).
 - `ChatSocket.onopen` clears `firstMessageSent` and the previous connection's assigned
   id, so a live stored id is offered again on the next connection. `ws.ts` calls
   `onopen()` **before** `onstatus("online")` on purpose: `useRoom` flushes the unsent
@@ -866,7 +896,7 @@ graph TD
         subgraph DoorProvider
             Reducer[actionReducer<br/>TrackedAction phases]
             Banner[DoorBanner]
-            Layer[DoorLayer<br/>FuseRing · SlideToConfirm]
+            Layer["DoorLayer<br/>FuseRing · SlideToConfirm · Don't"]
         end
     end
 
@@ -885,10 +915,10 @@ graph TD
     Conn --> Head
     Conn --> AuthGate
 
-    ChatSock -->|response · transcription · error| TL
+    ChatSock -->|response incl. followup · transcription · error| TL
     ChatSock -->|notification without pending_action_id| TL
     ChatSock -->|notification with pending_action_id| Reducer
-    TelSock  -->|result: applied| Reducer
+    TelSock  -->|result: applied or failed| Reducer
     TelSock  -->|entry x8| Feed
     QC       -->|pending-actions| Reducer
     Feed --> Bench

@@ -119,6 +119,63 @@ session), never a registration.
 5. Import the module in the appropriate entry point to trigger registration
 6. Call `ChannelRegistry.set_instance("name", MyAdapter(...))` during startup
 
+### Sources
+
+`source` says who raised a notification. Clients should not branch on it, but it is what
+the logs and the Room's act rows show. The approval and follow-up paths use the sources
+below; other notifications can carry other sources:
+
+| Source | Raised for |
+|--------|------------|
+| `conscious-engine` | the `Confirmation required` prompt of a System 2 run that parked its critical calls, and the `Done` / `That didn't work` outcome of an action the router held |
+| `domain-router` | the `Confirmation required` prompt for an action `DomainRouter` intercepted, not a parked run ([`autonomy.md`](autonomy.md#an-action-the-router-intercepts)) |
+| `channels` | a follow-up that found no socket, satellite bridge or TTS to carry it (below) |
+
+## Follow-ups: late answers and Door resumes
+
+A reply can arrive after the channel that asked stopped waiting, or answer a request that
+was answered long ago. Both reach the owner through `core/channels/followups.py`, which
+reads every entry of `alfred:user:responses` once, in the consumer group
+`channels-followups`, and hands the two kinds it owns to a channel-specific sink.
+([#307](https://github.com/anirudhlath/alfred/issues/307))
+
+- **A late answer.** `publish_and_wait` (`core/channels/request_bus.py`) registers the wait
+  under `alfred:followup:{event_id}` as `waiting` (TTL 600 s) *before* the request goes out.
+  On a timeout it flips the key to `late` and returns `LATE_REPLY` ("This is taking a
+  little longer, sir..."). When the answer finally lands the worker claims it by winning the
+  `DEL` of the key, which the waiter's last read races for, so it is shown exactly once. An
+  answer a channel still waits for, or whose registration has expired (600 s), is skipped.
+- **A Door resume.** The conscious engine answers a run the owner approved or declined from
+  the Door with an `AlfredResponse` carrying `followup=True` and `in_reply_to` the original
+  request ([`autonomy.md`](autonomy.md#a-system-2-run-that-wants-a-critical-action)). Nobody
+  waits for it, and it needs no registration: the worker always delivers it.
+
+The sink (`_followup_sink` in `core/channels/web_server.py`) delivers on the channel the
+request came from:
+
+| `channel` | Delivery |
+|-----------|----------|
+| `web_pwa`, `voice`, `ios` | A `response` frame to every socket joined to the session. With no socket that takes it, a notification instead: title `Alfred`, `IMPORTANT`, source `channels`. |
+| `satellite` | The text is synthesised and spoken on the satellite the session names (`play_wav_to`). With no bridge, no satellite name or no TTS, a notification instead, as for the web channels. |
+| `signal` | Nothing: the Signal bridge already sends every response. |
+
+Every frame the worker sends to a socket carries `followup: true`, a late answer included.
+The Room needs it: without it, the frame would be taken for the answer to the turn in
+flight ([`web-frontend.md`](web-frontend.md#chat-ws)).
+
+**Delivery is best effort, and the worker ACKs every entry** whether it delivered or not.
+There is no PEL to reclaim — a deliberate exception to the reclaim rule in the root
+`CLAUDE.md`'s Gotchas. The group is created at the stream's end, so its first start replays
+none of the history; after that it resumes from its last read, so a follow-up that landed
+while the process was down is delivered when it returns (a late answer only while its
+registration lives).
+
+**Known limitation: a reconnected PWA socket is not back on its session until it sends its
+first message.** A new socket gets a fresh session id and adopts the client's previous one
+only with its first message. A follow-up that arrives in that window finds no socket on the
+session, so it goes through the dispatcher as a notification (above) rather than as a frame
+in the Room.
+
 ## DND Behavior
 
 - **Manual DND with expiry**: Notifications deferred to Redis list. One-shot time trigger
@@ -137,6 +194,7 @@ session), never a registration.
 | `alfred:memory:dnd` | String (JSON) | Manual DND state |
 | `alfred:notifications:deferred` | List | Deferred notification queue |
 | `alfred:notifications:dispatch` | Stream | Cross-process notification delivery |
+| `alfred:followup:{event_id}` | String (`waiting` \| `late`) | A channel's wait for a response, 600 s; `late` marks one that gave up and got `LATE_REPLY` |
 
 ## Drain Trigger
 

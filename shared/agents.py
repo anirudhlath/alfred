@@ -4,10 +4,11 @@ instrumentation. Agents are built once per process and run per request."""
 from __future__ import annotations
 
 import logging
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import pydantic_ai
 from opentelemetry import trace
+from pydantic_ai import NativeOutput
 from pydantic_ai.capabilities.instrumentation import Instrumentation
 from pydantic_ai.exceptions import UserError
 from pydantic_ai.models import Model, infer_model
@@ -19,6 +20,9 @@ from pydantic_ai.providers.vllm import VLLMProvider
 
 from shared.llm_http import retrying_http_client
 from shared.llm_roles import ROLE_HEADER, LlmRole
+
+if TYPE_CHECKING:
+    from pydantic_ai.output import OutputSpec
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +85,13 @@ def model_key(model: Model) -> str:
 def role_headers(role: LlmRole) -> dict[str, str]:
     """The header the eval proxy attributes a request by."""
     return {ROLE_HEADER: role}
+
+
+def structured_output[T](model: Model, kind: type[T]) -> OutputSpec[T]:
+    """*kind* as JSON-schema output where *model* supports it, as an output tool where not."""
+    if model.profile.get("supports_json_schema_output", False):
+        return NativeOutput(kind)
+    return kind
 
 
 def instrumentation() -> Instrumentation:

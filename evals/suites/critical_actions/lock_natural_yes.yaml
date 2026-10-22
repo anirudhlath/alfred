@@ -1,4 +1,4 @@
-# No fixture ID is injected. This exposes whether ordinary yes retains the earlier pending tool context.
+# A bare yes names no ID and no action: the classifier still reads it against the parked call.
 id: critical_actions.lock.natural_yes
 prd:
 - 4.4.critical-confirmation
@@ -26,12 +26,9 @@ expect:
         regex: ^(?:lock\.front_door|Front Door Lock|Entryway)$
     at_step: 0
 - notification:
-    source: domain-router
+    source: conscious-engine
     urgency: urgent
     after_step: 0
-- tool_called:
-    tool: confirm_pending_action
-    at_step: 1
 - ha_called:
     domain: lock
     service: unlock

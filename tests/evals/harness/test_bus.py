@@ -13,7 +13,7 @@ import httpx
 import pytest
 from redis import exceptions as redis_exceptions
 
-from bus.schemas.events import ActionRequest
+from bus.schemas.events import ActionRequest, AlfredResponse, ParkedAction, ParkedCall, ParkedRun
 from core.reflex.tool_registry import ToolRegistry
 from evals.harness.bus import BusError, ContainerBus, zone_for_hour
 from shared.redis_streams import read
@@ -24,9 +24,10 @@ from shared.streams import (
     DND_STATE_KEY,
     EVENTS_STREAM,
     NOTIFICATION_DISPATCH_STREAM,
-    PENDING_ACTIONS_PREFIX,
+    PENDING_PREFIX,
     TRIGGERS_CHANGED_CHANNEL,
     TRIGGERS_KEY,
+    USER_RESPONSES_STREAM,
     USER_TIMEZONE_KEY,
 )
 
@@ -355,6 +356,9 @@ FROZEN_CALLS: dict[str, Callable[[ContainerBus], Awaitable[object]]] = {
     "set_dnd": lambda b: b.set_dnd(True),
     "clear_dnd": lambda b: b.clear_dnd(),
     "wait_for_event": lambda b: b.wait_for_event(time.time(), 0.2, lambda e: True),
+    "decide_pending": lambda b: b.decide_pending("a", "confirm"),
+    "responses_tail": lambda b: b.responses_tail(),
+    "followup": lambda b: b.followup("r1", since_id="0-0", timeout_s=0.2),
 }
 
 
@@ -371,8 +375,12 @@ async def test_a_frozen_redis_is_a_bus_error_not_a_hang(call: str) -> None:
         await asyncio.wait_for(FROZEN_CALLS[call](frozen), timeout=5)
     elapsed = time.monotonic() - started
     assert elapsed < 1
-    if call == "wait_for_event":  # its own wait (0.2 s) comes first, then the call's bound
+    if call in ("wait_for_event", "followup"):  # its own wait (0.2 s), then the call's bound
         assert elapsed >= 0.3
+
+
+def _stored(action: ActionRequest) -> str:
+    return ParkedAction(action=action).model_dump_json()
 
 
 async def test_pending_reads_preserve_real_ids_and_cleanup_only_requested_keys(
@@ -384,10 +392,10 @@ async def test_pending_reads_preserve_real_ids_and_cleanup_only_requested_keys(
         target_service="home-service",
         tool_name="home.lock_unlock",
     )
-    await redis.set(f"{PENDING_ACTIONS_PREFIX}a", action.model_dump_json(), ex=300)
+    await redis.set(f"{PENDING_PREFIX}a", _stored(action), ex=300)
     await redis.set(
-        f"{PENDING_ACTIONS_PREFIX}keep",
-        action.model_copy(update={"request_id": "keep"}).model_dump_json(),
+        f"{PENDING_PREFIX}keep",
+        _stored(action.model_copy(update={"request_id": "keep"})),
         ex=300,
     )
     await redis.set("unrelated", "not json")
@@ -398,20 +406,66 @@ async def test_pending_reads_preserve_real_ids_and_cleanup_only_requested_keys(
     assert await redis.get("unrelated") == b"not json"
 
 
+async def test_a_parked_run_reads_as_one_action_request_per_call_under_its_record_id(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    run = ParkedRun(
+        approval_id="appr-1",
+        session_id="sess-1",
+        channel="web_pwa",
+        identity={"user": "sir", "method": "passkey"},
+        request_event_id="req-1",
+        created_at=at(12),
+        content_type="text",
+        tz_name="UTC",
+        summary="Unlock both doors.",
+        calls=[
+            ParkedCall(
+                tool_call_id=f"call-{n}",
+                tool_name="home.lock_unlock",
+                target_service="home-service",
+                parameters={"entity_id": f"lock.door_{n}"},
+            )
+            for n in range(2)
+        ],
+        messages="[]",
+    )
+    await redis.set(f"{PENDING_PREFIX}appr-1", run.model_dump_json(), ex=300)
+    b = bus(redis)
+
+    actions = await b.pending_actions()
+
+    assert [(a.request_id, a.parameters["entity_id"]) for a in actions] == [
+        ("appr-1", "lock.door_0"),
+        ("appr-1", "lock.door_1"),
+    ]
+    assert all(a.confirmed is False for a in actions)
+    await b.delete_pending_actions(["appr-1", "appr-1"])  # a repeated id is deleted once
+    assert await b.pending_actions() == []
+
+
 @pytest.mark.parametrize(
-    "raw", ["{", "{}", '{"source": 1,"target_service":"x","tool_name":"x","request_id":"bad"}']
+    "raw",
+    [
+        "{",
+        "{}",
+        # a record whose kind the store does not know
+        '{"kind": "mystery", "action": {}}',
+        # an action whose fields do not validate
+        '{"kind": "action", "action": {"source": 1, "target_service": "x", "tool_name": "x"}}',
+    ],
 )
 async def test_malformed_pending_is_a_bus_error_not_silently_omitted(
     redis: fakeredis.FakeAsyncRedis, raw: str
 ) -> None:
-    await redis.set(f"{PENDING_ACTIONS_PREFIX}bad", raw)
+    await redis.set(f"{PENDING_PREFIX}bad", raw)
     with pytest.raises(BusError, match="pending"):
         await bus(redis).pending_actions()
 
 
 async def test_pending_key_id_mismatch_is_a_bus_error(redis: fakeredis.FakeAsyncRedis) -> None:
     action = ActionRequest(source="x", request_id="other", target_service="x", tool_name="x")
-    await redis.set(f"{PENDING_ACTIONS_PREFIX}a", action.model_dump_json())
+    await redis.set(f"{PENDING_PREFIX}a", _stored(action))
     with pytest.raises(BusError, match="pending"):
         await bus(redis).pending_actions()
 
@@ -421,7 +475,153 @@ async def test_pending_key_expiring_between_scan_and_get_is_valid_empty_evidence
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def expired(*args: Any, **kwargs: Any) -> Any:
-        yield f"{PENDING_ACTIONS_PREFIX}expired".encode()
+        yield f"{PENDING_PREFIX}expired".encode()
 
     monkeypatch.setattr(redis, "scan_iter", expired)
     assert await bus(redis).pending_actions() == []
+
+
+async def test_decide_pending_posts_the_decision_with_a_session_that_lives_only_for_the_call(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    seen: list[tuple[str, str, bytes | None, int]] = []
+
+    async def web(request: httpx.Request) -> httpx.Response:
+        session_id = request.headers["cookie"].removeprefix("alfred_auth=")
+        key = f"{AUTH_SESSION_PREFIX}{session_id}"
+        session = await redis.hgetall(key)
+        seen.append(
+            (request.method, str(request.url), session.get(b"authenticated"), await redis.ttl(key))
+        )
+        return httpx.Response(200, json={})
+
+    b = bus(redis, web)
+    assert await b.decide_pending("abc123", "confirm") == 200
+    assert await b.decide_pending("abc123", "deny") == 200
+    assert [(m, u, a) for m, u, a, _ in seen] == [
+        ("POST", "http://alfred.test/api/actions/abc123/confirm", b"1"),
+        ("POST", "http://alfred.test/api/actions/abc123/deny", b"1"),
+    ]
+    assert all(0 < ttl <= 300 for *_, ttl in seen)
+    assert await redis.keys(f"{AUTH_SESSION_PREFIX}*") == []
+
+
+@pytest.mark.parametrize("status", [400, 404, 500, 503])
+async def test_decide_pending_returns_a_refusal_for_the_driver_to_record(
+    redis: fakeredis.FakeAsyncRedis, status: int
+) -> None:
+    async def refuse(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"detail": "no"})
+
+    assert await bus(redis, refuse).decide_pending("gone", "confirm") == status
+    assert await redis.keys(f"{AUTH_SESSION_PREFIX}*") == []
+
+
+@pytest.mark.parametrize("status", [401, 403, 405, 422, 502])
+async def test_decide_pending_raises_on_a_status_the_product_never_answers_with(
+    redis: fakeredis.FakeAsyncRedis, status: int
+) -> None:
+    """A rejected session or a changed contract is the harness's fault: recorded as the
+    product's answer it would score a golden as a regression."""
+
+    async def refuse(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"detail": "no"})
+
+    with pytest.raises(BusError, match=f"/api/actions/gone/confirm answered {status}: "):
+        await bus(redis, refuse).decide_pending("gone", "confirm")
+    assert await redis.keys(f"{AUTH_SESSION_PREFIX}*") == []
+
+
+async def test_an_unreachable_web_channel_is_a_bus_error_and_leaves_no_session(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    async def unreachable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    with pytest.raises(BusError, match="/api/actions/a/deny failed: connection refused"):
+        await bus(redis, unreachable).decide_pending("a", "deny")
+    assert await redis.keys(f"{AUTH_SESSION_PREFIX}*") == []
+
+
+def response(
+    in_reply_to: str | None, *, followup: bool = True, text: str = "Done, sir."
+) -> AlfredResponse:
+    return AlfredResponse(
+        source="conscious-engine",
+        channel="web_pwa",
+        session_id="s1",
+        text=text,
+        in_reply_to=in_reply_to,
+        followup=followup,
+    )
+
+
+async def publish(redis: fakeredis.FakeAsyncRedis, resp: AlfredResponse) -> str:
+    entry_id = await redis.xadd(USER_RESPONSES_STREAM, {"event": resp.model_dump_json()})
+    return entry_id.decode() if isinstance(entry_id, bytes) else str(entry_id)
+
+
+async def test_the_responses_tail_is_the_last_entry_or_the_start(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    b = bus(redis)
+    assert await b.responses_tail() == "0-0"
+    await publish(redis, response("r0"))
+    last = await publish(redis, response("r1"))
+    assert await b.responses_tail() == last
+
+
+async def test_followup_is_the_answer_to_that_request_after_the_tail(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    b = bus(redis)
+    await publish(redis, response("r1", text="Before the decision."))
+    tail = await b.responses_tail()
+    await publish(redis, response("r1", followup=False, text="Not a follow-up."))
+    await publish(redis, response("r2", text="Another request."))
+    await publish(redis, response(None, text="Nobody's."))
+    await publish(redis, response("r1", text="The outcome."))
+    await publish(redis, response("r1", text="A second one."))
+    found = await b.followup("r1", since_id=tail, timeout_s=1)
+    assert found is not None and found.text == "The outcome." and found.followup
+
+
+async def test_followup_blocks_until_the_answer_lands(redis: fakeredis.FakeAsyncRedis) -> None:
+    b = bus(redis)
+    tail = await b.responses_tail()
+
+    async def the_engine_resumes() -> None:
+        await asyncio.sleep(0.05)
+        await publish(redis, response("r2"))
+        await asyncio.sleep(0.05)
+        await publish(redis, response("r1", text="Late."))
+
+    resumed = asyncio.create_task(the_engine_resumes())
+    started = time.monotonic()
+    found = await b.followup("r1", since_id=tail, timeout_s=5)
+    assert found is not None and found.text == "Late."
+    assert time.monotonic() - started < 2
+    await resumed
+
+
+async def test_followup_gives_up_after_its_timeout(redis: fakeredis.FakeAsyncRedis) -> None:
+    b = bus(redis)
+    await publish(redis, response("r2"))
+    started = time.monotonic()
+    assert await b.followup("r1", since_id="0-0", timeout_s=0.2) is None
+    assert 0.2 <= time.monotonic() - started < 2
+
+
+async def test_followup_passes_over_an_entry_that_holds_no_response(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    await redis.xadd(USER_RESPONSES_STREAM, {"other": "x"})
+    await publish(redis, response("r1"))
+    found = await bus(redis).followup("r1", since_id="0-0", timeout_s=1)
+    assert found is not None and found.in_reply_to == "r1"
+
+
+async def test_an_unreadable_response_is_a_bus_error(redis: fakeredis.FakeAsyncRedis) -> None:
+    await redis.xadd(USER_RESPONSES_STREAM, {"event": "{not json"})
+    with pytest.raises(BusError, match=USER_RESPONSES_STREAM):
+        await bus(redis).followup("r1", since_id="0-0", timeout_s=1)

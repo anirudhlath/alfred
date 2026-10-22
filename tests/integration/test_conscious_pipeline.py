@@ -85,6 +85,7 @@ def _engine(script: Script) -> ConsciousEngine:
                 spend=spend,
             ),
             model=script.model,
+            notifier=AsyncMock(),
         )
     )
 

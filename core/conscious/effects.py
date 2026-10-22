@@ -31,7 +31,6 @@ from pydantic_ai.capabilities import AbstractCapability
 from core.conscious.deps import TurnDeps
 from core.conscious.tools.catalog import tool_identity
 from core.conscious.tools.scope import Refused
-from core.routing.domain_router import CONFIRMATION_REQUIRED_PREFIX
 from shared.redis_streams import MAX_REPLAY_AGE_MS
 from shared.streams import EFFECTS_KEY
 
@@ -51,6 +50,7 @@ __all__ = [
     "EffectLedger",
     "RecordEffects",
     "TooLate",
+    "humanise",
     "ledger_reply",
 ]
 
@@ -67,8 +67,8 @@ _REFUSED: Final = "refused"
 
 @dataclass(frozen=True)
 class Effect:
-    """One side-effecting call: ``started`` until it settles as ``ok``, ``failed``, or
-    ``parked`` (a critical action held for the user's confirmation, not yet done)."""
+    """One side-effecting call: ``started`` until it settles as ``ok`` or ``failed``; or
+    ``parked``, a critical call held for the user's confirmation, which never ran."""
 
     tool: str  # registry / catalog name, e.g. "home.light_turn_on"
     args: dict[str, Any]
@@ -83,8 +83,18 @@ class EffectLedger:
 
     async def started(self, request_id: str, tool: str, args: dict[str, Any]) -> int:
         """Record a call about to run; returns its index for ``finished``."""
+        return await self._append(request_id, tool, args, "started")
+
+    async def parked_call(self, request_id: str, tool: str, args: dict[str, Any]) -> int:
+        """Record a call held for the user's confirmation, in one write: it never ran, so
+        there is no ``started`` entry to strand in doubt if the process dies between two."""
+        return await self._append(request_id, tool, args, "parked")
+
+    async def _append(
+        self, request_id: str, tool: str, args: dict[str, Any], status: EffectStatus
+    ) -> int:
         key = EFFECTS_KEY.format(request_id)
-        entry = json.dumps({"tool": tool, "args": args, "status": "started"}, default=str)
+        entry = json.dumps({"tool": tool, "args": args, "status": status}, default=str)
         async with self._redis.pipeline(transaction=True) as pipe:
             pipe.rpush(key, entry)
             pipe.expire(key, EFFECTS_TTL_S)
@@ -94,10 +104,6 @@ class EffectLedger:
     async def finished(self, request_id: str, index: int, ok: bool) -> None:
         """Settle the call at *index*: it returned (``ok``) or failed."""
         await self._settle(request_id, index, "ok" if ok else "failed")
-
-    async def parked(self, request_id: str, index: int) -> None:
-        """Settle the call at *index* as held for the user's confirmation."""
-        await self._settle(request_id, index, "parked")
 
     async def discard(self, request_id: str, index: int) -> None:
         """Strike the call at *index* from what ``read`` returns: it was refused, so it
@@ -126,13 +132,13 @@ class EffectLedger:
         await self._redis.lset(key, index, json.dumps(entry))  # type: ignore[misc,unused-ignore]
 
 
-def _humanise(tool: str) -> str:
+def humanise(tool: str) -> str:
     """``home.light_turn_on`` -> ``light turn on``."""
     return tool.rpartition(".")[2].replace("_", " ")
 
 
 def _names(effects: list[Effect]) -> str:
-    return ", ".join(dict.fromkeys(_humanise(e.tool) for e in effects))
+    return ", ".join(dict.fromkeys(humanise(e.tool) for e in effects))
 
 
 def ledger_reply(effects: list[Effect]) -> str:
@@ -222,11 +228,7 @@ class RecordEffects(AbstractCapability[TurnDeps]):
             else:
                 await _quietly(ledger.finished(request_id, index, ok=False), request_id)
             raise
-        if isinstance(result, str) and result.startswith(CONFIRMATION_REQUIRED_PREFIX):
-            # The router parked a critical action for confirmation: nothing happened yet.
-            await _quietly(ledger.parked(request_id, index), request_id)
-        else:
-            await _quietly(ledger.finished(request_id, index, ok=True), request_id)
+        await _quietly(ledger.finished(request_id, index, ok=True), request_id)
         return result
 
 
