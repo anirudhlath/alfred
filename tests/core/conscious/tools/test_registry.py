@@ -443,6 +443,62 @@ async def test_trigger_engine_registrations_are_left_to_the_trigger_toolset() ->
 
 
 @pytest.mark.asyncio
+async def test_a_critical_call_with_an_undeclared_parameter_is_retried_never_parked() -> None:
+    """#397: the owner approves every parameter a call carries, so a critical call may carry
+    only the ones its tool declares; the retry names the stray one."""
+    router = _router({"ok": True})
+    args = {"entity_id": "lock.front", "note": "and the back door"}
+    script = Script(tool_call("home_unlock_door", args), "gave up")
+
+    result, _ = await _run(script, [_info("home.unlock_door", risk="critical")], router=router)
+
+    assert result.output == "gave up"
+    assert "'note' was unexpected" in script.retries(1)[0]
+    router.route.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_only_a_critical_tool_is_offered_a_closed_schema() -> None:
+    critical = _info("home.unlock_door", risk="critical")
+    script = Script("ok")
+
+    await _run(script, [critical, _info("home.get_lights")])
+
+    assert script.schema("home_unlock_door")["additionalProperties"] is False
+    assert "additionalProperties" not in script.schema("home_get_lights")
+    assert "additionalProperties" not in critical.input_schema
+
+
+@pytest.mark.asyncio
+async def test_an_undeclared_parameter_on_a_benign_tool_still_routes() -> None:
+    router = _router({"ok": True})
+    script = Script(tool_call("home_get_lights", {"entity_id": "light.hall", "x": 1}), "done")
+
+    await _run(script, [_info("home.get_lights")], router=router)
+
+    assert router.route.await_args.args[0].parameters == {"entity_id": "light.hall", "x": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_critical_schema_that_allows_extra_parameters_keeps_them() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"entity_id": {"type": "string"}},
+        "additionalProperties": True,
+    }
+    info = _info("home.unlock_door", risk="critical", input_schema=schema)
+    script = Script(tool_call("home_unlock_door", {"entity_id": "lock.front", "x": 1}))
+
+    result, _ = await _run(script, [info])
+
+    deferred = result.output
+    assert isinstance(deferred, DeferredToolRequests)
+    [part] = deferred.approvals
+    assert deferred.metadata[part.tool_call_id]["parameters"] == {"entity_id": "lock.front", "x": 1}
+    assert script.schema("home_unlock_door")["additionalProperties"] is True
+
+
+@pytest.mark.asyncio
 async def test_critical_tools_get_an_optional_reason_that_rides_the_action() -> None:
     info = _info("home.unlock_door", risk="critical")
     router = _router({"ok": True})
@@ -516,7 +572,8 @@ async def test_a_tool_that_declares_its_own_reason_keeps_it(risk: str) -> None:
     else:
         await _run(script, tools, router=router)
 
-    assert script.schema("home_log_incident") == own
+    closed = {**own, "additionalProperties": False} if risk == "critical" else own
+    assert script.schema("home_log_incident") == closed
     action = router.route.await_args.args[0]
     assert action.parameters == {"reason": "Smoke alarm tripped."}
     assert action.reason is None

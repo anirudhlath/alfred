@@ -256,12 +256,15 @@ this is the part that belongs to the LLM layer.
   template (*"Before I do that, I need your confirmation: ... Shall I, sir?"*), with no
   model call. What it asks about is described by code, not by the model: each call reads
   the humanised tool name and every parameter it will run with, then the model's `reason` as
-  a quoted aside, e.g. `lock unlock (target=Garage) ("Unlock the front door")`
+  a quoted aside, e.g. `lock unlock (target="Garage") ("Unlock the front door")`
   (`describe_call`; each is one short plain line: whitespace collapsed, quote marks and
   Unicode format characters removed, and from the reason also parentheses and every
-  quotation-mark look-alike; a name that is not plain printable ASCII is shown JSON-escaped
-  and a dict or list value whole, not cut; the full rules are in `docs/autonomy.md`, "Rules
-  that hold on every path"). The session stores the id as `pending_approval`.
+  quotation-mark look-alike; a string value is quoted, a name that is not plain printable
+  ASCII is shown JSON-escaped and a dict or list value whole as JSON, not cut; past eight
+  parameters the rest are counted. A critical tool's schema is closed, so a call carrying a
+  parameter its tool does not declare is retried, never parked. The full rules are in
+  `docs/autonomy.md`, "Rules that hold on every path"). The session stores the id as
+  `pending_approval`.
 - **A reply is read by the classifier** (`ApprovalClassifier`). While a session has a
   `pending_approval`, the next message from **sir** on it is classified against the pending
   calls: `approve`, `deny` or `other`, by the `approval-classifier` prompt on
@@ -302,8 +305,11 @@ and the turn is retried like any other. A permanent 4xx, such as a typo'd model,
 classified permanent (see [Retries](#retries)), so **every `sir` turn on a session answers
 `FAILED_REPLY` while that session has a pending approval**, for up to 300 s, until the
 record expires and turns stop reaching the classifier. The Door is unaffected. `alfredctl
-doctor` does not check `APPROVAL_MODEL` yet; when replies to a confirmation fail, read
-`alfred:conscious:dead_letters` for the error.
+doctor` checks `APPROVAL_MODEL` like the other roles and, when it (or the System 2 model it
+falls back to) is not a usable model string, says approval by reply is off; a model that
+resolves to nothing at startup makes every reply `other`, and the conscious process logs one
+warning saying so. Doctor cannot see a model the provider rejects: when replies to a
+confirmation fail, read `alfred:conscious:dead_letters` for the error.
 
 ## The Librarian
 

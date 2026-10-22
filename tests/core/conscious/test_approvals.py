@@ -14,6 +14,7 @@ from pydantic_ai.messages import ToolCallPart
 from bus.schemas.events import ActionRequest, ParkedCall, ParkedRun
 from core.conscious.approvals import (
     APPROVAL_NAMESPACE,
+    PARAM_COUNT_MAX,
     PARAM_KEY_MAX,
     PARAM_VALUE_MAX,
     REASON_CLAUSE_MAX,
@@ -185,8 +186,8 @@ def test_the_reply_names_every_call() -> None:
     summary = summary_of(calls)
 
     assert summary == (
-        'unlock door (entity_id=lock.door_0) ("Unlock the front door."); '
-        "garage door open (entity_id=lock.door_1)"
+        'unlock door (entity_id="lock.door_0") ("Unlock the front door."); '
+        'garage door open (entity_id="lock.door_1")'
     )
     assert confirmation_reply(summary) == (
         f"Before I do that, I need your confirmation: {summary}. Shall I, sir?"
@@ -200,7 +201,7 @@ def test_a_targeted_tool_names_its_target_not_its_service() -> None:
     )
 
     assert describe_call(call) == (
-        'lock unlock (target=Garage) ("Unlock the front door for the dog walker")'
+        'lock unlock (target="Garage") ("Unlock the front door for the dog walker")'
     )
 
 
@@ -216,18 +217,18 @@ def test_call_service_names_the_service_it_will_call() -> None:
 
     assert reply == (
         "Before I do that, I need your confirmation: call service "
-        "(domain=lock, service=unlock, entity_id=lock.front_door) "
+        '(domain="lock", service="unlock", entity_id="lock.front_door") '
         '("lock the front door for the night"). Shall I, sir?'
     )
     before_reason = reply.split(' ("')[0]
-    assert "service=unlock" in before_reason
+    assert 'service="unlock"' in before_reason
     assert "night" not in before_reason
 
 
 def test_every_parameter_is_named_in_its_own_order() -> None:
     call = _tool("home.light_turn_on", {"target": "hall", "brightness": 40, "data": {"a": [1]}})
 
-    assert describe_call(call) == "light turn on (target=hall, brightness=40, data={a:[1]})"
+    assert describe_call(call) == 'light turn on (target="hall", brightness=40, data={"a":[1]})'
 
 
 def test_a_parameter_that_is_not_text_is_compact_json() -> None:
@@ -237,14 +238,14 @@ def test_a_parameter_that_is_not_text_is_compact_json() -> None:
     )
 
     assert describe_call(call) == (
-        "cover open (entity_id=[cover.garage,cover.gate], tilt=null, fast=true, note=é)"
+        'cover open (entity_id=["cover.garage","cover.gate"], tilt=null, fast=true, note="é")'
     )
 
 
 def test_a_parameter_named_reason_is_left_to_the_reason() -> None:
     call = _tool("home.lock_unlock", {"target": "Garage", "reason": "turn on the light"})
 
-    assert describe_call(call) == "lock unlock (target=Garage)"
+    assert describe_call(call) == 'lock unlock (target="Garage")'
 
 
 def test_a_call_with_no_parameters_has_no_parentheses() -> None:
@@ -262,18 +263,19 @@ def test_a_value_is_one_short_line_without_quotes_or_format_characters() -> None
 
     described = describe_call(call)
 
-    value = described.removeprefix("lock unlock (target=").removesuffix(")")
+    value = described.removeprefix('lock unlock (target="').removesuffix('")')
     assert value.startswith("Front door Garage xxx")
     assert value.endswith("…")
     assert len(value) == PARAM_VALUE_MAX
     assert "\n" not in described
-    assert not any(ch in described for ch in '"“”„‟«»\u202e\u200b')
+    assert not any(ch in value for ch in '"“”„‟«»')
+    assert not any(ch in described for ch in "\u202e\u200b")
 
 
 def test_a_plain_key_is_capped() -> None:
     described = describe_call(_tool("home.lock_unlock", {"k" * 100: "Garage"}))
 
-    key = described.removeprefix("lock unlock (").removesuffix("=Garage)")
+    key = described.removeprefix("lock unlock (").removesuffix('="Garage")')
     assert key == "k" * (PARAM_KEY_MAX - 1) + "…"
 
 
@@ -281,14 +283,14 @@ def test_a_key_that_cleaning_would_change_is_escaped_instead() -> None:
     """``ta"rget`` must not read as ``target`` beside the real one."""
     call = _tool("home.lock_unlock", {'ta"rget': "Front door", "target": "Garage"})
 
-    assert describe_call(call) == 'lock unlock (ta\\"rget=Front door, target=Garage)'
+    assert describe_call(call) == 'lock unlock (ta\\"rget="Front door", target="Garage")'
 
 
 def test_a_look_alike_key_is_shown_escaped_not_cleaned() -> None:
     """P39: a zero-width character must not make a decoy key read as the real one."""
     call = _tool("home.lock_unlock", {"tar\u200bget": "Front door", "target": "Garage"})
 
-    assert describe_call(call) == ("lock unlock (tar\\u200bget=Front door, target=Garage)")
+    assert describe_call(call) == 'lock unlock (tar\\u200bget="Front door", target="Garage")'
 
 
 @pytest.mark.parametrize(
@@ -302,14 +304,14 @@ def test_a_look_alike_key_is_shown_escaped_not_cleaned() -> None:
 )
 def test_a_key_that_is_not_plain_ascii_is_json_escaped(key: str, shown: str) -> None:
     assert describe_call(_tool("home.lock_unlock", {key: "Garage"})) == (
-        f"lock unlock ({shown}=Garage)"
+        f'lock unlock ({shown}="Garage")'
     )
 
 
 def test_an_escaped_key_is_capped_like_any_other() -> None:
     described = describe_call(_tool("home.lock_unlock", {"\u0435" * 30: "Garage"}))
 
-    key = described.removeprefix("lock unlock (").removesuffix("=Garage)")
+    key = described.removeprefix("lock unlock (").removesuffix('="Garage")')
     assert key.startswith("\\u0435\\u0435")
     assert key.endswith("…")
     assert len(key) == PARAM_KEY_MAX
@@ -322,7 +324,7 @@ def test_a_structured_value_is_shown_in_full() -> None:
 
     described = describe_call(call)
 
-    assert described.endswith(",entity_id:lock.front_door})")
+    assert described.endswith(',"entity_id":"lock.front_door"})')
     assert "x" * 80 in described
     assert "…" not in described
 
@@ -332,7 +334,9 @@ def test_a_nested_look_alike_name_is_escaped_too() -> None:
     data = {"entity_id\u200b": "lock.back", "entity_id": "lock.front"}
     call = _tool("home.call_service", {"domain": "lock", "service": "unlock", "data": data})
 
-    assert describe_call(call).endswith("data={entity_id\\u200b:lock.back,entity_id:lock.front})")
+    assert describe_call(call).endswith(
+        'data={"entity_id\\u200b":"lock.back","entity_id":"lock.front"})'
+    )
 
 
 def test_a_long_list_is_shown_in_full_but_a_long_string_is_still_cut() -> None:
@@ -341,8 +345,8 @@ def test_a_long_list_is_shown_in_full_but_a_long_string_is_still_cut() -> None:
     listed = describe_call(_tool("home.light_turn_off", {"entity_id": ids}))
     text = describe_call(_tool("home.light_turn_off", {"entity_id": ",".join(ids)}))
 
-    assert listed.endswith("light.room_11])")
-    assert text.endswith("…)")
+    assert listed.endswith('light.room_11"])')
+    assert text.endswith('…")')
     assert "room_11" not in text
 
 
@@ -351,7 +355,7 @@ def test_a_reason_is_one_short_line_without_quotes() -> None:
 
     described = describe_call(_tool("home.lock_unlock", {"target": "Garage"}, reason))
 
-    clause = described.removeprefix("lock unlock (target=Garage) (").removesuffix(")")
+    clause = described.removeprefix('lock unlock (target="Garage") (').removesuffix(")")
     assert clause.startswith('"Unlock the front door xxx')
     assert clause.endswith('…"')
     assert len(clause) == REASON_CLAUSE_MAX + 2  # the text is capped, the quotes are extra
@@ -368,7 +372,7 @@ def test_a_reason_cannot_fake_the_end_of_its_quotes() -> None:
 
     described = describe_call(_tool("home.lock_unlock", {"target": "Garage"}, reason))
 
-    clause = described.removeprefix("lock unlock (target=Garage) (").removesuffix(")")
+    clause = described.removeprefix('lock unlock (target="Garage") (').removesuffix(")")
     assert clause == '"Unlock the door hall ok fine a b c d e"'
     dropped = (
         '"()\u201c\u201d\u201e\u201f\u00ab\u00bb\u2018\u2019\u2039\u203a\u2033\uff02\u05f4\u02ee'
@@ -383,7 +387,7 @@ def test_a_reason_cannot_open_a_second_parameter_group() -> None:
     described = describe_call(call)
 
     assert described.count("(target=") == 1
-    assert described.startswith("lock unlock (target=Garage) (")
+    assert described.startswith('lock unlock (target="Garage") (')
     assert described.count("(") == 2  # the parameters' and the reason's, no more
     assert described.count(")") == 2
 
@@ -392,12 +396,45 @@ def test_a_value_keeps_its_apostrophes_and_parentheses() -> None:
     """Only the reason loses them: a name like this is what the house resolves."""
     call = _tool("home.lock_unlock", {"target": "Sam\u2019s room (upstairs)"})
 
-    assert describe_call(call) == "lock unlock (target=Sam\u2019s room (upstairs))"
+    assert describe_call(call) == 'lock unlock (target="Sam\u2019s room (upstairs)")'
+
+
+def test_a_string_value_is_quoted_so_it_cannot_imitate_structure() -> None:
+    """#397: a value holding ``)`` or ``, key=`` stays inside its own quotes."""
+    call = _tool("home.lock_unlock", {"target": 'Garage", target="Front door'})
+
+    assert describe_call(call) == 'lock unlock (target="Garage, target=Front door")'
+
+
+def test_a_string_inside_a_structured_value_keeps_its_json_quotes() -> None:
+    """#397: nested strings are JSON, escapes and all, so one cannot pass for a nested name."""
+    data = {"note": 'x","entity_id":"lock.back'}
+    call = _tool("home.call_service", {"domain": "lock", "service": "unlock", "data": data})
+
+    assert describe_call(call).endswith('data={"note":"x\\",\\"entity_id\\":\\"lock.back"})')
+
+
+def test_the_parameters_shown_are_capped_and_the_rest_counted() -> None:
+    parameters = {f"p{n}": n for n in range(PARAM_COUNT_MAX + 3)}
+
+    described = describe_call(_tool("home.lock_unlock", parameters))
+
+    shown = ", ".join(f"p{n}={n}" for n in range(PARAM_COUNT_MAX))
+    assert described == f"lock unlock ({shown}, +3 more)"
+
+
+def test_parameters_at_the_cap_are_all_shown() -> None:
+    parameters = {f"p{n}": n for n in range(PARAM_COUNT_MAX)}
+
+    described = describe_call(_tool("home.lock_unlock", {**parameters, "reason": "why"}))
+
+    assert "more" not in described
+    assert described.endswith(f"p{PARAM_COUNT_MAX - 1}={PARAM_COUNT_MAX - 1})")
 
 
 def test_a_reason_of_only_quotes_and_space_adds_no_clause() -> None:
     assert describe_call(_tool("home.lock_unlock", {"target": "Garage"}, ' "" \n ')) == (
-        "lock unlock (target=Garage)"
+        'lock unlock (target="Garage")'
     )
 
 

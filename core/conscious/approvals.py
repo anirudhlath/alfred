@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "APPROVAL_NAMESPACE",
+    "PARAM_COUNT_MAX",
     "PARAM_KEY_MAX",
     "PARAM_VALUE_MAX",
     "REASON_CLAUSE_MAX",
@@ -63,6 +64,9 @@ Decision = Literal["approve", "deny", "other"]
 REASON_CLAUSE_MAX: Final = 120
 PARAM_KEY_MAX: Final = 40
 PARAM_VALUE_MAX: Final = 60
+# At most this many parameters are shown; the rest are counted ("+2 more"). The gate lets a
+# critical call carry only the parameters its tool declares, so this caps a long schema.
+PARAM_COUNT_MAX: Final = 8
 _WHITESPACE: Final = re.compile(r"\s+")
 # Quote marks that could visually end a quoted text early; format characters (Unicode
 # category Cf: bidi controls, zero-width characters) are dropped as well.
@@ -155,16 +159,18 @@ def _key_shown(key: str) -> str:
 
 
 def _value_shown(value: object) -> str:
-    """A parameter's value as one line: a string as it is, anything else as compact JSON.
+    """A parameter's value as one line: a string in quotes, anything else as compact JSON.
 
-    A string is cut at ``PARAM_VALUE_MAX``. A dict or list is not, and its non-ASCII is
-    escaped like a name's, so nothing in it, a nested name included, can be hidden or cut.
+    A string loses its own quote marks, so it cannot close its quotes and pass a ``)`` or a
+    ``, key=`` off as structure (#397), and is cut at ``PARAM_VALUE_MAX``. A dict or list is
+    not cut: it is ASCII JSON, whose quotes and escapes keep every nested string and name,
+    look-alikes included, visible and in its place.
     """
     if isinstance(value, str):
-        return _clean(value, PARAM_VALUE_MAX)
-    structured = isinstance(value, dict | list)
-    shown = json.dumps(value, separators=(",", ":"), ensure_ascii=structured, default=str)
-    return _clean(shown, None if structured else PARAM_VALUE_MAX)
+        return f'"{_clean(value, PARAM_VALUE_MAX)}"'
+    if isinstance(value, dict | list):
+        return json.dumps(value, separators=(",", ":"), ensure_ascii=True, default=str)
+    return _clean(json.dumps(value, default=str), PARAM_VALUE_MAX)
 
 
 def describe_call(call: ParkedCall) -> str:
@@ -176,16 +182,19 @@ def describe_call(call: ParkedCall) -> str:
     one short line, so it can add context but never stand in for what runs: a reason of
     "lock the front door" on an unlock still reads as an unlock (I1)::
 
-        call service (domain=lock, service=unlock, entity_id=lock.front_door) ("lock the door")
+        call service (domain="lock", service="unlock", entity_id="lock.front") ("lock it")
+
+    Past ``PARAM_COUNT_MAX`` parameters the rest are counted, not shown.
     """
     described = humanise(call.tool_name)
-    pairs = ", ".join(
-        f"{_key_shown(key)}={_value_shown(value)}"
-        for key, value in call.parameters.items()
-        if key != "reason"
-    )
+    parameters = [(key, value) for key, value in call.parameters.items() if key != "reason"]
+    pairs = [
+        f"{_key_shown(key)}={_value_shown(value)}" for key, value in parameters[:PARAM_COUNT_MAX]
+    ]
+    if len(parameters) > PARAM_COUNT_MAX:
+        pairs.append(f"+{len(parameters) - PARAM_COUNT_MAX} more")
     if pairs:
-        described = f"{described} ({pairs})"
+        described = f"{described} ({', '.join(pairs)})"
     reason = _clean(call.reason or "", REASON_CLAUSE_MAX, reason=True)
     return f'{described} ("{reason}")' if reason else described
 

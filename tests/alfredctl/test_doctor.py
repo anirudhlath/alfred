@@ -432,6 +432,7 @@ def _clean_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "SYSTEM2_MODEL",
         "LIBRARIAN_MODEL",
+        "APPROVAL_MODEL",
         "VLLM_BASE_URL",
         "OPENAI_BASE_URL",
         "OPENAI_COMPAT_HOST",
@@ -479,6 +480,39 @@ def test_librarian_model_is_checked_when_it_differs(
     checks = doctor.run_checks(env, online=False)
     assert _status(checks, "conscious (System 2)") == "fail"
     assert "LIBRARIAN_MODEL" in _detail(checks, "conscious (System 2)")
+
+
+def test_an_approval_model_that_differs_is_checked(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(
+        tmp_path, "SYSTEM2_MODEL=vllm:gemma-x\nAPPROVAL_MODEL=openrouter:vendor/small\n"
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "fail"
+    detail = _detail(checks, "conscious (System 2)")
+    assert "APPROVAL_MODEL=openrouter:vendor/small needs OPENROUTER_API_KEY" in detail
+    assert "approval by reply is off" in detail
+    assert "the Door still approves" in detail
+
+
+def test_an_approval_model_that_works_is_listed(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(tmp_path, "SYSTEM2_MODEL=vllm:gemma-x\nAPPROVAL_MODEL=vllm:qwen-small\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "pass"
+    detail = _detail(checks, "conscious (System 2)")
+    assert "APPROVAL_MODEL=vllm:qwen-small" in detail
+    assert "approval by reply is off" not in detail
+
+
+def test_a_system2_model_the_approval_role_falls_back_to_names_the_consequence(
+    tmp_path: Path, _clean_llm_env: None
+) -> None:
+    env = _write_env(tmp_path, "SYSTEM2_MODEL=house-brain\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "fail"
+    detail = _detail(checks, "conscious (System 2)")
+    assert "SYSTEM2_MODEL=house-brain is not a model string" in detail
+    assert "approval by reply is off" in detail
+    assert detail.count("SYSTEM2_MODEL=house-brain") == 1
 
 
 def test_bad_max_tokens_fails_naming_it(tmp_path: Path, _clean_llm_env: None) -> None:

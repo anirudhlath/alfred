@@ -170,6 +170,8 @@ def _probe_embedding_dim(
 
 
 _CONSCIOUS = "conscious (System 2)"
+# What an unusable approval model costs: replies to a confirmation all read as "other".
+_NO_APPROVAL_MODEL = "approval by reply is off (the Door still approves)"
 
 
 def _check_model(setting: str, model: str, llm: LlmSettings) -> tuple[str, str]:
@@ -205,10 +207,16 @@ def _check_conscious(env: dict[str, str], online: bool) -> DoctorCheck:
     roles = [("SYSTEM2_MODEL", llm.system2_model)]
     if llm.librarian_model != llm.system2_model:
         roles.append(("LIBRARIAN_MODEL", llm.librarian_model))
+    if llm.approval_model != llm.system2_model:
+        roles.append(("APPROVAL_MODEL", llm.approval_model))
     results = [_check_model(setting, model, llm) for setting, model in roles]
+    # The approval role is System 2's model unless APPROVAL_MODEL names another.
+    approval = results[-1] if roles[-1][0] == "APPROVAL_MODEL" else results[0]
     for status in ("fail", "warn"):
         bad = [detail for st, detail in results if st == status]
         if bad:
+            if status == "fail" and approval[0] == "fail":
+                bad.append(_NO_APPROVAL_MODEL)
             return DoctorCheck(_CONSCIOUS, status, "; ".join(bad))
     detail = "; ".join(d for _, d in results)
     if online and any(model.startswith("openrouter:") for _, model in roles):
