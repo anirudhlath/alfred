@@ -18,7 +18,6 @@ from evals.harness.checks.judge_spec import JudgeCategory, JudgeSpec, Rubric
 from evals.harness.checks.result import CheckResult
 from evals.harness.evidence import TranscriptTurn  # noqa: TC001 — Pydantic field type
 from evals.harness.preflight import PreflightError
-from evals.harness.vllm_model import PROVIDER as VLLM_PROVIDER  # importing registers it
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -31,6 +30,9 @@ CALIBRATION_DIR = Path(__file__).resolve().parent.parent / "judge_calibration"
 STATE_DIR = Path.home() / ".local" / "share" / "alfred-evals"
 CALIBRATION_FILE = STATE_DIR / "calibration.json"
 TRUST_THRESHOLD = 0.85
+# Inspect's OpenAI-compatible provider under vLLM's service name: unlike its ``vllm`` one,
+# it never starts a server of its own.
+JUDGE_PROVIDER = "openai-api/vllm"
 JUDGE_API_KEY = "alfred-eval-not-a-key"
 # Judge requests to vLLM at once; with the proxy's MAX_UPSTREAM, a run's share is 4.
 JUDGE_CONNECTIONS = 2
@@ -84,7 +86,7 @@ class Judge:
             output = await self._model.generate(messages)
         except RetryError as exc:
             # Inspect gave up retrying and wraps the last attempt's error; raise that one,
-            # so a report says "ConnectError: ..." rather than "RetryError[<Future ...>]".
+            # so a report says "APIConnectionError: ..." rather than "RetryError[<Future ...>]".
             # Plainly: ``from exc`` would replace its own cause with the wrapper.
             last = exc.last_attempt.exception()
             if isinstance(last, Exception):
@@ -96,13 +98,22 @@ class Judge:
 
 
 def make_judge_model(model: str, base_url: str) -> Model:
+    """The judge on the vLLM server at *base_url*, which it never starts or looks up itself.
+
+    Raises:
+        ValueError: *base_url* is empty, where Inspect would fall back to ``VLLM_BASE_URL``.
+    """
+    if not base_url.strip():
+        raise ValueError("the judge needs the vLLM base URL of a running server")
     # Inspect otherwise retries an unreachable server for up to 30 minutes, logging below
     # WARNING, so a down vLLM looks like a hang. Two retries, then fail. ``timeout`` bounds
-    # each request, not the whole: three attempts and the back-off between them.
+    # each request, not the whole: three attempts and the back-off between them. The OpenAI
+    # client's own retries are off (``max_retries=0``), or they would multiply Inspect's.
     return get_model(
-        f"{VLLM_PROVIDER}/{model}",
+        f"{JUDGE_PROVIDER}/{model}",
         base_url=base_url,
         api_key=JUDGE_API_KEY,
+        max_retries=0,
         config=GenerateConfig(
             temperature=0.0,
             max_tokens=600,

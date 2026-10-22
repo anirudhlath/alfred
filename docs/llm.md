@@ -593,7 +593,7 @@ one-toolset agent.
 | 4 | full session history, tool calls and results included (done, see Sessions under System 2) |
 | 5 | deferred tool approvals replace the chat confirmation tool; late replies become follow-ups (done, see [Approvals](#approvals) and [`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes)) |
 | 6 | retries, the turn ledger and spend on the harness's `SpendLimits` (done, see [Retries](#retries) and [Spend](#spend)) |
-| 7 | the judge uses Inspect's own OpenAI provider; `evals/harness/vllm_model.py` goes |
+| 7 | the judge uses Inspect's own OpenAI provider; `evals/harness/vllm_model.py` is gone (done, see [`evals.md`](evals.md#the-model)) |
 | 8 | Reflex becomes an agent; Ollama is dropped |
 
 ## Key files

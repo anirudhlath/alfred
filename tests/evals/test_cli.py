@@ -127,10 +127,14 @@ JUDGE_ARGS = ["--model", "judge-m", "--vllm-url", "http://vllm.test/v1"]
 def test_evals_calibrate_words_an_http_error_by_its_status(
     monkeypatch: pytest.MonkeyPatch, status: int, says: str
 ) -> None:
-    from evals.harness.vllm_model import VllmStatusError
+    import httpx2
+    import openai
+
+    request = httpx2.Request("POST", "http://vllm.test/v1/chat/completions")
 
     async def answer(*_: object) -> JudgeVerdict:
-        raise VllmStatusError("http://vllm.test/v1/chat/completions", status, "nope")
+        response = httpx2.Response(status, request=request)
+        raise openai.APIStatusError("nope", response=response, body=None)
 
     _fake_judge_model(monkeypatch, [])
     monkeypatch.setattr("evals.harness.judge.Judge.ask", answer)

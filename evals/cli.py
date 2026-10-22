@@ -44,6 +44,9 @@ ProxyPortOpt = Annotated[
 def calibrate(model: ModelOpt = DEFAULT_MODEL, vllm_url: VllmUrlOpt = DEFAULT_VLLM_URL) -> None:
     """Measure how often the judge agrees with the hand-labelled items."""
     import asyncio
+    from http import HTTPStatus
+
+    from openai import APIStatusError
 
     from evals.harness.judge import (
         CALIBRATION_FILE,
@@ -56,7 +59,6 @@ def calibrate(model: ModelOpt = DEFAULT_MODEL, vllm_url: VllmUrlOpt = DEFAULT_VL
         calibrate as run_calibration,
     )
     from evals.harness.preflight import PreflightError, base_url
-    from evals.harness.vllm_model import TOO_MANY_REQUESTS, VllmStatusError
 
     try:
         vllm_url = base_url(vllm_url, "--vllm-url")
@@ -69,8 +71,8 @@ def calibrate(model: ModelOpt = DEFAULT_MODEL, vllm_url: VllmUrlOpt = DEFAULT_VL
         report = asyncio.run(run_calibration(judge, sets, model))
     except Exception as exc:
         detail = " ".join(f"{type(exc).__name__}: {exc}".split())
-        status = exc.status_code if isinstance(exc, VllmStatusError) else None
-        if status is not None and 400 <= status < 500 and status != TOO_MANY_REQUESTS:
+        status = exc.status_code if isinstance(exc, APIStatusError) else None
+        if status is not None and 400 <= status < 500 and status != HTTPStatus.TOO_MANY_REQUESTS:
             # The server answered and refused the request: most likely a model it does not
             # serve, not an unreachable URL.
             typer.echo(
