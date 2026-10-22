@@ -305,8 +305,11 @@ and the turn is retried like any other. A permanent 4xx, such as a typo'd model,
 classified permanent (see [Retries](#retries)), so **every `sir` turn on a session answers
 `FAILED_REPLY` while that session has a pending approval**, for up to 300 s, until the
 record expires and turns stop reaching the classifier. The Door is unaffected. `alfredctl
-doctor` does not check `APPROVAL_MODEL` yet; when replies to a confirmation fail, read
-`alfred:conscious:dead_letters` for the error.
+doctor` checks `APPROVAL_MODEL` like the other roles and, when it (or the System 2 model it
+falls back to) is not a usable model string, says approval by reply is off; a model that
+resolves to nothing at startup makes every reply `other`, and the conscious process logs one
+warning saying so. Doctor cannot see a model the provider rejects: when replies to a
+confirmation fail, read `alfred:conscious:dead_letters` for the error.
 
 ## The Librarian
 
