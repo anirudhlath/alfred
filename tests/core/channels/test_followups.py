@@ -8,9 +8,11 @@ from typing import Any
 import fakeredis
 from loguru import logger
 from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import ResponseError
 
 from bus.schemas.events import AlfredResponse
 from core.channels.followups import FOLLOWUP_GROUP, followup_worker
+from core.reflex.runner import ensure_consumer_group
 from shared.streams import FOLLOWUP_KEY, USER_RESPONSES_STREAM
 
 _SENTINEL = "sentinel"
@@ -50,6 +52,20 @@ class _FlakyRedis(_Redis):
         return await super().get(name)
 
 
+class _DownAtStartRedis(_Redis):
+    """Refuses the first group creation, as a Redis that is not up yet would."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.creations = 0
+
+    async def xgroup_create(self, *args: Any, **kwargs: Any) -> Any:
+        self.creations += 1
+        if self.creations == 1:
+            raise RedisConnectionError("connection refused")
+        return await super().xgroup_create(*args, **kwargs)
+
+
 class _Sink:
     """Records what the worker delivers, raises for ``fail_on``, and stops the workers once
     the sentinel arrives, so a test runs every entry XADDed before it."""
@@ -80,12 +96,9 @@ def _response(text: str, *, in_reply_to: str | None = "req-1", followup: bool = 
 
 
 async def _redis(store: type[_Redis] = _Redis) -> _Redis:
-    """A store whose follow-up group exists: a worker run with shutdown already set creates
-    the group, at the stream's end, and reads nothing."""
+    """A store whose follow-up group already exists, at the stream's end."""
     redis = store()
-    stopped = asyncio.Event()
-    stopped.set()
-    await followup_worker(redis, deliver=_Sink(stopped), consumer="setup", shutdown=stopped)
+    await ensure_consumer_group(redis, USER_RESPONSES_STREAM, FOLLOWUP_GROUP, start_id="$")
     return redis
 
 
@@ -108,6 +121,33 @@ async def _run(
         timeout=5,
     )
     return sink
+
+
+async def _wait_for_group(redis: _Redis) -> None:
+    """Until the follow-up group exists, which the worker sees to once Redis answers."""
+    async with asyncio.timeout(5):
+        while True:
+            try:
+                groups = await redis.xinfo_groups(USER_RESPONSES_STREAM)
+            except ResponseError:  # no stream yet
+                groups = []
+            if any(g["name"] == FOLLOWUP_GROUP.encode() for g in groups):
+                return
+            await asyncio.sleep(0.01)
+
+
+def _start(redis: _Redis, sink: _Sink) -> asyncio.Task[None]:
+    return asyncio.create_task(
+        followup_worker(redis, deliver=sink, consumer="worker-0", shutdown=sink.shutdown)
+    )
+
+
+async def _finish(redis: _Redis, worker: asyncio.Task[None], texts: list[str]) -> None:
+    """Once the group exists, XADD a follow-up per text and the sentinel; wait for the worker."""
+    await _wait_for_group(redis)
+    for text in [*texts, _SENTINEL]:
+        await redis.xadd(USER_RESPONSES_STREAM, {"event": _response(text, followup=True)})
+    await asyncio.wait_for(worker, timeout=5)
 
 
 async def test_a_late_answer_is_delivered_once() -> None:
@@ -159,13 +199,36 @@ async def test_history_is_not_replayed() -> None:
     not delivered."""
     redis = _Redis()
     await redis.xadd(USER_RESPONSES_STREAM, {"event": _response("Old news.", followup=True)})
-    stopped = asyncio.Event()
-    stopped.set()
-    await followup_worker(redis, deliver=_Sink(stopped), consumer="setup", shutdown=stopped)
+    sink = _Sink(asyncio.Event())
 
-    sink = await _run(redis, [])
+    await _finish(redis, _start(redis, sink), [])
 
     assert sink.delivered == []
+
+
+async def test_a_redis_that_is_not_up_yet_does_not_kill_the_worker() -> None:
+    """The group is made inside the retry loop: a refused first try is retried."""
+    redis = _DownAtStartRedis()
+    sink = _Sink(asyncio.Event())
+
+    await _finish(redis, _start(redis, sink), ["Up now, sir."])
+
+    assert [r.text for r in sink.delivered] == ["Up now, sir."]
+    assert redis.creations == 2
+
+
+async def test_a_lost_group_is_made_again_and_the_worker_goes_on() -> None:
+    """A flush or a restore drops the group; the read's NOGROUP makes it again, at the
+    stream's end, and what is published after that is delivered."""
+    redis = await _redis()
+    sink = _Sink(asyncio.Event())
+    worker = _start(redis, sink)
+    await asyncio.sleep(0.05)
+    await redis.xgroup_destroy(USER_RESPONSES_STREAM, FOLLOWUP_GROUP)
+
+    await _finish(redis, worker, ["Still here, sir."])
+
+    assert [r.text for r in sink.delivered] == ["Still here, sir."]
 
 
 async def test_every_entry_is_acked() -> None:

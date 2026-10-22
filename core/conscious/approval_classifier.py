@@ -90,7 +90,12 @@ class ApprovalClassifier:
         self._prompts = prompts
         self._settings = ModelSettings(max_tokens=max_tokens, timeout=timeout_s)
         self._agent: Agent[None, ApprovalVerdict] | None = None
-        if model is not None:
+        if model is None:
+            logger.warning(
+                "APPROVAL_MODEL has no model, so approval by reply is off: every reply to a "
+                "confirmation reads as 'other' and only the Door approves"
+            )
+        else:
             capabilities: list[AbstractCapability[None]] = [instrumentation(), spend]
             self._agent = Agent(
                 None,
