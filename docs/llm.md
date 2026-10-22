@@ -256,12 +256,15 @@ this is the part that belongs to the LLM layer.
   template (*"Before I do that, I need your confirmation: ... Shall I, sir?"*), with no
   model call. What it asks about is described by code, not by the model: each call reads
   the humanised tool name and every parameter it will run with, then the model's `reason` as
-  a quoted aside, e.g. `lock unlock (target=Garage) ("Unlock the front door")`
+  a quoted aside, e.g. `lock unlock (target="Garage") ("Unlock the front door")`
   (`describe_call`; each is one short plain line: whitespace collapsed, quote marks and
   Unicode format characters removed, and from the reason also parentheses and every
-  quotation-mark look-alike; a name that is not plain printable ASCII is shown JSON-escaped
-  and a dict or list value whole, not cut; the full rules are in `docs/autonomy.md`, "Rules
-  that hold on every path"). The session stores the id as `pending_approval`.
+  quotation-mark look-alike; a string value is quoted, a name that is not plain printable
+  ASCII is shown JSON-escaped and a dict or list value whole as JSON, not cut; past eight
+  parameters the rest are counted. A critical tool's schema is closed, so a call carrying a
+  parameter its tool does not declare is retried, never parked. The full rules are in
+  `docs/autonomy.md`, "Rules that hold on every path"). The session stores the id as
+  `pending_approval`.
 - **A reply is read by the classifier** (`ApprovalClassifier`). While a session has a
   `pending_approval`, the next message from **sir** on it is classified against the pending
   calls: `approve`, `deny` or `other`, by the `approval-classifier` prompt on
