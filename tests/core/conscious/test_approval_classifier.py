@@ -69,8 +69,8 @@ async def test_the_user_message_carries_the_actions_and_the_reply_as_data() -> N
 
     assert script.prompt() == (
         "<actions>\n"
-        '- lock unlock (target=front door) ("Unlock the front door.")\n'
-        '- lock unlock (target=front door) ("Arm away")\n'
+        '- lock unlock (target="front door") ("Unlock the front door.")\n'
+        '- lock unlock (target="front door") ("Arm away")\n'
         "</actions>\n"
         "<reply>\nok\n</reply>"
     )

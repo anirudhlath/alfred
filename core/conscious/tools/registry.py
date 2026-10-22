@@ -105,13 +105,19 @@ class RegistryToolset(AbstractToolset[TurnDeps]):
         except WireNameError as exc:
             error_once(("wire-name", info.name), "Tool %r is not offered: %s", info.name, exc)
             return None
-        validator = compile_schema(info.name, info.input_schema)
+        checked = info.input_schema
+        # The owner approves every parameter a critical call carries, so it may carry only
+        # the ones its tool declares, unless the schema itself allows more (#397).
+        closed = info.risk == "critical" and "additionalProperties" not in checked
+        if closed:
+            checked = {**checked, "additionalProperties": False}
+        validator = compile_schema(info.name, checked)
         if validator is None:
             return None
         # A critical tool is offered an optional `reason` for the confirmation prompt,
         # unless it declares its own, which then belongs to the service.
         strip_reason = info.risk == "critical" and REASON_PARAM not in info.parameter_names
-        schema = copy.deepcopy(info.input_schema)
+        schema = copy.deepcopy(checked)
         if strip_reason:
             schema.setdefault("properties", {})[REASON_PARAM] = dict(REASON_SCHEMA)
 

@@ -263,8 +263,13 @@ Full behaviour in [`web-frontend.md`](web-frontend.md#the-door).
   clause:
 
   ```
-  call service (domain=lock, service=unlock, entity_id=lock.front_door) ("lock the door")
+  call service (domain="lock", service="unlock", entity_id="lock.front_door") ("lock the door")
   ```
+
+  Every parameter shown is one the tool declares: the registry toolset closes a critical
+  tool's schema (`additionalProperties: false`, unless the schema sets it itself), so a call
+  carrying a stray parameter is retried with the validation error naming it, never parked.
+  Past eight parameters the rest are counted (`+2 more`), not shown.
 
   Each name, value and reason is shown as one plain line:
 
@@ -272,10 +277,12 @@ Full behaviour in [`web-frontend.md`](web-frontend.md#the-door).
     characters. Any other name (a zero-width or Cyrillic look-alike, a bidi control, a quote
     mark) is shown JSON-escaped (`tar\u200bget`) instead of cleaned, so a decoy never reads
     like the real name beside it.
-  - **Values** have whitespace runs collapsed and quote marks and Unicode format characters
-    (bidi controls, zero-width) removed. A string is cut at 60 characters; a dict or list is
-    shown whole as compact JSON, with its non-ASCII escaped, because what a call acts on
-    (`call_service`'s `data` carries an `entity_id`) can sit anywhere in it.
+  - **Values**: a string has whitespace runs collapsed and quote marks and Unicode format
+    characters (bidi controls, zero-width) removed, is cut at 60 characters and is shown in
+    double quotes, so a `)` or a `, key=` inside it stays visibly inside the value. A dict or
+    list is shown whole as compact ASCII JSON, its own quotes and escapes kept, because what a
+    call acts on (`call_service`'s `data` carries an `entity_id`) can sit anywhere in it, and
+    a nested string can then no more pass for a nested name than a top-level one can.
   - **The reason** gets the value cleaning and loses more, since it sits in quotes after
     the parameters: parentheses and the common quotation marks (Unicode categories Pi and
     Pf, and the look-alikes `″` `＂` `״` `ˮ`), cut at 120 characters. A rarer quote glyph
