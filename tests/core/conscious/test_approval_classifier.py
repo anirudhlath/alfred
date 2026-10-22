@@ -137,6 +137,27 @@ async def test_no_model_is_other() -> None:
     assert await classifier.classify([_call()], "yes") == "other"
 
 
+def test_no_model_warns_once_that_approval_by_reply_is_off(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="core.conscious.approval_classifier"):
+        ApprovalClassifier(model=None, prompts=PromptStore(), spend=_spend())
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "APPROVAL_MODEL" in message
+    assert "approval by reply is off" in message
+    assert "Door" in message
+
+
+def test_a_model_starts_without_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="core.conscious.approval_classifier"):
+        _classifier(Script({"decision": "approve"}))
+
+    assert not caplog.records
+
+
 @pytest.mark.asyncio
 async def test_a_model_that_gives_up_is_other(caplog: pytest.LogCaptureFixture) -> None:
     script = Script(UnexpectedModelBehavior("no usable output"))
