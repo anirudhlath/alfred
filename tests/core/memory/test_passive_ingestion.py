@@ -115,6 +115,66 @@ async def test_summary_without_salient_attributes(
     assert entry.summary == f"[observation] {STAMP} — binary_sensor.front_door: off → on"
 
 
+async def _summary(obs: ReflexObservation, scorer: AsyncMock, passive_scorer: AsyncMock) -> str:
+    from core.memory.ingestor import ingest_observation
+
+    episodic = AsyncMock()
+    await ingest_observation(obs, episodic, scorer, passive_scorer, tz=UTC_ZONE)
+    entry: EpisodicEntry = episodic.write.call_args.args[0]
+    return entry.summary
+
+
+@pytest.mark.asyncio
+async def test_summary_says_who_caused_it(scorer: AsyncMock, passive_scorer: AsyncMock) -> None:
+    obs = _passive(attributes={"media_title": "Harry Potter"})
+    obs.trigger_event["context"] = {"by_service": True, "user_id": "u"}
+
+    assert await _summary(obs, scorer, passive_scorer) == (
+        f"[observation] {STAMP} — media_player.living_room_apple_tv: "
+        "paused → playing (media_title=Harry Potter), by Alfred"
+    )
+
+
+@pytest.mark.asyncio
+async def test_summary_names_a_person_by_their_entity(
+    scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    obs = _passive("binary_sensor.front_door", "off", "on")
+    obs.trigger_event["context"] = {"user_id": "u", "person": "person.alex"}
+
+    assert await _summary(obs, scorer, passive_scorer) == (
+        f"[observation] {STAMP} — binary_sensor.front_door: off → on, by person.alex"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("context", [None, "not a mapping", {"by_service": "perhaps"}])
+async def test_a_missing_or_malformed_context_leaves_the_summary_as_it_was(
+    context: object, scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    obs = _passive("binary_sensor.front_door", "off", "on")
+    obs.trigger_event["context"] = context
+
+    assert await _summary(obs, scorer, passive_scorer) == (
+        f"[observation] {STAMP} — binary_sensor.front_door: off → on"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_cause_does_not_change_the_semantic_key(
+    scorer: AsyncMock, passive_scorer: AsyncMock
+) -> None:
+    from core.memory.ingestor import ingest_observation
+
+    obs = _passive("binary_sensor.front_door", "off", "on")
+    obs.trigger_event["context"] = {"parent_id": "p"}
+    episodic = AsyncMock()
+    await ingest_observation(obs, episodic, scorer, passive_scorer, tz=UTC_ZONE)
+
+    entry: EpisodicEntry = episodic.write.call_args.args[0]
+    assert entry.semantic_key == "Observed binary_sensor.front_door change from off to on"
+
+
 @pytest.mark.asyncio
 async def test_salient_attributes_are_folded_in_declared_order(
     scorer: AsyncMock, passive_scorer: AsyncMock
