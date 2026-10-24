@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import redis.asyncio as aioredis
 
 from bus.schemas.events import ReflexObservation, StateChangedEvent
+from core.attribution.log import record_change
 from core.reflex.availability import bridge_availability
 from shared.streams import OBSERVED_ENTITY_PREFIX, REFLEX_DECISIONS_PREFIX, decode_stream_value
 from shared.types import AioRedis as AioRedis  # noqa: TC001  # re-export for backward compat
@@ -227,6 +228,10 @@ async def process_stream_entry(
     if bridged is None:
         return False
     event = bridged
+
+    # Count the change by its cause. Ahead of the gate, so the changes it drops are counted
+    # too; best-effort (record_change never raises), so it never changes a decision or the ACK.
+    await record_change(redis, event)
 
     # Attention gate — only attention-set members on real transitions reach
     # the SLM. Gated events stay fully visible to triggers and context

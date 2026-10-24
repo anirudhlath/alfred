@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -47,6 +47,10 @@ def _router() -> tuple[object, StubAgent, AsyncMock, AsyncMock]:
 
     redis = AsyncMock()
     redis.hget = AsyncMock(return_value=_MANIFEST.encode())
+    # redis-py's pipeline() is a sync call returning an async context manager (the call log's).
+    pipe = MagicMock()
+    pipe.execute = AsyncMock(return_value=[])
+    redis.pipeline = MagicMock(return_value=MagicMock(__aenter__=AsyncMock(return_value=pipe)))
     notifier = AsyncMock()
     router = DomainRouter(redis=redis, notifier=notifier)
     agent = StubAgent()

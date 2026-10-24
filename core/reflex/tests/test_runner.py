@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from bus.schemas.events import ActionRequest, ReflexProposal, StateChangedEvent
-from shared.streams import OBSERVED_ENTITY_PREFIX
+from shared.streams import OBSERVED_ENTITY_PREFIX, REFLEX_DECISIONS_PREFIX
 
 
 def _tv_event() -> StateChangedEvent:
@@ -117,11 +117,14 @@ async def test_every_decision_is_counted(decision: str) -> None:
 
     await _run(engine, redis)
 
-    (count,) = redis.hincrby.await_args_list
+    # The change itself is counted by its cause too (attribution); this is the decision count.
+    counts = [
+        c for c in redis.hincrby.await_args_list if c.args[0].startswith(REFLEX_DECISIONS_PREFIX)
+    ]
+    (count,) = counts
     key, field, amount = count.args
-    assert key.startswith("alfred:reflex:decisions:")
     assert (field, amount) == (decision, 1)
-    redis.expire.assert_awaited_once_with(key, DECISION_COUNT_TTL_SECONDS)
+    redis.expire.assert_any_await(key, DECISION_COUNT_TTL_SECONDS)
 
 
 @pytest.mark.asyncio
