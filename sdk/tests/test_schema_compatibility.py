@@ -27,6 +27,67 @@ def test_state_changed_roundtrip_bus_to_sdk() -> None:
     assert sdk_event.attributes == bus_event.attributes
 
 
+def test_state_changed_context_roundtrip_both_ways() -> None:
+    """A ChangeContext survives bus -> SDK and SDK -> bus unchanged, field by field."""
+    from bus.schemas.events import ChangeContext as BusContext
+    from bus.schemas.events import StateChangedEvent as BusEvent
+    from sdk.alfred_sdk.events import ChangeContext as SdkContext
+    from sdk.alfred_sdk.events import StateChangedEvent as SdkEvent
+
+    bus_event = BusEvent(
+        source="home-service",
+        domain="home",
+        entity_id="light.bedroom_lamp",
+        old_state="off",
+        new_state="on",
+        context=BusContext(
+            id="c1", user_id="u1", parent_id=None, person="person.alex", by_service=False
+        ),
+    )
+    sdk_event = SdkEvent.model_validate_json(bus_event.model_dump_json())
+    back = BusEvent.model_validate_json(sdk_event.model_dump_json())
+
+    for event in (sdk_event, back):
+        assert event.context is not None
+        assert event.context.id == "c1"
+        assert event.context.user_id == "u1"
+        assert event.context.parent_id is None
+        assert event.context.person == "person.alex"
+        assert event.context.by_service is False
+    assert isinstance(sdk_event.context, SdkContext)
+    assert isinstance(back.context, BusContext)
+
+    sdk_made = SdkEvent(
+        source="home-service",
+        domain="home",
+        entity_id="light.bedroom_lamp",
+        new_state="off",
+        context=SdkContext(parent_id="p1", by_service=True),
+    )
+    bus_from_sdk = BusEvent.model_validate_json(sdk_made.model_dump_json())
+    assert bus_from_sdk.context is not None
+    assert bus_from_sdk.context.parent_id == "p1"
+    assert bus_from_sdk.context.by_service is True
+    assert bus_from_sdk.context.id is None
+
+
+def test_state_changed_without_context_parses_as_none() -> None:
+    """A payload from a publisher that predates ChangeContext still parses."""
+    from bus.schemas.events import StateChangedEvent as BusEvent
+    from sdk.alfred_sdk.events import StateChangedEvent as SdkEvent
+
+    payload = {
+        "source": "home-service",
+        "domain": "home",
+        "entity_id": "light.bedroom_lamp",
+        "old_state": "off",
+        "new_state": "on",
+    }
+    for cls in (BusEvent, SdkEvent):
+        event = cls.model_validate(payload)
+        assert event.context is None
+
+
 def test_action_request_roundtrip_sdk_to_bus() -> None:
     """Serialize an SDK ActionRequest, deserialize as bus ActionRequest."""
     from bus.schemas.events import ActionRequest as BusAction
@@ -106,6 +167,7 @@ def test_shared_schemas_have_same_fields() -> None:
 
     for bus_cls, sdk_cls in [
         (bus.BaseEvent, sdk.BaseEvent),
+        (bus.ChangeContext, sdk.ChangeContext),
         (bus.StateChangedEvent, sdk.StateChangedEvent),
         (bus.ActionRequest, sdk.ActionRequest),
         (bus.ActionResult, sdk.ActionResult),

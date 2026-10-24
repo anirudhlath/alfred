@@ -25,6 +25,16 @@ class BaseEvent(BaseModel):
     source: str = Field(description="Service or component that produced this event")
 
 
+class ChangeContext(BaseModel):
+    """Who caused a state change, as the publishing service resolved it."""
+
+    id: str | None = None  # the platform's context id (HA: context.id)
+    user_id: str | None = None  # the platform user who caused it
+    parent_id: str | None = None  # set when an automation or script caused it
+    person: str | None = None  # person entity of that user, when the service could map it
+    by_service: bool = False  # the publishing service's own call caused it (on Alfred's request)
+
+
 class StateChangedEvent(BaseEvent):
     """A device or entity changed state. Published by microservices."""
 
@@ -34,6 +44,7 @@ class StateChangedEvent(BaseEvent):
     old_state: str | None = None
     new_state: str
     attributes: dict[str, Any] = Field(default_factory=dict)
+    context: ChangeContext | None = None  # who caused it; absent from older publishers
 
 
 class ActionRequest(BaseEvent):

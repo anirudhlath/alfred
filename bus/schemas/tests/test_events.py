@@ -32,6 +32,17 @@ def test_state_changed_event_rejects_missing_fields() -> None:
         StateChangedEvent(source="home-service")  # type: ignore[call-arg]
 
 
+def test_change_context_defaults() -> None:
+    from bus.schemas.events import ChangeContext
+
+    context = ChangeContext()
+    assert context.by_service is False
+    assert context.id is None
+    assert context.user_id is None
+    assert context.parent_id is None
+    assert context.person is None
+
+
 def test_action_request_creation() -> None:
     from bus.schemas.events import ActionRequest
 

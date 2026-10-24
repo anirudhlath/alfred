@@ -67,6 +67,13 @@ Published by microservices when a device or entity changes state. This is the pr
 | `old_state`  | `str \| None`     | Previous state value (null on first report)      |
 | `new_state`  | `str`             | Current state value                              |
 | `attributes` | `dict[str, Any]`  | Freeform attributes (brightness, color, etc.)    |
+| `context`    | `ChangeContext \| None` | Who caused the change, as the publisher resolved it; null when the publisher does not say (older publishers never send it) |
+
+`ChangeContext` fields, all optional: `id` (the platform's context id), `user_id` (the platform
+user who caused the change), `parent_id` (set when an automation or script caused it), `person`
+(the person entity of that user, when the publisher could map it) and `by_service` (default
+`false`; true when the publishing service's own call caused the change, on Alfred's request). A
+publisher that cannot say who caused a change omits the whole `context`.
 
 ### ActionRequest
 
