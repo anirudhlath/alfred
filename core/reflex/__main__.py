@@ -22,6 +22,7 @@ from core.notifications.schema import Urgency
 from core.reflex import inference
 from core.reflex.attention import AttentionSet
 from core.reflex.context_reader import ContextReader
+from core.reflex.decision_log import DecisionLog
 from core.reflex.engine import ReflexEngine, build_notification_body
 from core.reflex.runner import (
     count_decision,
@@ -251,6 +252,7 @@ async def run(config: AlfredConfig) -> None:
         tool_registry=registry,
         context_reader=context_reader,
         memory_reader=memory_reader,
+        decision_log=DecisionLog(r),
     )
     attention = AttentionSet(redis=r)
 
