@@ -144,8 +144,9 @@ HA user who caused it (if any), and a `parent_id` when an automation or script c
    `StateChangedEvent` and its SDK mirror gain an optional `context`. Events from an older home-service
    have none.
 2. **Home-service returns the context id of each service call** in its action result. Alfred records
-   which request and which part of Alfred it belonged to, keyed by that id, for long enough to join it to
-   the state changes it caused (24 hours, **my call**).
+   which request and which part of Alfred it belonged to, with that id, in a log of its calls kept 30
+   days, which the oversight report joins to the state changes they caused (**my call**; updated while
+   planning, from a 24-hour key, so the report can look back as far as the other logs).
 3. **Alfred's changes are recognised by HA user.** Home-service must connect to HA as an HA user of its
    own, so every change it makes carries that user's id. If it connects with the owner's token today,
    Alfred's changes look like the owner's. The builder checks which user it is. Creating a dedicated HA
@@ -163,8 +164,9 @@ HA user who caused it (if any), and a `parent_id` when an automation or script c
    `user_id`, so it is known at once. The part is filled in by the join, which is why reports read it
    later rather than at the moment of the change.
 5. **The cause travels everywhere the change goes:** into Reflex's prompt, into the shadow log and into
-   episodic memory. The Librarian's preference and routine detection counts only `person` changes, so
-   Alfred never learns its own actions as the owner's habits.
+   episodic memory. Alfred must never learn its own actions as the owner's habits. Today the Librarian
+   reads no state changes at all (it consolidates scratchpad notes), so the rule that habit detection
+   counts only `person` changes applies when slice 3 builds that path (updated while planning).
 6. **Oversight.** A report, run like the shadow report, lists the changes in a window by cause, and lists
    everything Alfred changed with the part that did it and the reason it gave (**my call**: a report
    first; asking Alfred "who turned on the kitchen light?" can come later if the owner wants it).
@@ -333,8 +335,8 @@ When it acts, it says what it did and offers an undo for 10 minutes, on the same
 Undo restores the recorded state of each entity it touched. Slice 1's causes make the "person reversed
 it" case visible.
 
-**Learning from the owner's own actions.** The Librarian's preference and routine detection, which counts
-only `person` changes after slice 1, proposes habits. Reflex may then ask about one: "You usually dim the
+**Learning from the owner's own actions.** Habit detection over state changes, which counts only `person` changes
+(the Librarian reads no state changes today, so this slice builds that path), proposes habits. Reflex may then ask about one: "You usually dim the
 living room when a movie starts. Want me to do that?" A one-off change never becomes a habit. The owner:
 "Something temporary shouldn't."
 
@@ -412,7 +414,7 @@ Closing or rewriting those issues is a public post. The builder asks before doin
 
 ## Calls made in this design (for the owner to check)
 
-1. The context-id join is kept for 24 hours.
+1. Alfred's calls are logged with their context ids for 30 days, and the report joins them to the changes (updated while planning; was a 24-hour key).
 2. `outside` changes count as a person's for the never-reverse rule.
 3. Oversight starts as a report. Asking Alfred "who did this?" comes later if wanted.
 4. Every decision is recorded privately with its prompt and cause for 30 days, starting in slice 1.
