@@ -18,10 +18,12 @@ from core.attribution.log import (
     record_call,
     record_change,
 )
+from shared.redis_streams import REPLAY_MARKER_TTL_SECONDS
 from shared.streams import (
     ATTRIBUTION_CALLS_STREAM,
     ATTRIBUTION_CAUSES_PREFIX,
     ATTRIBUTION_CHANGES_STREAM,
+    ATTRIBUTION_COUNTED_PREFIX,
     ATTRIBUTION_MAX_AGE,
 )
 
@@ -163,6 +165,33 @@ async def test_record_change_counts_by_the_utc_day_of_now() -> None:
     assert await redis.hgetall(causes_key(date(2026, 10, 25))) == {b"alfred": b"1"}
 
 
+async def test_record_change_counts_an_entry_once() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    event = _change(ChangeContext(id="c1", user_id="u1"))
+
+    first = await record_change(redis, event, entry_id=b"1-0", now=_NOW)
+    replay = await record_change(redis, event, entry_id="1-0", now=_NOW)  # str and bytes: one entry
+
+    assert first == replay == "person"  # the cause is the event's, counted or not
+    assert await redis.hgetall(causes_key(date(2026, 10, 24))) == {b"person": b"1"}
+    assert await redis.xlen(ATTRIBUTION_CHANGES_STREAM) == 1
+    ttl = await redis.ttl(f"{ATTRIBUTION_COUNTED_PREFIX}1-0")
+    assert 0 < ttl <= REPLAY_MARKER_TTL_SECONDS
+
+
+async def test_record_change_counts_each_entry_and_each_unmarked_call() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    event = _change(ChangeContext(id="c1", user_id="u1"))
+
+    await record_change(redis, event, entry_id="1-0", now=_NOW)
+    await record_change(redis, event, entry_id="2-0", now=_NOW)
+    await record_change(redis, event, now=_NOW)
+    await record_change(redis, event, now=_NOW)  # no entry id, no marker: counted as before
+
+    assert await redis.hgetall(causes_key(date(2026, 10, 24))) == {b"person": b"4"}
+    assert await redis.xlen(ATTRIBUTION_CHANGES_STREAM) == 4
+
+
 def _refusing_redis() -> MagicMock:
     """A redis at maxmemory: the writes it would need are refused."""
     refusal = redis_exceptions.ResponseError(
@@ -173,6 +202,7 @@ def _refusing_redis() -> MagicMock:
     redis.hincrby = AsyncMock(side_effect=refusal)
     redis.expire = AsyncMock(side_effect=refusal)
     redis.xadd = AsyncMock(side_effect=refusal)
+    redis.set = AsyncMock(side_effect=refusal)
     return redis
 
 
@@ -182,7 +212,9 @@ async def test_writes_never_raise_when_redis_refuses() -> None:
     await record_call(redis, _action(), _result(result={"result": {"context_id": "abc"}}), now=_NOW)
     cause = await record_change(redis, _change(ChangeContext(user_id="u1")), now=_NOW)
     unknown = await record_change(redis, _change(None), now=_NOW)
+    marked = await record_change(redis, _change(ChangeContext(by_service=True)), entry_id="1-0")
 
     # The cause is read from the event, not from redis: a refused write changes no decision.
     assert cause == "person"
     assert unknown is None
+    assert marked == "alfred"

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
@@ -124,7 +124,8 @@ async def test_every_decision_is_counted(decision: str) -> None:
     (count,) = counts
     key, field, amount = count.args
     assert (field, amount) == (decision, 1)
-    redis.expire.assert_any_await(key, DECISION_COUNT_TTL_SECONDS)
+    expiries = [c for c in redis.expire.await_args_list if c.args[0] == key]
+    assert expiries == [call(key, DECISION_COUNT_TTL_SECONDS)]
 
 
 @pytest.mark.asyncio

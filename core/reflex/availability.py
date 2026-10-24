@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from shared.redis_streams import MAX_REPLAY_AGE_MS
+from shared.redis_streams import REPLAY_MARKER_TTL_SECONDS
 from shared.streams import (
     AVAILABILITY_DECISION_PREFIX,
     LAST_KNOWN_STATE_KEY,
@@ -38,9 +38,6 @@ if TYPE_CHECKING:
     from shared.types import AioRedis
 
 UNAVAILABLE_STATES = frozenset({"unavailable", "unknown"})
-
-# Twice the oldest entry the reclaim pass will replay, so a replay finds its decision.
-DECISION_TTL_SECONDS = 2 * MAX_REPLAY_AGE_MS // 1000
 
 
 def _no_information(state: str | None) -> bool:
@@ -115,7 +112,7 @@ async def _came_back_from(
     else:
         left = known[0] if known is not None and known[0] != event.new_state else None
         try:
-            await redis.set(decision_key, json.dumps({"left": left}), ex=DECISION_TTL_SECONDS)
+            await redis.set(decision_key, json.dumps({"left": left}), ex=REPLAY_MARKER_TTL_SECONDS)
         except Exception as exc:
             logger.warning("Return of {} not kept for replay: {}", event.entity_id, exc)
     await _remember(redis, event, entry_id)

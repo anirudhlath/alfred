@@ -24,14 +24,16 @@ from pydantic import BaseModel
 
 from bus.schemas.events import ChangeContext  # noqa: TC001  # pydantic field type
 from core.attribution.cause import ATTRIBUTED, Cause, cause_of
-from shared.redis_streams import append_capped
+from shared.redis_streams import REPLAY_MARKER_TTL_SECONDS, append_capped
 from shared.streams import (
     ATTRIBUTION_CALLS_MAXLEN,
     ATTRIBUTION_CALLS_STREAM,
     ATTRIBUTION_CAUSES_PREFIX,
     ATTRIBUTION_CHANGES_MAXLEN,
     ATTRIBUTION_CHANGES_STREAM,
+    ATTRIBUTION_COUNTED_PREFIX,
     ATTRIBUTION_MAX_AGE,
+    decode_stream_value,
 )
 
 if TYPE_CHECKING:
@@ -117,9 +119,16 @@ async def record_call(
 
 
 async def record_change(
-    redis: AioRedis, event: StateChangedEvent, *, now: datetime | None = None
+    redis: AioRedis,
+    event: StateChangedEvent,
+    *,
+    entry_id: bytes | str | None = None,
+    now: datetime | None = None,
 ) -> Cause | None:
     """Count *event* by its cause and, when it names an actor, log it. Returns the cause.
+
+    Given the stream *entry_id* it was read from, an entry is counted once however often it is
+    delivered: a replay finds the first delivery's marker and writes nothing.
 
     The cause comes from the event alone, so it is returned even when a write is refused:
     best-effort bookkeeping never changes what the caller decides.
@@ -127,6 +136,10 @@ async def record_change(
     when = (now or datetime.now(UTC)).astimezone(UTC)
     cause = cause_of(event.context)
     try:
+        if entry_id is not None:
+            marker = f"{ATTRIBUTION_COUNTED_PREFIX}{decode_stream_value(entry_id)}"
+            if not await redis.set(marker, 1, nx=True, ex=REPLAY_MARKER_TTL_SECONDS):
+                return cause
         key = causes_key(when.date())
         await redis.hincrby(key, cause or _UNKNOWN, 1)
         await redis.expire(key, _COUNT_TTL_SECONDS)

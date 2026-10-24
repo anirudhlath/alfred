@@ -230,8 +230,9 @@ async def process_stream_entry(
     event = bridged
 
     # Count the change by its cause. Ahead of the gate, so the changes it drops are counted
-    # too; best-effort (record_change never raises), so it never changes a decision or the ACK.
-    await record_change(redis, event)
+    # too; once per entry, so a redelivery after a failed inference is not counted again.
+    # Best-effort (record_change never raises): it never changes a decision or the ACK.
+    await record_change(redis, event, entry_id=entry_id)
 
     # Attention gate — only attention-set members on real transitions reach
     # the SLM. Gated events stay fully visible to triggers and context

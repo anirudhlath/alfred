@@ -223,7 +223,11 @@ async def test_attention_gated_event_is_not_observed() -> None:
 
     assert took_action is False
     engine.process_event.assert_not_awaited()
-    redis.set.assert_not_awaited()
+    # The change is still counted (a marker SET); the observation debounce must stay untouched.
+    debounced = [
+        c for c in redis.set.await_args_list if c.args[0].startswith(OBSERVED_ENTITY_PREFIX)
+    ]
+    assert debounced == []
     redis.xadd.assert_not_awaited()
 
 

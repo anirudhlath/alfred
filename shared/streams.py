@@ -38,6 +38,9 @@ ATTRIBUTION_CALLS_STREAM = "alfred:attribution:calls"
 ATTRIBUTION_CHANGES_STREAM = "alfred:attribution:changes"
 # + UTC date -> hash, one field per cause (plus "unknown" for an event with no context).
 ATTRIBUTION_CAUSES_PREFIX = "alfred:attribution:causes:"
+# + stream entry ID -> "1" (short TTL): the entry's change is already counted, so a redelivery
+# of it (an un-ACKed entry the reclaim pass replays) is not counted twice.
+ATTRIBUTION_COUNTED_PREFIX = "alfred:attribution:counted:"
 # What Reflex decided about each event and why, one entry per event.
 REFLEX_DECISION_LOG_STREAM = "alfred:reflex:decision_log"
 ATTRIBUTION_MAX_AGE = timedelta(days=30)

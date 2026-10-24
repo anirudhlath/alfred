@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 import fakeredis
@@ -10,8 +11,8 @@ from redis import exceptions as redis_exceptions
 
 from bus.schemas.events import ActionRequest, ActionResult
 from core.attribution.log import AlfredCall
-from core.routing.domain_router import DomainRouter
-from shared.streams import ATTRIBUTION_CALLS_STREAM
+from core.routing.domain_router import CONFIRMATION_REQUIRED_PREFIX, DomainRouter
+from shared.streams import ATTRIBUTION_CALLS_STREAM, TOOL_REGISTRY_KEY
 
 
 class FakeAgent:
@@ -118,6 +119,30 @@ async def test_route_records_no_call_it_did_not_execute() -> None:
     assert (await router.route(_call_action("reflex-engine"))).status == "error"
 
     assert await redis.xlen(ATTRIBUTION_CALLS_STREAM) == 0
+
+
+async def _critical_router(redis: fakeredis.FakeAsyncRedis) -> DomainRouter:
+    """A router whose registry tags the tool critical."""
+    manifest = {"features": [{"tools": [{"name": "smart_home.dim_lights", "risk": "critical"}]}]}
+    await redis.hset(TOOL_REGISTRY_KEY, "home-service", json.dumps(manifest))
+    router = DomainRouter(redis=redis)
+    router.register("home-service", ContextAgent())
+    return router
+
+
+@pytest.mark.asyncio
+async def test_route_records_a_critical_call_only_once_confirmed() -> None:
+    """Parked for the owner's say-so, it was not executed; confirmed, it was."""
+    redis = fakeredis.FakeAsyncRedis()
+    router = await _critical_router(redis)
+
+    parked = await router.route(_call_action())
+    assert (parked.error or "").startswith(CONFIRMATION_REQUIRED_PREFIX)
+    assert await redis.xlen(ATTRIBUTION_CALLS_STREAM) == 0
+
+    confirmed = await router.route(_call_action().model_copy(update={"confirmed": True}))
+    assert confirmed.status == "success"
+    assert await redis.xlen(ATTRIBUTION_CALLS_STREAM) == 1
 
 
 @pytest.mark.asyncio

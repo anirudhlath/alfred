@@ -170,6 +170,9 @@ async def reclaim_stale(
 
 # A reclaimed entry is only worth acting on while it still describes the present.
 MAX_REPLAY_AGE_MS = 300_000  # 5 minutes
+# How long a per-entry replay marker lives: twice the oldest entry the reclaim pass will replay,
+# so a replay still finds the marker its first delivery left.
+REPLAY_MARKER_TTL_SECONDS = 2 * MAX_REPLAY_AGE_MS // 1000
 
 
 def is_replayable(
