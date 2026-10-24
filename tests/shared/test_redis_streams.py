@@ -168,18 +168,19 @@ async def test_append_capped_trims_entries_older_than_max_age() -> None:
 
 
 async def test_append_capped_caps_the_length() -> None:
+    """``MAXLEN ~`` trims whole nodes only, so the stream must outgrow the cap to show it."""
     redis = fakeredis.FakeAsyncRedis()
     now = datetime.now(UTC)
 
-    for i in range(5):
+    for i in range(250):
         await append_capped(
-            redis, "s", {"i": str(i)}, maxlen=2, max_age=timedelta(days=30), now=now
+            redis, "s", {"i": str(i)}, maxlen=100, max_age=timedelta(days=30), now=now
         )
 
-    # MAXLEN ~ may keep a little over the cap; it must never keep everything.
-    assert await redis.xlen("s") <= 5
-    last = (await redis.xrevrange("s", count=1))[0][1]
-    assert last == {b"i": b"4"}
+    # Never below the cap (approximate trimming only overshoots), and well under all 250.
+    assert 100 <= await redis.xlen("s") < 250
+    newest = (await redis.xrevrange("s", count=1))[0][1]
+    assert newest == {b"i": b"249"}
 
 
 async def test_append_capped_raises_when_redis_refuses() -> None:
