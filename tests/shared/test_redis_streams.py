@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import fakeredis
 import pytest
 from redis import exceptions as redis_exceptions
 
-from shared.redis_streams import Redelivery, create_redis, reclaim_due
+from shared.redis_streams import Redelivery, append_capped, create_redis, reclaim_due
 
 
 def test_create_redis_passes_socket_timeout_none() -> None:
@@ -145,3 +146,46 @@ async def test_a_redis_error_returns_nothing() -> None:
     redis.xpending_range = AsyncMock(side_effect=redis_exceptions.ConnectionError("down"))
 
     assert await reclaim_due(redis, _STREAM, _GROUP, "c2") == []
+
+
+# --- append_capped: a stream capped by length and by age ---
+
+
+async def test_append_capped_trims_entries_older_than_max_age() -> None:
+    """The age trim is exact: an approximate one drops only whole radix nodes, so a small
+    stream would never age out."""
+    redis = fakeredis.FakeAsyncRedis()
+    now = datetime.now(UTC)
+    stale_ms = int((now - timedelta(days=31)).timestamp() * 1000)
+    fresh_ms = int((now - timedelta(days=29)).timestamp() * 1000)
+    await redis.xadd("s", {"k": "stale"}, id=f"{stale_ms}-0")
+    await redis.xadd("s", {"k": "fresh"}, id=f"{fresh_ms}-0")
+
+    await append_capped(redis, "s", {"k": "new"}, maxlen=100, max_age=timedelta(days=30), now=now)
+
+    kept = [fields[b"k"] for _, fields in await redis.xrange("s")]
+    assert kept == [b"fresh", b"new"]
+
+
+async def test_append_capped_caps_the_length() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    now = datetime.now(UTC)
+
+    for i in range(5):
+        await append_capped(
+            redis, "s", {"i": str(i)}, maxlen=2, max_age=timedelta(days=30), now=now
+        )
+
+    # MAXLEN ~ may keep a little over the cap; it must never keep everything.
+    assert await redis.xlen("s") <= 5
+    last = (await redis.xrevrange("s", count=1))[0][1]
+    assert last == {b"i": b"4"}
+
+
+async def test_append_capped_raises_when_redis_refuses() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    now = datetime.now(UTC)
+    await redis.set("s", "not a stream")
+
+    with pytest.raises(redis_exceptions.ResponseError):
+        await append_capped(redis, "s", {"k": "v"}, maxlen=10, max_age=timedelta(days=1), now=now)

@@ -21,6 +21,9 @@ import redis.asyncio as aioredis
 from loguru import logger
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from datetime import datetime, timedelta
+
     from shared.types import AioRedis
 
 
@@ -36,6 +39,30 @@ def create_redis(url: str, *, decode_responses: bool = False) -> AioRedis:
 type StreamBatch = list[
     tuple[bytes | str, list[tuple[bytes | str, dict[bytes | str, bytes | str]]]]
 ]
+
+
+async def append_capped(
+    redis: AioRedis,
+    stream: str,
+    fields: Mapping[str, str],
+    *,
+    maxlen: int,
+    max_age: timedelta,
+    now: datetime,
+) -> None:
+    """Append one entry to *stream*, then trim it by length and by age. Raises on failure.
+
+    ``XADD … MAXLEN ~ maxlen`` bounds the length cheaply, but approximate trimming drops only
+    whole radix nodes, so on a small stream it would never age anything out. The age bound
+    is therefore a separate exact ``XTRIM … MINID`` (entry ids lead with their unix-ms), sent
+    in the same non-transactional pipeline: one round trip, no MULTI. The caller decides
+    what a refused write means (these logs are best-effort bookkeeping).
+    """
+    min_id = f"{int((now - max_age).timestamp() * 1000)}-0"
+    async with redis.pipeline(transaction=False) as pipe:
+        pipe.xadd(stream, cast("Any", fields), maxlen=maxlen, approximate=True)
+        pipe.xtrim(stream, minid=min_id, approximate=False)
+        await pipe.execute()
 
 
 async def read_group(
