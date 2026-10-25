@@ -18,6 +18,14 @@ Fast event → decision loop via a local SLM (vLLM through `REFLEX_BACKEND=opena
 - `__main__.py` — Two consumer loops: (1) `HOME_STATE_STREAM` for StateChanged, (2) `EVENTS_STREAM` for TriggerFired (group `reflex-trigger-fired`)
 - TriggerFired handling: Path A (notification) fires first, Path B (SLM reasoning) is isolated — SLM failures never block notification delivery
 
+## Attribution (`attribution/`) — Who Did It
+
+Who caused each home state change, kept privately for 30 days (`docs/attribution.md`). Every write is best-effort: a refused write logs a warning and never raises into routing or Reflex.
+
+- `cause.py` — `cause_of(context)`: `alfred` (`by_service`) → `person` (`user_id`) → `automation` (`parent_id`) → `outside`; `None` with no context. `cause_words(context, name=None)` phrases it (`by Alex`, `by a person`, `by Alfred`, `by an automation`, `by a switch, app or device`)
+- `log.py` — `record_call()` (a successful call, with the `context_id` the service returned; `DomainRouter.route` calls it) and `record_change()` (counts the cause in `alfred:attribution:causes:<UTC date>` and logs a person's, Alfred's or an automation's change; the Reflex runner calls it with the stream entry id, which a `counted:` marker turns into once per entry)
+- `report.py` — `python -m core.attribution.report --days N`: counts by cause, each call Alfred made with the changes it caused (joined on the context id or its parent), then everyone else's changes; names people and devices, so private
+
 ## Memory (`memory/`) — Three-Layer System
 
 Episodic + semantic + procedural, biologically inspired.
