@@ -14,7 +14,7 @@ import pytest
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from bus.schemas.events import StateChangedEvent
+from bus.schemas.events import ChangeContext, StateChangedEvent
 from core.conscious.tools.attention import ATTENTION_FUNCTIONS
 from core.conscious.tools.memory import MEMORY_FUNCTIONS
 from core.conscious.tools.names import wire_name
@@ -86,6 +86,77 @@ def test_every_golden_loads_and_names_real_entities() -> None:
                 entity = getattr(check.params, "entity_id", None)
                 for e in [entity] if isinstance(entity, str) else (entity or []):
                     assert e in world_ids, f"{s.path}: {e}"
+
+
+# Each attribution golden: who the fake HA says caused the change, and the words Reflex
+# should then write on its What changed line.
+ATTRIBUTION_GOLDENS = {
+    "reflex.attribution.person": ("person.alex", "by Alex"),
+    "reflex.attribution.automation": ("automation", "by an automation"),
+}
+
+
+def test_the_attribution_goldens_load_pending_and_watch_system1() -> None:
+    # Pending until the evals' home-service forwards a context (the home-service half of
+    # who-did-it); then they flip to shipped.
+    for golden_id, (by, words) in ATTRIBUTION_GOLDENS.items():
+        s = _goldens()[golden_id]
+        assert s.status == "pending" and s.prd == ["4.4.who-did-it"] and s.tags == ["attribution"]
+        [step] = s.steps
+        assert isinstance(step, HaEventStep) and step.ha_event.by == by
+        [check] = s.expect
+        assert (check.name, check.params.model_dump(exclude_none=True)) == (
+            "prompt_contains",
+            {"role": "system1", "text": words},
+        )
+        assert s.watches_reflex
+
+
+def test_the_attribution_goldens_expect_the_words_reflex_writes_for_those_contexts() -> None:
+    """The needles are Reflex's own words for the contexts ``set_state`` pushes, in this
+    world: a person is named by the friendly name their ``user_id`` maps to."""
+    world = load_world("apartment")
+    persons = {e.entity_id: e for e in world.entities if e.domain == "person"}
+    alex = persons["person.alex"]
+    assert alex.friendly_name == "Alex"
+    assert alex.attributes["user_id"] == "eval-user-alex"
+    assert persons["person.sam"].attributes["user_id"] == "eval-user-sam"
+    contexts = {
+        "person.alex": ChangeContext(user_id="eval-user-alex", person="person.alex"),
+        "automation": ChangeContext(parent_id="eval-automation"),
+    }
+    lamp = {e.entity_id: e for e in world.entities}["light.bedroom_lamp"]
+    for golden_id, (by, _) in ATTRIBUTION_GOLDENS.items():
+        event = StateChangedEvent(
+            source="home-service",
+            domain="home",
+            entity_id=lamp.entity_id,
+            old_state="off",
+            new_state="on",
+            context=contexts[by],
+        )
+        live = _served(world, lamp) | _served(world, alex)
+        line = render_event(event, live)
+        [check] = _goldens()[golden_id].expect
+        said = LlmCall(t=1, role="system1", latency_ms=1, status=200, messages=reflex_prompt(line))
+        silent = LlmCall(
+            t=1,
+            role="system1",
+            latency_ms=1,
+            status=200,
+            messages=reflex_prompt("Bedroom Lamp (Bedroom): off → on"),
+        )
+        for call, status in ((said, "pass"), (silent, "fail")):
+            ev = Evidence(
+                scenario_id=golden_id,
+                variant=0,
+                epoch=0,
+                session_id="t",
+                started_at=0,
+                ended_at=1,
+                llm_calls=[call],
+            )
+            assert run_check(check.name, check.params, ev).status == status, line
 
 
 def test_slice_three_has_shipped_evidence_and_keeps_enforcement_pending() -> None:

@@ -517,7 +517,7 @@ async def _play(
             case HaEventStep():
                 e = step.ha_event
                 pushed = time.monotonic()
-                await ctx.fake_ha.set_state(e.entity_id, e.state, e.attributes)
+                await ctx.fake_ha.set_state(e.entity_id, e.state, e.attributes, by=e.by)
                 ev.state_pushes.append(StatePush(step=index, entity_id=e.entity_id, state=e.state))
                 ev.transcript.append(
                     TranscriptTurn(role="event", text=f"{e.entity_id} → {e.state}")

@@ -183,6 +183,19 @@ def _strings(value: Any) -> Iterator[str]:
             yield from _strings(item)
 
 
+def prompt_contains(evidence: Evidence, p: PromptParams) -> CheckResult:
+    calls = [c for c in evidence.llm_calls if c.role == p.role]
+    if not calls:
+        return failed("prompt_contains", f"no {p.role} call was recorded")
+    for call in calls:
+        for text in _strings(call.request_body or call.messages):
+            if (found := hit(p, text)) is not None:
+                return passed("prompt_contains", f"a {p.role} prompt contains {found!r}")
+    return failed(
+        "prompt_contains", f"{needle_text(p)} is in none of {len(calls)} {p.role} prompt(s)"
+    )
+
+
 def prompt_not_contains(evidence: Evidence, p: PromptParams) -> CheckResult:
     calls = [c for c in evidence.llm_calls if c.role == p.role]
     if not calls:

@@ -386,6 +386,26 @@ def test_a_reflex_latency_golden_needs_no_user_step() -> None:
         golden([EVENT], [{"latency": {"metric": "reply_ms", "max": 500}}])
 
 
+@pytest.mark.parametrize("by", ["outside", "automation", "person.alex", "person.sam_2"])
+def test_ha_event_by_takes_outside_an_automation_or_a_person(by: str) -> None:
+    s = golden([{"ha_event": {**EVENT["ha_event"], "by": by}}], [{"ha_not_called": {}}])
+    [step] = s.steps
+    assert isinstance(step, HaEventStep) and step.ha_event.by == by
+
+
+def test_ha_event_by_defaults_to_outside() -> None:
+    [step] = golden([EVENT], [{"ha_not_called": {}}]).steps
+    assert isinstance(step, HaEventStep) and step.ha_event.by == "outside"
+
+
+@pytest.mark.parametrize(
+    "by", ["alfred", "person", "person.", "person.Alex", "person.alex.x", "light.bedroom_lamp", ""]
+)
+def test_ha_event_by_rejects_other_values(by: str) -> None:
+    with pytest.raises(ValidationError, match=r"ha_event\.by\n\s+String should match pattern"):
+        golden([{"ha_event": {**EVENT["ha_event"], "by": by}}], [{"ha_not_called": {}}])
+
+
 def test_a_plain_golden_does_not_watch_reflex() -> None:
     assert not golden([{"user": "a"}], [{"reply_contains": {"text": "x"}}]).watches_reflex
 
