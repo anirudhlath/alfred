@@ -206,6 +206,34 @@ def _refusing_redis() -> MagicMock:
     return redis
 
 
+async def test_a_failing_counter_write_still_appends_the_change() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    redis.hincrby = AsyncMock(  # type: ignore[method-assign]
+        side_effect=redis_exceptions.ResponseError("OOM command not allowed")
+    )
+
+    cause = await record_change(redis, _change(ChangeContext(id="c1", user_id="u1")), now=_NOW)
+
+    assert cause == "person"
+    entries = await redis.xrange(ATTRIBUTION_CHANGES_STREAM)
+    assert len(entries) == 1
+    assert AttributedChange.model_validate_json(entries[0][1][b"change"]).cause == "person"
+    assert await redis.hgetall(causes_key(date(2026, 10, 24))) == {}
+
+
+async def test_a_failing_change_append_still_counts_the_cause() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    redis.pipeline = MagicMock(  # type: ignore[method-assign]
+        side_effect=redis_exceptions.ResponseError("OOM command not allowed")
+    )
+
+    cause = await record_change(redis, _change(ChangeContext(id="c1", user_id="u1")), now=_NOW)
+
+    assert cause == "person"
+    assert await redis.hgetall(causes_key(date(2026, 10, 24))) == {b"person": b"1"}
+    assert await redis.xlen(ATTRIBUTION_CHANGES_STREAM) == 0
+
+
 async def test_writes_never_raise_when_redis_refuses() -> None:
     redis = _refusing_redis()
 

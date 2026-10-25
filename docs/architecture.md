@@ -366,7 +366,7 @@ The bridge subscribes to MQTT topics `home/#` and `media/#` by default and liste
 
 **Files:** `core/reflex/engine.py`, `core/reflex/prompt.py`, `core/reflex/decision.py`, `core/reflex/inference.py` (backends `openai_client.py`, `ollama_client.py`)
 
-The `ReflexEngine` class is the System 1 fast path. It is a pure inference component with no side effects -- it takes a `StateChangedEvent` (or a `TriggerFired`) and returns a `ReflexProposal`: **act**, **ask**, **none** or **invalid** ([#285](https://github.com/anirudhlath/alfred/issues/285), [design](superpowers/specs/2026-10-07-reflex-context-design.md)).
+The `ReflexEngine` class is the System 1 fast path. It has no effect on the house, and keeps only a private decision log (`alfred:reflex:decision_log`) -- it takes a `StateChangedEvent` (or a `TriggerFired`) and returns a `ReflexProposal`: **act**, **ask**, **none** or **invalid** ([#285](https://github.com/anirudhlath/alfred/issues/285), [design](superpowers/specs/2026-10-07-reflex-context-design.md)).
 
 **How it works:**
 
@@ -376,10 +376,11 @@ The `ReflexEngine` class is the System 1 fast path. It is a pure inference compo
 4. Builds the prompt with `core/reflex/prompt.py`, ordered from stable to volatile so vLLM's prefix cache covers as much as it can: rules and compact tools, `## Preferences`, `## Now` (local time, time of day, sun, people), `## House` (the actionable domains, one line per room by `attributes.area` — see [live-state.md](live-state.md#well-known-attributes)), then `## What changed` in one line or `## Trigger fired`. About 1,000 tokens.
 5. Sends it through `core/reflex/inference.py` (`REFLEX_BACKEND`: `openai` for vLLM in production, `ollama` by default) with `temperature=0`, JSON output and, on the OpenAI-compatible backend, `max_tokens=150`.
 6. `parse_decision()` turns the reply into a `ReflexProposal`, validating the tool against Reflex's own tool list. Anything else becomes **invalid**, keeping the raw text.
+7. Writes one record to the decision log (`alfred:reflex:decision_log`): the event, who caused it, the exact prompt and the proposal. Best-effort and private; a refused write logs a warning and never changes the proposal. See [attribution.md](attribution.md).
 
 **Shadow mode (slice 1 of #285 → #286 → #287):** nothing a proposal names is executed. The runner counts every decision and records act, ask and invalid proposals; see section 2.
 
-The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer, and `@track_tokens` on each backend's `infer` records token usage.
+The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer (the measured latency includes the sub-millisecond decision-log write), and `@track_tokens` on each backend's `infer` records token usage.
 
 #### 3.2.1 AttentionSet (Tiered Autonomy — Reflex Gating)
 
@@ -897,11 +898,11 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:entity:freq:observed` | Sorted Set | The same counts for **passive** observations only — a separate population, so ~200–300 entries/day cannot flatten novelty for real reflex actions |
 | `alfred:reflex:last_known_state` | Hash | Entity ID → JSON `{state, entry}`: its last real state (never `unavailable`/`unknown`) and the `alfred:home:state_changed` entry ID that set it, for the Reflex runner's availability bridge (`core/reflex/availability.py`); only ever moves forward in entry order |
 | `alfred:reflex:returned:{entry_id}` | String | The bridge's decision for one returning stream entry — JSON `{left}`, the state it came back from or `null` for a blip (TTL 600s), so a replay is bridged the same way |
-| `alfred:attribution:calls` | Stream | One `AlfredCall` per successful call Alfred made (time, part of Alfred, tool, parameters, reason, the `context_id` the service returned), written by `DomainRouter`; kept 30 days, `MAXLEN ~ 20000` (`core/attribution/log.py`, [attribution.md](attribution.md)) |
-| `alfred:attribution:changes` | Stream | One `AttributedChange` per state change caused by a person, Alfred or an automation, with its context, written by the Reflex runner; kept 30 days, `MAXLEN ~ 50000` |
+| `alfred:attribution:calls` | Stream | One `AlfredCall` per successful call Alfred made (time, part of Alfred, tool, parameters, reason, the `context_id` the service returned), written by `DomainRouter`; kept up to 30 days or `MAXLEN ~ 20000`, whichever comes first (`core/attribution/log.py`, [attribution.md](attribution.md)) |
+| `alfred:attribution:changes` | Stream | One `AttributedChange` per state change caused by a person, Alfred or an automation, with its context, written by the Reflex runner; kept up to 30 days or `MAXLEN ~ 50000`, whichever comes first |
 | `alfred:attribution:causes:<UTC date>` | Hash | One counter per cause (`person`, `alfred`, `automation`, `outside`, `unknown`) for that UTC day's state changes (TTL 30 days) |
 | `alfred:attribution:counted:{entry_id}` | String | Marks a `alfred:home:state_changed` entry as counted, so a redelivered entry is counted once (`SET NX`, TTL 600s, `REPLAY_MARKER_TTL_SECONDS`) |
-| `alfred:reflex:decision_log` | Stream | One record per decision that reached the model — event, cause, exact prompt, proposal — for slice 2's replay set; kept 30 days, `MAXLEN ~ 10000` (`core/reflex/decision_log.py`) |
+| `alfred:reflex:decision_log` | Stream | One record per decision that reached the model — event, cause, exact prompt, proposal — for slice 2's replay set; kept up to 30 days or `MAXLEN ~ 10000`, whichever comes first (`core/reflex/decision_log.py`) |
 | `alfred:observer:seen:{entity_id}` | String | Per-entity passive-observation debounce (`SET NX EX`, TTL `OBSERVATION_DEBOUNCE_SECONDS`, default 300); present means "already recorded this entity recently, skip" |
 | `alfred:memory:ingest:attempts` | Hash | Stream-entry ID → delivery count for the Memory Ingestor; at 5 the entry is ACK-dropped so a deterministically-failing entry cannot starve the PEL (TTL 3600s, crash-safety net only) |
 | `alfred:identity:voiceprint` | Hash | Voiceprint embeddings for identity |

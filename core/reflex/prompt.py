@@ -251,6 +251,8 @@ def _cause(event: StateChangedEvent, entities: Mapping[str, LiveEntity] | None) 
     person = entities.get(context.person) if entities is not None and context.person else None
     friendly = person.attributes.get("friendly_name") if person is not None else None
     name = _clip(friendly) if isinstance(friendly, str) and friendly.strip() else None
+    if name is None and context.person is not None and context.person.strip():
+        name = _clip(context.person)  # the entity id stands in for the name, and is clipped alike
     return cause_words(context, name)
 
 

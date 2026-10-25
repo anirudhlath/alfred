@@ -1,8 +1,9 @@
 # Attribution — who did it
 
-Every change in the house says who caused it: a person, Alfred, an automation, or something
-outside Alfred's view. The cause is read from the `context` Home Assistant attaches to each
-state change, counted by day, and kept with the calls Alfred made, so a private report can
+Every change in the house that passes the availability bridge says who caused it: a person,
+Alfred, an automation, or something outside Alfred's view. (The bridge drops a device going
+unavailable and a brief drop-out that comes straight back; those are never counted.) The cause
+is read from the `context` Home Assistant attaches to each state change, counted by day, and kept with the calls Alfred made, so a private report can
 answer "what did Alfred change, and why?".
 
 **Status.** Alfred's side (reading the context, counting, logging, the report) ships first.
@@ -166,11 +167,11 @@ changes a decision and never blocks an ACK.
 
 | Key | Type | Holds | Retention |
 |---|---|---|---|
-| `alfred:attribution:calls` | Stream | One `AlfredCall` per successful call Alfred made: time, `source` (the part of Alfred that asked), request id, target service, tool, parameters, reason, and the `context_id` the service reported | 30 days; capped at 20,000 entries |
-| `alfred:attribution:changes` | Stream | One `AttributedChange` per state change whose cause is `person`, `alfred` or `automation`, with its whole context | 30 days; capped at 50,000 entries |
-| `alfred:attribution:causes:<UTC date>` | Hash | One counter per cause (`person`, `alfred`, `automation`, `outside`) plus `unknown`, for every state change that day | 30 days (TTL) |
+| `alfred:attribution:calls` | Stream | One `AlfredCall` per successful call Alfred made: time, `source` (the part of Alfred that asked), request id, target service, tool, parameters, reason, and the `context_id` the service reported | up to 30 days or 20,000 entries, whichever comes first |
+| `alfred:attribution:changes` | Stream | One `AttributedChange` per state change whose cause is `person`, `alfred` or `automation`, with its whole context | up to 30 days or 50,000 entries, whichever comes first |
+| `alfred:attribution:causes:<UTC date>` | Hash | One counter per cause (`person`, `alfred`, `automation`, `outside`) plus `unknown`, for every change that day that passes the availability bridge | 30 days (TTL) |
 | `alfred:attribution:counted:{entry_id}` | String | A marker that a `alfred:home:state_changed` entry has been counted | twice the replay window (`REPLAY_MARKER_TTL_SECONDS`, 10 minutes) |
-| `alfred:reflex:decision_log` | Stream | One `DecisionRecord` per decision that reached the model: the event, its cause, the exact prompt and the proposal | 30 days; capped at 10,000 entries |
+| `alfred:reflex:decision_log` | Stream | One `DecisionRecord` per decision that reached the model: the event, its cause, the exact prompt and the proposal | up to 30 days or 10,000 entries, whichever comes first |
 
 - A change from a switch, an app or a device (`outside`) is counted but not kept in the changes
   stream: there is nobody to attribute it to.
@@ -213,8 +214,11 @@ and devices, so it is read privately and never posted to a public thread.
 3. **Changes by people and automations.** Every `person` or `automation` change that belongs to
    no call in the window, with its cause.
 
-`--days` must be at least 1. Every log and counter is kept 30 days, so a longer window still
-shows only the last 30.
+`--days` must be at least 1. Each stream keeps up to 30 days or its cap (calls 20,000, changes
+50,000, decision log 10,000), whichever comes first, and the day-counter hashes keep 30 days, so a
+longer window still shows only the last 30. The changes stream takes far more entries than the
+calls stream, so a busy house can trim it before 30 days pass: "no change seen" can mean the change
+was trimmed from the changes stream.
 
 When a change carrying a call's own context id has a cause other than `alfred`, the report opens
 with one line before its heading ("N changes matched ... but were not", singular for one):

@@ -25,6 +25,7 @@ from core.reflex.attention import DEFAULT_SEED_PATH, AttentionSeedRules
 from core.reflex.prompt import LiveEntity, render_event
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
+from evals.harness import fake_ha
 from evals.harness.checks import JudgeSpec, run_check
 from evals.harness.driver import PlayContext
 from evals.harness.evidence import (
@@ -123,7 +124,7 @@ def test_the_attribution_goldens_expect_the_words_reflex_writes_for_those_contex
     assert persons["person.sam"].attributes["user_id"] == "eval-user-sam"
     contexts = {
         "person.alex": ChangeContext(user_id="eval-user-alex", person="person.alex"),
-        "automation": ChangeContext(parent_id="eval-automation"),
+        "automation": ChangeContext(parent_id=fake_ha.AUTOMATION_PARENT_ID),
     }
     lamp = {e.entity_id: e for e in world.entities}["light.bedroom_lamp"]
     for golden_id, (by, _) in ATTRIBUTION_GOLDENS.items():

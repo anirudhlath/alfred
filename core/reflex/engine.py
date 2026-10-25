@@ -5,7 +5,8 @@ preferences, Reflex's tools and live state, builds the prompt with
 ``core.reflex.prompt`` and parses the reply with ``core.reflex.decision``.
 
 Design for eval-ability: structured (event, preferences, live state) in → structured
-proposal out. No side effects — in shadow mode nothing a proposal names is executed.
+proposal out. No effect on the house — in shadow mode nothing a proposal names is executed —
+and one private write: the decision log (``alfred:reflex:decision_log``), best-effort.
 """
 
 from __future__ import annotations

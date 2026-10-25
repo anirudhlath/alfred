@@ -9,6 +9,7 @@ import pytest
 
 from bus.schemas.events import ChangeContext, StateChangedEvent, TriggerFired
 from core.reflex.prompt import (
+    MAX_DETAIL_CHARS,
     LiveEntity,
     RenderedEvent,
     build_state_change_prompt,
@@ -143,6 +144,14 @@ def test_event_line_without_a_person_entity_says_a_person() -> None:
 def test_event_line_falls_back_to_the_person_entity_id_without_live_state() -> None:
     event = _caused(ChangeContext(user_id="u", person="person.alex"))
     assert render_event(event, None) == "light.bedroom_lamp: off → on · by person.alex"
+
+
+def test_event_line_clips_a_long_person_entity_id_fallback() -> None:
+    person = "person." + "x" * 200
+    event = _caused(ChangeContext(user_id="u", person=person))
+    line = render_event(event, None)
+    assert line == f"light.bedroom_lamp: off → on · by {person[: MAX_DETAIL_CHARS - 1]}…"
+    assert person not in line
 
 
 def test_event_line_without_context_is_unchanged() -> None:

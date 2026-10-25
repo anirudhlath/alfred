@@ -140,10 +140,18 @@ async def record_change(
             marker = f"{ATTRIBUTION_COUNTED_PREFIX}{decode_stream_value(entry_id)}"
             if not await redis.set(marker, 1, nx=True, ex=REPLAY_MARKER_TTL_SECONDS):
                 return cause
+    except Exception as e:
+        logger.warning("Attribution change log failed ({}): {}", event.entity_id, e)
+        return cause
+    # The count and the log are separate writes: one refused does not drop the other.
+    try:
         key = causes_key(when.date())
         await redis.hincrby(key, cause or _UNKNOWN, 1)
         await redis.expire(key, _COUNT_TTL_SECONDS)
-        if cause in ATTRIBUTED and event.context is not None:
+    except Exception as e:
+        logger.warning("Attribution change count failed ({}): {}", event.entity_id, e)
+    if cause in ATTRIBUTED and event.context is not None:
+        try:
             change = AttributedChange(
                 time=event.timestamp,
                 entity_id=event.entity_id,
@@ -160,6 +168,6 @@ async def record_change(
                 max_age=ATTRIBUTION_MAX_AGE,
                 now=when,
             )
-    except Exception as e:
-        logger.warning("Attribution change log failed ({}): {}", event.entity_id, e)
+        except Exception as e:
+            logger.warning("Attribution change log failed ({}): {}", event.entity_id, e)
     return cause
