@@ -3,8 +3,9 @@
 Every change in the house that passes the availability bridge says who caused it: a person,
 Alfred, an automation, or something outside Alfred's view. (The bridge drops a device going
 unavailable and a brief drop-out that comes straight back; those are never counted.) The cause
-is read from the `context` Home Assistant attaches to each state change, counted by day, and kept with the calls Alfred made, so a private report can
-answer "what did Alfred change, and why?".
+is read from the `context` Home Assistant attaches to each state change, counted by day, and
+kept with the calls Alfred made, so a private report can answer "what did Alfred change, and
+why?".
 
 **Status.** Alfred's side (reading the context, counting, logging, the report) ships first.
 home-service's side (forwarding the context, returning each call's context id, connecting as a
@@ -216,9 +217,8 @@ and devices, so it is read privately and never posted to a public thread.
 
 `--days` must be at least 1. Each stream keeps up to 30 days or its cap (calls 20,000, changes
 50,000, decision log 10,000), whichever comes first, and the day-counter hashes keep 30 days, so a
-longer window still shows only the last 30. The changes stream takes far more entries than the
-calls stream, so a busy house can trim it before 30 days pass: "no change seen" can mean the change
-was trimmed from the changes stream.
+longer window still shows only the last 30. A busy house can fill the changes stream before 30
+days pass, so "no change seen" can mean the change was trimmed from the changes stream.
 
 When a change carrying a call's own context id has a cause other than `alfred`, the report opens
 with one line before its heading ("N changes matched ... but were not", singular for one):

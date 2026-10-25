@@ -1,6 +1,6 @@
 """The attribution logs: what Alfred asked a service to do, and who caused each change.
 
-Three private records, each kept ``ATTRIBUTION_MAX_AGE``:
+Three private records, each kept ``ATTRIBUTION_MAX_AGE`` (the streams also stop at their caps):
 
 - ``alfred:attribution:calls``: every successful call Alfred made, with the context id the
   service reported for it, so a later change can be tied back to the call that caused it.
