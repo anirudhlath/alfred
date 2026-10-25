@@ -45,14 +45,37 @@ PARTS: Final[Mapping[str, str]] = {
 CAUSE_COLUMNS: Final = ("person", "alfred", "automation", "outside", "unknown")
 _NO_OLD_STATE: Final = "(none)"  # the same word Reflex's event line uses for a first report
 _NONE_IN_WINDOW: Final = "None in this window."
-_MISMATCH: Final = (
-    "{n} changes matched Alfred's calls but were not attributed to Alfred: "
-    "home-service is not connected to Home Assistant as a user of its own."
+_MISMATCH_CAUSE: Final = (
+    " not attributed to Alfred: home-service is not connected to Home Assistant as a user of "
+    "its own."
 )
 
 
 def _when(moment: datetime, tz: ZoneInfo) -> str:
     return moment.astimezone(tz).strftime("%a %d %b %H:%M")
+
+
+def _one_line(text: object) -> str:
+    """*text* with every run of whitespace, newlines included, as one space."""
+    return " ".join(str(text).split())
+
+
+def _in_window[R: (AlfredCall, AttributedChange)](records: list[R], start: datetime) -> list[R]:
+    """The records at or after *start*, oldest first. A time with no offset (a publisher that
+    sent none) is read as UTC, so one such record cannot break the comparison."""
+    aware = [
+        r
+        if r.time.tzinfo is not None
+        else r.model_copy(update={"time": r.time.replace(tzinfo=UTC)})
+        for r in records
+    ]
+    return sorted((r for r in aware if r.time >= start), key=lambda r: r.time)
+
+
+def _mismatch_line(count: int) -> str:
+    if count == 1:
+        return "1 change matched Alfred's calls but was" + _MISMATCH_CAUSE
+    return f"{count} changes matched Alfred's calls but were" + _MISMATCH_CAUSE
 
 
 async def _read[R: BaseModel](
@@ -90,11 +113,11 @@ def _change_text(change: AttributedChange, tz: ZoneInfo) -> str:
 
 def _call_text(call: AlfredCall, tz: ZoneInfo) -> str:
     """``time · part · tool(params)`` for one call, then the reason in quotes when it gave one."""
-    params = ", ".join(f"{k}={v}" for k, v in call.parameters.items())
+    params = ", ".join(f"{k}={_one_line(v)}" for k, v in call.parameters.items())
     part = PARTS.get(call.source, call.source)
     text = f"{_when(call.time, tz)} · {part} · {call.tool_name}({params})"
     if call.reason:
-        text += f' — "{" ".join(call.reason.split())}"'
+        text += f' — "{_one_line(call.reason)}"'
     return text
 
 
@@ -122,11 +145,11 @@ async def build_report(redis: AioRedis, *, days: int, now: datetime, tz_name: st
     tz = ZoneInfo(tz_name)
     start = now - timedelta(days=days)
     logged_calls = await _read(redis, ATTRIBUTION_CALLS_STREAM, "call", AlfredCall, start)
-    calls = sorted((c for c in logged_calls if c.time >= start), key=lambda c: c.time)
+    calls = _in_window(logged_calls, start)
     logged_changes = await _read(
         redis, ATTRIBUTION_CHANGES_STREAM, "change", AttributedChange, start
     )
-    changes = sorted((c for c in logged_changes if c.time >= start), key=lambda c: c.time)
+    changes = _in_window(logged_changes, start)
 
     # A change belongs to a call when it carries the call's context id (the call's own effect,
     # or a script it ran) or names it as its parent (an automation the call set off).
@@ -150,8 +173,9 @@ async def build_report(redis: AioRedis, *, days: int, now: datetime, tz_name: st
 
     lines: list[str] = []
     if unattributed:
-        lines += [_MISMATCH.format(n=unattributed), ""]
-    lines += [f"## Alfred attribution report: the last {days} days (times in {tz_name})", ""]
+        lines += [_mismatch_line(unattributed), ""]
+    window = "day" if days == 1 else f"{days} days"
+    lines += [f"## Alfred attribution report: the last {window} (times in {tz_name})", ""]
     lines += await _counts_table(redis, start, now)
 
     lines += ["", f"### What Alfred changed ({len(calls)})", ""]
@@ -186,9 +210,18 @@ async def _main(days: int) -> None:
         await redis.aclose()
 
 
+def _positive_days(value: str) -> int:
+    days = int(value)
+    if days < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, not {value}")
+    return days
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Attribution report: who changed the house")
-    parser.add_argument("--days", type=int, default=7, help="window length (default 7)")
+    parser.add_argument(
+        "--days", type=_positive_days, default=7, help="window length in days (default 7)"
+    )
     args = parser.parse_args()
     asyncio.run(_main(args.days))
 

@@ -5,6 +5,11 @@ outside Alfred's view. The cause is read from the `context` Home Assistant attac
 state change, counted by day, and kept with the calls Alfred made, so a private report can
 answer "what did Alfred change, and why?".
 
+**Status.** Alfred's side (reading the context, counting, logging, the report) ships first.
+home-service's side (forwarding the context, returning each call's context id, connecting as a
+Home Assistant user of its own) is the design of its next release. Until that release every
+change reads `unknown`; see [An older home-service](#an-older-home-service).
+
 Design: `docs/superpowers/specs/2026-10-24-reflex-anticipation-design.md` (slice 1, "who did
 it") · The first slice of the Reflex anticipation work, which replaces
 [#286](https://github.com/anirudhlath/alfred/issues/286) and
@@ -40,6 +45,7 @@ sequenceDiagram
     participant D as DomainRouter
     participant Rep as Report
 
+    Note over HS: With home-service's next release: it forwards the context<br/>and returns each call's context id. Until then both are absent.
     HA-->>HS: state_changed (with context)
     HS->>R: XADD alfred:home:state_changed (StateChangedEvent.context)
     R->>Rt: XREADGROUP
@@ -104,6 +110,54 @@ The shadow report and memory have no live state to look a friendly name up in, s
 person by entity id (`by person.alex`) where Reflex's prompt uses the friendly name. Neither
 changes the cause.
 
+## Data models
+
+`ChangeContext` (`bus/schemas/events.py`, mirrored in `sdk/alfred_sdk/events.py`), the optional
+`context` of a `StateChangedEvent`. Every field is optional.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | `str \| None` | The platform's context id (Home Assistant's `context.id`) |
+| `user_id` | `str \| None` | The platform user who caused the change |
+| `parent_id` | `str \| None` | Set when an automation or a script caused it |
+| `person` | `str \| None` | The person entity of that user, when the publisher could map it |
+| `by_service` | `bool` (default `false`) | The publishing service's own call caused it, on Alfred's request |
+
+`AlfredCall` (`core/attribution/log.py`), one entry of `alfred:attribution:calls`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `time` | `datetime` | When Alfred made the call |
+| `source` | `str` | The part of Alfred that asked (`ActionRequest.source`): `reflex-engine`, `conscious-engine`, `trigger-engine` or `admin-api` |
+| `request_id` | `str` | The `ActionRequest`'s id |
+| `target_service` | `str` | The service the call went to |
+| `tool_name` | `str` | The tool called |
+| `parameters` | `dict[str, Any]` | The call's parameters |
+| `reason` | `str \| None` | Why the actor wanted it, when it said |
+| `context_id` | `str \| None` | The context id the service returned for the call; `None` from an older home-service |
+
+`AttributedChange` (`core/attribution/log.py`), one entry of `alfred:attribution:changes`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `time` | `datetime` | The event's timestamp |
+| `entity_id` | `str` | The entity that changed |
+| `old_state` | `str \| None` | Its previous state (`None` on a first report) |
+| `new_state` | `str` | Its new state |
+| `cause` | `person \| alfred \| automation` | Who caused it |
+| `context` | `ChangeContext` | The whole context, kept for the join |
+
+`DecisionRecord` (`core/reflex/decision_log.py`), one entry of `alfred:reflex:decision_log`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `time` | `datetime` | When Reflex decided |
+| `origin` | `state_change \| trigger_fired` | What Reflex was asked about |
+| `event` | `dict[str, Any]` | The event, dumped as JSON (a state change keeps its whole context) |
+| `cause` | `Cause \| None` | Who caused a state change; `None` for a trigger or an event with no context |
+| `prompt` | `str` | The exact prompt the model saw |
+| `proposal` | `ReflexProposal` | What Reflex proposed |
+
 ## What is kept
 
 All of it is private bookkeeping, in Redis, and every write is best-effort: a refused write
@@ -149,7 +203,8 @@ docker exec alfred python -m core.attribution.report --days 7
 `core/attribution/report.py` prints Markdown in the user's timezone, oldest first. It names people
 and devices, so it is read privately and never posted to a public thread.
 
-1. **Changes by cause.** One row per UTC day in the window, with the five counter fields.
+1. **Changes by cause.** One row per UTC day in the window, with the five counter fields. The
+   first and last rows are whole UTC days, so they can include counts just outside the window.
 2. **What Alfred changed.** One bullet per call: time, the part of Alfred (`Reflex`, `System 2`,
    `a trigger`, `the admin API`; an unknown source is shown as it is), the tool and its
    parameters, and the reason in quotes when it gave one. Under it, each change that belongs to
@@ -158,10 +213,13 @@ and devices, so it is read privately and never posted to a public thread.
 3. **Changes by people and automations.** Every `person` or `automation` change that belongs to
    no call in the window, with its cause.
 
-When a change carrying a call's own context id has a cause other than `alfred`, the report opens
-with one line before its heading, for example:
+`--days` must be at least 1. Every log and counter is kept 30 days, so a longer window still
+shows only the last 30.
 
-> 1 changes matched Alfred's calls but were not attributed to Alfred: home-service is not
+When a change carrying a call's own context id has a cause other than `alfred`, the report opens
+with one line before its heading ("N changes matched ... but were not", singular for one):
+
+> 1 change matched Alfred's calls but was not attributed to Alfred: home-service is not
 > connected to Home Assistant as a user of its own.
 
 That line is the operator step below, not yet taken. A script's or an automation's children
@@ -169,12 +227,13 @@ That line is the operator step below, not yet taken. A script's or an automation
 
 ## Operator requirement
 
-Home Assistant records the user who made each call. home-service must connect to Home Assistant
-as **a user of its own**, not as the owner: it asks Home Assistant which user its token belongs
-to, and marks `by_service` on every change that user caused. If it uses the owner's token, every
-change Alfred makes carries the owner's user id, nothing is ever marked as Alfred's, and Alfred's
-changes read as a person's until the token is replaced. The report flags exactly this. Creating
-that user is a Home Assistant admin step.
+Home Assistant records the user who made each call. The design that ships with home-service's
+next release has it connect to Home Assistant as **a user of its own**, not as the owner: it asks
+Home Assistant which user its token belongs to, and marks `by_service` on every change that user
+caused. If it were to use the owner's token, every change Alfred makes would carry the owner's
+user id, nothing would be marked as Alfred's, and Alfred's changes would read as a person's until
+the token is replaced. The report flags exactly this. Creating that user is a Home Assistant admin
+step, taken when that release is deployed.
 
 ## An older home-service
 

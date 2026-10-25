@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import fakeredis
+import pytest
 
 from bus.schemas.events import ActionRequest, ActionResult, ChangeContext, StateChangedEvent
-from core.attribution.log import record_call, record_change
-from core.attribution.report import PARTS, build_report
+from core.attribution.log import AlfredCall, AttributedChange, record_call, record_change
+from core.attribution.report import build_report, main
 from shared.streams import ATTRIBUTION_CALLS_STREAM, ATTRIBUTION_CHANGES_STREAM
 
 _NOW = datetime(2026, 10, 24, 18, 0, tzinfo=UTC)  # Sat 24 Oct, 13:00 in Chicago
 _TZ = "America/Chicago"
-_MISMATCH = (
+_MISMATCH_ONE = (
+    "1 change matched Alfred's calls but was not attributed to Alfred: "
+    "home-service is not connected to Home Assistant as a user of its own."
+)
+_MISMATCH_MANY = (
     "{n} changes matched Alfred's calls but were not attributed to Alfred: "
     "home-service is not connected to Home Assistant as a user of its own."
 )
@@ -175,16 +181,37 @@ async def test_call_with_no_change_says_so() -> None:
     assert "no context id" not in report
 
 
-async def test_a_source_not_in_parts_is_named_as_it_is() -> None:
+@pytest.mark.parametrize(
+    ("source", "part"),
+    [
+        ("reflex-engine", "Reflex"),
+        ("conscious-engine", "System 2"),
+        ("trigger-engine", "a trigger"),
+        ("admin-api", "the admin API"),
+        ("some-new-engine", "some-new-engine"),  # not in PARTS: named as it is
+    ],
+)
+async def test_a_call_names_the_part_of_alfred_that_asked(source: str, part: str) -> None:
     redis = _redis()
-    await _call(redis, _NOW - timedelta(hours=1), source="some-new-engine")
+    await _call(redis, _NOW - timedelta(hours=1), source=source)
 
     report = await build_report(redis, days=1, now=_NOW, tz_name=_TZ)
 
-    assert "· some-new-engine ·" in report
-    assert PARTS["reflex-engine"] == "Reflex"
-    assert PARTS["trigger-engine"] == "a trigger"
-    assert PARTS["admin-api"] == "the admin API"
+    assert f" · {part} · smart_home.dim_lights(" in report
+
+
+async def test_a_parameter_value_spanning_lines_stays_on_the_calls_bullet() -> None:
+    redis = _redis()
+    await _call(
+        redis,
+        _NOW - timedelta(hours=1),
+        parameters={"message": "line one\n\n  line   two"},
+        reason="two\nlines",
+    )
+
+    report = await build_report(redis, days=1, now=_NOW, tz_name=_TZ)
+
+    assert '(message=line one line two) — "two lines"' in report
 
 
 async def test_people_and_automations_section_excludes_matched_changes() -> None:
@@ -251,8 +278,20 @@ async def test_flags_alfred_changes_read_as_a_person() -> None:
 
     report = await build_report(redis, days=1, now=_NOW, tz_name=_TZ)
 
-    assert report.startswith(_MISMATCH.format(n=1))
+    assert report.startswith(_MISMATCH_ONE)
     assert "light.bedroom_lamp: on → off · by person.alex" in report
+
+
+async def test_the_mismatch_line_counts_each_change() -> None:
+    redis = _redis()
+    at = _NOW - timedelta(hours=2)
+    await _call(redis, at, context_id="abc")
+    await _change(redis, at, ChangeContext(id="abc", user_id="owner"))
+    await _change(redis, at, ChangeContext(id="abc", user_id="owner"), entity_id="light.hall_lamp")
+
+    report = await build_report(redis, days=1, now=_NOW, tz_name=_TZ)
+
+    assert report.startswith(_MISMATCH_MANY.format(n=2))
 
 
 async def test_no_mismatch_line_when_every_matched_change_is_alfreds() -> None:
@@ -263,8 +302,14 @@ async def test_no_mismatch_line_when_every_matched_change_is_alfreds() -> None:
 
     report = await build_report(redis, days=1, now=_NOW, tz_name=_TZ)
 
-    assert report.startswith("## Alfred attribution report: the last 1 days")
+    assert report.startswith("## Alfred attribution report: the last day (times in")
     assert "were not attributed to Alfred" not in report
+
+
+async def test_the_heading_names_the_window() -> None:
+    report = await build_report(_redis(), days=7, now=_NOW, tz_name=_TZ)
+
+    assert report.startswith("## Alfred attribution report: the last 7 days (times in")
 
 
 async def test_window_excludes_older_entries() -> None:
@@ -299,3 +344,68 @@ async def test_an_empty_window_says_so() -> None:
     assert report.count("None in this window.") == 2
     assert "### What Alfred changed (0)" in report
     assert "### Changes by people and automations (0)" in report
+
+
+async def test_the_scan_starts_at_the_window_start_id() -> None:
+    redis = _redis()
+    start_ms = int((_NOW - timedelta(days=7)).timestamp() * 1000)
+    inside = _NOW - timedelta(days=1)  # the records say they are in the window: only the id differs
+    for entry_id, tool, entity in (
+        (f"{start_ms - 1}-0", "smart_home.before_start", "light.before_start"),
+        (f"{start_ms}-0", "smart_home.at_start", "light.at_start"),
+    ):
+        call = AlfredCall(
+            time=inside,
+            source="conscious-engine",
+            request_id="r",
+            target_service="home",
+            tool_name=tool,
+            parameters={},
+            reason=None,
+            context_id=None,
+        )
+        change = AttributedChange(
+            time=inside,
+            entity_id=entity,
+            old_state="on",
+            new_state="off",
+            cause="person",
+            context=ChangeContext(user_id="u1"),
+        )
+        await redis.xadd(ATTRIBUTION_CALLS_STREAM, {"call": call.model_dump_json()}, id=entry_id)
+        await redis.xadd(
+            ATTRIBUTION_CHANGES_STREAM, {"change": change.model_dump_json()}, id=entry_id
+        )
+
+    report = await build_report(redis, days=7, now=_NOW, tz_name=_TZ)
+
+    assert "smart_home.at_start" in report
+    assert "light.at_start" in report
+    assert "smart_home.before_start" not in report
+    assert "light.before_start" not in report
+
+
+async def test_a_record_with_a_naive_time_is_read_as_utc() -> None:
+    redis = _redis()
+    naive = datetime(2026, 10, 24, 17, 0)  # a publisher that sent no offset
+    await _call(redis, naive, context_id="abc", tool="smart_home.naive_call")
+    await _change(redis, naive, ChangeContext(id="abc", by_service=True))
+    await _change(
+        redis, naive + timedelta(minutes=5), ChangeContext(user_id="u1"), entity_id="light.kitchen"
+    )
+
+    report = await build_report(redis, days=1, now=_NOW, tz_name=_TZ)
+
+    assert "- Sat 24 Oct 12:00 · System 2 · smart_home.naive_call(" in report
+    assert "  - Sat 24 Oct 12:00 · light.bedroom_lamp: on → off · by Alfred" in report
+    assert "- Sat 24 Oct 12:05 · light.kitchen: on → off · by a person" in report
+
+
+@pytest.mark.parametrize("days", ["0", "-3"])
+def test_days_must_be_positive(monkeypatch: pytest.MonkeyPatch, days: str) -> None:
+    monkeypatch.setattr(sys, "argv", ["report", "--days", days])
+
+    with pytest.raises(SystemExit) as exit_info:
+        main()
+
+    assert exit_info.value.code == 2

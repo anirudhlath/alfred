@@ -140,6 +140,7 @@ graph TB
         Engine[Reflex Engine]
         Observer["observe_passively()<br/>per-entity debounce"]
         CtxReader[ContextReader]
+        Attribution["Attribution<br/>record_change / record_call<br/>(core/attribution/)"]
         Registry[ToolRegistry]
         MemReader[Memory Reader]
         ScratchWriter[ScratchpadWriter]
@@ -242,6 +243,10 @@ graph TB
     AttnSet -->|SADD/SMEMBERS<br/>alfred:attention:*| Redis
     AttnSet --> Engine
     Runner --> DomRouter
+    Runner -->|record_change| Attribution
+    DomRouter -->|record_call| Attribution
+    Attribution -->|"HINCRBY alfred:attribution:causes:*<br/>XADD alfred:attribution:changes + :calls"| Redis
+    Engine -->|"XADD alfred:reflex:decision_log"| Redis
     DomRouter --> HomeAgent
     DomRouter -->|SET/GETDEL<br/>alfred:pending:*| Redis
     Runner --> ScratchWriter
