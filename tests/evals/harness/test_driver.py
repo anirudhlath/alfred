@@ -5,7 +5,7 @@ import re
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
@@ -191,6 +191,33 @@ async def test_ha_event_step_changes_state_and_is_transcribed() -> None:
     ev = await play(ctx(Recorder(), ha), variant, epoch=1)
     assert ev.ha_states["light.living_room_ceiling"].state == "on"
     assert ev.transcript[0].role == "event"
+
+
+async def test_an_ha_event_step_pushes_the_change_by_the_cause_it_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ha = FakeHA(load_world("apartment"))
+    pushed: list[str] = []
+    real = ha.set_state
+
+    async def recording(
+        entity_id: str, state: str, attributes: dict[str, Any] | None = None, *, by: str
+    ) -> None:
+        pushed.append(by)
+        await real(entity_id, state, attributes, by=by)
+
+    monkeypatch.setattr(ha, "set_state", recording)
+    lamp = {"entity_id": "light.living_room_ceiling", "state": "on"}
+    s = scenario(
+        steps=[
+            {"ha_event": {**lamp, "by": "person.alex"}, "settle": 0},
+            {"ha_event": {**lamp, "state": "off", "by": "automation"}, "settle": 0},
+            {"ha_event": {**lamp, "state": "on"}, "settle": 0},
+        ]
+    )
+    [variant] = expand_variants(s)
+    await play(ctx(Recorder(), ha), variant, epoch=1)
+    assert pushed == ["person.alex", "automation", "outside"]
 
 
 LAMP_ON = {"ha_event": {"entity_id": "light.living_room_ceiling", "state": "on"}}

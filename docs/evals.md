@@ -78,8 +78,9 @@ default; see [Host firewall](#host-firewall)), and the container reaches them as
 `host.docker.internal`.
 
 **The fake Home Assistant** (`evals/harness/fake_ha.py`) is a WebSocket server speaking the
-subset of HA's API that home-service uses: auth, `subscribe_events`, the entity, device and
-area registry lists, `get_states`, `get_services` and `call_service`. It serves a **world**
+subset of HA's API that home-service uses: auth, `auth/current_user`, `subscribe_events`, the
+entity, device and area registry lists, `get_states`, `get_services` and `call_service`. It
+serves a **world**
 (`evals/harness/worlds/apartment.yaml`): a fictional two-bedroom apartment with areas,
 devices, lights, a switch, a media player, scenes, a lock, a garage cover, an alarm panel,
 door, motion and temperature sensors, and the services that act on them. A `call_service`
@@ -88,6 +89,14 @@ recorded with a timestamp, applied to the fake's state (`light.turn_on` with
 `brightness_pct` sets `brightness`, `lock.lock` sets `locked`, and so on), and pushed back
 as `state_changed` before the result is sent, so Alfred's live state follows exactly as it
 would with a real HA. The driver also pushes state changes through it (`ha_event` steps).
+Every pushed `state_changed` carries a `context` (`id`, `user_id`, `parent_id`) on the event
+and on its `new_state`, as HA sends it, saying who caused the change. A `call_service`'s
+changes carry the service user's context: the user `auth/current_user` answers with
+(`eval-alfred`), under the id (`eval-<message id>`) the call's result returns. An `ha_event`
+step's `by` chooses the cause of its change: `outside` (a switch, an app or a device: no user,
+no parent), `automation` (a parent id) or `person.<name>`, which carries that person's
+`user_id` attribute in the world (`person.alex` is `eval-user-alex`, `person.sam` is
+`eval-user-sam`). A person without a `user_id` fails the push. A restore pushes as `outside`.
 Before each sample, every entity that drifted is restored to the world and the change
 pushed, so goldens do not inherit each other's lights.
 
@@ -249,8 +258,8 @@ sequenceDiagram
 ```
 
 A golden with a reflex check (`reflex_decision` or `reflex_not_proposed`), a `reflex_ms`
-latency, or a `prompt_not_contains` on `system1` **watches Reflex**. After each `ha_event`
-the driver waits for System 1's answer to that change, not for an HA call.
+latency, or a `prompt_contains` or `prompt_not_contains` on `system1` **watches Reflex**.
+After each `ha_event` the driver waits for System 1's answer to that change, not for an HA call.
 
 Before its first step, such a golden waits until System 1 has been quiet for 6 s. Reflex
 ignores an entity for 5 s after it last let one of its events through, and the restore may
@@ -613,7 +622,7 @@ expect:
 | Step | Fields | What the driver does |
 |---|---|---|
 | `user: <text>` | `variants: [<text>, …]`, `as: {…}`, `pending_action: {at_step, tool}` (used by no golden now, see below) | Sends the utterance and waits for System 2's reply, then 2 s for side effects. `as` overrides the golden's actor for this step, which is how a conversation moves between channels |
-| `ha_event: {entity_id, state, attributes}` | `settle: <seconds>` | Pushes a state change through the fake HA, merging `attributes` into the entity's current ones. While an `ha_called` check that could count a call from this step (it has no `after_step`, or one at or before this step) is still unmet, it then waits for a `call_service` that check wants, up to 30 s, and 2 s more for side effects once one arrives; any other call does not end the wait. With no such check outstanding it waits a 5 s window. In a golden that watches Reflex (see [One sample](#one-sample)) it waits instead for System 1's answer to this change, up to 15 s. `settle` replaces the 30 s, the 5 s or the 15 s |
+| `ha_event: {entity_id, state, attributes, by}` | `settle: <seconds>` | Pushes a state change through the fake HA, merging `attributes` into the entity's current ones, with the context of its cause, `by`: `outside` (the default: a switch, an app or a device), `automation`, or `person.<name>` (a person in the world with a `user_id`). While an `ha_called` check that could count a call from this step (it has no `after_step`, or one at or before this step) is still unmet, it then waits for a `call_service` that check wants, up to 30 s, and 2 s more for side effects once one arrives; any other call does not end the wait. With no such check outstanding it waits a 5 s window. In a golden that watches Reflex (see [One sample](#one-sample)) it waits instead for System 1's answer to this change, up to 15 s. `settle` replaces the 30 s, the 5 s or the 15 s |
 | `wait: <seconds>` | — | Lets time pass (more than 0, at most 600) |
 | `clock: {hour: H}` | — | Sets the user's zone to the `Etc/GMT±N` zone whose local hour is H now. Reflex's clock is UTC shown in that zone. Never runs in an hour's last two minutes: there it first waits for the next hour. The reflex checks error if the prompt showed another hour |
 | `advance_trigger: {name: …}` | `settle: <seconds>` | Makes the newest one-time trigger (one with a `run_at`) the sample created due now, optionally narrowed by `name`, a case-insensitive part of its name. Then waits up to 15 s (`settle`) for it to fire, as a TriggerFired or, for a trigger with an action, its `ActionRequest`, and 2 s more once it has. With no such trigger, the transcript says so and the checks score it. `advance_trigger: {}` takes the newest |
@@ -834,6 +843,7 @@ scored separately. Params are validated at load and unknown keys are rejected.
 | `latency` | `metric` (required: `reply_ms`, `reflex_ms` or `reminder_fire_ms`), `max` (required; ms, > 0); `step` (int, default `-1`) for `reply_ms`; `at_step` for the other two | `reply_ms`: the reply at `step` arrived within `max` ms of its request. `reflex_ms`: the earliest System 1 call about the `ha_event` step's change was answered within `max` ms of the step's start (any wait for one of the proxy's upstream slots included). With no such call it errors, as a reflex check does: no judgment, nothing to time. `reminder_fire_ms`: the notification of that trigger's fire was dispatched within `max` ms of the `advance_trigger` making it due |
 | `reflex_decision` | `decision` (required: `act`, `ask`, `none`, `invalid`, or a list of them); `tool` (one, or a list of which any will do); `target`; `at_step`; `uncalled_ok` (default `false`) | Every System 1 call about the step's change has a decision in the set, and, for act/ask, one of the `tool`s and the `target` (entity or area id) given. With no such call it errors (no judgment to score), unless `uncalled_ok` is set and `none` is in the set: then it passes |
 | `reflex_not_proposed` | `tool` (required); `target`; `decision` (default `[act, ask]`); `at_step`; `uncalled_ok` (default `false`) | No call about the step's change proposes that tool (on that target). With no such call it errors, unless `uncalled_ok` is set |
+| `prompt_contains` | exactly one of `text`, `any`, `regex`; `role` (default `system2`) | Some string leaf or mapping key in a full recorded request body for the role contains the needle, matched as `prompt_not_contains` matches (case-insensitive; older evidence falls back to messages). Fails when the role was never called. On `system1` it watches Reflex, so the driver waits for System 1's answer to each `ha_event` |
 | `prompt_not_contains` | exactly one of `text`, `any`, `regex`; `role` (default `system2`) | No string leaf or mapping key in any full recorded request body for the role contains the needle (messages, tool descriptions/schemas and extra fields included); older evidence falls back to messages. Fails when the role was never called |
 | `trigger_created` | `type` (`time`, `sensor`, `composite`), `name`, `conditions` (mapping), `run_in_seconds` (number or `{approx, tol}`), `at_local` (`{time: "HH:MM", tz}`), `urgency`, `one_shot`; all optional | A trigger System 2 created matches `type`, `name`, `conditions`, `run_in_seconds` (from creation to `run_at`), `at_local` (the `run_at`'s wall-clock time in a zone), `urgency` and `one_shot`. `name` is a case-insensitive part of the trigger's name |
 | `trigger_not_created` | `type` (optional) | No trigger (of that type) was created |
@@ -1129,7 +1139,7 @@ goldens are public. Everything about it is fake or fenced.
 | `evals/harness/display.py` | `--display` choices and how Inspect's display is pinned |
 | `evals/harness/coverage.py` | PRD parsing and `coverage_problems()` |
 | `evals/suites/<suite>/` | Goldens |
-| `evals/suites/reflex/` | System 1's judgment on house events, its prompt and its latency |
+| `evals/suites/reflex/` | System 1's judgment on house events, its prompt, its latency, and (pending) whether its What changed line says who caused a change |
 | `evals/suites/triggers/` | Reminders and rules System 2 sets: relative, timezone, recurring, sensor and fast |
 | `evals/suites/notifications/` | Reminder urgency, do-not-disturb and its release |
 | `evals/suites/guest_boundary/` | Web/Signal identity, sir controls, personal-data requests and a sir-to-guest session transition; policy enforcement remains pending |

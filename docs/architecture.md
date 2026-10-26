@@ -118,6 +118,7 @@ sequenceDiagram
 **Key behaviors:**
 
 - `unavailable`, `unknown` and a missing old state carry no information. Before the attention gate, `bridge_availability()` (`core/reflex/availability.py`) drops any transition into `unavailable`/`unknown`, and compares an entity coming back — from either, or as `None → state` when HA re-adds it after a restart — with its last real state in `alfred:reflex:last_known_state`: the same state is a blip and is dropped, a different one goes on as a single `last → new` change (`off → unavailable → on` is `off → on`). Running ahead of the gate means a blip costs no inference and does not start the gate's 5 s cooldown, which would swallow a real change right behind it. A return with no known state (first sight, or a fresh hash) is dropped. A failed lookup drops the return; a failed write only logs. Replays are safe, keyed on the stream entry ID, which Redis assigns in arrival order and keeps across redelivery: each return's decision is kept for ten minutes under `alfred:reflex:returned:{entry_id}` and reused by any replay, and the known state only moves forward in entry order, so a late replay cannot roll it back. A replay still retries the known-state write, in case its first delivery lost it.
+- Each change is attributed before the attention gate: `record_change()` (`core/attribution/log.py`) reads the event's `context` into one of four causes (`person`, `alfred`, `automation`, `outside`; `unknown` when an older home-service sent none), counts it in `alfred:attribution:causes:<UTC date>` once per stream entry, and logs a person's, Alfred's or an automation's change to `alfred:attribution:changes`. The cause then rides into Reflex's `## What changed` line (`by Alex`), the memory summary and the shadow report, and `DomainRouter` logs each executed call with its `context_id`; `python -m core.attribution.report --days 7` joins the two. Best-effort like every attribution write. See [attribution.md](attribution.md).
 - If Ollama is down, `process_event` raises an exception. The Runner does NOT ACK the message; its reclaim pass (`reclaim_replayable`, every few cycles) replays it, as long as it is under five minutes old.
 - Reflex runs in **shadow mode** ([#285](https://github.com/anirudhlath/alfred/issues/285)): `engine.process_event()` returns a `ReflexProposal` and the runner executes nothing. Every decision increments `alfred:reflex:decisions:<UTC date>` (one hash per day, one field per decision, 30-day TTL). An **act**, **ask** or **invalid** proposal is published as a `ReflexObservation` with `proposal` set and `action`/`result` empty, bypassing the debounce below. Both writes are best-effort: a failure is logged and the entry is still ACKed. `python -m core.reflex.shadow_report --days 7` prints them for review.
 - On **none**, the event is still not forgotten. `observe_passively()` (`core/reflex/runner.py`) publishes a `ReflexObservation` with `action=None` to `alfred:reflex:observations`, debounced per entity by a `SET NX EX` on `alfred:observer:seen:{entity_id}` (`OBSERVATION_DEBOUNCE_SECONDS`, default 300). The write is best-effort and wrapped in its own `try` — a failure is logged and the message is still ACKed, because a passive observation is bookkeeping for an event the engine has already finished handling, and propagating would feed every no-action event back into a fresh SLM inference on the next reclaim pass. See 3.7.1 and [the design spec](superpowers/specs/2026-09-03-passive-observation-design.md).
@@ -139,6 +140,7 @@ graph TB
         Engine[Reflex Engine]
         Observer["observe_passively()<br/>per-entity debounce"]
         CtxReader[ContextReader]
+        Attribution["Attribution<br/>record_change / record_call<br/>(core/attribution/)"]
         Registry[ToolRegistry]
         MemReader[Memory Reader]
         ScratchWriter[ScratchpadWriter]
@@ -241,6 +243,10 @@ graph TB
     AttnSet -->|SADD/SMEMBERS<br/>alfred:attention:*| Redis
     AttnSet --> Engine
     Runner --> DomRouter
+    Runner -->|record_change| Attribution
+    DomRouter -->|record_call| Attribution
+    Attribution -->|"HINCRBY alfred:attribution:causes:*<br/>XADD alfred:attribution:changes + :calls"| Redis
+    Engine -->|"XADD alfred:reflex:decision_log"| Redis
     DomRouter --> HomeAgent
     DomRouter -->|SET/GETDEL<br/>alfred:pending:*| Redis
     Runner --> ScratchWriter
@@ -360,7 +366,7 @@ The bridge subscribes to MQTT topics `home/#` and `media/#` by default and liste
 
 **Files:** `core/reflex/engine.py`, `core/reflex/prompt.py`, `core/reflex/decision.py`, `core/reflex/inference.py` (backends `openai_client.py`, `ollama_client.py`)
 
-The `ReflexEngine` class is the System 1 fast path. It is a pure inference component with no side effects -- it takes a `StateChangedEvent` (or a `TriggerFired`) and returns a `ReflexProposal`: **act**, **ask**, **none** or **invalid** ([#285](https://github.com/anirudhlath/alfred/issues/285), [design](superpowers/specs/2026-10-07-reflex-context-design.md)).
+The `ReflexEngine` class is the System 1 fast path. It has no effect on the house, and keeps only a private decision log (`alfred:reflex:decision_log`) -- it takes a `StateChangedEvent` (or a `TriggerFired`) and returns a `ReflexProposal`: **act**, **ask**, **none** or **invalid** ([#285](https://github.com/anirudhlath/alfred/issues/285), [design](superpowers/specs/2026-10-07-reflex-context-design.md)).
 
 **How it works:**
 
@@ -370,10 +376,11 @@ The `ReflexEngine` class is the System 1 fast path. It is a pure inference compo
 4. Builds the prompt with `core/reflex/prompt.py`, ordered from stable to volatile so vLLM's prefix cache covers as much as it can: rules and compact tools, `## Preferences`, `## Now` (local time, time of day, sun, people), `## House` (the actionable domains, one line per room by `attributes.area` — see [live-state.md](live-state.md#well-known-attributes)), then `## What changed` in one line or `## Trigger fired`. About 1,000 tokens.
 5. Sends it through `core/reflex/inference.py` (`REFLEX_BACKEND`: `openai` for vLLM in production, `ollama` by default) with `temperature=0`, JSON output and, on the OpenAI-compatible backend, `max_tokens=150`.
 6. `parse_decision()` turns the reply into a `ReflexProposal`, validating the tool against Reflex's own tool list. Anything else becomes **invalid**, keeping the raw text.
+7. Writes one record to the decision log (`alfred:reflex:decision_log`): the event, who caused it, the exact prompt and the proposal. Best-effort and private; a refused write logs a warning and never changes the proposal. See [attribution.md](attribution.md).
 
 **Shadow mode (slice 1 of #285 → #286 → #287):** nothing a proposal names is executed. The runner counts every decision and records act, ask and invalid proposals; see section 2.
 
-The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer, and `@track_tokens` on each backend's `infer` records token usage.
+The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer (the measured latency includes the sub-millisecond decision-log write), and `@track_tokens` on each backend's `infer` records token usage.
 
 #### 3.2.1 AttentionSet (Tiered Autonomy — Reflex Gating)
 
@@ -847,7 +854,7 @@ graph LR
 
 | Event Type | Source | Purpose | Key Fields |
 |---|---|---|---|
-| `StateChangedEvent` | Microservices via MQTT | Reports a device/entity state change | `domain`, `entity_id`, `old_state`, `new_state`, `attributes` |
+| `StateChangedEvent` | Microservices via MQTT | Reports a device/entity state change | `domain`, `entity_id`, `old_state`, `new_state`, `attributes`, `context` (who caused it: `id`, `user_id`, `parent_id`, `person`, `by_service`; absent from older publishers — see [attribution.md](attribution.md)) |
 | `ActionRequest` | Reflex Engine | Requests a tool execution on a microservice | `target_service`, `tool_name`, `parameters` |
 | `ActionResult` | Domain agents | Reports the outcome of a tool execution | `request_id`, `tool_name`, `status`, `result`, `error` |
 | `TelemetryEvent` | Any component | Observability metric | `metric_type`, `category`, `value`, `unit` |
@@ -891,6 +898,11 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:entity:freq:observed` | Sorted Set | The same counts for **passive** observations only — a separate population, so ~200–300 entries/day cannot flatten novelty for real reflex actions |
 | `alfred:reflex:last_known_state` | Hash | Entity ID → JSON `{state, entry}`: its last real state (never `unavailable`/`unknown`) and the `alfred:home:state_changed` entry ID that set it, for the Reflex runner's availability bridge (`core/reflex/availability.py`); only ever moves forward in entry order |
 | `alfred:reflex:returned:{entry_id}` | String | The bridge's decision for one returning stream entry — JSON `{left}`, the state it came back from or `null` for a blip (TTL 600s), so a replay is bridged the same way |
+| `alfred:attribution:calls` | Stream | One `AlfredCall` per successful call Alfred made (time, part of Alfred, tool, parameters, reason, the `context_id` the service returned), written by `DomainRouter`; kept up to 30 days or `MAXLEN ~ 20000`, whichever comes first (`core/attribution/log.py`, [attribution.md](attribution.md)) |
+| `alfred:attribution:changes` | Stream | One `AttributedChange` per state change caused by a person, Alfred or an automation, with its context, written by the Reflex runner; kept up to 30 days or `MAXLEN ~ 50000`, whichever comes first |
+| `alfred:attribution:causes:<UTC date>` | Hash | One counter per cause (`person`, `alfred`, `automation`, `outside`, `unknown`) for that UTC day's state changes that passed the availability bridge (TTL 30 days) |
+| `alfred:attribution:counted:{entry_id}` | String | Marks a `alfred:home:state_changed` entry as counted, so a redelivered entry is counted once (`SET NX`, TTL 600s, `REPLAY_MARKER_TTL_SECONDS`) |
+| `alfred:reflex:decision_log` | Stream | One record per decision that reached the model — event, cause, exact prompt, proposal — for slice 2's replay set; kept up to 30 days or `MAXLEN ~ 10000`, whichever comes first (`core/reflex/decision_log.py`) |
 | `alfred:observer:seen:{entity_id}` | String | Per-entity passive-observation debounce (`SET NX EX`, TTL `OBSERVATION_DEBOUNCE_SECONDS`, default 300); present means "already recorded this entity recently, skip" |
 | `alfred:memory:ingest:attempts` | Hash | Stream-entry ID → delivery count for the Memory Ingestor; at 5 the entry is ACK-dropped so a deterministically-failing entry cannot starve the PEL (TTL 3600s, crash-safety net only) |
 | `alfred:identity:voiceprint` | Hash | Voiceprint embeddings for identity |

@@ -12,10 +12,19 @@ Fast event → decision loop via a local SLM (vLLM through `REFLEX_BACKEND=opena
 - `tool_registry.py` — Reads tool manifests from Redis `alfred:tool_registry`. `ToolInfo.input_schema` is each tool's one argument description: the schema the manifest ships, or, for an old SDK's manifest, one derived at parse time from its legacy `parameters` by `legacy_input_schema()` (the only reader of that map). Reflex renders `ToolInfo.parameter_names`
 - `context_reader.py` — `ContextReader`: reads live state fresh on every call through the SDK's `read_live_state()` (no cache) and renders it for the prompts; says `Live home state unavailable.` when no service has any; `get_snapshot()` and `get_user_timezone()` feed Reflex's prompt
 - `runner.py` — Event loop orchestration + `ensure_consumer_group()`, `observe_passively()`, `publish_observation()`, `publish_proposal()`, `count_decision()` (shadow mode, #285)
+- `decision_log.py` — `DecisionLog`: `record()` keeps every decision that reached the model (event, cause, prompt, proposal) on `alfred:reflex:decision_log` for up to 30 days or 10,000 entries, whichever comes first, best-effort; `read(since=)` returns them for slice 2's replay set
 - `shadow_report.py` — `python -m core.reflex.shadow_report --days N`: Markdown of daily decision counts and every act/ask/invalid proposal, for #285's shadow review
 - `availability.py` — `bridge_availability()`: drops transitions into `unavailable`/`unknown` and bridges a return from them (or from no state) to one `last → new` change, or drops it as a blip (hash `alfred:reflex:last_known_state`, one field per entity, ordered by stream entry ID; decisions under `alfred:reflex:returned:{entry_id}`); runs before the attention gate, replay-safe
 - `__main__.py` — Two consumer loops: (1) `HOME_STATE_STREAM` for StateChanged, (2) `EVENTS_STREAM` for TriggerFired (group `reflex-trigger-fired`)
 - TriggerFired handling: Path A (notification) fires first, Path B (SLM reasoning) is isolated — SLM failures never block notification delivery
+
+## Attribution (`attribution/`) — Who Did It
+
+Who caused each home state change, kept privately, each stream up to 30 days or its cap, the day counters 30 days (`docs/attribution.md`). Every write is best-effort: a refused write logs a warning and never raises into routing or Reflex.
+
+- `cause.py` — `cause_of(context)`: `alfred` (`by_service`) → `person` (`user_id`) → `automation` (`parent_id`) → `outside`; `None` with no context. `cause_words(context, name=None)` phrases it (`by Alex`, `by a person`, `by Alfred`, `by an automation`, `by a switch, app or device`)
+- `log.py` — `record_call()` (a successful call, with the `context_id` the service returned; `DomainRouter.route` calls it) and `record_change()` (counts the cause in `alfred:attribution:causes:<UTC date>` and logs a person's, Alfred's or an automation's change; the Reflex runner calls it with the stream entry id, which a `counted:` marker turns into once per entry)
+- `report.py` — `python -m core.attribution.report --days N`: counts by cause, each call Alfred made with the changes it caused (joined on the context id or its parent), then everyone else's changes; names people and devices, so private
 
 ## Memory (`memory/`) — Three-Layer System
 

@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import time
 from logging import ERROR, WARNING
 from typing import TYPE_CHECKING, Any, cast
@@ -423,6 +424,100 @@ async def test_set_state_and_restore_world_push_to_subscribers(ha: FakeHA) -> No
     with pytest.raises(KeyError):
         await ha.set_state("light.nope", "on")
     await ws.close()
+
+
+async def test_answers_current_user_with_the_service_user(ha: FakeHA) -> None:
+    ws, _ = await handshake(ha)
+    reply = await command(ws, 1, type="auth/current_user")
+    assert reply["success"] is True
+    assert (
+        reply["result"]
+        == fake_ha.SERVICE_USER
+        == {
+            "id": "eval-alfred",
+            "name": "Alfred",
+            "is_owner": False,
+            "is_admin": False,
+        }
+    )
+    await ws.close()
+
+
+async def test_call_service_changes_carry_the_call_context(ha: FakeHA) -> None:
+    ws, _ = await handshake(ha)
+    await command(ws, 1, type="subscribe_events", event_type="state_changed")
+    await ws.send(
+        json.dumps(
+            {
+                "id": 7,
+                "type": "call_service",
+                "domain": "light",
+                "service": "turn_on",
+                "target": {"entity_id": "light.bedroom_lamp"},
+            }
+        )
+    )
+    event = (await recv(ws))["event"]
+    result = await recv(ws)
+    context = {"id": "eval-7", "user_id": fake_ha.SERVICE_USER["id"], "parent_id": None}
+    # As HA sends it: on the event, and on the state it carries.
+    assert event["context"] == context
+    assert event["data"]["new_state"]["context"] == context
+    assert result["result"]["context"]["id"] == context["id"]
+    await ws.close()
+
+
+async def test_set_state_by_a_person_carries_their_user_id(ha: FakeHA) -> None:
+    ws, _ = await handshake(ha)
+    await command(ws, 1, type="subscribe_events", event_type="state_changed")
+    await ha.set_state("light.bedroom_lamp", "on", by="person.alex")
+    event = (await recv(ws))["event"]
+    assert event["context"]["user_id"] == "eval-user-alex"
+    assert event["context"]["parent_id"] is None
+    assert event["data"]["new_state"]["context"] == event["context"]
+    await ws.close()
+
+
+async def test_set_state_by_an_automation_carries_a_parent_id(ha: FakeHA) -> None:
+    ws, _ = await handshake(ha)
+    await command(ws, 1, type="subscribe_events", event_type="state_changed")
+    await ha.set_state("light.bedroom_lamp", "on", by="automation")
+    context = (await recv(ws))["event"]["context"]
+    assert context["user_id"] is None and context["parent_id"] == "eval-automation"
+    await ws.close()
+
+
+async def test_set_state_defaults_to_outside(ha: FakeHA) -> None:
+    ws, _ = await handshake(ha)
+    await command(ws, 1, type="subscribe_events", event_type="state_changed")
+    await ha.set_state("light.bedroom_lamp", "on")
+    await ha.restore_world()  # the restore is outside too
+    contexts = [(await recv(ws))["event"]["context"] for _ in range(2)]
+    for context in contexts:
+        assert context["user_id"] is None and context["parent_id"] is None
+    assert contexts[0]["id"] and contexts[0]["id"] != contexts[1]["id"]  # a fresh id each
+    await ws.close()
+
+
+@pytest.mark.parametrize(
+    "by", ["person.nobody", "person.no_user_id", "alfred", "light.bedroom_lamp"]
+)
+async def test_set_state_by_an_unknown_cause_raises_and_changes_nothing(by: str) -> None:
+    world = World.model_validate(
+        {
+            "name": "tiny",
+            "areas": [],
+            "entities": [
+                {"entity_id": "light.bedroom_lamp", "name": "Bedroom Lamp", "state": "off"},
+                {"entity_id": "person.no_user_id", "name": "Nu", "state": "home"},
+            ],
+            "services": {},
+        }
+    )
+    server = FakeHA(world)
+    with pytest.raises(ValueError, match=re.escape(by)):
+        await server.set_state("light.bedroom_lamp", "on", by=by)
+    assert server.states()["light.bedroom_lamp"].state == "off"
 
 
 class _GoneSocket:

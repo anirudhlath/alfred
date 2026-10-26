@@ -231,6 +231,16 @@ for example. Home-service catches every failure, marks its hash dirty and heals 
 whichever lands first: the next connect, state event, reconnect attempt or registration.
 Nothing runs on a schedule; `docs/live-state.md` describes how.
 
+### Saying who caused a state change
+
+A `StateChangedEvent` carries an optional `context` (`ChangeContext`, in `alfred_sdk.events`).
+A publisher fills it when its platform says who caused a change — Home Assistant's `context.id`,
+`user_id` and `parent_id` map straight across, and `person` is the person entity the service
+mapped that user to — and sets `by_service` only for changes its own calls caused on Alfred's
+request. When the platform says nothing, leave `context` out: consumers read a missing context as
+"unknown", never as "nobody". Every field is optional, so a payload without `context` parses
+everywhere. See `docs/event-bus.md` for the fields.
+
 ---
 
 ## Dispatch

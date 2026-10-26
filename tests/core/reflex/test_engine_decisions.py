@@ -6,13 +6,16 @@ import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
+import fakeredis
 import pytest
 
 from bus.schemas.events import StateChangedEvent, TriggerFired
 from core.reflex.context_reader import LIVE_STATE_UNAVAILABLE
+from core.reflex.decision_log import DecisionLog
 from core.reflex.engine import ReflexEngine
 from core.reflex.tool_registry import ToolInfo
 from sdk.alfred_sdk.context import ContextEntry, ContextSnapshot
+from shared.streams import REFLEX_DECISION_LOG_STREAM
 
 # 03:30 UTC on Thu 8 Oct 2026 is 22:30 on Wed 7 Oct in Chicago (CDT, UTC-5).
 NIGHT_UTC = datetime(2026, 10, 8, 3, 30, tzinfo=UTC)
@@ -102,7 +105,10 @@ def _snapshot() -> ContextSnapshot:
 
 
 def _engine(
-    snapshot: ContextSnapshot | None = None, *, live: bool = True
+    snapshot: ContextSnapshot | None = None,
+    *,
+    live: bool = True,
+    decision_log: DecisionLog | None = None,
 ) -> tuple[ReflexEngine, AsyncMock]:
     registry = AsyncMock()
     registry.get_tools = AsyncMock(return_value=TOOLS)
@@ -116,6 +122,7 @@ def _engine(
         tool_registry=registry,
         context_reader=reader,
         clock=lambda: NIGHT_UTC,
+        decision_log=decision_log,
     )
     engine._cached_preferences = "- Prefers dim light for films"
     return engine, registry
@@ -243,3 +250,38 @@ async def test_a_trigger_gets_now_and_the_house_and_names_itself() -> None:
     assert "## House\nLiving Room:" in prompt
     assert "## What changed" not in prompt
     assert proposal.decision == "none"
+
+
+async def test_engine_records_each_decision() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    log = DecisionLog(redis, clock=lambda: NIGHT_UTC)
+    engine, _ = _engine(_snapshot(), decision_log=log)
+    infer = _reply(ACT)
+
+    with patch("core.reflex.inference.infer", new=infer):
+        proposal = await engine.process_event(TV_PLAYS)
+    (first,) = await log.read(since=NIGHT_UTC)
+
+    assert first.origin == "state_change"
+    assert first.prompt == infer.await_args.args[0]
+    assert first.proposal == proposal
+    assert first.event["entity_id"] == "media_player.living_room_tv"
+
+    trigger = TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time")
+    with patch("core.reflex.inference.infer", new=infer):
+        await engine.process_trigger_fired(trigger)
+    records = await log.read(since=NIGHT_UTC)
+
+    assert [r.origin for r in records] == ["state_change", "trigger_fired"]
+    assert records[1].prompt == infer.await_args.args[0]
+    assert records[1].cause is None
+
+
+async def test_engine_without_a_log_records_nothing() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    engine, _ = _engine(_snapshot())
+
+    with patch("core.reflex.inference.infer", new=_reply({"decision": "none"})):
+        await engine.process_event(TV_PLAYS)
+
+    assert await redis.exists(REFLEX_DECISION_LOG_STREAM) == 0

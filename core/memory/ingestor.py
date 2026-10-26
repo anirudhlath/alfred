@@ -14,8 +14,10 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from loguru import logger
+from pydantic import ValidationError
 
-from bus.schemas.events import ReflexObservation
+from bus.schemas.events import ChangeContext, ReflexObservation
+from core.attribution.cause import cause_words
 from core.memory.schemas import EpisodicEntry, SignificanceScore
 from shared.redis_streams import read_group, reclaim_stale
 from shared.streams import (
@@ -148,6 +150,22 @@ def _transition(obs: ReflexObservation) -> tuple[str, str, str]:
     return _state("entity_id"), _state("old_state"), _state("new_state")
 
 
+def _cause(obs: ReflexObservation) -> str | None:
+    """Who caused the change ("by Alfred"), from the event's context.
+
+    An event from an older publisher has none, and a malformed one is read as none: a
+    summary is never lost to it. With no live state here, a person reads as their entity.
+    """
+    raw = obs.trigger_event.get("context")
+    if raw is None:
+        return None
+    try:
+        return cause_words(ChangeContext.model_validate(raw))
+    except ValidationError:
+        logger.debug("Observation {} carries an unreadable context; no cause", obs.observation_id)
+        return None
+
+
 def _build_observation_summary(obs: ReflexObservation, stamp: str) -> str:
     """Summarise a state change nobody acted on.
 
@@ -165,7 +183,9 @@ def _build_observation_summary(obs: ReflexObservation, stamp: str) -> str:
         if attributes.get(key) not in (None, "")
     ]
     suffix = f" ({', '.join(salient)})" if salient else ""
-    return f"[observation] {stamp} — {entity}: {old_state} → {new_state}{suffix}"
+    cause = _cause(obs)
+    cause_suffix = f", {cause}" if cause else ""
+    return f"[observation] {stamp} — {entity}: {old_state} → {new_state}{suffix}{cause_suffix}"
 
 
 def _build_observation_semantic_key(obs: ReflexObservation) -> str:

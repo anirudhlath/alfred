@@ -35,6 +35,7 @@ DETERMINISTIC: dict[str, tuple[type[BaseModel], DeterministicCheck]] = {
     "latency": (latency.LatencyParams, latency.latency),
     "reflex_decision": (reflex.ReflexDecisionParams, reflex.reflex_decision),
     "reflex_not_proposed": (reflex.ReflexNotProposedParams, reflex.reflex_not_proposed),
+    "prompt_contains": (llm.PromptParams, llm.prompt_contains),
     "prompt_not_contains": (llm.PromptParams, llm.prompt_not_contains),
     "trigger_created": (triggers.TriggerCreatedParams, triggers.trigger_created),
     "trigger_not_created": (triggers.TriggerTypeParams, triggers.trigger_not_created),
@@ -67,7 +68,7 @@ def step_kind_needed(name: str, params: BaseModel) -> StepKind | None:
 
 def watches_reflex(name: str, params: BaseModel) -> bool:
     """Whether the check reads System 1's calls, so the driver waits for them."""
-    if name == "prompt_not_contains":
+    if name in ("prompt_contains", "prompt_not_contains"):
         return getattr(params, "role", None) == "system1"
     return step_kind_needed(name, params) == "ha_event"
 

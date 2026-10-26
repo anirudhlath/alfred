@@ -1,18 +1,20 @@
 """A Home Assistant WebSocket API double for home-service, serving one World.
 
 Speaks the subset home-service uses (alfred-home-service ``app/ha_connection.py``):
-auth, subscribe_events, the three registry lists, get_states, get_services and
-call_service. A served call_service is recorded, applied to the fake's state, and
-pushed back as ``state_changed`` — so Alfred's live state follows, as with a real HA.
+auth, auth/current_user, subscribe_events, the three registry lists, get_states,
+get_services and call_service. A served call_service is recorded, applied to the fake's
+state, and pushed back as ``state_changed`` — so Alfred's live state follows, as with a
+real HA. Every pushed change carries a ``context`` saying who caused it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
@@ -51,6 +53,12 @@ _ws_logger.addFilter(_ProbeHangUps())
 
 EVAL_HA_TOKEN = "alfred-eval-ha-token"
 _HA_VERSION = "2026.7.0"
+
+# The user home-service connects as, answered to ``auth/current_user``. A service call it
+# makes carries this user's id in its context, which is how a change reads as Alfred's own.
+SERVICE_USER: Final = {"id": "eval-alfred", "name": "Alfred", "is_owner": False, "is_admin": False}
+# The parent id of a change an automation made: a script or automation ran the call.
+AUTOMATION_PARENT_ID: Final = "eval-automation"
 
 _SET_STATE: dict[tuple[str, str], str] = {
     ("light", "turn_on"): "on",
@@ -164,6 +172,7 @@ class FakeHA:
         self.connected = asyncio.Event()
         self._call_seen = asyncio.Event()  # replaced on every call; see ``record``
         self._states = world.initial_states()
+        self._context_ids = itertools.count(1)
         # Per connection: event type ("*" for every event) → the subscription ids, since HA
         # keeps every subscription, each pushed under its own id.
         self._subs: dict[ServerConnection, dict[str, list[int]]] = {}
@@ -219,14 +228,23 @@ class FakeHA:
         return True
 
     async def set_state(
-        self, entity_id: str, state: str, attributes: dict[str, Any] | None = None
+        self,
+        entity_id: str,
+        state: str,
+        attributes: dict[str, Any] | None = None,
+        *,
+        by: str = "outside",
     ) -> None:
+        """Change an entity and push it, with the context of whoever *by* names: ``outside``
+        (a switch, an app or a device: no user, no parent), ``automation`` (a parent id), or
+        ``person.<name>`` (that person's ``user_id`` from the world)."""
         old = self._states.get(entity_id)
         if old is None:
             raise KeyError(f"unknown entity {entity_id!r} in world {self.world.name!r}")
+        context = self._context_by(by)  # before any change: a bad cause leaves the state alone
         new = HaState(state=state, attributes={**old.attributes, **(attributes or {})})
         self._states[entity_id] = new
-        await self._push_change(entity_id, old, new)
+        await self._push_change(entity_id, old, new, context)
 
     async def restore_world(self) -> int:
         """Push every entity that drifted from the world back to it. Returns the count."""
@@ -236,9 +254,32 @@ class FakeHA:
             if current != initial:
                 self._states[entity_id] = initial
                 if current is not None:
-                    await self._push_change(entity_id, current, initial)
+                    await self._push_change(
+                        entity_id, current, initial, self._context_by("outside")
+                    )
                 restored += 1
         return restored
+
+    def _context_by(self, by: str) -> dict[str, Any]:
+        """A fresh context, as HA stamps on a change *by* someone caused."""
+        context: dict[str, Any] = {
+            "id": f"eval-ctx-{next(self._context_ids)}",
+            "user_id": None,
+            "parent_id": None,
+        }
+        if by == "automation":
+            context["parent_id"] = AUTOMATION_PARENT_ID
+        elif by.startswith("person."):
+            person = next((e for e in self.world.entities if e.entity_id == by), None)
+            user_id = None if person is None else person.attributes.get("user_id")
+            if not isinstance(user_id, str) or not user_id:
+                raise ValueError(f"{by} has no user_id in world {self.world.name!r}")
+            context["user_id"] = user_id
+        elif by != "outside":
+            raise ValueError(
+                f"unknown cause {by!r}: use 'outside', 'automation' or 'person.<name>'"
+            )
+        return context
 
     def _targets(self, domain: str, target: dict[str, Any]) -> list[str]:
         ids: list[str] = []
@@ -302,6 +343,8 @@ class FakeHA:
                 # Set before replying: once the reply is out, a waiter may already look.
                 self.connected.set()
                 await self._result(ws, msg_id, self.world.services)
+            case "auth/current_user":
+                await self._result(ws, msg_id, SERVICE_USER)
             case "call_service":
                 await self._call_service(ws, msg_id, msg)
             case other:
@@ -333,23 +376,29 @@ class FakeHA:
             return
         self.record(call)
         self._states = staged
+        # The call's own context, which its result returns too: the service user made it.
+        context = {"id": f"eval-{msg_id}", "user_id": SERVICE_USER["id"], "parent_id": None}
         # Events first, then the result: what HA does for an entity that writes its state
         # during the call, so the caller's live state has moved by the time it returns.
         for entity_id, (old, new) in changed.items():
-            await self._push_change(entity_id, old, new)
-        await self._result(ws, msg_id, {"context": {"id": f"eval-{msg_id}"}, "response": None})
+            await self._push_change(entity_id, old, new, context)
+        await self._result(ws, msg_id, {"context": {"id": context["id"]}, "response": None})
 
-    async def _push_change(self, entity_id: str, old: HaState, new: HaState) -> None:
+    async def _push_change(
+        self, entity_id: str, old: HaState, new: HaState, context: dict[str, Any]
+    ) -> None:
         def as_state(s: HaState) -> dict[str, Any]:
             return {"entity_id": entity_id, "state": s.state, "attributes": s.attributes}
 
+        # HA puts the context on the event and on the new state it carries.
         event = {
             "event_type": "state_changed",
             "data": {
                 "entity_id": entity_id,
                 "old_state": as_state(old),
-                "new_state": as_state(new),
+                "new_state": {**as_state(new), "context": context},
             },
+            "context": context,
         }
         for ws, subs in list(self._subs.items()):
             # One frame per matching subscription, each under its own id, as HA sends.

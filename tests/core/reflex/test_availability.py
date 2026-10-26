@@ -19,7 +19,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from bus.schemas.events import ReflexObservation, ReflexProposal, StateChangedEvent
+from bus.schemas.events import (
+    ChangeContext,
+    ReflexObservation,
+    ReflexProposal,
+    StateChangedEvent,
+)
 from shared.streams import AVAILABILITY_DECISION_PREFIX, LAST_KNOWN_STATE_KEY
 from tests.helpers import attention_redis
 
@@ -446,3 +451,25 @@ async def test_a_blip_does_not_start_the_attention_cooldown() -> None:
 
     engine.process_event.assert_awaited_once()
     assert _transition(engine.process_event.await_args.args[0]) == ("off", "on")
+
+
+@pytest.mark.asyncio
+async def test_a_bridged_return_keeps_its_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cause of the change is the returning event's, so the bridge must not drop it."""
+    spy = AsyncMock(return_value="person")
+    monkeypatch.setattr("core.reflex.runner.record_change", spy)
+    redis = await _seeded("on")
+    engine = AsyncMock()
+    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
+    returned = _event("unavailable", "off").model_copy(
+        update={"context": ChangeContext(user_id="u")}
+    )
+
+    await _process(redis, _event("on", "unavailable"), engine)
+    await _process(redis, returned, engine)
+
+    spy.assert_awaited_once()  # the blip was dropped before it was counted
+    counted = spy.await_args.args[1]
+    assert _transition(counted) == ("on", "off")
+    assert counted.context is not None
+    assert counted.context.user_id == "u"

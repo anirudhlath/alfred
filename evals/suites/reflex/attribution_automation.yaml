@@ -1,0 +1,9 @@
+id: reflex.attribution.automation
+prd: [4.4.who-did-it]
+status: pending  # the evals' home-service forwards no change context yet
+tags: [attribution]
+steps:
+  - ha_event: {entity_id: light.bedroom_lamp, state: "on", by: automation}
+expect:
+  # A script or automation ran the call: the line says so, and names no one.
+  - prompt_contains: {role: system1, text: "by an automation"}

@@ -1,5 +1,6 @@
 """Redis stream and key constants — single source of truth."""
 
+from datetime import timedelta
 from typing import Final
 
 EVENTS_STREAM = "alfred:events"
@@ -27,6 +28,25 @@ HOME_ACTION_RESULTS_STREAM = "alfred:home:action_results"
 REFLEX_OBSERVATIONS_STREAM = "alfred:reflex:observations"
 # Daily Reflex decision counts (#285): one hash per UTC day, one field per decision.
 REFLEX_DECISIONS_PREFIX = "alfred:reflex:decisions:"
+
+# Who caused each home state change. Private logs, each kept ATTRIBUTION_MAX_AGE: an append
+# (shared.redis_streams.append_capped) trims everything older, and the MAXLEN caps bound a
+# busy house.
+# Alfred's own successful calls: {"call": AlfredCall JSON}.
+ATTRIBUTION_CALLS_STREAM = "alfred:attribution:calls"
+# Changes with a nameable cause (person, alfred, automation): {"change": AttributedChange JSON}.
+ATTRIBUTION_CHANGES_STREAM = "alfred:attribution:changes"
+# + UTC date -> hash, one field per cause (plus "unknown" for an event with no context).
+ATTRIBUTION_CAUSES_PREFIX = "alfred:attribution:causes:"
+# + stream entry ID -> "1" (short TTL): the entry's change is already counted, so a redelivery
+# of it (an un-ACKed entry the reclaim pass replays) is not counted twice.
+ATTRIBUTION_COUNTED_PREFIX = "alfred:attribution:counted:"
+# What Reflex decided about each event and why, one entry per event.
+REFLEX_DECISION_LOG_STREAM = "alfred:reflex:decision_log"
+ATTRIBUTION_MAX_AGE = timedelta(days=30)
+ATTRIBUTION_CALLS_MAXLEN: Final = 20_000
+ATTRIBUTION_CHANGES_MAXLEN: Final = 50_000
+REFLEX_DECISION_LOG_MAXLEN: Final = 10_000
 
 # Phase 3: Conscious Engine
 USER_REQUESTS_STREAM = "alfred:user:requests"

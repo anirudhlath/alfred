@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from pydantic import ValidationError
 
-from evals.harness.checks import CHECK_PARAMS, DETERMINISTIC, run_check
+from evals.harness.checks import CHECK_PARAMS, DETERMINISTIC, run_check, watches_reflex
 from evals.harness.checks.llm import PromptParams, ToolArgsParams, same_tool
 from evals.harness.checks.matching import validate_expected, value_matches
 from evals.harness.evidence import HaState, LlmCall, ToolCall
@@ -341,6 +341,48 @@ def test_prompt_not_contains_reads_every_prompt_of_the_role() -> None:
     assert run_check("prompt_not_contains", p, evidence(llm_calls=[clean, other])).status == "pass"
     failed = run_check("prompt_not_contains", p, evidence(llm_calls=[clean, noisy]))
     assert failed.status == "fail" and "entity_picture" in failed.reason
+
+
+def test_prompt_contains_passes_and_fails() -> None:
+    lamp = prompted("system1", "Bedroom Lamp (Bedroom): off → on · by Alex")
+    other = prompted("system2", "by a switch, app or device")
+    has = PromptParams.model_validate({"role": "system1", "text": "by Alex"})
+    missing = PromptParams.model_validate({"role": "system1", "text": "by an automation"})
+    assert run_check("prompt_contains", has, evidence(llm_calls=[lamp, other])).status == "pass"
+    failed = run_check("prompt_contains", missing, evidence(llm_calls=[lamp, other]))
+    assert failed.status == "fail" and "system1" in failed.reason
+    # The needle sits in another role's prompt only, and in no call of the role at all.
+    only_other = PromptParams.model_validate({"role": "system1", "text": "app or device"})
+    assert run_check("prompt_contains", only_other, evidence(llm_calls=[lamp, other])).status == (
+        "fail"
+    )
+    none = run_check("prompt_contains", has, evidence(llm_calls=[other]))
+    assert none.status == "fail" and "no system1 call" in none.reason
+
+
+def test_prompt_contains_reads_the_full_request_body() -> None:
+    recorded = LlmCall(
+        t=1,
+        role="system1",
+        latency_ms=1,
+        status=200,
+        request_body={"messages": [{"role": "user", "content": [{"text": "by Alex"}]}]},
+    )
+    assert (
+        check(
+            "prompt_contains",
+            {"role": "system1", "text": "by Alex"},
+            evidence(llm_calls=[recorded]),
+        ).status
+        == "pass"
+    )
+
+
+def test_watches_reflex_covers_prompt_contains() -> None:
+    system1 = PromptParams.model_validate({"role": "system1", "text": "by Alex"})
+    system2 = PromptParams.model_validate({"role": "system2", "text": "by Alex"})
+    assert watches_reflex("prompt_contains", system1)
+    assert not watches_reflex("prompt_contains", system2)
 
 
 def test_prompt_not_contains_fails_when_the_role_was_never_called() -> None:

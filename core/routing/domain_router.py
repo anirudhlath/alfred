@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Final, Protocol, runtime_checkable
 from loguru import logger
 
 from bus.schemas.events import ActionRequest, ActionResult
+from core.attribution.log import record_call
 from core.notifications.schema import Urgency
 from core.reflex.runner import publish_observation
 from core.routing.pending import (
@@ -148,7 +149,12 @@ class DomainRouter:
             if risk == "critical" and not action.confirmed:
                 return await self._intercept_critical(self._redis, action)
 
-        return await agent.execute_action(action)
+        result = await agent.execute_action(action)
+        if self._redis is not None:
+            # Log the call so the change it causes can be tied back to it. Best-effort:
+            # record_call never raises, so the agent's result is returned as it came.
+            await record_call(self._redis, action, result)
+        return result
 
     async def execute_action(self, action: ActionRequest) -> ActionResult:
         """Alias for route() — satisfies DomainAgent protocol."""

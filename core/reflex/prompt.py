@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
+from core.attribution.cause import cause_words
 from core.reflex.context_reader import LIVE_STATE_UNAVAILABLE
 
 if TYPE_CHECKING:
@@ -47,7 +48,7 @@ OTHER_ROOM = "Other"
 NO_DEVICES = "No devices to show."
 NO_TOOLS = "No tools available."
 NO_PREFERENCES = "None recorded yet."
-# The What changed line: "{name} ({room}): {old} → {new} · {detail} · …".
+# The What changed line: "{name} ({room}): {old} → {new} · {cause} · {detail} · …".
 STATE_CHANGE_HEADING = "What changed"
 NO_OLD_STATE = "(none)"
 _ARROW = " → "
@@ -240,9 +241,24 @@ def _event_detail(key: str, value: object) -> str | None:
     return f'"{text}"' if key == "media_title" else text
 
 
+def _cause(event: StateChangedEvent, entities: Mapping[str, LiveEntity] | None) -> str | None:
+    """Who caused the change ("by Alex"), or None when the event carries no context.
+    A person is named by their live-state friendly name; without one, ``cause_words``
+    falls back to the context's person entity, then to "a person"."""
+    context = event.context
+    if context is None:
+        return None
+    person = entities.get(context.person) if entities is not None and context.person else None
+    friendly = person.attributes.get("friendly_name") if person is not None else None
+    name = _clip(friendly) if isinstance(friendly, str) and friendly.strip() else None
+    if name is None and context.person is not None and context.person.strip():
+        name = _clip(context.person)  # the entity id stands in for the name, and is clipped alike
+    return cause_words(context, name)
+
+
 def render_event(event: StateChangedEvent, entities: Mapping[str, LiveEntity] | None) -> str:
-    """One line: name (room): old → new, then up to three details from the event.
-    ``parse_event`` reads it back."""
+    """One line: name (room): old → new, then who caused it and up to three details from
+    the event. ``parse_event`` reads it back."""
     known = entities.get(event.entity_id) if entities is not None else None
     # Live state names and places the entity; the event carries only HA's raw attributes.
     attributes = {**event.attributes, **(known.attributes if known is not None else {})}
@@ -256,7 +272,8 @@ def render_event(event: StateChangedEvent, entities: Mapping[str, LiveEntity] | 
         for key in EVENT_ATTRIBUTES
         if (detail := _event_detail(key, event.attributes.get(key))) is not None
     ][:MAX_EVENT_DETAILS]
-    return _DETAIL_SEP.join([line, *details])
+    cause = _cause(event, entities)
+    return _DETAIL_SEP.join([line, *([cause] if cause else []), *details])
 
 
 @dataclass(frozen=True)

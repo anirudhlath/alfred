@@ -105,6 +105,9 @@ class HaEvent(BaseModel):
     entity_id: str
     state: str
     attributes: dict[str, Any] = Field(default_factory=dict)
+    # Who caused the change: a switch, app or device; an automation; or a person (their
+    # entity in the world, which carries the user_id the context names).
+    by: str = Field(default="outside", pattern=r"^(outside|automation|person\.[a-z0-9_]+)$")
 
 
 class HaEventStep(BaseModel):

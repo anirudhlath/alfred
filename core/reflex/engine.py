@@ -5,7 +5,8 @@ preferences, Reflex's tools and live state, builds the prompt with
 ``core.reflex.prompt`` and parses the reply with ``core.reflex.decision``.
 
 Design for eval-ability: structured (event, preferences, live state) in → structured
-proposal out. No side effects — in shadow mode nothing a proposal names is executed.
+proposal out. No effect on the house — in shadow mode nothing a proposal names is executed —
+and one private write: the decision log (``alfred:reflex:decision_log``), best-effort.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 
     from bus.schemas.events import ReflexProposal, StateChangedEvent, TriggerFired
     from core.reflex.context_reader import ContextReader
+    from core.reflex.decision_log import DecisionLog
     from core.reflex.prompt import LiveEntity
     from core.reflex.tool_registry import ToolInfo, ToolRegistry
 
@@ -63,12 +65,14 @@ class ReflexEngine:
         memory_reader: MemoryReader | None = None,
         *,
         clock: Callable[[], datetime] = _utc_now,
+        decision_log: DecisionLog | None = None,
     ) -> None:
         self.preferences_dir = preferences_dir
         self._registry = tool_registry
         self._context_reader = context_reader
         self._memory_reader = memory_reader
         self._clock = clock
+        self._decision_log = decision_log
         self._cached_preferences: str | None = None
         self._cached_tools: list[ToolInfo] | None = None
         self._cache_time: float = 0.0
@@ -128,7 +132,10 @@ class ReflexEngine:
             tz_name=tz_name,
         )
         response = await inference.infer(prompt)
-        return parse_decision(str(response.get("response", "")), tools)
+        proposal = parse_decision(str(response.get("response", "")), tools)
+        if self._decision_log is not None:
+            await self._decision_log.record("state_change", event, prompt, proposal)
+        return proposal
 
     @traced(name="reflex.process_trigger_fired")
     @track_latency(category="reflex")
@@ -145,4 +152,7 @@ class ReflexEngine:
             tz_name=tz_name,
         )
         response = await inference.infer(prompt)
-        return parse_decision(str(response.get("response", "")), tools)
+        proposal = parse_decision(str(response.get("response", "")), tools)
+        if self._decision_log is not None:
+            await self._decision_log.record("trigger_fired", event, prompt, proposal)
+        return proposal

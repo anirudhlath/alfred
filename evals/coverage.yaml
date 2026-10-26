@@ -47,6 +47,7 @@ rows:
   - {id: 4.4.control-surface, section: "4.4", prd: "Generated control surface", pending_suites: [home_control]}
   - {id: 4.4.live-state, section: "4.4", prd: "Live state streaming", suites: [home_control]}
   - {id: 4.4.reflex-judgment, section: "4.4", prd: "Reflex judgment calls", suites: [reflex]}
+  - {id: 4.4.who-did-it, section: "4.4", prd: "Who did it", pending_suites: [reflex], tests: [tests/core/attribution]}
   - {id: 4.4.tiered-autonomy, section: "4.4", prd: "Tiered autonomy", pending_suites: [reflex]}
   # PRD status remains planned; goldens exercise the existing router/pending/confirmation code.
   - {id: 4.4.critical-confirmation, section: "4.4", prd: "Confirmation required for critical actions", suites: [critical_actions]}
