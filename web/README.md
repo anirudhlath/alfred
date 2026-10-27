@@ -162,7 +162,7 @@ Phase 4: the app installs and opens with no network.
 
 ## The service worker
 
-`public/sw.js` is hand-written — 268 lines of code under 851 of comment at `0972685`, 3.2
+`public/sw.js` is hand-written — 273 lines of code under 909 of comment at `1d166e3`, 3.3
 to 1, counted with acorn's tokenizer (a line is code if any token touches it, comment if
 only a comment does, and a blank line, inside a comment or not, is neither) — and shipped
 verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
@@ -236,8 +236,8 @@ Chromium with no DevTools attached, a chunk sending a byte every five seconds he
 install `installing` until the browser failed it at 300 seconds, and the same chunk named by
 a new deploy held the navigation's refresh, and its connection, for 309 seconds after the
 page was served; with the ceiling, the install fails and the refresh lets go at 120. Two
-minutes is generous on purpose: the entry chunk, 418 537 bytes at `c49e66d`, reaches it
-only below 3.5 kB/s — about 28 kbit/s, a GPRS-class link, on which the page's own load of
+minutes is generous on purpose: the entry chunk, 448 860 bytes at `1d166e3`, reaches it
+only below 3.7 kB/s — about 30 kbit/s, a GPRS-class link, on which the page's own load of
 that chunk takes as long — and it ends well inside the browser's 300. It is per body, not
 per event, and an event reads its bodies one after another, so three bodies that each run
 near the ceiling outlast the browser's 300 seconds. Install is where it bites: a font cut
@@ -284,23 +284,24 @@ widen the cache.
 Every cache whose name is not the current one is deleted outright — no `alfred-` prefix
 filter, because anything this origin holds that is not the current cache is not ours to
 keep — so bumping `VERSION` takes the whole previous world with it. Then the collection,
-`collect()`: inside the current cache, every entry that neither the `/__shell-manifest`
-record nor the shell now in the cache names, itself or through its stylesheet (the union is
-the next paragraph): asset URLs are content-hashed, and `VERSION` is bumped by hand, so for
-every deploy that does *not* bump it this is the only thing that reaches what the previous
-build of the same file cached. The same collection runs after every refresh that publishes
-a shell, which is where most of them happen ("What that ordering costs", below). Entries
-are compared on the full URL, not the pathname, so a cross-origin copy sharing a path with
-something precached goes too. It also reaches whatever the `fetch` handler stores at
-runtime, by the same rule: an asset cached on a cache-first miss is in no record, so it
-stays only if the cached shell names it, itself or through its stylesheet — the chunks a
-refresh published do, and so does a font install declined and the page fetched later —
-and the next collection takes anything else, such as a font only a superseded stylesheet
-names. That is intended: what the record and the shell name is what the phone needs
-offline, any other runtime entry is re-fetchable online, and the alternative is a cache
-with no ceiling. Online is the catch: a build that splits out a lazy chunk would have it
-collected at the next online navigation, since neither the record nor the shell's HTML
-names one, and then fail to load it offline. There is none today, and a build that adds
+`collect()`: inside the current cache, every entry that none of the `/__shell-manifest`
+record, the shell now in the cache and the shell this worker last served from it names,
+itself or through its stylesheet (the union is the next paragraph): asset URLs are
+content-hashed, and `VERSION` is bumped by hand, so for every deploy that does *not* bump
+it this is the only thing that reaches what the previous build of the same file cached.
+The same collection runs after every refresh that publishes a shell, which is where most
+of them happen ("What that ordering costs", below). Entries are compared on the full URL,
+not the pathname, so a cross-origin copy sharing a path with something precached goes too.
+It also reaches whatever the `fetch` handler stores at runtime, by the same rule: an asset
+cached on a cache-first miss is in no record, so it stays only if a shell it keeps names
+it, itself or through its stylesheet — the chunks a refresh published are, and so is a
+font install declined and the page fetched later — and the next collection takes anything
+else, such as a font only a superseded stylesheet names. That is intended: what the record
+and the shells name is what the phone needs offline, any other runtime entry is
+re-fetchable online, and the alternative is a cache with no ceiling. Online is the catch:
+a build that splits out a lazy chunk would have it collected at the next online
+navigation, since neither the record nor any shell's HTML names one, and then fail to load
+it offline. There is none today, and a build that adds
 one must add it to the keep-set first ([#406](https://github.com/anirudhlath/alfred/issues/406) §16).
 
 The keep-set is that record **union what the shell now in the cache names, union the fonts
@@ -322,10 +323,12 @@ keeps it beside the cached shell's, so the cache holds two deploys after one, or
 they agree — measured in Chromium, 12 keys after the first install and 14 after each of
 four deploys, where activate alone let it grow 14, 16, 18, 20 — and a third while the
 worker remembers serving an older shell from the cache (below). Reading a
-stylesheet costs one cache read of it each time, 68 301 bytes at `0972685`, which was not
-measured as a cost. A shell, or a stylesheet it names, that will not read is treated
-exactly like a record that will not parse: keep everything; a named stylesheet that is not
-in the cache names nothing.
+stylesheet costs one cache read of it each time, 68 429 bytes at `1d166e3`, which was not
+measured as a cost. A shell, cached or last served, or a stylesheet it names, that will
+not read is treated exactly like a record that will not parse: keep everything, until the
+next install rewrites the cache's shell, and the next launch from the cache, or a worker
+started again, the one last served; a named stylesheet that is not in the cache names
+nothing.
 
 **A record it cannot trust means keep everything.** All three shapes — absent, not a list,
 or not readable as JSON — are read the same way, because deleting on a record you cannot
@@ -337,14 +340,15 @@ dropped the old cache. Each delete is caught on its own for the same reason: one
 storage failure must not cost the caches behind it, the entry purge, or the claim.
 
 Only then does it `clients.claim()` — a page handed to this worker mid-purge is being
-served from a cache that is still being emptied underneath it. A collection also keeps what
-the shell this worker last served from the cache names: a launch served one deploy's cached
-shell while a refresh published the next would otherwise lose that shell's chunk between
-reading the shell and asking for the chunk. The worker remembers one such shell, and none
-once it is stopped and started again. The one race left is a worker *installing* while a
-collection runs, at this activate or after a refresh: the entry keys are snapshotted before
-the record is read, and a refresh does not collect while `self.registration.installing` is
-set, which narrow it, and closing it would need a lock two workers do not have.
+served from a cache that is still being emptied underneath it. A collection also keeps
+what the shell this worker last served from the cache names, and the fonts its stylesheet
+names: a launch served one deploy's cached shell while a refresh published the next would
+otherwise lose that shell's chunk between reading the shell and asking for the chunk. The
+worker remembers one such shell, and none once it is stopped and started again. The one
+race left is a worker *installing* while a collection runs, at this activate or after a
+refresh: the entry keys are snapshotted before the record is read, and a refresh does not
+collect while `self.registration.installing` is set, which narrow it, and closing it would
+need a lock two workers do not have.
 
 **The `fetch` handler refuses first and then branches twice.** `isRefused` is the whole of
 rule 1 in one predicate — every request this worker must never answer — and it runs before
@@ -422,7 +426,7 @@ last: the asset branch serves them cache-first to any page whose HTML names them
 with the online page whose navigation began the refresh, and the next online navigation to
 that deploy finds them cached and has only the HTML left to publish. What they lack is a
 claim on the next collection. They are bounded (what a shell names is the entry chunk and
-the stylesheet, 486 880 bytes at `c49e66d`) and they are collected by that collection,
+the stylesheet, 517 289 bytes at `1d166e3`) and they are collected by that collection,
 which is the same collector every other runtime entry relies on.
 
 A refresh that completes collects as its last step, once its shell is published, so the
@@ -477,9 +481,9 @@ gave it, when it gave it.
 The cost of cache-first with no expiry, written down because nothing else says it: an entry
 that is wrong stays wrong until something deletes it. There is no revalidation, and a
 collection, after each refresh that publishes a shell and at activate, deletes an entry
-only once neither the record nor the cached shell names it, itself or through its
-stylesheet: a wrong entry stays for as long as either does. What stands between that and a
-poisoned cache is upstream — a hashed name cannot be
+only once none of the record, the cached shell and the shell last served from the cache
+names it, itself or through its stylesheet: a wrong entry stays for as long as any of them
+does. What stands between that and a poisoned cache is upstream — a hashed name cannot be
 poisoned by a deploy, the store guard refuses what is not an asset, and the kill switch is
 the floor.
 
@@ -526,10 +530,15 @@ Three rules govern it, and they are restated at the top of the file itself:
    only by a phone that is offline or cannot reach this origin inside the deadline, never
    by one whose network is working; and the browser's own update check on `/sw.js` keeps
    running — which is what lets a kill switch land if this file ever has to be withdrawn.
-3. **Every global goes through `self.`**, which is the seam `src/test/sw-harness.ts`
-   replaces to evaluate the shipped bytes in a fake `ServiceWorkerGlobalScope`. It is
-   enforced by `no-restricted-globals` in `eslint.config.js`, not by convention:
-   `globals.serviceworker` would otherwise make a bare `caches` perfectly legal.
+3. **Ten globals go through `self.`** — `fetch`, `caches`, `clients`, `registration`,
+   `location`, `setTimeout`, `clearTimeout`, `AbortController`, `addEventListener` and
+   `skipWaiting` — which is the seam `src/test/sw-harness.ts` replaces to evaluate the
+   shipped bytes in a fake `ServiceWorkerGlobalScope`. It is enforced by
+   `no-restricted-globals` in `eslint.config.js`, not by convention:
+   `globals.serviceworker` would otherwise make a bare `caches` perfectly legal. The
+   language's own globals (`Promise`, `JSON`, `Set`, `Array`, `Error`,
+   `decodeURIComponent`, `undefined`) and `URL` and `Response` are reached bare: none of
+   them reaches outside the worker, and the tests run the real ones.
 
 Two things to know before editing it. **A 200 is not proof of anything** — `/assets` is a
 StaticFiles mount (`core/channels/spa.py:39-40`), so a removed hashed chunk answers 404
@@ -555,7 +564,8 @@ The tests are `src/test/sw.test.ts` (the worker, driven event by event),
 `Cache.put`, `Clients.matchAll` and which worker controls each open page closely enough
 that a test passing here means a worker that runs on a phone, and the levers the tests
 drive time with: `late(pathname, ms)`, an answer that comes after the worker stopped
-waiting for it, and `holdPut(key)`, a write held after its body is read),
+waiting for it; `holdPut(key)`, a write held after its body is read; and `holdRead(key)`
+and `refuseRead(key)`, the next read of a cached body held or failed, once),
 `src/test/sw-server-routes.test.ts` (the `NEVER` and `NEVER_UNDER` lists, read out of
 `sw.js` and held against the routes `create_app` and `mount_spa` declare) and
 `src/lib/sw.test.ts` (the page's side, against a fake `navigator.serviceWorker`). That
