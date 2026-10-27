@@ -205,7 +205,7 @@ async def test_read_asks_redis_only_for_the_window(monkeypatch: pytest.MonkeyPat
 
     assert [(a["min_id"], a["max_id"]) for a in asked] == [
         (str(_ms(since)), "+"),
-        (str(_ms(since)), str(_ms(_NOW))),
+        (str(_ms(since)), str(_ms(_NOW) + decision_log.UNTIL_SLACK_MS)),
     ]
 
 
@@ -219,6 +219,33 @@ async def test_read_stops_before_until() -> None:
     records = await DecisionLog(redis).read(since=_EPOCH, until=until)
 
     assert [r.prompt for r in records] == ["inside"]
+
+
+async def test_read_keeps_a_record_made_before_until_but_written_after_it() -> None:
+    """``record()`` stamps the time before the XADD, so the stream id can lead it past until."""
+    redis = fakeredis.FakeAsyncRedis()
+    until = _NOW
+    slack = timedelta(milliseconds=decision_log.UNTIL_SLACK_MS)
+    await _add(
+        redis,
+        "decided before, written after",
+        time=until - timedelta(milliseconds=1),
+        entry_at=until + timedelta(milliseconds=1),
+    )
+    await _add(redis, "decided at until", time=until, entry_at=until + timedelta(milliseconds=2))
+    await _add(
+        redis,
+        "decided before, written at the slack",
+        time=until - timedelta(milliseconds=1),
+        entry_at=until + slack,
+    )
+
+    records = await DecisionLog(redis).read(since=_EPOCH, until=until)
+
+    assert [r.prompt for r in records] == [
+        "decided before, written after",
+        "decided before, written at the slack",
+    ]
 
 
 async def test_read_still_filters_on_a_records_own_time_inside_the_window() -> None:
