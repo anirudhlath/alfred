@@ -357,13 +357,19 @@ optional (see [Deployment](deployment.md#prompts-from-langfuse-optional)).
 | `librarian-resolve` | `{{min_observations}}`, `{{min_days}}` |
 | `librarian-patterns` | `{{min_occurrences}}`, `{{min_days}}`, `{{tz_name}}` |
 | `approval-classifier` | none |
+| `reflex-state-change` | none |
+| `reflex-trigger` | none |
+| `reflex-rules` | none |
 
 A name is also its default's file name and its name in Langfuse. Variables use Langfuse's
 `{{name}}` syntax. **The store renders only the prose; code renders the data**: the
 current time, involuntary recall and the routine hint in System 2, and the observations the
 Librarian analyses, are built in code and sit between or after the prompts. The engine
 renders System 2's sections before each turn, fetched concurrently, so the agent's
-instructions function stays sync; the Librarian passes each agent its prompt.
+instructions function stays sync; the Librarian passes each agent its prompt. Reflex fetches the
+intro for the event (`reflex-state-change` or `reflex-trigger`) and `reflex-rules` before each
+decision (`core/reflex/prose.py`); the store's cache makes that free once warm, and an engine
+built with no store uses the repo defaults.
 
 **Where a prompt comes from**, in order:
 
@@ -604,7 +610,7 @@ one-toolset agent.
 | `shared/agents.py` | `resolve_model` (providers on the retrying client), `model_key`, `role_headers`, `instrumentation` |
 | `shared/config.py` | `resolve_llm_settings`, the LLM fields on `AlfredConfig`, `apply_model_env` |
 | `shared/otel.py` | `langfuse_attributes`, `LangfuseBaggageProcessor` |
-| `shared/prompts/` | `names` (the thirteen prompts and their variables), `store.PromptStore`, `template`, `link` (the span link), `cli` (`alfred prompts`), `defaults/<name>.md` |
+| `shared/prompts/` | `names` (the sixteen prompts and their variables), `store.PromptStore`, `template`, `link` (the span link), `cli` (`alfred prompts`), `defaults/<name>.md` |
 | `core/conscious/system2_prompts.py` | `System2Prompts`: one turn's rendered sections |
 | `core/conscious/agent.py` | `build_system2_agent`, `system2_toolsets`, `REQUEST_LIMIT` |
 | `core/conscious/engine.py` | `ConsciousEngine`: one turn around one agent run, `resume_approval` for a Door decision |

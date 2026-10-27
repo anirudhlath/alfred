@@ -11,6 +11,7 @@ from core.reflex.prompt import (
     build_trigger_prompt,
     render_tools,
 )
+from core.reflex.prose import repo_prose
 from core.reflex.tool_registry import ToolInfo
 
 NIGHT_UTC = datetime(2026, 10, 8, 3, 30, tzinfo=UTC)
@@ -72,6 +73,7 @@ def _prompt(
         entities=entities if entities is not None else {"light.tv_lamp": _lamp("on")},
         now=NIGHT_UTC,
         tz_name="UTC",
+        prose=repo_prose("state_change"),
     )
 
 
@@ -138,6 +140,7 @@ def test_a_trigger_prompt_names_the_trigger_and_says_the_owner_knows() -> None:
         entities={"light.tv_lamp": _lamp("on")},
         now=NIGHT_UTC,
         tz_name="UTC",
+        prose=repo_prose("trigger_fired"),
     )
 
     assert "already being notified" in prompt

@@ -55,27 +55,16 @@ _ARROW = " → "
 _DETAIL_SEP = " · "
 _HEAD = re.compile(r"(?P<name>.+) \((?P<area>[^()]+)\)")
 
-STATE_CHANGE_INTRO = (
-    "You are Alfred's Reflex Engine, the quiet steward of a home. One thing in the house "
-    "just changed. Decide whether to do something about it."
-)
-TRIGGER_INTRO = (
-    "You are Alfred's Reflex Engine, the quiet steward of a home. A trigger the owner set "
-    "up has just fired, and the owner is already being notified about it. Decide whether "
-    "the home should also do something."
-)
-DECISION_RULES = """\
-- act: the right move is obvious. Common sense or a stated preference makes it plainly
-  what the household wants, and doing it would surprise no one at home.
-- ask: a move is plausible, but you are not sure it is wanted.
-- none: nothing needs doing. This is the usual answer.
 
-Use only the tools below. Target a room by its name in the House section, or a device by
-its name.
+@dataclass(frozen=True)
+class ReflexProse:
+    """The prose around the data: the intro that says what happened, and the decision rules.
 
-Respond with JSON only. Either {"decision": "none"} or
-{"decision": "act" | "ask", "reason": "<one short sentence>", "tool_name": "...",
- "parameters": {...}}"""
+    Both come from the prompt store (``core.reflex.prose``); this module only places them.
+    """
+
+    intro: str
+    rules: str
 
 
 @dataclass(frozen=True)
@@ -343,7 +332,7 @@ def render_tools(tools: Sequence[ToolInfo]) -> str:
 
 
 def _assemble(
-    intro: str,
+    prose: ReflexProse,
     *,
     preferences: str,
     tools: Sequence[ToolInfo],
@@ -356,7 +345,7 @@ def _assemble(
     # Stable → volatile. Keep this order: it is what lets vLLM reuse the prefix.
     return "\n\n".join(
         [
-            f"{intro}\n\n{DECISION_RULES}\n\n{render_tools(tools)}",
+            f"{prose.intro}\n\n{prose.rules}\n\n{render_tools(tools)}",
             f"## Preferences\n{preferences.strip() or NO_PREFERENCES}",
             f"## Now\n{render_now(now, tz_name, entities)}",
             f"## House\n{render_house(entities)}",
@@ -374,10 +363,11 @@ def build_state_change_prompt(
     entities: Mapping[str, LiveEntity] | None,
     now: datetime,
     tz_name: str,
+    prose: ReflexProse,
 ) -> str:
     """The Reflex prompt for one state change."""
     return _assemble(
-        STATE_CHANGE_INTRO,
+        prose,
         preferences=preferences,
         tools=tools,
         entities=entities,
@@ -396,10 +386,11 @@ def build_trigger_prompt(
     entities: Mapping[str, LiveEntity] | None,
     now: datetime,
     tz_name: str,
+    prose: ReflexProse,
 ) -> str:
     """The Reflex prompt for a trigger that fired; the owner is already being notified."""
     return _assemble(
-        TRIGGER_INTRO,
+        prose,
         preferences=preferences,
         tools=tools,
         entities=entities,

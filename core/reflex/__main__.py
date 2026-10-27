@@ -38,6 +38,7 @@ from domains.home.home_agent import HomeAgent
 from sdk.alfred_sdk.telemetry import clear_telemetry_buffer, get_telemetry_buffer
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
+from shared.prompts.store import PromptStore
 from shared.redis_streams import create_redis, read_group, reclaim_replayable
 from shared.streams import (
     EVENTS_STREAM,
@@ -247,12 +248,15 @@ async def run(config: AlfredConfig) -> None:
         profile_dir=profile_dir(),
         default_proactivity=config.proactivity_level,
     )
+    prompts = PromptStore.from_config(config, redis=r)
+    logger.info("Prompts: %s", prompts.describe())
     engine = ReflexEngine(
         preferences_dir=str(preferences_dir()),
         tool_registry=registry,
         context_reader=context_reader,
         memory_reader=memory_reader,
         decision_log=DecisionLog(r),
+        prompts=prompts,
     )
     attention = AttentionSet(redis=r)
 
@@ -311,6 +315,7 @@ async def run(config: AlfredConfig) -> None:
         warmup_task.cancel()
         trigger_fired_task.cancel()
         telemetry_task.cancel()
+        await prompts.aclose()
         await r.aclose()
 
 
