@@ -222,6 +222,11 @@ const ascending = (deadlines: readonly number[]): number[] => [...deadlines].sor
  * is the wall's. Macrotasks are counted, not timed (see `macrotasks`), so a
  * machine that is slow, or stalls part way, gets the same answer as one that
  * is not — a `"settled"` that takes a few steps is not lost to a 20 ms sleep.
+ * A `"settled"` asserted through it is a positive raced against that count as
+ * its backstop, and fails loudly if the read needs more steps than the count.
+ * A `"pending"` is a negative, which could not: "settles the page's read of a
+ * response that ends" below is the same read of a body that ends, and is what
+ * fails first if the count stops being deep enough.
  */
 const pending = (read: Promise<unknown>): Promise<string> =>
   Promise.race([
@@ -239,9 +244,12 @@ const pending = (read: Promise<unknown>): Promise<string> =>
  * test can see only the consequences of. Gives up after a hundred, and the
  * assertion after it is what fails. The hundred are macrotasks, not time, so
  * load cannot make this give up earlier: every one lets each step waiting take
- * one, however slowly they run (`macrotasks` says why). The waits below need
- * one to three; the last, which waits for a deletion that must NOT come, is
- * meant to use all hundred.
+ * one, however slowly they run (`macrotasks` says why). The one wait that is
+ * for a deletion that must NOT come is meant to use all hundred, and so could
+ * pass for want of anything that could have failed if a collection ever took
+ * more than that; "collects the files of a shell nothing names within the
+ * macrotasks `until` gives a collection that must not come", beside it, is the
+ * same wait for a deletion that is due, and fails first.
  */
 const until = async (done: () => boolean): Promise<void> => {
   for (let i = 0; i < 100 && !done(); i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2688,6 +2696,45 @@ describe.skipIf(FIRED)("navigations", () => {
     const third = deploy(3);
     await worker.request({ path: "/", mode: "navigate" });
     expect(worker.keys()).toEqual([...record, ...second, typefaces[1], ...third].sort());
+  });
+
+  it("settles the page's read of a response that ends, as `pending` gives one that stalls no chance to", async () => {
+    // The twin of "serves the page, and keeps the shell it has, when the new one
+    // stalls": the same navigation answered by a body that ends, read after the
+    // event has settled, as the stalled one's is. The count `pending` gives a
+    // read that must NOT settle is checked here, against a read that does.
+    const worker = shell();
+    await worker.install();
+    worker.respond("/", deployed("control"));
+    const { responded, settled } = worker.dispatch({ path: "/", mode: "navigate" });
+    const response = await responded;
+    await settled;
+    await expect(pending(response!.text())).resolves.toBe("settled");
+  });
+
+  it("collects the files of a shell nothing names within the macrotasks `until` gives a collection that must not come", async () => {
+    // The twin of the test below with the hold taken out and the shell it keeps
+    // them for replaced: deploy 1's files are named by no shell a launch was
+    // served once a launch has been served deploy 2's, so the collection that
+    // deploy 3's refresh runs takes them, and `until` waits for that as it waits
+    // there for a deletion that never comes. If this fails, the wait is
+    // too short for a collection, and the test below is passing for want of
+    // anything that could have failed.
+    const worker = shell();
+    await worker.install();
+    await worker.activate();
+    const first = routeDeploy(worker, 1);
+    await worker.request({ path: "/", mode: "navigate" });
+    await (await worker.request({ path: "/activity", mode: "navigate" }))!.text();
+    routeDeploy(worker, 2);
+    await worker.request({ path: "/", mode: "navigate" });
+    await (await worker.request({ path: "/activity", mode: "navigate" }))!.text();
+    routeDeploy(worker, 3);
+    const three = worker.dispatch({ path: "/", mode: "navigate" });
+    await three.responded;
+    await until(() => !worker.keys().includes(first[0]));
+    expect(worker.keys()).not.toContain(first[0]);
+    await three.settled;
   });
 
   it("keeps the files of a shell it served from the cache while that shell is still being read", async () => {
