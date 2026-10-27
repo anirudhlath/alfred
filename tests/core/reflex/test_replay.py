@@ -442,9 +442,8 @@ async def test_no_records_is_a_clear_message_not_a_table(
 # --- the model ----------------------------------------------------------------------------
 
 
-def test_the_model_option_overrides_the_configured_one(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("VLLM_BASE_URL", "")
-    monkeypatch.delenv("VLLM_BASE_URL")  # build_agent exports it; have the test undo that
+@pytest.mark.usefixtures("restored_environ")
+def test_the_model_option_overrides_the_configured_one() -> None:
     config = dataclasses.replace(
         AlfredConfig.from_env(),
         reflex_model="vllm:configured-model",
@@ -457,7 +456,8 @@ def test_the_model_option_overrides_the_configured_one(monkeypatch: pytest.Monke
     assert agent.model.model_name == "other-model"
 
 
-def test_without_any_model_the_replay_exits_non_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.usefixtures("restored_environ")
+def test_without_any_model_the_replay_exits_non_zero() -> None:
     config = dataclasses.replace(AlfredConfig.from_env(), reflex_model="")
 
     with pytest.raises(SystemExit) as stopped:

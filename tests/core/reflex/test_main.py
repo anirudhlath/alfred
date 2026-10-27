@@ -16,15 +16,8 @@ from shared.prompts.store import PromptStore
 from tests.shared.prompts.fakes import FakeLangfuse
 
 
-@pytest.fixture
-def no_vllm_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
-    """``build_agent`` exports the base URL to ``os.environ``; have it undone after the test."""
-    monkeypatch.setenv("VLLM_BASE_URL", "")
-    monkeypatch.delenv("VLLM_BASE_URL")
-    return monkeypatch
-
-
-def test_the_agent_is_built_over_the_configured_model(no_vllm_env: pytest.MonkeyPatch) -> None:
+@pytest.mark.usefixtures("restored_environ")
+def test_the_agent_is_built_over_the_configured_model() -> None:
     config = dataclasses.replace(
         AlfredConfig.from_env(),
         reflex_model="vllm:test-model",
@@ -38,9 +31,8 @@ def test_the_agent_is_built_over_the_configured_model(no_vllm_env: pytest.Monkey
     assert agent.model.base_url == "http://vllm.test:8000/v1/"
 
 
-def test_without_a_model_reflex_logs_and_exits_non_zero(
-    no_vllm_env: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
+@pytest.mark.usefixtures("restored_environ")
+def test_without_a_model_reflex_logs_and_exits_non_zero(caplog: pytest.LogCaptureFixture) -> None:
     config = dataclasses.replace(AlfredConfig.from_env(), reflex_model="")
 
     with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as stopped:
