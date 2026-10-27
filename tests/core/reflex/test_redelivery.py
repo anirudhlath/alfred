@@ -212,6 +212,28 @@ async def test_a_proposal_is_marked_after_it_is_published() -> None:
     assert await redis.xlen(REFLEX_OBSERVATIONS_STREAM) == 1
 
 
+def _refuse_exists(redis: AioRedis, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The decided-check's read fails: Redis cannot say whether the event was decided."""
+    monkeypatch.setattr(
+        redis, "exists", AsyncMock(side_effect=redis_exceptions.ConnectionError("redis gone"))
+    )
+
+
+async def test_a_failing_decided_check_leaves_the_entry_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Raised, so the loop does not ACK; guessing "not decided" could decide the event twice."""
+    redis = fakeredis.FakeAsyncRedis()
+    engine, script = _engine(NONE)
+    _refuse_exists(redis, monkeypatch)
+
+    with pytest.raises(redis_exceptions.ConnectionError, match="redis gone"):
+        await _deliver(redis, engine, _lamp())
+
+    assert script.call_count == 0
+    assert await _decisions_today(redis) == {}
+
+
 async def test_a_refused_marker_write_does_not_fail_the_entry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -274,3 +296,18 @@ async def test_a_trigger_decision_that_failed_is_not_marked() -> None:
 
     assert script.call_count == 2
     assert await already_decided(redis, event.event_id) is True
+
+
+async def test_a_failing_decided_check_leaves_the_trigger_entry_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    engine, script = _engine(NONE)
+    publisher = _publisher()
+    _refuse_exists(redis, monkeypatch)
+
+    with pytest.raises(redis_exceptions.ConnectionError, match="redis gone"):
+        await _fire(redis, engine, publisher, _trigger())
+
+    assert script.call_count == 0
+    publisher.publish.assert_not_awaited()  # nothing reaches the owner before the check
