@@ -130,7 +130,7 @@ function stubFetch(): void {
         return new Response(JSON.stringify(reflexObservationsPage), { status: 200 });
       }
       // The one read on these benches that answers a **bare array** rather
-      // than an envelope (`lib/system.ts`, `fetchIntegrations`).
+      // than an envelope (`lib/system.ts`, `fetchIntegrationListing`).
       if (url === "/api/integrations") return new Response("[]", { status: 200 });
       // Every other read on the three new benches: a body with none of the
       // keys they look for, which each fetcher reads as an empty list. The

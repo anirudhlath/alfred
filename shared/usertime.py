@@ -33,17 +33,32 @@ def is_valid_timezone(tz_name: str) -> bool:
     return True
 
 
-async def get_user_timezone(redis: AioRedis) -> str:
-    """Return the user's IANA timezone name (stored -> env -> UTC)."""
-    raw: str | bytes | None = await redis.get(USER_TIMEZONE_KEY)  # type: ignore[misc,unused-ignore]
-    if raw is not None:
-        name = decode_stream_value(raw)
-        if is_valid_timezone(name):
-            return name
+# The zone this process last resolved or stored, for readers that cannot await (the
+# spend clock picks the budget day synchronously, on every model request).
+_last_resolved: str | None = None
+
+
+def default_user_timezone() -> str:
+    """The configured zone: ALFRED_TIMEZONE when valid, else UTC."""
     env = os.getenv("ALFRED_TIMEZONE", "")
     if env and is_valid_timezone(env):
         return env
     return "UTC"
+
+
+def last_user_timezone() -> str:
+    """The zone ``get_user_timezone`` or ``set_user_timezone`` last saw in this process,
+    or the configured default before either has run."""
+    return _last_resolved or default_user_timezone()
+
+
+async def get_user_timezone(redis: AioRedis) -> str:
+    """Return the user's IANA timezone name (stored -> env -> UTC)."""
+    global _last_resolved
+    raw: str | bytes | None = await redis.get(USER_TIMEZONE_KEY)  # type: ignore[misc,unused-ignore]
+    name = decode_stream_value(raw) if raw is not None else ""
+    _last_resolved = name if is_valid_timezone(name) else default_user_timezone()
+    return _last_resolved
 
 
 async def set_user_timezone(redis: AioRedis, tz_name: str) -> bool:
@@ -52,9 +67,11 @@ async def set_user_timezone(redis: AioRedis, tz_name: str) -> bool:
     On change, pokes TRIGGERS_CHANGED_CHANNEL so long-sleeping cron alarms
     re-arm under the new zone. Returns True only when a write happened.
     """
+    global _last_resolved
     if not is_valid_timezone(tz_name):
         logger.warning("Ignoring invalid client timezone %r", tz_name)
         return False
+    _last_resolved = tz_name
     raw: str | bytes | None = await redis.get(USER_TIMEZONE_KEY)  # type: ignore[misc,unused-ignore]
     current = decode_stream_value(raw) if raw is not None else None
     if current == tz_name:

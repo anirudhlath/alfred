@@ -203,7 +203,7 @@ bytes.
 `core/channels/web_server.py`) takes 3 recorded samples of the identity speaking. **There is
 no client surface for it in PWA phase 1** — the Settings page that carried the Voice
 Enrollment card was removed in the hard cut, and the Workshop that reinstates one is phase 2
-(`docs/backlog/low/pwa-phase1-followups.md` §5). Until then the endpoint is driven directly.
+([#256](https://github.com/anirudhlath/alfred/issues/256) §5). Until then the endpoint is driven directly.
 The handler decodes each sample to 16kHz PCM
 (`core/voice/audio.decode_to_pcm16k`) and calls `SpeakerID.enroll(identity, samples)`, which
 embeds each sample, averages them, L2-normalizes, and writes to the Redis hash.
@@ -235,7 +235,7 @@ trigger a duplicate load.
 ## Room-Aware Context
 
 The `area` field flows from `satellites.yaml` → `UserRequest.area` →
-`ConsciousEngine` → `ContextAssembler.assemble(area=...)`, which injects:
+`ConsciousEngine` → the `system2-location` prompt (`area`), which injects:
 
 ```
 ## Location
@@ -243,7 +243,7 @@ This request was spoken at the <area> satellite. When a device is referenced wit
 naming a room ("the lights"), assume the <area> area.
 ```
 
-Nothing is hardcoded — any area name from the config flows straight into the prompt.
+Nothing is hardcoded — any area name from the config flows straight into the prompt. The wording is the `system2-location` prompt ([docs/llm.md](llm.md#prompts)).
 
 ## Announcements
 
@@ -265,7 +265,11 @@ bare `AudioStart`/`AudioChunk`/`AudioStop` stream, identical to a spoken reply.
 
 For single-device delivery (future presence-aware targeting, timers), the bridge also exposes
 `get_connection(name)` and `play_wav_to(name, wav) -> bool` (False when the named satellite is
-offline or unknown); v1's announcement adapter only uses the broadcast path.
+offline or unknown); the announcement adapter only uses the broadcast path. The channels'
+follow-up sink uses `play_wav_to`: a late answer, or the reply to a run the owner approved
+or declined on the Door, is spoken on the one satellite whose session asked
+(`satellite_name(session_id)`), never broadcast. With no bridge or no TTS it goes out as a
+notification instead; if that satellite is offline the follow-up is dropped with a WARNING ([`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes)).
 
 ## False Wakes
 
@@ -324,7 +328,7 @@ raise, which propagates out of `SatellitePipeline.__call__` into
 plays its error earcon. If Redis is up but nothing ever publishes a matching
 `AlfredResponse` (e.g. the Conscious Engine is down), `publish_and_wait()`'s 60s timeout
 returns a canned apology response instead, which is spoken normally via TTS like any other
-reply. Broader Redis-down recovery is a separate backlog item, not satellite-specific.
+reply. Broader Redis-down recovery is [#68](https://github.com/anirudhlath/alfred/issues/68), not satellite-specific.
 
 **Dev-mode fake satellite (no hardware):** run `wyoming-satellite` directly on the MacBook
 against its built-in mic, point `config/satellites.yaml` at `127.0.0.1`, and start the

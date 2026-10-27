@@ -1,4 +1,4 @@
-"""Concurrent _load() calls must construct the embedding model exactly once.
+"""Concurrent model loads must construct the embedding model exactly once.
 
 A background warmup task racing the first real embed() request would otherwise
 load two copies of the ~300M-param model (both via asyncio.to_thread).
@@ -24,7 +24,7 @@ class _FakeModel:
         _constructions += 1
         time.sleep(0.05)  # simulate slow model load
 
-    def get_sentence_embedding_dimension(self) -> int:
+    def get_embedding_dimension(self) -> int:
         return 8
 
     def encode(self, text: Any, normalize_embeddings: bool = True) -> Any:
@@ -39,7 +39,7 @@ def test_concurrent_load_constructs_model_once(monkeypatch: pytest.MonkeyPatch) 
     provider = SentenceTransformerProvider("fake-model")
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(provider._load) for _ in range(2)]
+        futures = [pool.submit(provider._model.get) for _ in range(2)]
         models = [f.result(timeout=5) for f in futures]
 
     assert _constructions == 1

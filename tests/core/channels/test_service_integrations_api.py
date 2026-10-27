@@ -16,6 +16,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from loguru import logger
+from redis import exceptions as redis_exceptions
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -157,10 +159,14 @@ def _build_service_client(
     *,
     signed_in: bool = True,
     on_manifest_read: Callable[[], None] | None = None,
+    registry_error: Exception | None = None,
 ) -> Iterator[TestClient]:
     """Shared TestClient builder: home-service manifest in a mocked tool registry
     + fake service HTTP. Factored out so variant manifests (e.g. missing
     credentials_endpoint) can reuse the same hermetic registry snapshot/restore.
+
+    ``registry_error`` makes every tool-registry read raise it, while the session
+    lookup on the same fake keeps answering.
     """
     registry_data = {b"home-service": json.dumps(manifest).encode()}
 
@@ -171,12 +177,16 @@ def _build_service_client(
 
     async def _fake_hgetall(key: str) -> dict[bytes, bytes]:
         if key == TOOL_REGISTRY_KEY:
+            if registry_error is not None:
+                raise registry_error
             return registry_data
         result: dict[bytes, bytes] = await session_hgetall(key)
         return result
 
     async def _fake_hget(key: str, field: str) -> bytes | None:
         if key == TOOL_REGISTRY_KEY:
+            if registry_error is not None:
+                raise registry_error
             if on_manifest_read is not None:
                 on_manifest_read()
             return registry_data.get(field.encode())
@@ -261,11 +271,14 @@ def home_service_manifest_without_any_endpoint(
 
 @contextmanager
 def _service_client_for(
-    manifest: dict[str, Any], service_handler: _ServiceHttpHandler
+    manifest: dict[str, Any],
+    service_handler: _ServiceHttpHandler,
+    *,
+    registry_error: Exception | None = None,
 ) -> Iterator[TestClient]:
     """`_build_service_client` as a context manager — for one-off manifest
     variants that don't warrant a dedicated fixture."""
-    yield from _build_service_client(manifest, service_handler)
+    yield from _build_service_client(manifest, service_handler, registry_error=registry_error)
 
 
 @pytest.fixture
@@ -530,6 +543,22 @@ def test_status_unexpected_probe_error_is_unhealthy_not_500(
     assert isinstance(data["latency_ms"], float)
 
 
+@pytest.mark.parametrize("body", [123, ["ok"], "ok", True])
+def test_status_non_object_health_body_is_unhealthy_not_500(
+    body: Any, service_client: TestClient, service_handler: _ServiceHttpHandler
+) -> None:
+    """A 200 whose /health body is valid JSON but not an object parses fine (no
+    ValueError), then crashed `.get` with an AttributeError — a 500 for one
+    misbehaving service. It reads as unhealthy instead."""
+    service_handler.health = body
+    resp = service_client.get("/api/integrations/home-service/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["healthy"] is False
+    assert data["detail"] == {"error": f"/health body is not a JSON object: {type(body).__name__}"}
+    assert isinstance(data["latency_ms"], float)
+
+
 def test_status_times_the_adapter_probe_not_its_construction(
     monkeypatch: pytest.MonkeyPatch,
     service_handler: _ServiceHttpHandler,
@@ -632,3 +661,163 @@ def test_integration_status_requires_session(anon_service_client: TestClient) ->
     """Status proxies the service's /health payload — session-gated."""
     resp = anon_service_client.get("/api/integrations/home-service/status")
     assert resp.status_code == 401
+
+
+# ── tool registry unreadable (issue #118) ──
+
+# One of each way a registry read fails: the connection is refused or dropped, the
+# reply never comes, or Redis answers with an error (a clobbered key, an ACL denial).
+_REGISTRY_ERRORS = [
+    pytest.param(redis_exceptions.ConnectionError("Connection refused"), id="connection"),
+    pytest.param(redis_exceptions.TimeoutError("Timeout reading from redis"), id="timeout"),
+    pytest.param(
+        redis_exceptions.ResponseError(
+            "WRONGTYPE Operation against a key holding the wrong kind of value"
+        ),
+        id="response",
+    ),
+]
+
+
+@pytest.fixture(params=_REGISTRY_ERRORS)
+def registry_down_client(
+    request: pytest.FixtureRequest,
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest: dict[str, Any],
+) -> Iterator[TestClient]:
+    """Signed in, but every read of the tool registry raises a RedisError.
+
+    Only the registry key fails: the session lookup is an HGETALL on the same
+    client, and a fake that failed it too would answer 401 before the route ran.
+    """
+    yield from _build_service_client(
+        home_service_manifest, service_handler, registry_error=request.param
+    )
+
+
+@pytest.fixture
+def captured_warnings() -> Iterator[list[str]]:
+    messages: list[str] = []
+    sink_id = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    yield messages
+    logger.remove(sink_id)
+
+
+def _registry_warnings(messages: list[str]) -> list[str]:
+    return [m for m in messages if "Tool registry unreadable" in m]
+
+
+# The wire contract the PWA reads (web/src/lib/system.ts), spelled out rather than
+# imported so a rename on either side fails here instead of passing quietly.
+_REGISTRY_HEADER = "X-Tool-Registry"
+_REGISTRY_DOWN = "Tool registry unavailable"
+
+# The per-name routes on a service name: the branch that has to read the registry.
+_SERVICE_ROUTES = [
+    pytest.param(
+        "PUT",
+        "/api/integrations/home-service/credentials",
+        {"url": "http://192.168.1.10:8123", "token": "abc123"},
+        id="put",
+    ),
+    pytest.param("DELETE", "/api/integrations/home-service/credentials", None, id="delete"),
+    pytest.param("GET", "/api/integrations/home-service/status", None, id="status"),
+]
+
+
+def test_get_lists_adapters_when_registry_unreadable(
+    registry_down_client: TestClient, captured_warnings: list[str]
+) -> None:
+    """Adapters live in the process and only the service half reads Redis, so a
+    failed registry read costs the services and leaves the adapters, not a 500 —
+    and says so in a header, since the body alone looks like a house with none."""
+    resp = registry_down_client.get("/api/integrations")
+    assert resp.status_code == 200
+    assert [(e["name"], e["kind"]) for e in resp.json()] == [("kind_adapter", "adapter")]
+    assert resp.headers[_REGISTRY_HEADER] == "unavailable"
+    [warning] = _registry_warnings(captured_warnings)
+    assert "adapters only" in warning
+
+
+def test_complete_listing_carries_no_registry_header(service_client: TestClient) -> None:
+    resp = service_client.get("/api/integrations")
+    assert resp.status_code == 200
+    assert _REGISTRY_HEADER not in resp.headers
+
+
+def test_listing_with_no_services_carries_no_registry_header(
+    service_handler: _ServiceHttpHandler, home_service_manifest: dict[str, Any]
+) -> None:
+    """The case the header exists to tell apart: a registry that was read and holds
+    no service with a credentials schema answers the same adapters-only body, and
+    that one is the truth about the house."""
+    manifest = {**home_service_manifest, "credentials_schema": None}
+    with _service_client_for(manifest, service_handler) as client:
+        resp = client.get("/api/integrations")
+    assert [e["kind"] for e in resp.json()] == ["adapter"]
+    assert _REGISTRY_HEADER not in resp.headers
+
+
+@pytest.mark.parametrize(("method", "path", "body"), _SERVICE_ROUTES)
+def test_service_routes_answer_503_when_registry_unreadable(
+    registry_down_client: TestClient,
+    captured_warnings: list[str],
+    service_handler: _ServiceHttpHandler,
+    method: str,
+    path: str,
+    body: dict[str, str] | None,
+) -> None:
+    """A service name can only be looked up in the registry, so an outage is an
+    outage: not a 404 for a name that may well exist, not a 500, and one detail and
+    one WARNING whichever of the three asked."""
+    from shared.secrets import get_secret, set_secret
+
+    set_secret("home-service", "token", "kept")
+
+    resp = registry_down_client.request(method, path, json=body)
+
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": _REGISTRY_DOWN}
+    assert len(_registry_warnings(captured_warnings)) == 1
+    # Nothing was validated against a schema nobody could read, so nothing moved.
+    assert get_secret("home-service", "token") == "kept"
+    assert service_handler.pushes == []
+
+
+def test_adapter_routes_need_no_registry(registry_down_client: TestClient) -> None:
+    """The per-name routes resolve an adapter in-process before they read the
+    registry, so an outage cannot take adapter credentials down with it."""
+    put = registry_down_client.put("/api/integrations/kind_adapter/credentials", json={"key": "k"})
+    assert put.status_code == 200
+
+    listed = registry_down_client.get("/api/integrations")
+    assert listed.json()[0]["configured"] == {"key": True}
+
+    status = registry_down_client.get("/api/integrations/kind_adapter/status")
+    assert status.status_code == 200
+    assert status.json()["healthy"] is True
+
+    delete = registry_down_client.delete("/api/integrations/kind_adapter/credentials")
+    assert delete.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [pytest.param("GET", "/api/integrations", None, id="list"), *_SERVICE_ROUTES],
+)
+def test_registry_reads_do_not_swallow_non_redis_errors(
+    service_handler: _ServiceHttpHandler,
+    home_service_manifest: dict[str, Any],
+    method: str,
+    path: str,
+    body: dict[str, str] | None,
+) -> None:
+    """Only Redis's own failures degrade the listing or answer 503. Anything else in
+    the service half is a bug, and an adapter-only 200 or a 503 would hide it."""
+    with (
+        _service_client_for(
+            home_service_manifest, service_handler, registry_error=RuntimeError("bug")
+        ) as client,
+        pytest.raises(RuntimeError, match="bug"),
+    ):
+        client.request(method, path, json=body)

@@ -37,11 +37,13 @@ class WeatherAdapter(Integration):
         return [
             IntegrationCapability(
                 name="get_current",
+                side_effect=False,
                 description="Get current weather conditions",
                 params_schema={"type": "object", "properties": {}},
             ),
             IntegrationCapability(
                 name="get_forecast",
+                side_effect=False,
                 description="Get weather forecast for next 7 days",
                 params_schema={"type": "object", "properties": {}},
             ),

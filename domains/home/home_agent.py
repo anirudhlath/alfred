@@ -7,19 +7,52 @@ Redis tool registry.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Callable
 
 import httpx
+from tenacity import (
+    AsyncRetrying,
+    RetryCallState,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_random_exponential,
+)
 
 from bus.schemas.events import ActionRequest, ActionResult
 from core.reflex.tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+# A request that provably never reached the service: nothing can have acted yet,
+# so sending it again cannot act twice. A read timeout or a status error can't
+# say that, so those are never retried.
+_NEVER_LEFT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+_MAX_ATTEMPTS = 3
+_BACKOFF_BASE_S = 0.2
+_BACKOFF_CAP_S = 2.0
+# Bounds the retries in time as well as attempts (spec 6b). A connect or a wait for a pooled
+# connection gets 5 s, so a black-holed service costs at most 3 x 5 s plus the backoff
+# (under 20 s), not 3 x 30 s. A timeout bounds the attempt itself; tenacity's
+# stop_after_delay could only skip the next attempt, never cut a hung connect short. A
+# slow action still has 30 s to answer, and a read timeout is never retried.
+_TIMEOUT = httpx.Timeout(30.0, connect=5.0, pool=5.0)
+
+
+def _log_retry(retry_state: RetryCallState) -> None:
+    outcome = retry_state.outcome
+    error = outcome.exception() if outcome is not None else None
+    logger.warning(
+        "Home service unreachable (%s); retrying, attempt %d of %d",
+        type(error).__name__,
+        retry_state.attempt_number + 1,
+        _MAX_ATTEMPTS,
+    )
 
 
 class RedisLike(Protocol):
@@ -31,8 +64,14 @@ class RedisLike(Protocol):
 class HomeAgent:
     """Sub-agent for the home domain."""
 
-    def __init__(self, redis: RedisLike) -> None:
+    def __init__(
+        self,
+        redis: RedisLike,
+        *,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+    ) -> None:
         self.redis = redis
+        self._sleep: Callable[[float], Awaitable[None]] = sleep or asyncio.sleep
         self._endpoint_cache: dict[str, str] = {}
         self._http_client: httpx.AsyncClient | None = None
 
@@ -68,15 +107,22 @@ class HomeAgent:
 
         try:
             if self._http_client is None or self._http_client.is_closed:
-                self._http_client = httpx.AsyncClient(timeout=30.0)
-            resp = await self._http_client.post(
-                endpoint,
-                json={
-                    "method": action.tool_name,
-                    "params": action.parameters,
-                    "id": action.request_id,
-                },
+                self._http_client = httpx.AsyncClient(timeout=_TIMEOUT)
+            client = self._http_client
+            payload = {
+                "method": action.tool_name,
+                "params": action.parameters,
+                "id": action.request_id,
+            }
+            retrying = AsyncRetrying(
+                retry=retry_if_exception_type(_NEVER_LEFT),
+                stop=stop_after_attempt(_MAX_ATTEMPTS),
+                wait=wait_random_exponential(multiplier=_BACKOFF_BASE_S, max=_BACKOFF_CAP_S),
+                before_sleep=_log_retry,
+                reraise=True,
+                sleep=self._sleep,
             )
+            resp: httpx.Response = await retrying(client.post, endpoint, json=payload)
             resp.raise_for_status()
             result_data: Any = resp.json()
 

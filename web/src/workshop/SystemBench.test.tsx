@@ -480,7 +480,7 @@ describe("SystemBench · Cloud spend", () => {
       <SystemBench system={state({ online: false, readAt: null, overview: undefined })} />,
     );
     const card = within(screen.getByTestId("spend-card"));
-    expect(card.getByText("no spend recorded today")).toBeInTheDocument();
+    expect(card.getByText("spend unavailable")).toBeInTheDocument();
     expect(card.queryByText(/unknown since/)).toBeNull();
   });
 
@@ -500,18 +500,18 @@ describe("SystemBench · Cloud spend", () => {
     expect(screen.getByTestId("spend-card").textContent).not.toContain("NaN");
   });
 
-  it("says nothing at all about a day the server reported no spend for", () => {
+  it("says nothing more about a cost the server could not read", () => {
     render(<SystemBench system={state({ overview: { ...overviewFixture, cost: null } })} />);
-    expect(screen.getByText("no spend recorded today")).toBeInTheDocument();
+    expect(screen.getByText("spend unavailable")).toBeInTheDocument();
     expect(screen.getByTestId<HTMLElement>("spend-fill").style.width).toBe("0%");
     // Nothing else to say, so the bar is named by the amount alone rather than
     // pointing at an id that is not on the page. The ids, not the accessible
     // name: a dangling idref contributes nothing to a name, so the name reads
     // the same whether the second id is there or not.
     const card = screen.getByTestId("spend-card");
-    const amount = screen.getByText("no spend recorded today");
+    const amount = screen.getByText("spend unavailable");
     expect(amount.id).not.toBe("");
-    expect(screen.getByRole("img", { name: "no spend recorded today" })).toHaveAttribute(
+    expect(screen.getByRole("img", { name: "spend unavailable" })).toHaveAttribute(
       "aria-labelledby",
       amount.id,
     );
@@ -666,7 +666,7 @@ describe("SystemBench · Quiet", () => {
 
     rerender(<SystemBench system={state({ quiet: quiet({ active: true }) })} />);
     expect(
-      screen.getByText("on · no expiry · queue will not drain on its own"),
+      screen.getByText("on · no expiry · queue drains when you turn it off"),
     ).toBeInTheDocument();
   });
 

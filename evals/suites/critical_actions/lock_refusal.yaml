@@ -1,0 +1,39 @@
+# A refusal in the conversation never executes, and it settles the approval: the record is gone.
+id: critical_actions.lock.refusal
+prd:
+- 4.4.critical-confirmation
+status: shipped
+tags:
+- critical
+- negative
+steps:
+- user: Unlock the front door.
+- user: No. Do not unlock the door. I refuse that action.
+expect:
+- llm_tool_args:
+    tool: home.lock_unlock
+    args:
+      target:
+        regex: ^(?:lock\.front_door|Front Door Lock|Entryway)$
+    at_step: 0
+- ha_not_called:
+    at_step: 0
+- pending_action:
+    tool: home.lock_unlock
+    target_service: home-service
+    parameters:
+      target:
+        regex: ^(?:lock\.front_door|Front Door Lock|Entryway)$
+    at_step: 0
+- notification:
+    source: conscious-engine
+    urgency: urgent
+    after_step: 0
+- ha_not_called:
+    at_step: 1
+- pending_action_absent:
+    tool: home.lock_unlock
+    at_step: 1
+- ha_state:
+    entity_id: lock.front_door
+    state: locked

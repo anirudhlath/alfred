@@ -1,0 +1,43 @@
+# A bare yes names no ID and no action: the classifier still reads it against the parked call.
+id: critical_actions.lock.natural_yes
+prd:
+- 4.4.critical-confirmation
+status: shipped
+tags:
+- critical
+- natural_confirmation
+steps:
+- user: Unlock the front door.
+- user: Yes, go ahead.
+expect:
+- llm_tool_args:
+    tool: home.lock_unlock
+    args:
+      target:
+        regex: ^(?:lock\.front_door|Front Door Lock|Entryway)$
+    at_step: 0
+- ha_not_called:
+    at_step: 0
+- pending_action:
+    tool: home.lock_unlock
+    target_service: home-service
+    parameters:
+      target:
+        regex: ^(?:lock\.front_door|Front Door Lock|Entryway)$
+    at_step: 0
+- notification:
+    source: conscious-engine
+    urgency: urgent
+    after_step: 0
+- ha_called:
+    domain: lock
+    service: unlock
+    entity_id: lock.front_door
+    at_step: 1
+    count: 1
+- pending_action_absent:
+    tool: home.lock_unlock
+    at_step: 1
+- ha_state:
+    entity_id: lock.front_door
+    state: unlocked

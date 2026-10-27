@@ -8,6 +8,7 @@ import pytest
 
 from core.librarian.consolidator import Librarian
 from core.memory.schemas import SignificanceScore
+from tests.llm_fakes import Script
 
 
 def _make_scorer_mock() -> AsyncMock:
@@ -139,8 +140,7 @@ async def test_consolidate_writes_episodic_entries(
 async def test_detect_patterns_includes_reflex_analysis_prompt() -> None:
     """Pattern detection prompt asks LLM to specifically analyze reflex-sourced entries."""
     from datetime import UTC, datetime, timedelta
-    from typing import Any
-    from unittest.mock import AsyncMock, MagicMock, patch
+    from unittest.mock import AsyncMock, MagicMock
 
     from core.librarian.consolidator import Librarian
     from core.memory.schemas import EpisodicEntry, SignificanceScore
@@ -176,28 +176,95 @@ async def test_detect_patterns_includes_reflex_analysis_prompt() -> None:
     mock_scorer = AsyncMock()
     mock_context_index = AsyncMock()
 
+    script = Script([])
     librarian = Librarian(
         redis=mock_redis,
         episodic_memory=mock_episodic,
         routine_store=mock_routines,
         significance_scorer=mock_scorer,
         context_index=mock_context_index,
-        claude_api_key="test-key",
+        model=script.model,
     )
 
-    captured_prompt: dict[str, str] = {}
-
-    async def mock_completion(**kwargs: Any) -> Any:
-        captured_prompt["system"] = kwargs["messages"][0]["content"]
-        captured_prompt["user"] = kwargs["messages"][1]["content"]
-        result = MagicMock()
-        result.choices = [MagicMock()]
-        result.choices[0].message.content = "[]"
-        return result
-
-    with patch("litellm.acompletion", side_effect=mock_completion):
-        await librarian._detect_patterns(entries)
+    await librarian._detect_patterns(entries)
 
     # The prompt should specifically mention reflex/System 1 pattern analysis
-    system_prompt = captured_prompt["system"].lower()
+    system_prompt = script.instructions().lower()
     assert "reflex" in system_prompt or "system 1" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_shows_entry_times_in_the_users_zone() -> None:
+    """A routine's ``trigger_pattern`` is matched in the user's zone, so the times the
+    model reads it from must be local too — and must agree with the local time that
+    observation text now carries."""
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import AsyncMock, MagicMock
+    from zoneinfo import ZoneInfo
+
+    from core.librarian.consolidator import Librarian
+    from core.memory.schemas import EpisodicEntry, SignificanceScore
+
+    at = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(days=1)
+    entry = EpisodicEntry(
+        id="ep-1",
+        timestamp=at,
+        source="observation",
+        summary="[observation] light.kitchen: off → on",
+        entities=["light.kitchen"],
+        significance=SignificanceScore(overall=0.2),
+    )
+    redis = AsyncMock()
+    redis.get = AsyncMock(return_value=b"America/Los_Angeles")
+    routines = MagicMock()
+    routines.list_all.return_value = []
+    script = Script([])
+    librarian = Librarian(
+        redis=redis,
+        episodic_memory=AsyncMock(),
+        routine_store=routines,
+        significance_scorer=AsyncMock(),
+        context_index=AsyncMock(),
+        model=script.model,
+    )
+
+    await librarian._detect_patterns([entry])
+
+    local = at.astimezone(ZoneInfo("America/Los_Angeles")).strftime("%a %Y-%m-%d %H:%M")
+    assert script.prompt() == f"- [ep-1] {local} [observation] light.kitchen: off → on"
+    assert "America/Los_Angeles" in script.instructions()
+
+
+@pytest.mark.asyncio
+async def test_detect_patterns_skips_when_the_users_zone_is_unreadable() -> None:
+    """Falls back to no patterns, as on any other error, rather than guessing UTC."""
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import AsyncMock, MagicMock
+
+    from core.librarian.consolidator import Librarian
+    from core.memory.schemas import EpisodicEntry, SignificanceScore
+
+    entry = EpisodicEntry(
+        id="ep-1",
+        timestamp=datetime.now(UTC) - timedelta(days=1),
+        source="observation",
+        summary="[observation] light.kitchen: off → on",
+        entities=["light.kitchen"],
+        significance=SignificanceScore(overall=0.2),
+    )
+    redis = AsyncMock()
+    redis.get = AsyncMock(side_effect=ConnectionError("connection reset"))
+    routines = MagicMock()
+    routines.list_all.return_value = []
+    script = Script()
+    librarian = Librarian(
+        redis=redis,
+        episodic_memory=AsyncMock(),
+        routine_store=routines,
+        significance_scorer=AsyncMock(),
+        context_index=AsyncMock(),
+        model=script.model,
+    )
+
+    assert await librarian._detect_patterns([entry]) == []
+    assert script.call_count == 0

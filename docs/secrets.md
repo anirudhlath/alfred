@@ -109,6 +109,22 @@ Core stays the single credential authority (`core/channels/service_credentials.p
   PWA phase 1 has no integrations screen: the only credential surface is the setup
   gate's second step (`web/src/gates/SetupGate.tsx`), which writes home-service and
   nothing else. The Workshop that browses the full list is phase 2.
+  Only the service half reads Redis (`HGETALL alfred:tool_registry`). When that read
+  raises any `RedisError` the listing logs a WARNING and answers 200 with the adapters
+  alone, rather than 500ing
+  ([#118](https://github.com/anirudhlath/alfred/issues/118)), and sets
+  `X-Tool-Registry: unavailable`. The body stays a bare array, and an adapters-only
+  array is also what a house with no services sends, so the header is the only thing
+  that tells the two apart; a complete listing never carries it. The per-name routes
+  resolve an adapter in-process before they read the registry, so adapter credentials
+  and status keep working through an outage; a service name answers **503**
+  `Tool registry unavailable` on all three, never a 404 for a name that may well exist.
+  Every registry read on these routes goes through one wrapper, `_tool_registry_read`
+  (`core/channels/web_server.py`), which logs the WARNING once per request; anything
+  that is not a `RedisError` still surfaces as a 500. The PWA's System bench reads the
+  header (`docs/web-frontend.md`). A sustained outage usually surfaces as a 401 before
+  any of this, because the session lookup is a Redis read too and
+  `AuthCookieMiddleware` treats its failure as signed out.
 - `PUT /api/integrations/{name}/credentials` (service, session + trusted network):
   validate against the registry schema → store non-transient fields in the OS
   keyring (namespace = service name) → POST the flat field dict to the

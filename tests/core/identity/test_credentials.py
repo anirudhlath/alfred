@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from core.identity.credentials import CredentialStore
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
 
 @pytest.fixture
-async def store(tmp_path: object) -> CredentialStore:
+async def store(tmp_path: object) -> AsyncIterator[CredentialStore]:
     """Create a CredentialStore backed by a temp SQLite DB."""
     import pathlib
 
     db_path = pathlib.Path(str(tmp_path)) / "credentials.db"
     s = CredentialStore(db_path)
     await s.initialize()
-    return s
+    yield s
+    await s.close()
 
 
 FAKE_CRED_ID = "dGVzdC1jcmVkLWlk"

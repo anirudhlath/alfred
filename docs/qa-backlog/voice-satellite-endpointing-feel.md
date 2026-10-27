@@ -43,6 +43,6 @@
   real room acoustics
 - Pay special attention to two failure modes: cutting off the last word of a sentence (false
   endpointing) and hanging open due to background noise (false continuation)
-- If either problem is observed, file a `docs/backlog/` ticket naming the specific
+- If either problem is observed, file an issue naming the specific
   `threshold`/`end_threshold`/`silence_ms` value that needs tuning rather than changing
   defaults ad hoc during QA

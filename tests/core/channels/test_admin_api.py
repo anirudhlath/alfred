@@ -5,8 +5,15 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
+from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolReturnPart,
+)
 
 import core.channels.admin_api as admin_api
 from core.channels.admin_api import (
@@ -16,7 +23,9 @@ from core.channels.admin_api import (
     require_authenticated,
 )
 from core.channels.web_server import create_app, require_trusted_network
+from core.conscious.session import MESSAGES_FIELD, text_turn
 from core.reflex.inference import REFLEX_BACKENDS
+from shared.streams import SPEND_PREFIX
 from tests.core.channels.conftest import _TEST_SESSION_ID, session_hgetall
 from tests.helpers import aiter_values, attention_redis
 
@@ -44,6 +53,7 @@ def _overview_redis() -> AsyncMock:
     r.scan_iter = MagicMock(return_value=aiter_values([]))
     r.xinfo_stream = AsyncMock(side_effect=Exception("missing"))
     r.xrevrange = AsyncMock(return_value=[])
+    r.exists = AsyncMock(return_value=0)
     return r
 
 
@@ -61,44 +71,69 @@ def test_admin_reads_and_controls_need_only_a_session() -> None:
 
     # Structural half: no admin route may carry a network gate, and every one must
     # carry the session gate. Asserting on the route table (rather than overriding a
-    # dependency) catches a gate re-added under a different callable.
+    # dependency) catches a gate re-added under a different callable. app.routes keeps
+    # included routers nested, so flatten it; each context carries the prefixed path and
+    # the dependencies in effect, including any added at include_router().
     admin_routes = [
-        route
-        for route in client.app.routes  # type: ignore[attr-defined]
-        if isinstance(route, APIRoute) and route.path.startswith("/api/admin")
+        ctx
+        for ctx in iter_route_contexts(client.app.routes)  # type: ignore[attr-defined]
+        if isinstance(ctx.original_route, APIRoute) and (ctx.path or "").startswith("/api/admin")
     ]
     assert admin_routes, "no admin routes registered"
-    for route in admin_routes:
-        deps = [d.call for d in route.dependant.dependencies]
-        assert require_authenticated in deps, route.path
-        assert require_trusted_network not in deps, route.path
+    for ctx in admin_routes:
+        deps = [d.call for d in ctx.dependant.dependencies]
+        assert require_authenticated in deps, ctx.path
+        assert require_trusted_network not in deps, ctx.path
 
     # Behavioural half: a read and a control both succeed on a session alone.
     assert client.get("/api/admin/overview").status_code == 200
     assert client.post("/api/admin/dnd", json={"active": True}).status_code == 200
 
 
+def _spend_hgetall(fields: dict[bytes, bytes] | Exception) -> AsyncMock:
+    """HGETALL serving today's spend counter (any key under the spend prefix) and the
+    auth session; *fields* as an exception makes the counter unreadable."""
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if key.startswith(f"{{{SPEND_PREFIX}}}:"):
+            if isinstance(fields, Exception):
+                raise fields
+            return fields
+        result: dict[bytes, bytes] = await session(key)
+        return result
+
+    return AsyncMock(side_effect=_hgetall)
+
+
 def test_overview_shape() -> None:
     r = _overview_redis()
-    r.get = AsyncMock(
-        side_effect=lambda key: (
-            json.dumps({"date": "2026-06-10", "spend_usd": 1.24, "cap_usd": 5.0}).encode()
-            if key == "alfred:cost:daily"
-            else None
-        )
-    )
+    r.hgetall = _spend_hgetall({b"usd_nanos": b"1240000000", b"requests": b"2"})
+    r.exists = AsyncMock(return_value=1)
     client = make_admin_client(r)
     # No httpx client on app.state → inference checks report False, not errors.
     resp = client.get("/api/admin/overview")
     assert resp.status_code == 200
     data = resp.json()
     assert data["redis"]["connected"] is True
-    assert data["cost"]["spend_usd"] == 1.24
+    cost = data["cost"]
+    assert set(cost) == {"date", "spend_usd", "cap_usd", "alert_sent", "request_count", "avg_usd"}
+    assert (cost["spend_usd"], cost["cap_usd"], cost["request_count"]) == (1.24, 5.0, 2)
+    assert (cost["avg_usd"], cost["alert_sent"]) == (0.62, True)
     assert data["dnd"] == {"active": False}
     assert data["counts"] == {"sessions": 0, "devices": 0, "deferred": 0, "triggers": 0}
     assert data["streams"]["events"]["length"] == 0
     assert data["inference"] == {"ollama": False, "lmstudio": False}
     assert data["session"] == {"idle_minutes": 30}
+
+
+def test_overview_reports_an_unreadable_spend_counter_as_no_cost() -> None:
+    r = _overview_redis()
+    r.hgetall = _spend_hgetall(ConnectionError("blip"))
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/overview")
+    assert resp.status_code == 200
+    assert resp.json()["cost"] is None
 
 
 def test_overview_reports_redis_down() -> None:
@@ -136,15 +171,15 @@ def test_overview_session_idle_follows_config(monkeypatch: Any, redis_up: bool) 
     assert resp.json()["session"] == {"idle_minutes": 10}
 
 
-def test_overview_survives_corrupt_cost_and_dnd() -> None:
-    """One corrupt cost/dnd value must not 500 the whole dashboard overview."""
+def test_overview_survives_a_corrupt_dnd_value() -> None:
+    """One corrupt value must not 500 the whole dashboard overview."""
     r = _overview_redis()
     r.get = AsyncMock(return_value=b"{not valid json")
     client = make_admin_client(r)
     resp = client.get("/api/admin/overview")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["cost"] is None
+    assert data["cost"]["spend_usd"] == 0.0
     assert data["dnd"] == {"active": False}
 
 
@@ -636,7 +671,8 @@ def test_sessions_list() -> None:
 
 
 def test_sessions_list_populated() -> None:
-    """Sessions list with a real session hash — channel, turns, created_at, and ttl populated."""
+    """Sessions list with a real session hash — channel, turns (user turns, from
+    legacy history), created_at, and ttl populated."""
     r = _overview_redis()
     r.scan_iter = MagicMock(return_value=aiter_values([b"alfred:sessions:s2"]))
 
@@ -664,9 +700,57 @@ def test_sessions_list_populated() -> None:
     entry = body[0]
     assert entry["session_id"] == "s2"
     assert entry["channel"] == "web_pwa"
-    assert entry["turns"] == 3
+    assert entry["turns"] == 2
     assert entry["created_at"] == "2026-06-10T10:00:00+00:00"
     assert entry["ttl_seconds"] == 900
+
+
+def test_sessions_list_counts_user_turns_from_messages() -> None:
+    r = _overview_redis()
+    r.scan_iter = MagicMock(return_value=aiter_values([b"alfred:sessions:s3"]))
+    messages = [
+        *text_turn("Is the lamp on?", "Checking."),
+        ModelRequest(parts=[ToolReturnPart("home_get_lights", {"state": "on"}, "c1")]),
+        ModelResponse(parts=[TextPart("It is on, sir.")]),
+        *text_turn("Thanks", "My pleasure, sir."),
+    ]
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        return {
+            b"channel": b"web_pwa",
+            MESSAGES_FIELD.encode(): ModelMessagesTypeAdapter.dump_json(messages),
+            b"created_at": b"2026-10-15T10:00:00+00:00",
+        }
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    r.ttl = AsyncMock(return_value=600)
+    client = make_admin_client(r)
+
+    [entry] = client.get("/api/admin/sessions").json()["sessions"]
+
+    assert entry["turns"] == 2
+
+
+def test_sessions_list_counts_unreadable_messages_as_zero_turns() -> None:
+    r = _overview_redis()
+    r.scan_iter = MagicMock(return_value=aiter_values([b"alfred:sessions:s4"]))
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        return {b"channel": b"signal", MESSAGES_FIELD.encode(): b"not json"}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    r.ttl = AsyncMock(return_value=600)
+    client = make_admin_client(r)
+
+    [entry] = client.get("/api/admin/sessions").json()["sessions"]
+
+    assert entry["turns"] == 0
 
 
 def test_devices_list() -> None:
@@ -734,7 +818,7 @@ def test_devices_list_truncates_the_token_on_corrupt_metadata() -> None:
 def test_dnd_set_and_clear() -> None:
     r = _overview_redis()
     r.set = AsyncMock()
-    r.delete = AsyncMock()
+    r.delete = AsyncMock(return_value=1)
     client = make_admin_client(r)
 
     resp = client.post("/api/admin/dnd", json={"active": True, "reason": "focus"})
@@ -751,6 +835,64 @@ def test_dnd_set_and_clear() -> None:
     resp = client.post("/api/admin/dnd", json={"active": False})
     assert resp.json() == {"active": False}
     r.delete.assert_awaited_once_with("alfred:memory:dnd")
+
+
+def _drain_requests(r: AsyncMock) -> list[dict[str, Any]]:
+    """Every `drain_deferred_notifications` action the admin API put on `alfred:actions`."""
+    actions = [
+        json.loads(call.args[1]["event"])
+        for call in r.xadd.await_args_list
+        if call.args[0] == "alfred:actions"
+    ]
+    return [a for a in actions if a["tool_name"] == "drain_deferred_notifications"]
+
+
+def test_dnd_clear_asks_the_conscious_process_to_drain_once() -> None:
+    """Clearing DND hands the held-back queue to its owner — once, and only after the delete.
+
+    The drain runs in the conscious process (`NotificationDispatcher.drain_deferred`); the
+    web process only queues it, the same way the expiry trigger and `/notifications/drain` do.
+    """
+    r = _overview_redis()
+    order: list[str] = []
+    r.delete = AsyncMock(side_effect=lambda *_: order.append("delete") or 1)
+    r.xadd = AsyncMock(side_effect=lambda *_: order.append("xadd"))
+    client = make_admin_client(r)
+
+    assert client.post("/api/admin/dnd", json={"active": False}).json() == {"active": False}
+
+    drains = _drain_requests(r)
+    assert len(drains) == 1
+    assert drains[0]["target_service"] == "conscious-engine"
+    assert drains[0]["source"] == "admin-api"
+    # DND is gone before the drain is asked for, or the drain could race a live key.
+    assert order == ["delete", "xadd"]
+
+
+def test_dnd_clear_when_not_set_requests_no_drain() -> None:
+    """A clear that cleared nothing is no transition, and must not flush a held queue."""
+    r = _overview_redis()
+    r.delete = AsyncMock(return_value=0)
+    r.xadd = AsyncMock()
+    client = make_admin_client(r)
+
+    assert client.post("/api/admin/dnd", json={"active": False}).json() == {"active": False}
+
+    assert _drain_requests(r) == []
+
+
+@pytest.mark.parametrize("until", [None, "2026-06-12T08:00:00+00:00"])
+def test_dnd_set_requests_no_drain(until: str | None) -> None:
+    """Turning quiet on (timed or not) holds the queue; it never asks for a drain."""
+    r = _overview_redis()
+    r.set = AsyncMock()
+    r.xadd = AsyncMock()
+    client = make_admin_client(r)
+
+    resp = client.post("/api/admin/dnd", json={"active": True, "until": until})
+
+    assert resp.status_code == 200
+    r.xadd.assert_not_awaited()
 
 
 def test_drain_and_librarian_publish_actions() -> None:

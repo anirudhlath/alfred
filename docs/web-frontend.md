@@ -67,9 +67,10 @@ web/
     icon-512.png         # The manifest's large one, which is also its maskable
   src/
     lib/           # No React: transport, formatters, physics, pure reducers
-      api.ts             # api/post/put, ApiError{status,detail}; 401→expired, 403→denied
-                         # (not for the status read, whose route sends neither);
-                         # timedOut() — whether a request failed on its deadline
+      api.ts             # api/post/put, apiWithHeaders, ApiError{status,detail};
+                         # 401→expired, 403→denied (not for the status read, whose
+                         # route sends neither); timedOut() — whether a request
+                         # failed on its deadline
       auth-events.ts     # authEvents.on/emit — the emitter api() announces gates on
       auth.ts            # fetchAuthStatus (STATUS_DEADLINE_MS, the payload check),
                          # DEVICE_KEY, rememberDevice, deviceFootLine
@@ -277,7 +278,7 @@ Workshop's status line adds the handoff's `live · N ev/s`, `paused · N new` an
 Phase 4 adds no word: the unanswered gate's kicker says `unknown since --:--`, where
 `--:--` is the stamp for a value never known, as the System bench writes one — a time
 would claim the value was known at that moment. The one exception to mono-and-lower-case is
-the Door's phase pill (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in
+the Door's phase pill (`Confirmed · queued`, `Applied`, `Failed`, `Declined`, `Expired`, `Answered`), set in
 the inverted layer's own type. Do not invent new words — the vocabulary is the contract
 the spec's honesty rules (§5.2) are written against.
 
@@ -293,10 +294,10 @@ coin more.
 > pass migrates into cold storage; it is never said of a cold row, because decay is what
 > puts a row there and nothing removes one afterwards. It marks a standing, not a schedule:
 > the client cannot compute the pass's own pressure formula, which also weighs age and
-> retrieval recency against a threshold no endpoint reports — and that threshold is
-> currently unreachable, so nothing migrates at all today
-> (`docs/backlog/high/librarian-decay-threshold-unreachable.md`,
-> `docs/backlog/low/pwa-phase3-followups.md` §20).
+> retrieval recency against a threshold no endpoint reports. That threshold is 0.2
+> (`DEFAULT_DECAY_MIGRATION_THRESHOLD`, [#201](https://github.com/anirudhlath/alfred/issues/201)), and pressure tops out at
+> `1 - 2 × significance`, so 0.4 is exactly the significance below which the pass can
+> ever reach a row: `DECAY_FLOOR` and the server agree ([#258](https://github.com/anirudhlath/alfred/issues/258) §20).
 
 It is drawn after the store rather than instead of the recall count, exactly as the
 prototype draws it: the count is the evidence for the mark.
@@ -457,7 +458,9 @@ that is what makes a suspended PWA correct on return (constraint §4.10).
 
 ## The Door
 
-A critical action needing approval. It is tracked by `actionReducer` over
+A critical action needing approval: a System 2 run that parked its critical calls, or an
+action the router intercepted ([`autonomy.md`](autonomy.md#confirmation-flow-for-critical-actions)).
+It is tracked by `actionReducer` over
 `TrackedAction[]`, fed from three independent places so it survives a cold launch, a
 notification tap and a suspended app:
 
@@ -465,12 +468,28 @@ notification tap and a suspended app:
 2. A `/ws` `notification` frame carrying `metadata.pending_action_id`.
 3. The `home_action_results` telemetry stream.
 
-Phases: `pending` → `queued` → `applied`, plus `expired` and `answered`.
+Phases: `pending` → `queued` → `applied` or `failed`, plus `declined`, `expired` and
+`answered`.
 
 **A 200 from `POST /api/actions/{request_id}/confirm` means queued, never applied** —
-the endpoint republishes the action and returns before anything runs. `applied` comes
-only from `home_action_results`. A 404 on confirm means the approval was already
-consumed: the phase becomes `answered`.
+the endpoint hands the approval on and returns before anything runs. `applied` comes
+only from `home_action_results`, and so does `failed`: the same report with
+`status: "error"` (the owner said yes, the lock said it could not; the footer then offers
+to ask again). One approval can cover several calls, each publishing its own result under
+the same id; a `failed` item stays `failed` when a later call succeeds. A 404 on confirm or
+deny means someone or something else answered first: the phase becomes `answered`.
+
+**Declining.** The layer has a **Don't** button next to the slide (`POST
+/api/actions/{request_id}/deny`). A 200 sets `declined`, which outranks what the phone merely
+inferred (`expired` from a fast clock, `answered` from a racing 404). A declined run is told
+so by the house and says so in the Room. A late `home_action_results` entry after a decline
+still wins — `applied` or `failed` replaces `declined` — because if the lock reported, the
+decline was wrong about what happened, and the Door shows what the lock did.
+
+**A failed answer is not a lost one.** A confirm or deny that fails with anything other than
+404 (a 503, no network) leaves the item `pending` so the owner can retry while the fuse
+still runs; the failure is logged to the console (`door: could not answer {id}`), where
+Safari's inspector can see it.
 
 Confirmation is a slide with travel (`CONFIRM_RATIO = 0.85`), never a tap; iOS gives the
 client no haptics, so the resistance is the confirmation. An approval that lapses leaves
@@ -513,7 +532,7 @@ deeper: the depth the user paged to is a floor the cap never rolls back. Past it
 oldest fall off the bottom and the cursor moves up to match, so nothing becomes
 unreachable. Older mode is exempt from the cap by design, so a paged stream grows without
 a ceiling — the virtualization ticket carries the cost
-(`docs/backlog/low/pwa-phase2-followups.md` §1).
+([#257](https://github.com/anirudhlath/alfred/issues/257) §1).
 
 The hook's `loaded` says the head read *settled*, however it settled; `streamLoaded` says
 it per stream. Both are needed to say what an empty list means without inventing
@@ -551,7 +570,7 @@ offers it on are `WHY_STREAMS` in `ActivityBench.tsx`: both have a cause the ser
 — an observation's `trigger_event`, and a reply's `actions_taken` naming the tool an
 action ran. The reply is spec §5.1's own conversation turn ("correlate one conversation
 turn with the system activity it caused"); the Room's Alfred bubbles do not offer it yet
-(`docs/backlog/low/pwa-phase2-followups.md` §11). Notifications and triggers are left out
+([#257](https://github.com/anirudhlath/alfred/issues/257) §11). Notifications and triggers are left out
 because they have no such id, and a pill that always produced a dashed-only column would
 be noise. `lib/trace.ts` reads one
 page of 100 from every stream up to ten minutes after the observation
@@ -585,7 +604,7 @@ involved". The query's `staleTime` is the join window itself: the
 window has closed behind a thread by the time that much has passed, so re-asking the
 same row does not re-read eight streams. The sheet never says "not caused by" — the
 client cannot prove that. A server-side correlation id is the follow-up (spec §7,
-`docs/backlog/low/pwa-phase2-followups.md`).
+[#257](https://github.com/anirudhlath/alfred/issues/257)).
 
 ---
 
@@ -616,7 +635,7 @@ Quiet card's record of which expiry chip you last pressed and the `applied` note
 from it (`asked` in `SystemBench.tsx`), an unfolded semantic card (`MemoryBench.tsx`), and
 the pairing code, which `useSystem` clears the moment the bench stops showing — a six-digit secret left standing on a screen nobody is watching is
 the thing that decision exists to prevent. The list's scroll position goes with them,
-which is a cost rather than a choice (`docs/backlog/low/pwa-phase3-followups.md` §15).
+which is a cost rather than a choice ([#258](https://github.com/anirudhlath/alfred/issues/258) §15).
 
 **The `enabled` gate.** `useMemory(enabled)`, `useTriggers(enabled)` and
 `useSystem(enabled, onHeld)` each take `bench === "…"` from the panel and hand it to
@@ -655,7 +674,7 @@ increments — always exactly 1, whatever the row's history. So `recalled` is `n
 every cold row and the meta line drops the clause, the way it drops a significance the
 server did not send. Absent, not zero: `never recalled` would be a claim about the house
 drawn from a missing column. What the server would have to change is
-`docs/backlog/low/pwa-phase3-followups.md` §16. The same evidence moved `decaying` onto
+[#258](https://github.com/anirudhlath/alfred/issues/258) §16. The same evidence moved `decaying` onto
 **hot** rows, where both the handoff and the Librarian's decay pass put it (the
 vocabulary entry above says what it means). Numeric parsing runs before `Date.parse`, or
 an epoch string silently becomes the year 1758.
@@ -717,7 +736,7 @@ each is named under its own rule rather than left for the next reviewer to find.
   Two controls predate the rule and still break it. Activity's `All streams`
   button breaks both rules at once — a real `disabled` carrying `opacity: 0.4`
   (`ActivityBench.tsx:245-251`), phase-2 code phase 3 did not reopen, filed rather than
-  fixed (`docs/backlog/low/pwa-phase3-followups.md` §21). And the composer's
+  fixed ([#258](https://github.com/anirudhlath/alfred/issues/258) §21). And the composer's
   `Hold to talk` is a real `disabled` while the house is unreachable
   (`HoldToTalk.tsx:117`), phase-1 code.
 - **Never say the house is empty before the server has answered.** An empty list has
@@ -737,9 +756,16 @@ each is named under its own rule rather than left for the next reviewer to find.
   signal — the only way a bench meets one, since nothing past the gates is reachable before
   the house has answered. A launch that begins offline fires no such event and pauses
   nothing, and that case is the gates' ("The gates" above). All three benches carry the
-  same `read` flag for it (`useMemory.ts:256-261`, `useSystem.ts:928-952`,
+  same `read` flag for it (`useMemory.ts:256-261`, `useSystem.ts:937-963`,
   `useTriggers.ts:305`), and a bench that has not read says **nothing** rather than
   guessing which of the three it is.
+  Connected services has a fourth: a read that half answered. `GET /api/integrations`
+  lists the adapters even when the server cannot read the tool registry, and marks that
+  answer with `X-Tool-Registry: unavailable` rather than changing the array's shape
+  (`docs/secrets.md`). `fetchIntegrationListing` reads the header, the section prints
+  `REGISTRY_DOWN_NOTE` over the adapters it does have, and the health grid's home card
+  says `home assistant · registry unavailable` where it would otherwise have claimed
+  `not registered` about a service the server never looked for.
 - **Never let a client-set mark outlive its evidence.** A `Pending` lives exactly
   `REREAD_MS` (60 s), after which the list itself is the evidence; `useSystem` prunes
   its `ended` and `saves` marks against the records still in the last read, so a mark
@@ -863,7 +889,7 @@ does, every time the app is backgrounded long enough.
 | { type: "session";       session_id: string }
 | { type: "transcription"; text: string; session_id: string }
 | { type: "response";      text: string; audio?: string; session_id: string;
-                            actions_taken?: string[]; mood?: Mood }
+                            actions_taken?: string[]; mood?: Mood; followup?: boolean }
 | { type: "notification";  title: string; body: string; urgency: Urgency;
                             notification_id: string; audio?: string;
                             metadata?: Record<string, unknown> }
@@ -876,6 +902,13 @@ does, every time the app is backgrounded long enough.
 - `response.mood` — affective tone label. An `error` frame has neither, and says
   `error · HH:MM` rather than inventing a mood.
 - `response.audio` — base64 WAV data URL, played through the one unlocked `AudioContext`.
+- `response.followup` — true for a reply nobody asked this socket for: the answer to a run
+  the owner approved or declined from the Door, or a late answer to a request that already got
+  the "taking a little longer" fallback. Every frame the server's follow-up worker sends has it
+  ([`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes)). The Room
+  treats it as unsolicited: an ordinary `response` clears the in-flight rows (thinking, the
+  countdown) because it answers the turn they stand for, a follow-up does not, and
+  `liftRepliesAboveTransients` seats it above whatever is still in flight.
 - `notification.metadata.pending_action_id`, when present, routes the frame to the Door
   instead of the thread. The frame carries no `source`, so a live act row reads
   `HH:MM · live · {urgency}`; the same notification re-read from the stream later shows
@@ -909,6 +942,11 @@ does, every time the app is backgrounded long enough.
   the Room's `No connection to the house …` note clears as the chat socket opens — well
   under a second after `online` (0.16 to 0.58 s over two runs in Chromium), where it
   waited out up to 8 s of backoff before.
+- **A reconnected socket is not back on its session until it sends a message.** The server
+  gives each new socket a fresh session id and adopts the client's previous one only with its
+  first message, so a follow-up that lands in that window reaches the app as a notification,
+  not as a `response` frame (known limitation, see
+  [`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes)).
 - `ChatSocket.onopen` clears `firstMessageSent` and the previous connection's assigned
   id, so a live stored id is offered again on the next connection. `ws.ts` calls
   `onopen()` **before** `onstatus("online")` on purpose: `useRoom` flushes the unsent
@@ -1008,7 +1046,7 @@ graph TD
         subgraph DoorProvider
             Reducer[actionReducer<br/>TrackedAction phases]
             Banner[DoorBanner]
-            Layer[DoorLayer<br/>FuseRing · SlideToConfirm]
+            Layer["DoorLayer<br/>FuseRing · SlideToConfirm · Don't"]
         end
     end
 
@@ -1038,10 +1076,10 @@ graph TD
     Conn --> Head
     Conn --> AuthGate
 
-    ChatSock -->|response · transcription · error| TL
+    ChatSock -->|response incl. followup · transcription · error| TL
     ChatSock -->|notification without pending_action_id| TL
     ChatSock -->|notification with pending_action_id| Reducer
-    TelSock  -->|result: applied| Reducer
+    TelSock  -->|result: applied or failed| Reducer
     TelSock  -->|entry x8| Feed
     QC       -->|pending-actions| Reducer
     Feed --> Bench
@@ -1117,6 +1155,7 @@ npm run lint          # ESLint
 npm test              # Vitest (jsdom)
 npm run build         # tsc -b && vite build → web/dist/
 npm run preview       # serve web/dist/ locally
+npm run design-sync   # regenerate the claude.ai/design system → design-system/out/ (docs/design-system.md)
 ```
 
 The type check lives in `build` (`tsc -b`), not in `lint`. CI runs `lint`, `test` and
@@ -1633,14 +1672,14 @@ regenerated from a different drawing fails rather than ships.
   could do that no endpoint supports. Only the first is said out loud in the client: the
   Triggers footer reads `Nothing here edits a trigger — ask Alfred to change or remove
   one.` (`TriggersBench.tsx:190`). Restart and log download are absent without comment,
-  because System has no ops section for a sentence to sit in. `docs/backlog/low/pwa-phase3-followups.md`
+  because System has no ops section for a sentence to sit in. [#258](https://github.com/anirudhlath/alfred/issues/258)
   §7 and §10 name the routes each would need.
 - **Telemetry `status`/`error` frames** (`redis_error`, `invalid JSON`) still reach only
   the console, rate-limited by `WARN_EVERY_MS`. The System bench reports the *reads* that
   failed, not the socket's own frames.
 - **Desktop** — phase 6. The client is phone-first and there is no wide composition.
 
-Open follow-ups: `docs/backlog/low/pwa-phase1-followups.md`,
-`docs/backlog/low/pwa-phase2-followups.md`,
-`docs/backlog/low/pwa-phase3-followups.md` and
+Open follow-ups: [#256](https://github.com/anirudhlath/alfred/issues/256),
+[#257](https://github.com/anirudhlath/alfred/issues/257),
+[#258](https://github.com/anirudhlath/alfred/issues/258) and
 `docs/backlog/low/pwa-phase4-followups.md`.

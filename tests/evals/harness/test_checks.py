@@ -1,0 +1,571 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+import pytest
+from pydantic import ValidationError
+
+from evals.harness.checks import CHECK_PARAMS, DETERMINISTIC, run_check, watches_reflex
+from evals.harness.checks.llm import PromptParams, ToolArgsParams, same_tool
+from evals.harness.checks.matching import validate_expected, value_matches
+from evals.harness.evidence import HaState, LlmCall, ToolCall
+from tests.evals.harness.factories import call, evidence, llm
+
+if TYPE_CHECKING:
+    from evals.harness.checks.result import CheckResult
+    from evals.harness.evidence import Evidence, Role
+
+
+def check(name: str, params: dict[str, Any], ev: Evidence) -> CheckResult:
+    return run_check(name, CHECK_PARAMS[name].model_validate(params), ev)
+
+
+def test_ha_called_matches_domain_service_entities_and_approx_data() -> None:
+    ev = evidence(
+        ha_calls=[call("light", "turn_on", ["light.a", "light.b"], {"brightness_pct": 31.0})]
+    )
+    ok = check(
+        "ha_called",
+        {
+            "domain": "light",
+            "service": "turn_on",
+            "entity_id": "light.a",
+            "data": {"brightness_pct": {"approx": 30, "tol": 2}},
+        },
+        ev,
+    )
+    assert ok.status == "pass"
+    far = check(
+        "ha_called",
+        {
+            "domain": "light",
+            "service": "turn_on",
+            "data": {"brightness_pct": {"approx": 50, "tol": 2}},
+        },
+        ev,
+    )
+    assert far.status == "fail" and "brightness_pct" in far.reason
+
+
+def test_ha_called_after_step_ignores_earlier_calls() -> None:
+    ev = evidence(ha_calls=[call("light", "turn_on", ["light.a"], t=1.0)], step_started=[0.0, 5.0])
+    res = check("ha_called", {"domain": "light", "service": "turn_on", "after_step": 1}, ev)
+    assert res.status == "fail"
+
+
+def test_ha_not_called_with_no_filters_means_no_calls_at_all() -> None:
+    assert check("ha_not_called", {}, evidence()).status == "pass"
+    ev = evidence(ha_calls=[call("switch", "turn_on", ["switch.x"])])
+    res = check("ha_not_called", {}, ev)
+    assert res.status == "fail" and "switch.turn_on" in res.reason
+
+
+def test_ha_not_called_by_entity_only() -> None:
+    ev = evidence(ha_calls=[call("light", "turn_off", ["light.a"])])
+    assert check("ha_not_called", {"entity_id": "light.b"}, ev).status == "pass"
+    assert check("ha_not_called", {"entity_id": "light.a"}, ev).status == "fail"
+
+
+def test_ha_state_checks_state_and_attributes() -> None:
+    ev = evidence(ha_states={"light.a": HaState(state="on", attributes={"brightness": 130})})
+    assert (
+        check(
+            "ha_state",
+            {
+                "entity_id": "light.a",
+                "state": "on",
+                "attributes": {"brightness": {"approx": 128, "tol": 13}},
+            },
+            ev,
+        ).status
+        == "pass"
+    )
+    assert check("ha_state", {"entity_id": "light.a", "state": "off"}, ev).status == "fail"
+    assert check("ha_state", {"entity_id": "light.zzz"}, ev).status == "fail"
+
+
+def test_tool_names_compare_after_dot_normalisation() -> None:
+    ev = evidence(llm_calls=[llm("system2", ("home_light_turn_on", {"brightness_pct": 30}))])
+    assert check("tool_called", {"tool": "home.light_turn_on"}, ev).status == "pass"
+    assert (
+        check("tool_called", {"tool": "home.light_turn_on", "role": "system1"}, ev).status == "fail"
+    )
+    assert check("tool_not_called", {"tool": "home.call_service"}, ev).status == "pass"
+
+
+def test_llm_tool_args_and_absent() -> None:
+    ev = evidence(llm_calls=[llm("system2", ("triggers_create_trigger", {"run_in_seconds": 1200}))])
+    assert (
+        check(
+            "llm_tool_args",
+            {
+                "tool": "triggers.create_trigger",
+                "args": {"run_in_seconds": {"approx": 1200, "tol": 60}},
+            },
+            ev,
+        ).status
+        == "pass"
+    )
+    assert (
+        check(
+            "llm_tool_args_absent", {"tool": "triggers.create_trigger", "key": "run_at"}, ev
+        ).status
+        == "pass"
+    )
+    assert (
+        check(
+            "llm_tool_args_absent", {"tool": "triggers.create_trigger", "key": "run_in_seconds"}, ev
+        ).status
+        == "fail"
+    )
+
+
+def test_reply_contains_defaults_to_last_reply_and_is_case_insensitive() -> None:
+    ev = evidence(replies=["Priya is visiting.", "The door is LOCKED, sir."])
+    assert check("reply_contains", {"text": "locked"}, ev).status == "pass"
+    assert check("reply_contains", {"text": "priya"}, ev).status == "fail"
+    assert check("reply_contains", {"text": "priya", "step": "any"}, ev).status == "pass"
+    assert check("reply_contains", {"any": ["nope", "door"]}, ev).status == "pass"
+
+
+def test_reply_regex_word_boundary_keeps_unlocked_out() -> None:
+    ev = evidence(replies=["The front door is unlocked, sir."])
+    assert check("reply_contains", {"regex": r"\blocked\b"}, ev).status == "fail"
+    assert check("reply_not_contains", {"text": "unlocked"}, ev).status == "fail"
+
+
+def test_reply_check_without_reply_fails_with_reason() -> None:
+    res = check("reply_contains", {"text": "x", "step": 3}, evidence(replies=["a"]))
+    assert res.status == "fail" and "no reply" in res.reason
+
+
+def test_latency_bound() -> None:
+    ev = evidence(replies=["ok"], latencies=[4200.0])
+    assert check("latency", {"metric": "reply_ms", "max": 5000}, ev).status == "pass"
+    assert check("latency", {"metric": "reply_ms", "max": 4000}, ev).status == "fail"
+
+
+def test_reply_params_need_exactly_one_needle() -> None:
+    with pytest.raises(ValidationError):
+        CHECK_PARAMS["reply_contains"].model_validate({"text": "a", "regex": "b"})
+
+
+def test_judge_is_a_known_check_name() -> None:
+    assert "judge" in CHECK_PARAMS
+
+
+def test_reply_not_contains_fails_when_the_reply_is_missing() -> None:
+    res = check("reply_not_contains", {"text": "x", "step": 3}, evidence(replies=["a"]))
+    assert res.status == "fail" and "no reply" in res.reason
+    res = check("reply_not_contains", {"text": "x", "step": "any"}, evidence())
+    assert res.status == "fail" and "no reply" in res.reason
+    res = check("reply_not_contains", {"text": "x"}, evidence())
+    assert res.status == "fail" and "no reply" in res.reason
+
+
+def test_reply_not_contains_passes_when_the_needle_is_absent() -> None:
+    ev = evidence(replies=["The front door is locked, sir."])
+    assert check("reply_not_contains", {"text": "unlocked"}, ev).status == "pass"
+    assert check("reply_not_contains", {"any": ["open", "ajar"], "step": "any"}, ev).status == (
+        "pass"
+    )
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"text": ""},
+        {"any": []},
+        {"any": ["door", ""]},
+        {"regex": ""},
+        # Blank is as good as empty: a space is in nearly every reply.
+        {"text": " "},
+        {"any": ["door", " \t"]},
+        {"regex": "  "},
+    ],
+)
+def test_reply_params_reject_empty_needles(params: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        CHECK_PARAMS["reply_contains"].model_validate(params)
+
+
+def test_reply_params_reject_a_bad_regex_at_validation() -> None:
+    with pytest.raises(ValidationError, match="regex"):
+        CHECK_PARAMS["reply_contains"].model_validate({"regex": "(unclosed"})
+
+
+def test_reply_contains_any_step_failure_lists_every_reply_truncated() -> None:
+    long = "x" * 300
+    ev = evidence(replies=["Priya is visiting.", "The door is locked.", long])
+    res = check("reply_contains", {"text": "garage", "step": "any"}, ev)
+    assert res.status == "fail"
+    assert "Priya is visiting." in res.reason and "The door is locked." in res.reason
+    assert "x" * 120 in res.reason and "x" * 121 not in res.reason
+
+
+def test_ha_state_compares_state_case_insensitively() -> None:
+    ev = evidence(ha_states={"lock.front": HaState(state="locked")})
+    assert check("ha_state", {"entity_id": "lock.front", "state": "LOCKED"}, ev).status == "pass"
+
+
+def test_tool_not_called_fails_when_the_tool_was_called() -> None:
+    ev = evidence(llm_calls=[llm("system2", ("home_call_service", {}))])
+    res = check("tool_not_called", {"tool": "home.call_service"}, ev)
+    assert res.status == "fail" and "home.call_service" in res.reason
+
+
+def test_ha_called_after_step_keeps_calls_at_or_after_the_step_start() -> None:
+    ev = evidence(ha_calls=[call("light", "turn_on", ["light.a"], t=5.0)], step_started=[0.0, 5.0])
+    res = check("ha_called", {"domain": "light", "service": "turn_on", "after_step": 1}, ev)
+    assert res.status == "pass"
+
+
+def test_reply_contains_any_step_failure_caps_its_reason_overall() -> None:
+    ev = evidence(replies=[f"{n} " + "x" * 300 for n in range(10)])
+    res = check("reply_contains", {"text": "garage", "step": "any"}, ev)
+    assert res.status == "fail" and len(res.reason) < 600
+    assert res.reason.endswith("more replies") and "'0 xxx" in res.reason
+
+
+def test_run_check_scores_a_raising_check_as_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken(evidence: Evidence, params: Any) -> CheckResult:
+        raise RuntimeError("a bug in the check")
+
+    params, _ = DETERMINISTIC["ha_called"]
+    monkeypatch.setitem(DETERMINISTIC, "ha_called", (params, broken))
+    res = check("ha_called", {"domain": "light", "service": "turn_on"}, evidence())
+    assert res.status == "error"
+    assert res.reason == "check raised RuntimeError: a bug in the check"
+
+
+CRON = r"0 7 \* \* (1-5|mon-fri)"
+
+
+@pytest.mark.parametrize(
+    ("expected", "actual", "ok"),
+    [
+        ({"run_in_seconds": {"approx": 1200, "tol": 60}}, {"run_in_seconds": 1230, "x": 1}, True),
+        ({"run_in_seconds": {"approx": 1200, "tol": 60}}, {"run_in_seconds": 1300}, False),
+        ({"entity_id": "binary_sensor.front_door"}, {}, False),
+        ({"a": {"b": "on"}}, {"a": {"b": "ON "}}, True),
+        ({"a": 1}, "a=1", False),
+        ({}, {"anything": 1}, True),
+        ({"regex": CRON}, "0 7 * * MON-FRI", True),
+        ({"regex": CRON}, " 0 7 * * 1-5 ", True),
+        ({"regex": CRON}, "30 7 * * 1-5", False),  # the whole string must match
+        ({"regex": "on"}, 1, False),
+        ({"cron": {"regex": CRON}}, {"cron": "0 7 * * 1-5"}, True),
+        ([{"regex": "a.*"}], ["x", "ABC"], True),
+        ([{"regex": "a.*"}], ["x", "bad"], False),
+    ],
+)
+def test_value_matches_mappings_and_regex(expected: object, actual: object, ok: bool) -> None:
+    assert value_matches(expected, actual) is ok
+
+
+def test_validate_expected_rejects_a_regex_that_does_not_compile_anywhere() -> None:
+    validate_expected({"a": [{"regex": "x+"}], "b": {"approx": 1, "tol": 1}})
+    with pytest.raises(ValueError, match="does not compile"):
+        validate_expected({"conditions": {"cron": {"regex": "0 7 ("}}})
+    with pytest.raises(ValueError, match="must be a string"):
+        validate_expected([{"regex": 7}])
+
+
+def test_tool_args_with_a_bad_regex_fail_at_load() -> None:
+    with pytest.raises(ValidationError, match="does not compile"):
+        ToolArgsParams(
+            tool="triggers.create_trigger", args={"conditions": {"cron": {"regex": "("}}}
+        )
+
+
+@pytest.mark.parametrize(
+    ("name", "params", "error"),
+    [
+        (
+            "ha_called",
+            {"domain": "light", "service": "turn_on", "data": {"brightness": {"regex": "("}}},
+            "does not compile",
+        ),
+        (
+            "ha_state",
+            {"entity_id": "light.a", "attributes": {"effect": {"regex": "("}}},
+            "does not compile",
+        ),
+        (
+            "ha_state",
+            {"entity_id": "light.a", "attributes": {"effect": {"regex": 7}}},
+            "must be a string",
+        ),
+    ],
+)
+def test_home_checks_with_a_bad_regex_fail_at_load(
+    name: str, params: dict[str, Any], error: str
+) -> None:
+    with pytest.raises(ValidationError, match=error):
+        CHECK_PARAMS[name].model_validate(params)
+
+
+def test_a_top_level_key_named_regex_is_a_field_not_a_pattern() -> None:
+    ev = evidence(
+        llm_calls=[llm("system2", ("t", {"regex": 5}))],
+        ha_calls=[call("light", "turn_on", ["light.a"], {"regex": 5})],
+        ha_states={"light.a": HaState(state="on", attributes={"regex": 5})},
+    )
+    assert check("llm_tool_args", {"tool": "t", "args": {"regex": 5}}, ev).status == "pass"
+    assert (
+        check(
+            "ha_called", {"domain": "light", "service": "turn_on", "data": {"regex": 5}}, ev
+        ).status
+        == "pass"
+    )
+    assert (
+        check("ha_state", {"entity_id": "light.a", "attributes": {"regex": 5}}, ev).status == "pass"
+    )
+
+
+def prompted(role: str, *contents: object) -> LlmCall:
+    return LlmCall(
+        t=1.0,
+        role=role,
+        latency_ms=1.0,
+        status=200,
+        messages=[{"role": "user", "content": c} for c in contents],
+    )
+
+
+def test_prompt_not_contains_reads_every_prompt_of_the_role() -> None:
+    clean = prompted("system1", "House: living room lamp on")
+    noisy = prompted("system1", [{"type": "text", "text": "entity_picture: /api/x"}])
+    other = prompted("system2", "button.restart")
+    p = PromptParams.model_validate({"role": "system1", "any": ["entity_picture", "button."]})
+    assert run_check("prompt_not_contains", p, evidence(llm_calls=[clean, other])).status == "pass"
+    failed = run_check("prompt_not_contains", p, evidence(llm_calls=[clean, noisy]))
+    assert failed.status == "fail" and "entity_picture" in failed.reason
+
+
+def test_prompt_contains_passes_and_fails() -> None:
+    lamp = prompted("system1", "Bedroom Lamp (Bedroom): off → on · by Alex")
+    other = prompted("system2", "by a switch, app or device")
+    has = PromptParams.model_validate({"role": "system1", "text": "by Alex"})
+    missing = PromptParams.model_validate({"role": "system1", "text": "by an automation"})
+    assert run_check("prompt_contains", has, evidence(llm_calls=[lamp, other])).status == "pass"
+    failed = run_check("prompt_contains", missing, evidence(llm_calls=[lamp, other]))
+    assert failed.status == "fail" and "system1" in failed.reason
+    # The needle sits in another role's prompt only, and in no call of the role at all.
+    only_other = PromptParams.model_validate({"role": "system1", "text": "app or device"})
+    assert run_check("prompt_contains", only_other, evidence(llm_calls=[lamp, other])).status == (
+        "fail"
+    )
+    none = run_check("prompt_contains", has, evidence(llm_calls=[other]))
+    assert none.status == "fail" and "no system1 call" in none.reason
+
+
+def test_prompt_contains_reads_the_full_request_body() -> None:
+    recorded = LlmCall(
+        t=1,
+        role="system1",
+        latency_ms=1,
+        status=200,
+        request_body={"messages": [{"role": "user", "content": [{"text": "by Alex"}]}]},
+    )
+    assert (
+        check(
+            "prompt_contains",
+            {"role": "system1", "text": "by Alex"},
+            evidence(llm_calls=[recorded]),
+        ).status
+        == "pass"
+    )
+
+
+def test_watches_reflex_covers_prompt_contains() -> None:
+    system1 = PromptParams.model_validate({"role": "system1", "text": "by Alex"})
+    system2 = PromptParams.model_validate({"role": "system2", "text": "by Alex"})
+    assert watches_reflex("prompt_contains", system1)
+    assert not watches_reflex("prompt_contains", system2)
+
+
+def test_prompt_not_contains_fails_when_the_role_was_never_called() -> None:
+    p = PromptParams.model_validate({"role": "system1", "text": "notify."})
+    result = run_check("prompt_not_contains", p, evidence(llm_calls=[]))
+    assert result.status == "fail" and "no system1 call" in result.reason
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"tools": [{"function": {"parameters": {"default": "fake-SECRET"}}}]},
+        {"messages": [{"role": "tool", "content": "fake-SECRET"}]},
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"function": {"arguments": '{"password": "fake-SECRET"}'}}],
+                }
+            ]
+        },
+        {"metadata": {"nested": [None, 42, {"fake-SECRET": "safe"}]}},
+        {"user": "fake-SECRET"},
+    ],
+)
+@pytest.mark.parametrize("params", [{"text": "fake-secret"}, {"regex": r"fake-\w+"}])
+def test_prompt_privacy_reads_every_request_string_and_key(
+    body: dict[str, Any], params: dict[str, Any]
+) -> None:
+    recorded = LlmCall(t=1, role="system2", latency_ms=1, status=502, request_body=body)
+    assert check("prompt_not_contains", params, evidence(llm_calls=[recorded])).status == "fail"
+
+
+def test_prompt_privacy_legacy_fallback_scans_nested_message_fields() -> None:
+    old = prompted("system2", "safe")
+    old.messages.append({"role": "assistant", "function_call": {"arguments": "fake-secret"}})
+    assert (
+        check("prompt_not_contains", {"text": "fake-secret"}, evidence(llm_calls=[old])).status
+        == "fail"
+    )
+
+
+def test_prompt_privacy_excludes_other_roles_and_does_not_search_serialized_json() -> None:
+    safe = LlmCall(
+        t=1,
+        role="system2",
+        latency_ms=1,
+        status=200,
+        request_body={"metadata": {"text": 'say "hello"\nnext'}},
+    )
+    noisy = LlmCall(
+        t=2, role="system1", latency_ms=1, status=200, request_body={"password": "secret"}
+    )
+    ev = evidence(llm_calls=[safe, noisy])
+    assert check("prompt_not_contains", {"text": "secret"}, ev).status == "pass"
+    assert check("prompt_not_contains", {"text": '"hello"\nnext'}, ev).status == "fail"
+
+
+@pytest.mark.parametrize("name", ["tool_offered", "tool_not_offered"])
+def test_catalog_checks_need_a_call_of_the_selected_role(name: str) -> None:
+    ev = evidence(llm_calls=[llm("system1")])
+    result = check(name, {"tool": "home.light_turn_on"}, ev)
+    assert result.status == "fail" and "no system2 call" in result.reason
+
+
+def test_catalog_checks_scan_every_selected_call_and_normalize_names() -> None:
+    first = llm("system2")
+    other = llm("system1").model_copy(update={"tools_offered": ["private.reset"]})
+    later = llm("system2").model_copy(update={"tools_offered": ["home_light_turn_on"]})
+    ev = evidence(llm_calls=[first, other, later])
+    assert check("tool_offered", {"tool": "home.light_turn_on"}, ev).status == "pass"
+    assert check("tool_not_offered", {"tool": "home.light_turn_on"}, ev).status == "fail"
+    assert check("tool_not_offered", {"tool": "private.reset"}, ev).status == "pass"
+    assert check("tool_offered", {"tool": "private.reset"}, ev).status == "fail"
+
+
+def test_catalog_checks_scope_actor_changes_to_step_windows() -> None:
+    owner = llm("system2").model_copy(update={"t": 2.0, "tools_offered": ["private_reset"]})
+    guest = llm("system2").model_copy(update={"t": 5.0, "tools_offered": ["home.read"]})
+    later = llm("system2").model_copy(update={"t": 9.0, "tools_offered": ["private.reset"]})
+    ev = evidence(llm_calls=[owner, guest, later], step_started=[0.0, 5.0, 9.0])
+    assert check("tool_not_offered", {"tool": "private.reset", "at_step": -2}, ev).status == "pass"
+    assert check("tool_offered", {"tool": "home_read", "at_step": 1}, ev).status == "pass"
+    assert check("tool_not_offered", {"tool": "private.reset", "at_step": -1}, ev).status == "fail"
+    assert check("tool_offered", {"tool": "private.reset", "at_step": 0}, ev).status == "pass"
+
+
+@pytest.mark.parametrize("name", ["tool_offered", "tool_not_offered"])
+def test_catalog_checks_fail_for_an_empty_selected_step(name: str) -> None:
+    ev = evidence(llm_calls=[llm("system2")], step_started=[0.0, 5.0])
+    assert check(name, {"tool": "home.read", "at_step": -1}, ev).status == "fail"
+
+
+def test_tool_call_checks_scope_calls_and_arguments_to_a_step() -> None:
+    owner = llm("system2", ("home_reset", {"force": True}))
+    guest = llm("system2", ("home_read", {})).model_copy(update={"t": 5.0})
+    ev = evidence(llm_calls=[owner, guest], step_started=[0.0, 5.0])
+    assert check("tool_not_called", {"tool": "home.reset", "at_step": -1}, ev).status == "pass"
+    assert check("tool_called", {"tool": "home.read", "at_step": -1}, ev).status == "pass"
+    assert (
+        check(
+            "llm_tool_args", {"tool": "home.reset", "args": {"force": True}, "at_step": -1}, ev
+        ).status
+        == "fail"
+    )
+    assert (
+        check(
+            "llm_tool_args_absent", {"tool": "home.reset", "key": "force", "at_step": -1}, ev
+        ).status
+        == "pass"
+    )
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("home.light_turn_on", "home_light_turn_on", True),
+        ("home_light_turn_on", "home_light_turn_on", True),
+        ("memory_recall_memories", "memory_recall_memories", True),
+        ("home.light_turn_on", "home.light_turn_off", False),
+        ("home.light_turn_on", "homelight_turn_on", False),
+        ("", "", True),
+        ("", "home_light_turn_on", False),
+        ("x" * 65, "x" * 65, True),
+        ("x" * 65, "x" * 64, False),
+    ],
+)
+def test_same_tool_compares_wire_names(a: str, b: str, same: bool) -> None:
+    """A golden may name a tool by its identity; the model calls it by its wire name.
+    A name with no wire name (empty, too long) is only ever the same as itself."""
+    assert same_tool(a, b) is same
+    assert same_tool(b, a) is same
+
+
+def _offered(offered: list[str], *called: str, role: Role = "system2") -> LlmCall:
+    return LlmCall(
+        t=1.0,
+        role=role,
+        latency_ms=10.0,
+        status=200,
+        tools_offered=offered,
+        tool_calls=[ToolCall(name=n) for n in called],
+    )
+
+
+def test_tool_calls_offered_passes_when_every_call_names_an_offered_tool() -> None:
+    ev = evidence(
+        llm_calls=[
+            _offered(["home_light_turn_on", "memory_recall_memories"], "home_light_turn_on"),
+            _offered(["memory_recall_memories"], "memory_recall_memories"),
+        ]
+    )
+    result = check("tool_calls_offered", {}, ev)
+    assert result.status == "pass", result.reason
+
+
+def test_tool_calls_offered_fails_on_a_dotted_name_and_names_it() -> None:
+    """The exact wire name, never the identity: a dotted call was refused, not dispatched."""
+    ev = evidence(llm_calls=[_offered(["home_light_turn_on"], "home.light_turn_on")])
+    result = check("tool_calls_offered", {}, ev)
+    assert result.status == "fail"
+    assert "home.light_turn_on" in result.reason
+
+
+def test_tool_calls_offered_reads_each_request_alone() -> None:
+    """Offered in an earlier request is not offered in this one."""
+    ev = evidence(
+        llm_calls=[
+            _offered(["home_light_turn_on"]),
+            _offered(["memory_recall_memories"], "home_light_turn_on"),
+        ]
+    )
+    result = check("tool_calls_offered", {}, ev)
+    assert result.status == "fail"
+    assert "home_light_turn_on" in result.reason
+
+
+def test_tool_calls_offered_ignores_other_roles() -> None:
+    ev = evidence(llm_calls=[_offered([], "home_light_turn_on", role="system1")])
+    result = check("tool_calls_offered", {}, ev)
+    assert result.status == "pass", result.reason
+
+
+def test_tool_calls_offered_rejects_unknown_params() -> None:
+    with pytest.raises(ValidationError):
+        CHECK_PARAMS["tool_calls_offered"].model_validate({"tool": "x"})

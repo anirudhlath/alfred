@@ -76,5 +76,5 @@
 - Registration authenticates the session, so `AuthGate` seeds `["auth-status"]` itself after
   the ceremony rather than waiting for a refetch.
 - Credential writes need a trusted network as well as a session — see
-  `docs/backlog/low/pwa-phase1-followups.md` §1 for why step 5 can fail on the public host
+  [#256](https://github.com/anirudhlath/alfred/issues/256) §1 for why step 5 can fail on the public host
   with no warning beforehand.

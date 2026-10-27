@@ -1,0 +1,9 @@
+id: reflex.attribution.person
+prd: [4.4.who-did-it]
+status: shipped
+tags: [attribution]
+steps:
+  - ha_event: {entity_id: light.bedroom_lamp, state: "on", by: person.alex}
+expect:
+  # Someone used an app: Reflex's What changed line names them by their live-state name.
+  - prompt_contains: {role: system1, text: "by Alex"}

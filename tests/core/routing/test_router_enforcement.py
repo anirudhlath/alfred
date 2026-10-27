@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from bus.schemas.events import ActionRequest, ActionResult
+from bus.schemas.events import ActionRequest, ActionResult, ParkedAction
 from core.notifications.schema import Urgency
 
 _MANIFEST = json.dumps(
@@ -47,6 +47,10 @@ def _router() -> tuple[object, StubAgent, AsyncMock, AsyncMock]:
 
     redis = AsyncMock()
     redis.hget = AsyncMock(return_value=_MANIFEST.encode())
+    # redis-py's pipeline() is a sync call returning an async context manager (the call log's).
+    pipe = MagicMock()
+    pipe.execute = AsyncMock(return_value=[])
+    redis.pipeline = MagicMock(return_value=MagicMock(__aenter__=AsyncMock(return_value=pipe)))
     notifier = AsyncMock()
     router = DomainRouter(redis=redis, notifier=notifier)
     agent = StubAgent()
@@ -106,14 +110,21 @@ async def test_critical_unconfirmed_intercepted() -> None:
     assert result.status == "error"
     assert result.error == f"confirmation_required:{action.request_id}"
     assert agent.calls == []
-    # Pending entry stored with TTL 300
+    # Pending entry stored with TTL 300, as a parked action
     args, kwargs = redis.set.call_args
-    assert args[0] == f"alfred:pending_actions:{action.request_id}"
+    assert args[0] == f"alfred:pending:{action.request_id}"
     assert kwargs["ex"] == 300
+    assert ParkedAction.model_validate_json(args[1]).action == action
     # URGENT notification with pending metadata
     notifier.publish.assert_awaited_once()
     pub_kwargs = notifier.publish.call_args.kwargs
+    assert pub_kwargs["title"] == "Confirmation required"
+    assert pub_kwargs["body"] == (
+        "Alfred wants to run 'home.unlock_door' on home-service — confirm?"
+    )
+    assert pub_kwargs["source"] == "domain-router"
     assert pub_kwargs["urgency"] == Urgency.URGENT
+    assert set(pub_kwargs["metadata"]) == {"pending_action_id", "tool_name", "parameters", "reason"}
     assert pub_kwargs["metadata"]["pending_action_id"] == action.request_id
     assert pub_kwargs["metadata"]["tool_name"] == "home.unlock_door"
     assert pub_kwargs["metadata"]["parameters"] == {"room": "living_room"}

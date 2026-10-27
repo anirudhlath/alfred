@@ -65,11 +65,13 @@ class RobinhoodAdapter(Integration):
         return [
             IntegrationCapability(
                 name="get_portfolio",
+                side_effect=False,
                 description="Get current portfolio summary",
                 params_schema={"type": "object", "properties": {}},
             ),
             IntegrationCapability(
                 name="get_positions",
+                side_effect=False,
                 description="Get individual stock positions",
                 params_schema={"type": "object", "properties": {}},
             ),

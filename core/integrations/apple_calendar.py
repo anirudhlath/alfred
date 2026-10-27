@@ -162,16 +162,19 @@ class AppleCalendarAdapter(Integration):
         return [
             IntegrationCapability(
                 name="list_calendars",
+                side_effect=False,
                 description="List all calendars on the account with their types",
                 params_schema={"type": "object", "properties": {}},
             ),
             IntegrationCapability(
                 name="get_today_events",
+                side_effect=False,
                 description="Get today's calendar events",
                 params_schema={"type": "object", "properties": {}},
             ),
             IntegrationCapability(
                 name="get_upcoming",
+                side_effect=False,
                 description="Get events for the next N days",
                 params_schema={
                     "type": "object",

@@ -1,14 +1,13 @@
-"""Tests for the context reader — Redis fetch, cache, and Markdown rendering."""
+"""Tests for the context reader — fresh reads of live state, and Markdown rendering."""
 
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
-import pytest
-
+from core.reflex.context_reader import LIVE_STATE_UNAVAILABLE, ContextReader, render_snapshot
 from sdk.alfred_sdk.context import ContextEntry, ContextSnapshot
-from shared.streams import CONTEXT_KEY_PREFIX
+
+_READ = "core.reflex.context_reader.read_live_state"
 
 
 def _make_snapshot() -> ContextSnapshot:
@@ -34,31 +33,8 @@ def _make_snapshot() -> ContextSnapshot:
     )
 
 
-def _make_mock_redis(snapshot: ContextSnapshot | None) -> AsyncMock:
-    """Create a mock Redis with scan_iter + get configured for a single service."""
-    mock_redis = AsyncMock()
-
-    key = f"{CONTEXT_KEY_PREFIX}home-service".encode()
-
-    async def mock_scan_iter(match: str, count: int = 100) -> Any:
-        if snapshot is not None:
-            yield key
-
-    mock_redis.scan_iter = mock_scan_iter
-
-    if snapshot is not None:
-        mock_redis.get = AsyncMock(return_value=snapshot.model_dump_json().encode())
-    else:
-        mock_redis.get = AsyncMock(return_value=None)
-
-    return mock_redis
-
-
 def test_render_snapshot_produces_markdown() -> None:
-    from core.reflex.context_reader import render_snapshot
-
-    snapshot = _make_snapshot()
-    result = render_snapshot(snapshot)
+    result = render_snapshot(_make_snapshot())
 
     assert "### Lights" in result
     assert "- light.living_room: on (brightness: 255)" in result
@@ -70,80 +46,79 @@ def test_render_snapshot_produces_markdown() -> None:
 
 
 def test_render_empty_snapshot() -> None:
-    from core.reflex.context_reader import render_snapshot
-
-    result = render_snapshot(ContextSnapshot())
-    assert result == ""
+    assert render_snapshot(ContextSnapshot()) == ""
 
 
-@pytest.mark.asyncio
-async def test_context_reader_fetches_from_redis() -> None:
-    from core.reflex.context_reader import ContextReader
+async def test_rendered_context_reads_live_state() -> None:
+    redis = AsyncMock()
+    with patch(_READ, AsyncMock(return_value=_make_snapshot())) as read:
+        rendered = await ContextReader(redis=redis).get_rendered_context()
 
-    snapshot = _make_snapshot()
-    mock_redis = _make_mock_redis(snapshot)
-
-    reader = ContextReader(redis=mock_redis)
-    result = await reader.get_rendered_context()
-
-    assert "light.living_room" in result
-    assert "brightness: 255" in result
-    mock_redis.get.assert_called_once_with(f"{CONTEXT_KEY_PREFIX}home-service".encode())
+    read.assert_awaited_once_with(redis)
+    assert "- light.living_room: on (brightness: 255)" in rendered
 
 
-@pytest.mark.asyncio
-async def test_context_reader_caches_result() -> None:
-    from core.reflex.context_reader import ContextReader
+async def test_a_change_between_reads_shows_on_the_next_read() -> None:
+    before = ContextSnapshot(
+        controllable={"light": [ContextEntry(entity_id="light.lamp", state="on")]}
+    )
+    after = ContextSnapshot(
+        controllable={"light": [ContextEntry(entity_id="light.lamp", state="off")]}
+    )
+    reader = ContextReader(redis=AsyncMock())
 
-    snapshot = _make_snapshot()
-    mock_redis = _make_mock_redis(snapshot)
+    with patch(_READ, AsyncMock(side_effect=[before, after])):
+        first = await reader.get_rendered_context()
+        second = await reader.get_rendered_context()
 
-    reader = ContextReader(redis=mock_redis)
-    result1 = await reader.get_rendered_context()
-    result2 = await reader.get_rendered_context()
-
-    assert result1 == result2
-    # Redis only queried once (cached)
-    mock_redis.get.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_context_reader_returns_empty_when_key_missing() -> None:
-    from core.reflex.context_reader import ContextReader
-
-    mock_redis = AsyncMock()
-
-    async def mock_scan_iter(match: str, count: int = 100) -> Any:
-        return
-        yield  # make it an async generator
-
-    mock_redis.scan_iter = mock_scan_iter
-
-    reader = ContextReader(redis=mock_redis)
-    result = await reader.get_rendered_context()
-
-    assert result == ""
+    assert "- light.lamp: on" in first
+    assert "- light.lamp: off" in second
 
 
-@pytest.mark.asyncio
-async def test_context_reader_caches_empty_result() -> None:
-    """Empty result (no keys) should also be cached — don't re-scan Redis."""
-    from core.reflex.context_reader import ContextReader
+async def test_no_live_state_is_said_not_implied() -> None:
+    with patch(_READ, AsyncMock(return_value=None)):
+        rendered = await ContextReader(redis=AsyncMock()).get_rendered_context()
 
-    scan_call_count = 0
+    assert rendered == LIVE_STATE_UNAVAILABLE == "Live home state unavailable."
 
-    async def mock_scan_iter(match: str, count: int = 100) -> Any:
-        nonlocal scan_call_count
-        scan_call_count += 1
-        return
-        yield  # make it an async generator
 
-    mock_redis = AsyncMock()
-    mock_redis.scan_iter = mock_scan_iter
+async def test_entity_states_filter_by_glob() -> None:
+    with patch(_READ, AsyncMock(return_value=_make_snapshot())):
+        states = await ContextReader(redis=AsyncMock()).get_entity_states(patterns=["light.*"])
 
-    reader = ContextReader(redis=mock_redis)
-    await reader.get_rendered_context()
-    await reader.get_rendered_context()
+    assert states == [
+        {"entity_id": "light.living_room", "state": "on", "attributes": {"brightness": 255}},
+        {"entity_id": "light.bedroom", "state": "off"},
+    ]
 
-    # scan_iter only called once despite empty result (cached)
-    assert scan_call_count == 1
+
+async def test_unfiltered_entity_states_come_from_both_buckets() -> None:
+    with patch(_READ, AsyncMock(return_value=_make_snapshot())):
+        states = await ContextReader(redis=AsyncMock()).get_entity_states()
+
+    assert states is not None
+    assert [s["entity_id"] for s in states] == [
+        "light.living_room",
+        "light.bedroom",
+        "scene.movie_night",
+        "sensor.temperature",
+    ]
+
+
+async def test_a_domain_in_both_buckets_keeps_every_entity() -> None:
+    snapshot = ContextSnapshot(
+        controllable={"switch": [ContextEntry(entity_id="switch.kettle", state="on")]},
+        sensors={"switch": [ContextEntry(entity_id="switch.meter", state="off")]},
+    )
+    with patch(_READ, AsyncMock(return_value=snapshot)):
+        states = await ContextReader(redis=AsyncMock()).get_entity_states()
+
+    assert states == [
+        {"entity_id": "switch.kettle", "state": "on"},
+        {"entity_id": "switch.meter", "state": "off"},
+    ]
+
+
+async def test_entity_states_are_none_without_live_state() -> None:
+    with patch(_READ, AsyncMock(return_value=None)):
+        assert await ContextReader(redis=AsyncMock()).get_entity_states() is None

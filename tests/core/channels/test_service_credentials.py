@@ -447,7 +447,7 @@ def test_lifespan_starts_credential_push_worker() -> None:
 
     def fake_warmup(service: str, steps: Any) -> Any:
         # The real warmup starts Whisper/Piper loads in to_thread; those
-        # threads outlive the TestClient and pollute web_server._lazy_cache
+        # threads outlive the TestClient and pollute voice_models' cached models
         # for later tests (this file runs before test_voice_async.py).
         return asyncio.create_task(asyncio.sleep(0))
 
@@ -461,6 +461,7 @@ def test_lifespan_starts_credential_push_worker() -> None:
             new=AsyncMock(return_value=None),
         ),
         patch("core.channels.service_credentials.credential_push_worker", new=fake_worker),
+        patch("core.channels.followups.followup_worker", new=AsyncMock(return_value=None)),
         patch("httpx.AsyncClient.aclose", new=AsyncMock()),
     ):
         app = create_app(redis_url="redis://localhost:6379")

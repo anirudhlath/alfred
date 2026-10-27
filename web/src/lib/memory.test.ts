@@ -112,6 +112,20 @@ describe("toEpisodicRow", () => {
     });
   });
 
+  it("drops the event time an observation's text leads with, since the row shows it", () => {
+    // The ingestor stamps the text in the user's zone; the row prints `at` itself.
+    const stamped = (content: string) => toEpisodicRow({ ...HOT, content }, 0).text;
+    expect(stamped("[observation] Sat 2026-10-03 17:39 — light.kitchen: off → on")).toBe(
+      "[observation] light.kitchen: off → on",
+    );
+    expect(stamped("[reflex:state_change] Sat 2026-10-03 17:39 — home.lock_unlock() → success")).toBe(
+      "[reflex:state_change] home.lock_unlock() → success",
+    );
+    // Only a leading tag-then-stamp is a stamp; anything else is the memory's own words.
+    expect(stamped("Sat 2026-10-03 17:39 — lamp")).toBe("Sat 2026-10-03 17:39 — lamp");
+    expect(stamped("[observation] lamp: off → on")).toBe("[observation] lamp: off → on");
+  });
+
   it("gives a hot row an index key, because the server discards its id", () => {
     expect(toEpisodicRow(HOT, 4)).toMatchObject({ key: "hot:4", id: null });
   });

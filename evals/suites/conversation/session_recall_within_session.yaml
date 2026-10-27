@@ -1,0 +1,12 @@
+id: conversation.session.recall_within_session
+prd: [4.1.sessions]
+status: shipped
+tags: [sessions]
+steps:
+  - user: "My sister Priya is visiting on Saturday."
+  - user: "Who did I say is visiting?"
+expect:
+  - reply_contains: {text: "Priya"}
+  - judge:
+      category: faithfulness
+      rubric: "Does the reply say it is the user's sister Priya who is visiting, without contradicting the Saturday visit?"

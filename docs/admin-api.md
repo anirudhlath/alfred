@@ -97,7 +97,7 @@ upgrades — and checks the `alfred:auth:{session_id}` hash in Redis.
 Returns a single JSON object with:
 
 - `redis.connected` — bool, from a `PING` probe
-- `cost` — current `alfred:cost:daily` value (JSON object) or `null` if unset. The blob is written only on spend, so before the day's first `record_spend` it is the previous day's state (check `date`); `request_count` (calls billed today) and `avg_usd` (spend per call) are absent entirely from state written before the upgrade — treat both as optional
+- `cost` — today's spend, read from the shared budget counter (`{alfred:spend}:*`, see [docs/llm.md](llm.md#spend)): `date` (the day in the user's timezone), `spend_usd`, `cap_usd` (`0` when `DAILY_COST_CAP_USD` is 0 or less, which refuses every model request, $0 local ones included), `alert_sent` (whether today's 80% alert went out), `request_count` (model requests today, including $0 local ones, System 2's and the Librarian's alike: model requests, not turns, and one turn can make several) and `avg_usd` (`spend_usd / request_count`, per model request). Before the day's first billed request every number is `0`. `null` when the counter cannot be read
 - `dnd` — current `alfred:memory:dnd` value, defaulting to `{"active": false}`
 - `counts.sessions` — number of active `alfred:sessions:*` keys (scan-based)
 - `counts.devices` — `HLEN alfred:push:devices`
@@ -230,7 +230,7 @@ Query parameters: `q` (optional search string), `limit` (default 30, clamped to 
 
 **Without `?q`** (recent listing):
 
-- Hot store: scans `ctx:*` keys (RediSearch HNSW prefix), retains only entries where
+- Hot store: scans `ctx:*` keys (the hot index's key prefix), retains only entries where
   `type == "episodic"`. The `CONTEXT_PREFIX` keyspace is shared — it also holds
   `type="semantic"` and `type="routine"` entries that are filtered out here.
 - Cold store: queries `episodic_entries` table in `core/memory/episodic_cold.db` ordered
@@ -306,10 +306,11 @@ Reads the full `alfred:notifications:deferred` Redis List. Each element is a JSO
 | `DELETE` | `/api/admin/sessions/{session_id}` | Terminate a session immediately |
 
 **List sessions** scans `alfred:sessions:*` keys. For each session it fetches the hash
-fields (`hgetall`), counts conversation turns from the JSON `history` field, and reads the
-Redis `TTL`. Binary embedding fields (keys starting with `embedding`) are stripped before
-returning. The N+1 pattern (one `hgetall+ttl` per session) is intentional — session counts
-are small and this is low-frequency admin traffic.
+fields (`hgetall`), counts the user turns in the stored `messages` (or, for a session
+written before full history, its text `history`), and reads the Redis `TTL`. Binary
+embedding fields (keys starting with `embedding`) are stripped before returning. The N+1
+pattern (one `hgetall+ttl` per session) is intentional — session counts are small and this
+is low-frequency admin traffic.
 
 Response per session: `session_id`, `channel`, `created_at`, `turns`, `ttl_seconds`.
 
@@ -396,7 +397,11 @@ Request body:
 {"active": true, "until": "2026-06-11T22:00:00Z", "reason": "sleeping"}
 ```
 
-- `active: false` — deletes `alfred:memory:dnd` immediately.
+- `active: false` — deletes `alfred:memory:dnd` immediately and, if that removed a live key,
+  queues a drain of the held-back queue: the same `drain_deferred_notifications` action as
+  [Drain](#drain-post-apiadminnotificationsdrain) below, executed by the conscious process.
+  The response is still `{"active": false}` — it does not wait for the drain. A clear when
+  DND was already off queues nothing.
 - `active: true` — writes `{"active": true, "until": ..., "reason": ..., "source": "manual"}`
   to `alfred:memory:dnd`. `until` and `reason` are optional.
 
@@ -591,7 +596,7 @@ cleanly before the handler returns.
 
 | Control | Mechanism | Who executes |
 |---|---|---|
-| DND set/clear | Direct `SET`/`DEL alfred:memory:dnd` | Admin API (channels process) |
+| DND set/clear | Direct `SET`/`DEL alfred:memory:dnd`; a clear that removed the key also `XADD alfred:actions` (`drain_deferred_notifications`) | Admin API (channels process); the drain by the Conscious process `_INTERNAL_HANDLERS` |
 | Trigger `enabled` toggle | `XADD alfred:actions` (`set_trigger_enabled`, `target_service=trigger-engine`) | Triggers process (`triggers-internal` consumer → `TriggerStore.save`) |
 | Session delete | `DEL alfred:sessions:{id}` | Admin API (channels process) |
 | Drain deferred notifications | `XADD alfred:actions` (`drain_deferred_notifications`) | Conscious process `_INTERNAL_HANDLERS` |

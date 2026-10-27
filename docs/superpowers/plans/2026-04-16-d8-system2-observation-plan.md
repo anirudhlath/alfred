@@ -1132,12 +1132,12 @@ actions, and promote beneficial patterns to procedural memory."
 ### Task 8: Create Reflex Input Generalization Backlog Ticket
 
 **Files:**
-- Create: `docs/backlog/medium/reflex-input-generalization.md`
-- Modify: `docs/backlog/medium/d8-system2-observation-system1.md` (update status)
+- Create: [#88](https://github.com/anirudhlath/alfred/issues/88)
+- Modify: [#79](https://github.com/anirudhlath/alfred/issues/79) (update status)
 
 - [ ] **Step 1: Create the backlog ticket**
 
-Create `docs/backlog/medium/reflex-input-generalization.md`:
+Create [#88](https://github.com/anirudhlath/alfred/issues/88):
 
 ```markdown
 # Reflex Input Generalization
@@ -1157,7 +1157,7 @@ Identified during D8 (System 2 Observation) design. The observation pipeline (D8
 
 - [ ] **Step 2: Update D8 backlog ticket**
 
-Update `docs/backlog/medium/d8-system2-observation-system1.md` to mark as implemented:
+Update [#79](https://github.com/anirudhlath/alfred/issues/79) to mark as implemented:
 
 ```markdown
 # D8: System 2 Observation of System 1 Actions

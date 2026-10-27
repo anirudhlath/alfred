@@ -76,3 +76,18 @@ def test_apple_vmnet_gateway_falls_back_on_malformed_json(monkeypatch: pytest.Mo
     monkeypatch.setattr(runtime.subprocess, "run", _fake_run)
     apple = runtime.Runtime("container", "container")
     assert runtime.host_gateway(apple) == "192.168.64.1"
+
+
+@pytest.mark.parametrize(
+    ("name", "platform", "expected"),
+    [
+        ("docker", "linux", ["--add-host", "host.docker.internal:host-gateway"]),
+        ("docker", "darwin", []),  # Docker Desktop resolves host.docker.internal itself
+        ("podman", "linux", []),  # podman names the host host.containers.internal itself
+    ],
+)
+def test_host_alias_args_map_the_host_gateway_only_where_the_runtime_does_not(
+    monkeypatch: pytest.MonkeyPatch, name: str, platform: str, expected: list[str]
+) -> None:
+    monkeypatch.setattr(runtime.sys, "platform", platform)
+    assert runtime.host_alias_args(runtime.Runtime(name, name)) == expected

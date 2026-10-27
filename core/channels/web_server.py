@@ -9,27 +9,40 @@ import json
 import os
 import re
 import time
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import httpx
 import redis.asyncio as aioredis  # noqa: TC002 — patched at runtime by tests (e.g. test_device_registration.py)
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from loguru import logger
 from pydantic import BaseModel, Field
+from redis.exceptions import RedisError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
+    from core.channels.followups import FollowupSink
+    from core.channels.service_credentials import ServiceCredentialManifest
     from core.integrations.base import CredentialSchema
 
-from bus.schemas.events import UserRequest
+from bus.schemas.events import AlfredResponse, UserRequest
 from core.channels.admin_api import aclose_episodic, create_admin_router, require_authenticated
 from core.channels.request_bus import publish_and_wait
 from core.channels.satellite.bridge import SatelliteBridge
 from core.channels.satellite.config import load_satellites
-from core.channels.satellite.pipeline import SatellitePipeline
+from core.channels.satellite.pipeline import SatellitePipeline, satellite_name
 from core.channels.spa import SpaCacheMiddleware
 from core.channels.telemetry_ws import register_telemetry_ws
 from core.channels.voice_models import (  # re-exported for tests (see __all__)
@@ -45,12 +58,16 @@ from core.identity.credentials import CredentialStore
 from core.identity.ws_auth import require_ws_auth
 from core.notifications.adapters.satellite import SatelliteChannelAdapter
 from core.notifications.channels import ChannelRegistry
+from core.notifications.dispatcher import NotificationDispatcher
+from core.notifications.dnd import DNDChecker
+from core.notifications.publisher import NotificationPublisher
+from core.notifications.schema import Urgency
 from core.routing.pending import (
-    confirm_pending_action,
-    get_pending_action,
-    list_pending_actions,
-    pending_action_payload,
+    decide,
+    get_pending,
+    list_pending,
     pending_key,
+    pending_payload,
 )
 from core.shutdown import teardown
 from core.warmup import start_warmup
@@ -74,6 +91,8 @@ _SPA_DIST: Path = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
 
 
 _active_websockets: dict[WebSocket, str] = {}
+# The sockets on each chat session, so a follow-up reaches the session that asked (#307).
+_session_sockets: dict[str, set[WebSocket]] = {}
 _CHANNEL_SOURCE_MAP: dict[str, str] = {
     "ios": "ios-app",
     "web_pwa": "web-pwa",
@@ -93,6 +112,107 @@ def get_web_websockets() -> list[WebSocket]:
     adapters should only push to web clients to avoid duplicates.
     """
     return [ws for ws, ch in _active_websockets.items() if ch != "ios"]
+
+
+def _join_session(websocket: WebSocket, session_id: str) -> None:
+    _session_sockets.setdefault(session_id, set()).add(websocket)
+
+
+def _leave_session(websocket: WebSocket, session_id: str) -> None:
+    sockets = _session_sockets.get(session_id)
+    if sockets is None:
+        return
+    sockets.discard(websocket)
+    if not sockets:
+        del _session_sockets[session_id]
+
+
+async def _response_frame(response: AlfredResponse, session_id: str) -> dict[str, Any]:
+    """The chat socket's ``response`` frame for *response*, with its TTS audio when a voice
+    is loaded. One builder for the answer a socket waited for and for a follow-up."""
+    frame: dict[str, Any] = {
+        "type": "response",
+        "text": response.text,
+        "session_id": session_id,
+        "actions_taken": response.actions_taken,
+        "mood": response.mood,
+        "followup": response.followup,
+    }
+    tts = await aget_tts()
+    if tts is not None:
+        try:
+            wav_bytes = await synthesize_async(tts, response.text)
+            frame["audio"] = base64.b64encode(wav_bytes).decode()
+        except Exception as exc:
+            logger.error("TTS synthesis failed: {}", exc)
+    return frame
+
+
+def _followup_sink(
+    notifier: NotificationPublisher,
+    get_bridge: Callable[[], SatelliteBridge | None],
+) -> FollowupSink:
+    """Deliver a follow-up on the channel its request came from (#307)."""
+
+    async def deliver(response: AlfredResponse) -> None:
+        match response.channel:
+            case "web_pwa" | "voice" | "ios":
+                await _deliver_to_session(response, notifier)
+            case "satellite":
+                await _speak_on_satellite(response, get_bridge(), notifier)
+            case "signal":
+                pass  # the bridge already sends every Signal response
+
+    return deliver
+
+
+async def _deliver_to_session(response: AlfredResponse, notifier: NotificationPublisher) -> None:
+    """Send the frame to the session's sockets; with none that takes it, notify instead."""
+    sent = 0
+    sockets = list(_session_sockets.get(response.session_id, ()))
+    if sockets:
+        # Every frame sent from here is unsolicited from the socket's side, a late answer
+        # included, so it says followup: the Room otherwise takes it for the answer to the
+        # turn in flight (ruling P21).
+        unsolicited = response.model_copy(update={"followup": True})
+        frame = await _response_frame(unsolicited, response.session_id)
+        for websocket in sockets:
+            try:
+                await websocket.send_json(frame)
+                sent += 1
+            except Exception as exc:
+                logger.warning(
+                    "Follow-up to session {} not sent on a socket: {}", response.session_id, exc
+                )
+    if not sent:
+        await _notify_followup(response, notifier)
+
+
+async def _notify_followup(response: AlfredResponse, notifier: NotificationPublisher) -> None:
+    """Tell the owner a follow-up's text by notification, for a channel that cannot take it."""
+    await notifier.publish(
+        title="Alfred", body=response.text, source="channels", urgency=Urgency.IMPORTANT
+    )
+
+
+async def _speak_on_satellite(
+    response: AlfredResponse, bridge: SatelliteBridge | None, notifier: NotificationPublisher
+) -> None:
+    """Speak the reply on the satellite the session names; with none that can, notify."""
+    name = satellite_name(response.session_id)
+    if name is None or bridge is None:
+        logger.warning(
+            "Follow-up for session {} not spoken: no satellite bridge or name; notifying",
+            response.session_id,
+        )
+        await _notify_followup(response, notifier)
+        return
+    tts = await aget_tts()
+    if tts is None:
+        logger.warning("Satellite '{}': TTS unavailable — notifying instead", name)
+        await _notify_followup(response, notifier)
+        return
+    await bridge.play_wav_to(name, await synthesize_async(tts, response.text))
 
 
 _ALLOWED_AUDIO_FORMATS = {"wav", "webm", "aac", "m4a", "mp4", "ogg", "mp3"}
@@ -153,6 +273,15 @@ _REQUEST_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 # One vocabulary for an unreachable action store, as with the auth router's
 # "Session store unavailable" and the admin router's "Attention store unavailable".
 _ACTION_STORE_DOWN = "Action store unavailable"
+# The same vocabulary for an unreadable tool registry (`alfred:tool_registry`): the 503
+# the per-name integration routes answer with when they cannot look a service up.
+_TOOL_REGISTRY_DOWN = "Tool registry unavailable"
+# The listing's way of saying the same thing. It still answers 200 with the adapters,
+# which need no Redis (issue #118), and sets this header, which a complete listing never
+# carries, so a client can tell the omission from a house with no services. The PWA
+# restates the name and value in web/src/lib/system.ts.
+_TOOL_REGISTRY_HEADER = "X-Tool-Registry"
+_TOOL_REGISTRY_UNAVAILABLE = "unavailable"
 
 
 class DeviceRegistration(BaseModel):
@@ -336,6 +465,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     except Exception as exc:
         logger.warning("APNs adapter init failed ({}): {}", type(exc).__name__, exc)
 
+    from core.channels.followups import followup_worker
     from core.channels.service_credentials import credential_push_worker
 
     shutdown = asyncio.Event()
@@ -344,6 +474,19 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     )
     credential_push_task = asyncio.create_task(
         credential_push_worker(pool, app.state.http, shutdown=shutdown)
+    )
+    # Replies that land after a channel stopped waiting (#307). The bridge is read per
+    # delivery: it starts below, and may not start at all.
+    notifier = NotificationPublisher(
+        NotificationDispatcher(redis=pool, dnd_checker=DNDChecker(pool, calendar_adapter=None))
+    )
+    followup_task = asyncio.create_task(
+        followup_worker(
+            pool,
+            deliver=_followup_sink(notifier, lambda: getattr(app.state, "satellite_bridge", None)),
+            consumer="worker-1",
+            shutdown=shutdown,
+        )
     )
 
     # Load voice models in the background so the first audio message doesn't
@@ -396,7 +539,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     # behind the one before it, so a single raiser (or a cancellation during shutdown)
     # silently skipped the rest — leaking the http client and the Redis pool.
     await teardown(
-        tasks=[delivery_task, credential_push_task, warmup_task],
+        tasks=[delivery_task, credential_push_task, followup_task, warmup_task],
         closers={
             "satellite bridge": satellite_bridge.stop if satellite_bridge is not None else None,
             "apns adapter": getattr(apns, "close", None) if apns is not None else None,
@@ -405,7 +548,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
             # (it must outlive any single request), so this hook is its only close.
             "admin episodic provider": aclose_episodic,
             "http client": app.state.http.aclose,
-            "redis pool": pool.close,
+            "redis pool": pool.aclose,
         },
     )
 
@@ -431,6 +574,33 @@ async def _validate_and_store(name: str, schema: CredentialSchema, body: dict[st
     await asyncio.gather(
         *[aset_secret(name, f, v) for f, v in body.items() if not schema.fields[f].transient]
     )
+
+
+class _ToolRegistryUnavailable(HTTPException):
+    """A tool-registry read failed in Redis itself: an outage, never an unknown service.
+
+    An ``HTTPException``, so a per-name route answers 503 by letting it rise; the
+    listing catches it by type and answers with the adapters instead.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(status_code=503, detail=_TOOL_REGISTRY_DOWN)
+
+
+@contextmanager
+def _tool_registry_read(costs: str) -> Iterator[None]:
+    """Wrap every tool-registry read the integrations routes make.
+
+    Whatever stops the read (refused, timed out, or an error reply such as WRONGTYPE
+    or an ACL denial) is a ``RedisError``. It is logged here, once, at WARNING with
+    what it ``costs`` the caller, and re-raised as ``_ToolRegistryUnavailable``.
+    Nothing else is caught: a bug in the service half must still surface as a 500.
+    """
+    try:
+        yield
+    except RedisError as exc:
+        logger.warning("Tool registry unreadable ({}: {}) — {}", type(exc).__name__, exc, costs)
+        raise _ToolRegistryUnavailable from exc
 
 
 # The credential-equivalent routes (credential writes, device-token writes, voice
@@ -466,6 +636,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         session_id = str(uuid4())
         session_locked = False
         await websocket.send_json({"type": "session", "session_id": session_id})
+        _join_session(websocket, session_id)
 
         try:
             while True:
@@ -500,8 +671,11 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                     continue
 
                 # Allow client to restore a previous session on its first message only
-                if not session_locked and (client_sid := data.get("session_id")):
+                client_sid = data.get("session_id")
+                if not session_locked and isinstance(client_sid, str) and client_sid:
+                    _leave_session(websocket, session_id)
                     session_id = client_sid
+                    _join_session(websocket, session_id)
                 session_locked = True
 
                 raw_type = data.get("type", "text")
@@ -575,34 +749,21 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                 )
 
                 alfred_resp = await publish_and_wait(r, request, session_id, timeout=60.0)
-
-                response_payload: dict[str, Any] = {
-                    "type": "response",
-                    "text": alfred_resp.text,
-                    "session_id": session_id,
-                    "actions_taken": alfred_resp.actions_taken,
-                    "mood": alfred_resp.mood,
-                }
-
-                # Synthesise audio for the response
-                tts = await aget_tts()
-                if tts is not None:
-                    try:
-                        wav_bytes = await synthesize_async(tts, alfred_resp.text)
-                        response_payload["audio"] = base64.b64encode(wav_bytes).decode()
-                    except Exception as exc:
-                        logger.error("TTS synthesis failed: {}", exc)
-
-                await websocket.send_json(response_payload)
+                await websocket.send_json(await _response_frame(alfred_resp, session_id))
 
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected (session={})", session_id)
         finally:
             _active_websockets.pop(websocket, None)
+            _leave_session(websocket, session_id)
 
     @app.get("/api/integrations", dependencies=[Depends(require_authenticated)])
-    async def list_integrations() -> list[dict[str, Any]]:
-        """List integration adapters + registry-declared sovereign services (C5)."""
+    async def list_integrations(response: Response) -> list[dict[str, Any]]:
+        """List integration adapters + registry-declared sovereign services (C5).
+
+        Adapters alone when the registry cannot be read — the services come from it —
+        with ``_TOOL_REGISTRY_HEADER`` set to say the list is missing them.
+        """
         from core.channels.service_credentials import (
             build_integration_entry,
             list_service_manifests,
@@ -615,11 +776,21 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                 name, integration_cls.category, "adapter", integration_cls.credentials_schema
             )
 
+        async def _service_manifests() -> dict[str, ServiceCredentialManifest]:
+            # The adapter half needs no Redis, so an unreadable registry costs the
+            # services alone, never the adapters' credential entry (issue #118).
+            try:
+                with _tool_registry_read("listing integration adapters only"):
+                    return await list_service_manifests(app.state.redis)
+            except _ToolRegistryUnavailable:
+                response.headers[_TOOL_REGISTRY_HEADER] = _TOOL_REGISTRY_UNAVAILABLE
+                return {}
+
         # Adapters and registry-declared services live in independent stores
         # (in-process registry vs. Redis) — read both concurrently.
         adapters, manifests = await asyncio.gather(
             asyncio.gather(*[_build_info(n) for n in IntegrationRegistry.available()]),
-            list_service_manifests(app.state.redis),
+            _service_manifests(),
         )
         services = await asyncio.gather(
             *[
@@ -629,13 +800,25 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         )
         return list(adapters) + list(services)
 
-    async def _save_service_credentials(name: str, body: dict[str, str]) -> dict[str, Any]:
-        """Service branch of PUT: validate → keyring → push to credentials_endpoint."""
-        from core.channels.service_credentials import get_service_manifest, push_credentials
+    async def _service_manifest(name: str) -> ServiceCredentialManifest:
+        """The service branch's registry read, shared by PUT, DELETE and status.
 
-        manifest = await get_service_manifest(app.state.redis, name)
+        404 when the registry holds no such service, and 503 (``_TOOL_REGISTRY_DOWN``)
+        when it cannot be read: an outage must not read as an unknown name.
+        """
+        from core.channels.service_credentials import get_service_manifest
+
+        with _tool_registry_read("answering 503"):
+            manifest = await get_service_manifest(app.state.redis, name)
         if manifest is None:
             raise HTTPException(status_code=404, detail=f"Unknown integration: {name}")
+        return manifest
+
+    async def _save_service_credentials(name: str, body: dict[str, str]) -> dict[str, Any]:
+        """Service branch of PUT: validate → keyring → push to credentials_endpoint."""
+        from core.channels.service_credentials import push_credentials
+
+        manifest = await _service_manifest(name)
 
         await _validate_and_store(name, manifest.schema, body)
 
@@ -683,7 +866,6 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     )
     async def delete_credentials(name: str) -> dict[str, str]:
         """Clear all credentials for an adapter or service from the OS keyring."""
-        from core.channels.service_credentials import get_service_manifest
         from core.integrations.registry import IntegrationRegistry
         from shared.secrets import adelete_secret
 
@@ -692,12 +874,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             fields = list(integration_cls.credentials_schema.fields)
             is_adapter = True
         except KeyError:
-            manifest = await get_service_manifest(app.state.redis, name)
-            if manifest is None:
-                raise HTTPException(
-                    status_code=404, detail=f"Unknown integration: {name}"
-                ) from None
-            fields = list(manifest.schema.fields)
+            fields = list((await _service_manifest(name)).schema.fields)
             is_adapter = False
 
         await asyncio.gather(*[adelete_secret(name, f) for f in fields])
@@ -710,11 +887,9 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
         """Service branch of status: proxy the service's /health (C5)."""
         from urllib.parse import urljoin
 
-        from core.channels.service_credentials import get_service_manifest, service_payload_healthy
+        from core.channels.service_credentials import service_payload_healthy
 
-        manifest = await get_service_manifest(app.state.redis, name)
-        if manifest is None:
-            raise HTTPException(status_code=404, detail=f"Unknown integration: {name}")
+        manifest = await _service_manifest(name)
 
         endpoint = (
             manifest.manifest.get("credentials_endpoint")
@@ -735,7 +910,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             # urljoin is inside the try: a malformed endpoint ("http://[::1")
             # raises ValueError here, and httpx.InvalidURL is not an HTTPError.
             resp = await app.state.http.get(urljoin(endpoint, "/health"))
-            payload: dict[str, Any] = resp.json()
+            payload: Any = resp.json()
         except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
             return {
                 "name": name,
@@ -752,6 +927,15 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
                 "name": name,
                 "healthy": False,
                 "detail": {"error": f"{type(exc).__name__}: {exc}"},
+                "latency_ms": _elapsed_ms(started),
+            }
+        # Valid JSON need not be an object (`123`, `["ok"]`) — a service-written
+        # body degrades to unhealthy rather than an AttributeError and a 500.
+        if not isinstance(payload, dict):
+            return {
+                "name": name,
+                "healthy": False,
+                "detail": {"error": f"/health body is not a JSON object: {type(payload).__name__}"},
                 "latency_ms": _elapsed_ms(started),
             }
         return {
@@ -843,24 +1027,24 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     # Must stay above /api/actions/{request_id} — FastAPI matches in registration order.
     @app.get("/api/actions/pending", dependencies=[Depends(require_authenticated)])
-    async def list_pending() -> dict[str, list[dict[str, Any]]]:
-        """Every critical action still waiting for confirmation, oldest first."""
+    async def list_pending_approvals() -> dict[str, list[dict[str, Any]]]:
+        """Every critical action still waiting for a decision, oldest first."""
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
         try:
-            items = await list_pending_actions(r)
+            items = await list_pending(r)
         except Exception as e:
             logger.warning("Could not list the pending actions: {}", e)
             raise HTTPException(status_code=503, detail=_ACTION_STORE_DOWN) from e
-        return {"actions": [pending_action_payload(a, ttl) for a, ttl in items]}
+        return {"actions": [pending_payload(record, ttl) for record, ttl in items]}
 
     @app.get("/api/actions/{request_id}", dependencies=[Depends(require_authenticated)])
-    async def get_pending(request_id: str) -> dict[str, Any]:
-        """One pending action with its remaining fuse. Does not consume it."""
+    async def get_pending_approval(request_id: str) -> dict[str, Any]:
+        """One pending record with its remaining fuse. Does not consume it."""
         if not _REQUEST_ID_RE.fullmatch(request_id):
             raise HTTPException(status_code=400, detail="Invalid request id")
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
         try:
-            item = await get_pending_action(r, request_id)
+            item = await get_pending(r, request_id)
         except ValueError:
             # Same tombstone the list gives an unreadable entry (core/routing/pending.py):
             # a value that no longer parses is gone as far as a client is concerned, and
@@ -874,24 +1058,37 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             raise HTTPException(status_code=503, detail=_ACTION_STORE_DOWN) from e
         if item is None:
             raise HTTPException(status_code=404, detail="Pending action not found or expired")
-        action, ttl = item
-        return pending_action_payload(action, ttl)
+        record, ttl = item
+        return pending_payload(record, ttl)
+
+    async def _decide_pending(request_id: str, decision: Literal["approve", "deny"]) -> None:
+        """Claim a pending record and act on the decision; 404 when there is none."""
+        if not _REQUEST_ID_RE.fullmatch(request_id):
+            raise HTTPException(status_code=400, detail="Invalid request id")
+        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
+        try:
+            decided = await decide(r, request_id, decision)
+        except Exception as e:
+            logger.warning("Could not {} pending action {}: {}", decision, request_id, e)
+            raise HTTPException(status_code=503, detail=_ACTION_STORE_DOWN) from e
+        if not decided:
+            raise HTTPException(status_code=404, detail="Pending action not found or expired")
 
     @app.post("/api/actions/{request_id}/confirm", dependencies=[Depends(require_authenticated)])
     async def confirm_action(request_id: str) -> dict[str, str]:
-        """Confirm a pending critical action — republishes it with confirmed=True.
+        """Approve a pending critical action.
 
-        The pending entry was stored by the DomainRouter's critical-action
-        interception (TTL 5 min). Expired or unknown IDs return 404.
+        A router-held action is republished with confirmed=True; a parked System 2 run
+        is handed to the conscious process to resume. Expired or unknown IDs return 404.
         """
-        r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
-        confirmed = await confirm_pending_action(r, request_id)
-        if confirmed is None:
-            raise HTTPException(status_code=404, detail="Pending action not found or expired")
-        logger.info(
-            "Pending action {} confirmed via web (tool={})", request_id, confirmed.tool_name
-        )
+        await _decide_pending(request_id, "approve")
         return {"status": "confirmed"}
+
+    @app.post("/api/actions/{request_id}/deny", dependencies=[Depends(require_authenticated)])
+    async def deny_action(request_id: str) -> dict[str, str]:
+        """Deny a pending critical action. Expired or unknown IDs return 404."""
+        await _decide_pending(request_id, "deny")
+        return {"status": "denied"}
 
     @app.post(
         "/api/voice/enroll",

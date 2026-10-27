@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from sdk.alfred_sdk.client import AlfredClient
 from sdk.alfred_sdk.events import ServiceRegistered
-from sdk.alfred_sdk.feature import CredentialField, CredentialSchema
+from sdk.alfred_sdk.feature import BaseFeature, CredentialField, CredentialSchema
+
+if TYPE_CHECKING:
+    from sdk.alfred_sdk.context import ContextSnapshot
 
 HA_SCHEMA = CredentialSchema(
     fields={
@@ -107,3 +110,47 @@ async def test_register_publishes_even_without_credentials() -> None:
     assert event.service_name == "plain-service"
     assert event.has_credentials_schema is False
     assert event.credentials_endpoint is None
+
+
+class _PreLiveStateFeature(BaseFeature):
+    """A feature written for the old contract, still overriding get_context()."""
+
+    feature_name = "legacy"
+
+    async def get_context(self) -> ContextSnapshot:
+        raise AssertionError("register() must not collect context")
+
+
+@pytest.mark.asyncio
+async def test_register_writes_only_the_manifest_and_the_event() -> None:
+    mock_redis = _mock_redis()
+    client = AlfredClient(service_name="home-service")
+    client.discover_features_from_classes([_PreLiveStateFeature])
+
+    with patch("redis.asyncio.from_url", return_value=mock_redis):
+        await client.register()
+
+    # The whole call list, not just "no set": an AsyncMock accepts any method, so a
+    # regression to setex, json().set or a pipeline write would otherwise pass.
+    assert [c[0] for c in mock_redis.method_calls] == ["hset", "xadd", "aclose"]
+    mock_redis.hset.assert_awaited_once()
+    mock_redis.xadd.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_register_caps_the_events_stream() -> None:
+    mock_redis = _mock_redis()
+    with patch("redis.asyncio.from_url", return_value=mock_redis):
+        await AlfredClient(service_name="plain-service").register()
+
+    assert mock_redis.xadd.call_args.kwargs == {"maxlen": 10_000, "approximate": True}
+    assert AlfredClient.EVENTS_MAXLEN == 10_000
+
+
+def test_features_no_longer_carry_context() -> None:
+    from sdk.alfred_sdk import context, feature
+
+    assert not hasattr(feature.BaseFeature, "get_context")
+    assert not hasattr(context, "ContextProvider")
+    assert not hasattr(AlfredClient, "CONTEXT_KEY_PREFIX")
+    assert not hasattr(AlfredClient, "_collect_context")

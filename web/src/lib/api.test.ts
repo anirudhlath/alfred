@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NETWORK_GATE_DETAIL } from "@/test/fixtures";
-import { api, ApiError, post, put, timedOut } from "./api";
+import { api, ApiError, apiWithHeaders, post, put, timedOut } from "./api";
 import { authEvents, type AuthEventKind } from "./auth-events";
 
 // `authEvents` is a module singleton: unsubscribe in cleanup, not in the test
@@ -230,5 +230,28 @@ describe("timedOut", () => {
     expect(timedOut("TimeoutError")).toBe(false);
     expect(timedOut(null)).toBe(false);
     expect(timedOut(undefined)).toBe(false);
+  });
+});
+
+describe("apiWithHeaders", () => {
+  it("hands back the response's headers beside the body", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify([1]), { status: 200, headers: { "X-Tool-Registry": "x" } }),
+      ),
+    );
+    const { body, headers } = await apiWithHeaders<number[]>("/x");
+    expect(body).toEqual([1]);
+    expect(headers.get("X-Tool-Registry")).toBe("x");
+  });
+
+  it("refuses exactly as api does", async () => {
+    const expired = vi.fn();
+    listen("expired", expired);
+    stubFetch(401, { detail: "Authentication required" });
+    await expect(apiWithHeaders("/x")).rejects.toMatchObject({ status: 401 });
+    expect(expired).toHaveBeenCalledOnce();
   });
 });

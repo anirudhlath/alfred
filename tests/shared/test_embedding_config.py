@@ -12,6 +12,21 @@ def test_default_model_is_ungated() -> None:
     assert not config.DEFAULT_EMBEDDING_MODEL.startswith("google/embeddinggemma")
 
 
+def test_default_model_is_the_one_the_recall_floor_is_calibrated_for() -> None:
+    # The involuntary-recall floor sits on a per-model similarity scale (EXP-009), so
+    # the default model and the default floor have to be chosen together.
+    assert config.DEFAULT_EMBEDDING_MODEL == "BAAI/bge-m3"
+    assert config.embedding_dim_for(config.DEFAULT_EMBEDDING_MODEL) == 1024
+    assert config.DEFAULT_INVOLUNTARY_RECALL_THRESHOLD == 0.575
+
+
+def test_recall_floor_defaults_to_the_calibrated_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("INVOLUNTARY_RECALL_THRESHOLD", raising=False)
+    floor = config.DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
+    assert config.AlfredConfig().involuntary_recall_threshold == floor
+    assert config.AlfredConfig.from_env().involuntary_recall_threshold == floor
+
+
 def test_dim_lookup_matches_known_models() -> None:
     assert config.embedding_dim_for("sentence-transformers/all-MiniLM-L6-v2") == 384
     assert config.embedding_dim_for("sentence-transformers/all-mpnet-base-v2") == 768

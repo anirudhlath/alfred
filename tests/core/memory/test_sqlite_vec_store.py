@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sqlite3
@@ -9,13 +10,17 @@ import struct
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 import aiosqlite
 import pytest
 
-from core.memory.sqlite_vec_store import SqliteVecStore, _pack
-from core.memory.vector_store import ContextMetadata
+from core.memory.sqlite_vec_store import _SCHEMA_V1_PATH, _SCHEMA_VERSION, SqliteVecStore, _pack
+from core.memory.vector_store import ContextMetadata, Range
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -65,15 +70,18 @@ def test_pack_length() -> None:
 
 
 @pytest.fixture
-async def store(tmp_path: object) -> SqliteVecStore:
+async def store(tmp_path: object) -> AsyncIterator[SqliteVecStore]:
     """SqliteVecStore with in-memory DB and sqlite-vec loaded."""
     s = SqliteVecStore(db_path=":memory:", dim=4)
     await s._ensure_schema()
-    return s
+    # Closed even when the test fails: a traceback keeps the store alive, and an open
+    # aiosqlite connection's thread then holds pytest open after the run.
+    yield s
+    await s.close()
 
 
 @pytest.fixture
-async def store_no_vec(tmp_path: object) -> SqliteVecStore:
+async def store_no_vec(tmp_path: object) -> AsyncIterator[SqliteVecStore]:
     """SqliteVecStore without sqlite-vec extension (fallback mode)."""
     s = SqliteVecStore(db_path=":memory:", dim=4)
     # Force schema init but then disable vec
@@ -81,7 +89,8 @@ async def store_no_vec(tmp_path: object) -> SqliteVecStore:
         await s._ensure_schema()
     # Manually mark vec as unavailable after schema init
     s._vec_ready = False
-    return s
+    yield s
+    await s.close()
 
 
 # ---------------------------------------------------------------------------
@@ -114,13 +123,13 @@ async def test_schema_v2_adds_significance_column(store: SqliteVecStore) -> None
 
 
 @pytest.mark.asyncio
-async def test_schema_version_is_2(store: SqliteVecStore) -> None:
+async def test_schema_version_is_current(store: SqliteVecStore) -> None:
     db = store._db
     assert db is not None
     cursor = await db.execute("SELECT version FROM schema_version")
     row = await cursor.fetchone()
     assert row is not None
-    assert row[0] == 2
+    assert row[0] == 4
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +306,7 @@ async def test_search_min_similarity_filters_low_scores(store: SqliteVecStore) -
         metadata=_meta(),
     )
 
-    # cos(90°) = 0 → distance=1 → similarity=0; filter at 0.5 removes ep-far
+    # cos(90°) = 0 → cosine distance 1 → similarity 0; filter at 0.5 removes ep-far
     results = await store.search(query_embedding=emb_near, limit=10, min_similarity=0.5)
     ids = {r.id for r in results}
     assert "ep-near" in ids
@@ -447,7 +456,7 @@ async def test_migration_v1_to_v2_runs_without_embedder() -> None:
     cursor = await s._db.execute("SELECT version FROM schema_version")
     row = await cursor.fetchone()
     assert row is not None
-    assert row[0] == 2
+    assert row[0] == _SCHEMA_VERSION
     await s.close()
 
 
@@ -519,7 +528,7 @@ async def test_migration_v1_to_v2_backfills_existing_rows() -> None:
         cursor = await s._db.execute("SELECT version FROM schema_version")
         row = await cursor.fetchone()
         assert row is not None
-        assert row[0] == 2
+        assert row[0] == _SCHEMA_VERSION
 
         # embed should have been called for the legacy entry (content + semantic)
         assert mock_embedder.embed.call_count >= 2
@@ -952,6 +961,7 @@ async def test_unreadable_vec_dimension_warns_instead_of_passing_silently(
         ("uppercase", "vec0(embedding FLOAT[384])"),
         ("padded", "vec0(  embedding   float [ 384 ] )"),
         ("second_column", "vec0(other float[8], embedding float[384])"),
+        ("cosine", "vec0(embedding float[384] distance_metric=cosine)"),
     ],
 )
 @pytest.mark.asyncio
@@ -1111,3 +1121,472 @@ async def test_recovery_succeeds_with_the_admin_reader_attached(tmp_path: Path) 
         assert "float[8]" in _vec_sql(db_path)["vec_episodic_content"]
     finally:
         await restarted.close()
+
+
+# ---------------------------------------------------------------------------
+# Distance metric. vec0 measures L2 unless told otherwise, and recall reads
+# ``1 - distance`` as cosine similarity — on the same scale as the hot store's,
+# because EpisodicMemory.recall merges the two by score.
+# ---------------------------------------------------------------------------
+
+# What every release before schema v3 left on disk: _migrate_v2's vec0 tables with
+# no distance_metric, so L2.
+_V2_L2_SCRIPT = (
+    _SCHEMA_V1_PATH.read_text()
+    + """
+ALTER TABLE episodic_entries ADD COLUMN significance TEXT DEFAULT '{}';
+ALTER TABLE episodic_entries ADD COLUMN semantic_key TEXT DEFAULT '';
+ALTER TABLE episodic_entries ADD COLUMN compressed_into TEXT DEFAULT NULL;
+CREATE VIRTUAL TABLE vec_episodic_semantic USING vec0(embedding float[4]);
+CREATE VIRTUAL TABLE vec_episodic_content USING vec0(embedding float[4]);
+UPDATE schema_version SET version = 2 WHERE version = 1;
+"""
+)
+
+# id -> (content vector, semantic vector). Lengths differ on purpose: L2 and cosine
+# only agree on unit vectors.
+_ARCHIVED = {
+    "long": ([3.0, 0.0, 0.0, 0.0], [0.0, 0.0, 2.0, 0.0]),
+    "opposite": ([-1.0, 0.0, 0.0, 0.0], [-0.5, 0.0, 0.0, 0.0]),
+    "oblique": ([1.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 5.0]),
+}
+
+
+def _archive_v2_l2(db_path: str) -> None:
+    rows = "".join(
+        f"INSERT INTO episodic_entries(rowid, id, timestamp, source, summary, entities,"
+        f" valence, significance, semantic_key) VALUES ({rowid}, '{memory_id}', 1.0,"
+        f" 'observation', '{memory_id}', '', 'neutral', '{{\"overall\": 0.1}}', '{memory_id}');"
+        + "".join(
+            f"INSERT INTO {table}(rowid, embedding) VALUES ({rowid}, X'{_pack(v).hex()}');"
+            for table, v in (("vec_episodic_content", c), ("vec_episodic_semantic", s))
+        )
+        for rowid, (memory_id, (c, s)) in enumerate(_ARCHIVED.items(), start=1)
+    )
+    # WAL, as every deployed cold store already is: _connect has always switched it.
+    _setup_on_file(db_path, "PRAGMA journal_mode=WAL;" + _V2_L2_SCRIPT + rows)
+
+
+def _schema_version(db_path: str) -> int:
+    raw = sqlite3.connect(db_path)
+    try:
+        version: int = raw.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+    finally:
+        raw.close()
+    return version
+
+
+@pytest.mark.asyncio
+async def test_scores_are_cosine_whatever_the_vectors_length(store: SqliteVecStore) -> None:
+    if not store._vec_ready:
+        pytest.skip("sqlite-vec extension unavailable")
+    for memory_id, (content, semantic) in _ARCHIVED.items():
+        await store.add(memory_id, memory_id, memory_id, content, semantic, _meta())
+
+    results = await store.search([1.0, 0.0, 0.0, 0.0], limit=10, min_similarity=-1.0)
+
+    assert {r.id: r.score for r in results} == {
+        "long": pytest.approx(1.0),
+        "oblique": pytest.approx(0.5**0.5, abs=1e-6),
+        "opposite": pytest.approx(-1.0),
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_l2_store_is_rebuilt_as_cosine_keeping_every_vector(tmp_path: Path) -> None:
+    db_path = str(tmp_path / "cold.db")
+    _archive_v2_l2(db_path)
+
+    store = SqliteVecStore(db_path, dim=4)
+    try:
+        for memory_id, (content, semantic) in _ARCHIVED.items():
+            for vector in (content, semantic):
+                found = await store.search(vector, limit=1)
+                assert [(r.id, round(r.score, 6)) for r in found] == [(memory_id, 1.0)]
+        assert await store.count() == len(_ARCHIVED)
+    finally:
+        await store.close()
+
+    for ddl in _vec_sql(db_path).values():
+        assert "distance_metric=cosine" in ddl
+        assert "float[4]" in ddl
+    assert _schema_version(db_path) == _SCHEMA_VERSION
+
+
+@pytest.mark.asyncio
+async def test_a_failed_rebuild_leaves_the_l2_tables_whole(tmp_path: Path) -> None:
+    """Cold is the last stop: a rebuild that dies halfway must not lose a vector."""
+    db_path = str(tmp_path / "cold.db")
+    _archive_v2_l2(db_path)
+    before = _vec_sql(db_path)
+    rebuild = SqliteVecStore._rebuild_as_cosine
+
+    async def dies_on_the_second_table(
+        self: SqliteVecStore, db: aiosqlite.Connection, table: str
+    ) -> None:
+        if table == "vec_episodic_semantic":
+            raise sqlite3.OperationalError("disk I/O error")
+        await rebuild(self, db, table)
+
+    store = SqliteVecStore(db_path, dim=4)
+    try:
+        with (
+            patch.object(SqliteVecStore, "_rebuild_as_cosine", dies_on_the_second_table),
+            pytest.raises(sqlite3.OperationalError, match="disk I/O"),
+        ):
+            await store._ensure_schema()
+    finally:
+        await store.close()
+
+    assert _vec_sql(db_path) == before
+    assert _schema_version(db_path) == 2
+    raw = sqlite3.connect(db_path)
+    try:
+        raw.enable_load_extension(True)
+        raw.load_extension(_loadable_path())
+        for table in before:
+            assert raw.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == len(_ARCHIVED)
+    finally:
+        raw.close()
+
+
+@pytest.mark.asyncio
+async def test_processes_opening_an_l2_store_together_rebuild_it_once(tmp_path: Path) -> None:
+    """Every service opens the cold store at startup; the loser of the write lock must
+    find the tables already rebuilt rather than rebuild them again."""
+    db_path = str(tmp_path / "cold.db")
+    _archive_v2_l2(db_path)
+    stores = [SqliteVecStore(db_path, dim=4) for _ in range(3)]
+    try:
+        await asyncio.gather(*(s._ensure_schema() for s in stores))
+        for s in stores:
+            found = await s.search([3.0, 0.0, 0.0, 0.0], limit=1)
+            assert [(r.id, round(r.score, 6)) for r in found] == [("long", 1.0)]
+            assert await s.count() == len(_ARCHIVED)
+    finally:
+        for s in stores:
+            await s.close()
+    assert _schema_version(db_path) == _SCHEMA_VERSION
+
+
+@pytest.mark.asyncio
+async def test_a_store_opened_without_the_extension_gets_its_tables_later(
+    tmp_path: Path,
+) -> None:
+    """v3 is the vec0 tables' version: a process that cannot load sqlite-vec must not
+    claim it, or the first process that can would trust tables nobody built."""
+    db_path = str(tmp_path / "cold.db")
+    blind = SqliteVecStore(db_path, dim=4)
+    with patch("sqlite_vec.loadable_path", side_effect=RuntimeError("no extension")):
+        try:
+            await blind._ensure_schema()
+            assert blind._vec_ready is False
+        finally:
+            await blind.close()
+    assert _vec_sql(db_path) == {}
+    assert _schema_version(db_path) == 2
+
+    if not await _cold_store_at(db_path, 4):
+        pytest.skip("sqlite-vec extension unavailable")
+    assert set(_vec_sql(db_path)) == {"vec_episodic_content", "vec_episodic_semantic"}
+    assert all("distance_metric=cosine" in ddl for ddl in _vec_sql(db_path).values())
+    assert _schema_version(db_path) == _SCHEMA_VERSION
+
+
+@pytest.mark.asyncio
+async def test_first_open_waits_out_a_writer_instead_of_failing(tmp_path: Path) -> None:
+    """Switching a file to WAL needs an exclusive lock, and every service opens the cold
+    store at startup — on a first boot they race for it, and SQLite refuses the losers
+    at once instead of making them wait."""
+    db_path = str(tmp_path / "cold.db")
+    writer = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
+    try:
+        writer.execute("CREATE TABLE held(x)")
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("INSERT INTO held VALUES (1)")
+        asyncio.get_running_loop().call_later(0.3, writer.execute, "COMMIT")
+
+        store = SqliteVecStore(db_path, dim=4)
+        try:
+            await store._ensure_schema()
+            assert store._schema_ready is True
+        finally:
+            await store.close()
+    finally:
+        writer.close()
+
+
+# ---------------------------------------------------------------------------
+# replace_content / select — rewriting archived text in place
+# ---------------------------------------------------------------------------
+
+
+def _axis(i: int) -> list[float]:
+    return [1.0 if j == i else 0.0 for j in range(4)]
+
+
+async def test_replace_content_swaps_the_text_and_its_vector_only(store: SqliteVecStore) -> None:
+    await store.add("m1", "old", "key", _axis(0), _axis(1), _meta(significance=0.3))
+
+    assert await store.replace_content("m1", "new", _axis(2)) is True
+
+    by_new = await store.search(_axis(2), limit=5, min_similarity=0.9)
+    assert [(r.id, r.content) for r in by_new] == [("m1", "new")]
+    assert await store.search(_axis(0), limit=5, min_similarity=0.9) == []
+    by_key = await store.search(_axis(1), limit=5, min_similarity=0.9)
+    assert [r.id for r in by_key] == ["m1"]
+    assert by_key[0].semantic_key == "key"
+    assert by_key[0].metadata.significance == pytest.approx(0.3)
+    assert by_key[0].metadata.timestamp == pytest.approx(1_711_000_000.0)
+
+
+async def test_replace_content_of_a_missing_entry_writes_nothing(store: SqliteVecStore) -> None:
+    assert await store.replace_content("absent", "new", _axis(2)) is False
+
+    assert await store.count() == 0
+    assert await store.search(_axis(2), limit=5, min_similarity=0.9) == []
+
+
+async def test_select_returns_every_entry_inside_all_the_ranges(store: SqliteVecStore) -> None:
+    await store.add("low", "a", "k", _axis(0), _axis(0), _meta(significance=0.1, timestamp=5.0))
+    await store.add("high", "b", "k", _axis(1), _axis(1), _meta(significance=0.9, timestamp=5.0))
+    await store.add("section", "c", "k", _axis(2), _axis(2), _meta(significance=0.1, timestamp=0))
+
+    selected = await store.select({"timestamp": Range(above=0.0), "significance": Range(below=0.4)})
+
+    assert [(r.id, r.content, r.score) for r in selected] == [("low", "a", 0.0)]
+    assert sorted(r.id for r in await store.select({})) == ["high", "low", "section"]
+
+
+async def test_select_bounds_are_exclusive(store: SqliteVecStore) -> None:
+    await store.add("edge", "a", "k", _axis(0), _axis(0), _meta(significance=0.4, timestamp=5.0))
+
+    assert await store.select({"significance": Range(below=0.4)}) == []
+    assert await store.select({"timestamp": Range(above=5.0)}) == []
+
+
+async def test_select_refuses_a_field_it_does_not_store(store: SqliteVecStore) -> None:
+    with pytest.raises(ValueError, match="retrieval_count"):
+        await store.select({"retrieval_count": Range(above=0)})
+
+
+# ---------------------------------------------------------------------------
+# Re-adding an id (issue #279). add() used to write the entry with INSERT OR
+# REPLACE, which deletes the row and inserts it again under a new rowid: the
+# vectors went in under the new one, and the old rowid's stayed behind where KNN
+# still found them but no entry did. copy_to_cold_and_remove() re-adds whenever it
+# copied an entry but could not delete the hot copy and the next decay pass copied
+# it again.
+# ---------------------------------------------------------------------------
+
+_VEC_TABLES = ("vec_episodic_content", "vec_episodic_semantic")
+
+# Ranked against _axis(0) in this order, every score distinct.
+_SPREAD = {"near": _axis(0), "mid": [1.0, 1.0, 0.0, 0.0], "far": _axis(1)}
+
+
+async def _entry_rowids(db: aiosqlite.Connection) -> list[int]:
+    cursor = await db.execute("SELECT rowid FROM episodic_entries ORDER BY rowid")
+    return [row[0] for row in await cursor.fetchall()]
+
+
+async def _vectors_by_table(db: aiosqlite.Connection) -> dict[str, list[int]]:
+    """The rowids each vec0 table holds a vector under, ascending."""
+    found: dict[str, list[int]] = {}
+    for table in _VEC_TABLES:
+        cursor = await db.execute(f"SELECT rowid FROM {table} ORDER BY rowid")
+        found[table] = [row[0] for row in await cursor.fetchall()]
+    return found
+
+
+def _vectors_on_file(db_path: str) -> dict[str, list[int]]:
+    """``_vectors_by_table`` for a closed file."""
+    raw = sqlite3.connect(db_path)
+    try:
+        raw.enable_load_extension(True)
+        raw.load_extension(_loadable_path())
+        return {
+            table: [row[0] for row in raw.execute(f"SELECT rowid FROM {table} ORDER BY rowid")]
+            for table in _VEC_TABLES
+        }
+    finally:
+        raw.close()
+
+
+def _in_each_vec_table(rowids: list[int]) -> dict[str, list[int]]:
+    """What the two above return when each of ``rowids`` has its vector in both tables."""
+    return {table: rowids for table in _VEC_TABLES}
+
+
+async def _archive_spread(db_path: str) -> None:
+    """near, mid and far, at rowids 1 to 3."""
+    store = SqliteVecStore(db_path, dim=4)
+    try:
+        for memory_id, vector in _SPREAD.items():
+            await store.add(memory_id, memory_id, memory_id, vector, vector, _meta())
+    finally:
+        await store.close()
+
+
+def _orphan_vectors_at_v3(db_path: str, rowids: list[int], vector: list[float]) -> None:
+    """Vectors no entry owns, as add() left them before schema v4, on a v3 file."""
+    _setup_on_file(
+        db_path,
+        "".join(
+            f"INSERT INTO {table}(rowid, embedding) VALUES ({rowid}, X'{_pack(vector).hex()}');"
+            for rowid in rowids
+            for table in _VEC_TABLES
+        )
+        + "UPDATE schema_version SET version = 3;",
+    )
+
+
+async def test_re_adding_an_id_leaves_one_vector_per_entry_in_each_table(
+    store: SqliteVecStore,
+) -> None:
+    if not store._vec_ready:
+        pytest.skip("sqlite-vec extension unavailable")
+    await store.add("m1", "old", "old key", _axis(0), _axis(0), _meta())
+    await store.add("m2", "other", "other key", _axis(1), _axis(1), _meta())
+    await store.add("m1", "new", "new key", _axis(2), _axis(3), _meta(significance=0.9))
+
+    db = store._db
+    assert db is not None
+    entries = await _entry_rowids(db)
+    assert len(entries) == await store.count() == 2
+    assert await _vectors_by_table(db) == _in_each_vec_table(entries)
+
+    # The re-add replaced the entry whole: text, key, metadata and both vectors.
+    assert await store.search(_axis(0), limit=5, min_similarity=0.9) == []
+    by_content = await store.search(_axis(2), limit=5, min_similarity=0.9)
+    assert [(r.id, r.content) for r in by_content] == [("m1", "new")]
+    by_key = await store.search(_axis(3), limit=5, min_similarity=0.9)
+    assert [(r.id, r.semantic_key) for r in by_key] == [("m1", "new key")]
+    assert by_key[0].metadata.significance == pytest.approx(0.9)
+
+
+async def test_a_search_after_re_adds_still_fills_its_limit(store: SqliteVecStore) -> None:
+    """A stranded vector takes one of the k slots the KNN query asks each table for, and
+    it scores exactly as well as the entry it was copied from."""
+    if not store._vec_ready:
+        pytest.skip("sqlite-vec extension unavailable")
+    for memory_id, vector in _SPREAD.items():
+        await store.add(memory_id, memory_id, memory_id, vector, vector, _meta())
+    for _ in range(2):  # decay passes that copied "near" but could not delete it from hot
+        await store.add("near", "near", "near", _SPREAD["near"], _SPREAD["near"], _meta())
+
+    results = await store.search(_axis(0), limit=3, min_similarity=-1.0)
+
+    assert [r.id for r in results] == ["near", "mid", "far"]
+
+
+async def test_an_add_handed_a_rowid_a_stray_vector_holds_takes_it_over(
+    store: SqliteVecStore,
+) -> None:
+    """A vector a re-add stranded used to refuse the add later handed its rowid.
+
+    SQLite gives a new row the largest rowid plus one, so once the entries above a
+    stranded vector were deleted the next add landed on it, and vec0 refused that
+    add's vector — then every add after it, each rolling back to the same rowid.
+    """
+    if not store._vec_ready:
+        pytest.skip("sqlite-vec extension unavailable")
+    await store.add("kept", "kept", "kept", _axis(0), _axis(0), _meta())
+    db = store._db
+    assert db is not None
+    for table in _VEC_TABLES:
+        await db.execute(f"INSERT INTO {table}(rowid, embedding) VALUES (2, ?)", (_pack(_axis(3)),))
+    await db.commit()
+
+    await store.add("next", "next", "next", _axis(1), _axis(1), _meta())
+
+    assert await store._rowid_for_id(db, "next") == 2
+    assert await _vectors_by_table(db) == _in_each_vec_table([1, 2])
+    assert await store.search(_axis(3), limit=5, min_similarity=0.9) == []
+    found = await store.search(_axis(1), limit=5, min_similarity=0.9)
+    assert [r.id for r in found] == ["next"]
+
+
+async def test_opening_a_v3_store_deletes_the_vectors_re_adds_orphaned(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    db_path = str(tmp_path / "cold.db")
+    if not await _cold_store_at(db_path, 4):
+        pytest.skip("sqlite-vec extension unavailable")
+    await _archive_spread(db_path)
+    # Copies of "near", as its re-adds left them: they crowd its own query.
+    _orphan_vectors_at_v3(db_path, [10, 11], _SPREAD["near"])
+
+    store = SqliteVecStore(db_path, dim=4)
+    try:
+        with caplog.at_level(logging.INFO, logger="core.memory.sqlite_vec_store"):
+            results = await store.search(_axis(0), limit=3, min_similarity=-1.0)
+        assert [r.id for r in results] == ["near", "mid", "far"]
+        assert await store.count() == 3
+    finally:
+        await store.close()
+
+    assert _vectors_on_file(db_path) == _in_each_vec_table([1, 2, 3])
+    assert _schema_version(db_path) == 4
+    for table in _VEC_TABLES:
+        assert f"Deleted 2 orphaned vectors from {table}" in caplog.text
+
+
+async def test_the_orphan_sweep_leaves_a_clean_store_as_it_was(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    db_path = str(tmp_path / "cold.db")
+    if not await _cold_store_at(db_path, 4):
+        pytest.skip("sqlite-vec extension unavailable")
+    await _archive_spread(db_path)
+    _orphan_vectors_at_v3(db_path, [], _SPREAD["near"])
+
+    store = SqliteVecStore(db_path, dim=4)
+    try:
+        with caplog.at_level(logging.INFO, logger="core.memory.sqlite_vec_store"):
+            results = await store.search(_axis(0), limit=3, min_similarity=-1.0)
+        assert [r.id for r in results] == ["near", "mid", "far"]
+    finally:
+        await store.close()
+
+    assert _vectors_on_file(db_path) == _in_each_vec_table([1, 2, 3])
+    assert _schema_version(db_path) == 4
+    assert "v3 → v4" in caplog.text
+    assert "orphaned vectors from" not in caplog.text
+
+
+async def test_a_failed_orphan_sweep_leaves_the_store_as_it_was(tmp_path: Path) -> None:
+    """One write transaction: a sweep that dies halfway deletes nothing, and the next
+    open sweeps again."""
+    db_path = str(tmp_path / "cold.db")
+    if not await _cold_store_at(db_path, 4):
+        pytest.skip("sqlite-vec extension unavailable")
+    await _archive_spread(db_path)
+    _orphan_vectors_at_v3(db_path, [10], _SPREAD["near"])
+    sweep = SqliteVecStore._delete_orphans
+
+    async def dies_on_the_second_table(
+        self: SqliteVecStore, db: aiosqlite.Connection, table: str
+    ) -> None:
+        if table == "vec_episodic_semantic":
+            raise sqlite3.OperationalError("disk I/O error")
+        await sweep(self, db, table)
+
+    store = SqliteVecStore(db_path, dim=4)
+    try:
+        with (
+            patch.object(SqliteVecStore, "_delete_orphans", dies_on_the_second_table),
+            pytest.raises(sqlite3.OperationalError, match="disk I/O"),
+        ):
+            await store._ensure_schema()
+    finally:
+        await store.close()
+
+    assert _vectors_on_file(db_path) == _in_each_vec_table([1, 2, 3, 10])
+    assert _schema_version(db_path) == 3
+
+    assert await _cold_store_at(db_path, 4)
+    assert _vectors_on_file(db_path) == _in_each_vec_table([1, 2, 3])
+    assert _schema_version(db_path) == 4

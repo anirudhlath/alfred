@@ -48,7 +48,7 @@ function emptyNote({ solo, loaded, streamLoaded }: Pick<Activity, "solo" | "load
  * §5.1's own wording for Causality — "correlate one conversation turn with the
  * system activity it caused" — and this bench is where that turn is reachable;
  * the Room's chat bubbles are a handoff visual and stay as they are
- * (`docs/backlog/low/pwa-phase2-followups.md` §11).
+ * (issue #257 §11).
  *
  * Everything else is left out for decision 4's reason: notifications and
  * triggers have no server-held cause to join on, and a pill that always

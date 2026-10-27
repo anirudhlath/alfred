@@ -29,7 +29,7 @@
 - Reflex entries that are sporadic (< 3 occurrences) do not produce candidate routines
 
 ## Notes
-- This test requires a real Claude API call via LiteLLM — it cannot be fully validated with mocks
+- This test requires a real model call through `LIBRARIAN_MODEL` — it cannot be fully validated with mocks
 - The pattern detection prompt specifically instructs the LLM to flag reflex actions that are "unnecessary or counterproductive" — validate that the routine description field reflects reflex-aware analysis language
 - If the API key is absent, Librarian skips pattern detection silently and returns empty candidates — confirm this fallback is working without errors
 - Known limitation: the 7-day spread requirement makes this slow to accumulate organically; use time-backdated synthetic entries for testing

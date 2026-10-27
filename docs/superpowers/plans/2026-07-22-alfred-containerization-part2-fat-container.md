@@ -1750,11 +1750,11 @@ HF_TOKEN=
   first, native second, drop dev-up.sh), Gotchas (add: models under
   `ALFRED_MODELS_DIR`/`models_root()`; image build stages context from git ls-files —
   gitignored files never reach the image; explicit cryptfile backend requires passphrase)
-- Create: `docs/backlog/medium/seed-mode-fixtures-pack.md` (dummy HA snapshot + sample
+- Create: [#233](https://github.com/anirudhlath/alfred/issues/233) (dummy HA snapshot + sample
   user + sample memories loaded in seed mode — spec §4 deferred)
-- Create: `docs/backlog/low/registry-publish-images.md` (publish multi-arch images to
+- Create: [#211](https://github.com/anirudhlath/alfred/issues/211) (publish multi-arch images to
   GHCR; alfredctl pulls instead of building)
-- Create: `docs/backlog/low/secrets-passphrase-host-keychain.md` (store the generated
+- Create: [#213](https://github.com/anirudhlath/alfred/issues/213) (store the generated
   passphrase in the host keychain instead of `<data>/.secrets-passphrase`)
 - Create: `docs/backlog/low/non-gated-embedding-default.md` (if not already filed —
   check `ls docs/backlog/*/`; spec §6 mentions it)

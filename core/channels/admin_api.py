@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from bus.schemas.events import ActionRequest
 from core.channels.stream_catalog import STREAM_CATALOG, decode_entry, stream_summaries
+from core.conscious.session import stored_messages, turn_count
 from core.memory.paths import episodic_cold_path, preferences_dir, profile_dir, scratchpad_path
 from core.reflex.attention import (
     attention_add,
@@ -37,12 +38,13 @@ from core.reflex.attention import (
     attention_seen_list,
 )
 from core.reflex.inference import REFLEX_BACKENDS
+from core.triggers.models import TRIGGER_ENGINE_SOURCE
 from shared.config import AlfredConfig
 from shared.redis_streams import revrange
+from shared.spend import build_spend_limits, local_clock, spend_snapshot
 from shared.streams import (
     ACTIONS_STREAM,
     CONTEXT_PREFIX,
-    COST_DAILY_KEY,
     DEFERRED_NOTIFICATIONS_KEY,
     DEVICE_TOKENS_KEY,
     DND_STATE_KEY,
@@ -53,6 +55,7 @@ from shared.streams import (
     TRIGGERS_KEY,
     decode_stream_value,
 )
+from shared.usertime import get_user_timezone
 
 if TYPE_CHECKING:
     import httpx
@@ -126,13 +129,13 @@ async def _publish_trigger_action(
     """Queue a trigger mutation for the triggers process (owns TriggerStore).
 
     The triggers process consumes ACTIONS_STREAM (group 'triggers-internal'),
-    filters target_service='trigger-engine', and applies the change via the
+    filters target_service=TRIGGER_ENGINE_SOURCE, and applies the change via the
     real TriggerEngine / TriggerStore so Redis AND the YAML snapshot stay
     consistent — no direct hash writes from the channels process.
     """
     action = ActionRequest(
         source="admin-api",
-        target_service="trigger-engine",
+        target_service=TRIGGER_ENGINE_SOURCE,
         tool_name=tool_name,
         parameters=parameters,
     )
@@ -218,6 +221,18 @@ def _safe_json(raw: Any, *, default: Any) -> Any:
         return json.loads(decode_stream_value(raw))
     except (json.JSONDecodeError, ValueError, TypeError):
         return default
+
+
+async def _spend_today(r: AioRedis, cap_usd: float) -> dict[str, Any] | None:
+    """Today's spend, read through the same budget the agents carry; ``None`` when the
+    counter cannot be read (admin reads never 500)."""
+    try:
+        tz = await get_user_timezone(r)
+        limits = build_spend_limits(r, cap_usd=cap_usd, clock=local_clock(lambda: tz))
+        return await spend_snapshot(limits, r)
+    except Exception:
+        logger.opt(exception=True).warning("Admin overview could not read today's spend")
+        return None
 
 
 def _decode_hash(fields: dict[bytes | str, Any]) -> dict[str, Any]:
@@ -348,8 +363,7 @@ def create_admin_router() -> APIRouter:
             return out  # degraded: full shape, all placeholders
 
         out["redis"]["connected"] = True
-        raw_cost = await r.get(COST_DAILY_KEY)
-        out["cost"] = _safe_json(raw_cost, default=None)
+        out["cost"] = await _spend_today(r, cfg.daily_cost_cap_usd)
         raw_dnd = await r.get(DND_STATE_KEY)
         out["dnd"] = _safe_json(raw_dnd, default={"active": False})
 
@@ -450,11 +464,7 @@ def create_admin_router() -> APIRouter:
         async for key in r.scan_iter(match=f"{SESSIONS_KEY_PREFIX}*"):
             key_str = decode_stream_value(key)
             data = _decode_hash(await r.hgetall(key_str))
-            history = data.get("history") or "[]"
-            try:
-                turns = len(json.loads(history))
-            except (json.JSONDecodeError, ValueError):
-                turns = 0
+            turns = turn_count(stored_messages(data))
             out.append(
                 {
                     "session_id": key_str.removeprefix(SESSIONS_KEY_PREFIX),
@@ -607,8 +617,15 @@ def create_admin_router() -> APIRouter:
     async def set_dnd(request: Request, body: DndRequest) -> dict[str, Any]:
         r = _redis(request)
         if not body.active:
-            await r.delete(DND_STATE_KEY)
-            logger.info("Admin cleared DND")
+            # Clearing quiet is when the held-back queue is due. The drain belongs to
+            # the conscious process (`NotificationDispatcher.drain_deferred`), so ask it
+            # over ACTIONS_STREAM as the expiry trigger and `/notifications/drain` do.
+            # Only on a real transition: a clear that removed nothing ended no quiet.
+            if await r.delete(DND_STATE_KEY):
+                await _publish_internal_action(r, "drain_deferred_notifications")
+                logger.info("Admin cleared DND; queued deferred-notification drain")
+            else:
+                logger.info("Admin cleared DND (was not set)")
             return {"active": False}
         state: dict[str, Any] = {
             "active": True,

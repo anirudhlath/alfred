@@ -1,0 +1,13 @@
+id: conversation.signal.multi_turn
+prd: [4.1.signal, 4.1.sessions]
+status: shipped
+tags: [signal, sessions]
+as: {who: sir, channel: signal}
+steps:
+  - user: "The plumber is coming at three tomorrow."
+  - user: "When did I say the plumber is coming?"
+expect:
+  - reply_contains: {regex: "\\bthree\\b|\\b3(?!\\d)|\\b15:00\\b"}
+  - judge:
+      category: faithfulness
+      rubric: "Does the reply say the plumber is coming at three o'clock tomorrow?"

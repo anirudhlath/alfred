@@ -41,6 +41,116 @@ Everything else in `.env.example` under **OPTIONAL** has a working default. In p
   `HA_HOST`, etc. may point at `localhost`; the container rewrites it to the host gateway
   automatically (both `alfredctl up` and plain `docker compose`).
 
+### Daily spend cap
+
+`DAILY_COST_CAP_USD` (default `5.0`) caps what System 2 and the Librarian spend on models
+in a day. One counter in Redis is shared by every process, and the day rolls over at
+midnight in the user's timezone (the one the web client reports, else `ALFRED_TIMEZONE`,
+else UTC). You get one URGENT notification when spend reaches 80%, once a day. At the cap,
+every model request is refused, a $0 vLLM one included, so System 2 answers with the
+budget message and the Librarian skips its passes until the day rolls over.
+
+- A model served by vLLM costs $0, so it never counts against the cap.
+- `0` or less is a kill switch: every model request is refused, vLLM's included, so System 2
+  answers every turn with the budget message and the Librarian does no work. It switches
+  the models off without touching `SYSTEM2_MODEL`; it is not a way to keep vLLM and drop
+  only paid models.
+- A value that is not a number, or is NaN or infinity, stops startup with an error naming
+  the variable.
+- Requests in flight together can overshoot the cap by their own cost, a few cents.
+
+### Failed turns
+
+A System 2 request that fails is retried and answered once; see [`llm.md`](llm.md#retries).
+When Alfred gives up on one, it answers the user and records the turn in the Redis stream
+`alfred:conscious:dead_letters` (about the last 1000). Read them with:
+
+```bash
+docker exec <alfred-container> redis-cli XRANGE alfred:conscious:dead_letters - +
+```
+
+`reason` says why: `permanent`, `exhausted`, `expired`, `stale` or `partial`. A steady
+trickle of `exhausted` means the model provider is unhealthy.
+
+### Reasoning models
+
+System 2 and the Librarian take a Pydantic AI model string, `openrouter:<vendor>/<model>` or
+`vllm:<served-name>`. The full rules are in [`docs/llm.md`](llm.md), "Settings and model
+resolution".
+
+| Setting | Default |
+|---------|---------|
+| `SYSTEM2_MODEL` | the translated `CLAUDE_MODEL`, else `DEFAULT_SYSTEM2_MODEL` in `shared/config.py` |
+| `LIBRARIAN_MODEL` | `SYSTEM2_MODEL` |
+| `APPROVAL_MODEL` | `SYSTEM2_MODEL` (reads a reply to a pending confirmation as yes, no or neither) |
+| `VLLM_BASE_URL` | where `vllm:` models are served: the first set of `OPENAI_BASE_URL` (legacy `openai/` `CLAUDE_MODEL` only), `OPENAI_COMPAT_HOST`, `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended, `localhost` rewritten like the other host variables |
+
+> **Upgrading a deploy that still sets `CLAUDE_MODEL`:** it keeps working. Each process
+> reads the old LiteLLM string as `SYSTEM2_MODEL` (`openrouter/<vendor>/<model>` becomes
+> `openrouter:<vendor>/<model>`; `openai/<model>` becomes `vllm:<model>` when
+> `OPENAI_BASE_URL` is set) and logs one warning saying so. Set `SYSTEM2_MODEL` in `.env`
+> to silence it. A bare `claude-*` string is **not** translated: `alfredctl doctor` fails
+> it, and System 2 starts without a model and answers that it is not configured. Run
+> `alfredctl doctor` after editing `.env`; it resolves the models by the same rule.
+
+### Prompts from Langfuse (optional)
+
+**Langfuse is optional.** Without it, Alfred serves System 2's and the Librarian's prompts
+from the repo defaults in `shared/prompts/defaults/`, which are versioned in git and ship in
+the image. You lose live editing without a deploy, version history, labels (a `production`
+and a candidate version side by side) and the prompt-linked traces. Nothing else changes,
+so a self-hoster can ignore this section. An optional compose profile that runs Langfuse
+alongside Alfred is tracked in [#365](https://github.com/anirudhlath/alfred/issues/365).
+How the prompts are served, and the edit workflow, are in [docs/llm.md](llm.md#prompts).
+
+To serve them from a Langfuse you run yourself, set these in `.env`:
+
+| Setting | Default | What |
+|---------|---------|------|
+| `LANGFUSE_HOST` | unset | Base URL of Langfuse's web service. Unset means repo defaults only, with no network call |
+| `LANGFUSE_PUBLIC_KEY` | unset | The project's public key |
+| `LANGFUSE_SECRET_KEY` | unset | The project's secret key |
+| `ALFRED_PROMPT_LABEL` | `production` | The label whose version is served |
+| `PROMPT_CACHE_TTL_S` | `60` | Seconds a fetched prompt is served from memory before a background refresh |
+
+A host without both keys logs one WARNING at startup and serves the repo defaults. The
+startup log says which source is live: `Prompts: repo defaults` or
+`Prompts: Langfuse, label <label>`.
+
+1. **Share a network.** The Alfred container must reach Langfuse's web service, so put it on
+   Langfuse's docker network. Do that in the operator-owned `docker-compose.override.yml`,
+   not the tracked compose file (a deploy overwrites that; see
+   [The deploy workspace](#the-deploy-workspace)). `<langfuse-network>` is the network
+   Langfuse's compose project created (`docker network ls`):
+
+   ```yaml
+   services:
+     alfred:
+       networks:
+         - default
+         - langfuse
+   networks:
+     langfuse:
+       external: true
+       name: <langfuse-network>
+   ```
+
+   Then `LANGFUSE_HOST=http://langfuse-web:3000`, the service name and its internal port.
+2. **Seed Langfuse before enabling it.** Create a project in Langfuse and its API keys. On
+   the host, push the repo defaults as the `production` versions, reaching Langfuse by its
+   published port:
+
+   ```bash
+   LANGFUSE_HOST=http://localhost:3300 LANGFUSE_PUBLIC_KEY=... LANGFUSE_SECRET_KEY=... \
+     uv run alfred prompts push --promote
+   ```
+3. **Then add the variables to `.env`** and restart. Because the push came first, Langfuse
+   already serves exactly the text the repo does, so enabling it changes nothing until you
+   edit a prompt.
+
+Check it with `alfred prompts diff` (exit 1 when Langfuse differs from the repo) and the
+`Prompts:` line in the conscious process's log.
+
 ## `alfredctl doctor` — preflight
 
 Run before starting to catch config gaps early instead of discovering them in the logs:
@@ -266,7 +376,9 @@ the opposite of what you wanted.
 
 | Symptom | Cause / fix |
 |---------|-------------|
+| Alfred answers *"I'm afraid we've reached the daily budget, sir."* or *"my reasoning service isn't answering"* | The first: today's spend reached `DAILY_COST_CAP_USD` (or it is 0 or less); it resets at your local midnight. The second: the model provider failed three deliveries in a row, or the request was over five minutes old when it was picked up. Read why in `alfred:conscious:dead_letters` (see "Failed turns"). |
 | `alfredctl doctor` shows System 2 ✗ | `OPENROUTER_API_KEY` missing/placeholder — set it in `.env`. |
+| Every message to Alfred answers *"I'm afraid I couldn't finish that, sir — my reasoning service isn't answering."* for a few minutes after he asked you to confirm something | `APPROVAL_MODEL` is set to a model the provider rejects (a typo is a permanent 4xx). While a session has a pending confirmation, each of sir's messages goes through that model first, so every turn on that session fails until the pending record expires (up to 300 s); the Door still works. Fix or blank `APPROVAL_MODEL` and restart. `alfredctl doctor` catches a malformed `APPROVAL_MODEL` (or a missing OpenRouter key for it) but not a model name the provider rejects; the error is in `alfred:conscious:dead_letters` (see [`llm.md`](llm.md#approvals)). |
 | Memory recall disabled in logs | You set a gated `EMBEDDING_MODEL` without `HF_TOKEN`. Use the ungated default or provide the token + accept the license. |
 | `memory refuses to run` or `episodic recall refuses to run` in logs, naming two different `dim=` values | You changed `EMBEDDING_MODEL` or `EMBEDDING_BACKEND`, so the new vector width no longer matches the index the store was built at; both stores latch and refuse rather than write vectors search can never match. **Quickest undo:** put the previous model/backend back and restart — nothing has been lost. **To go forward:** follow the recovery in the error text itself; it is per-store, tells you whether Alfred has to stop, and one wrong flag (`FT.DROPINDEX … DD`) permanently deletes every episodic memory not yet decayed to cold. Expect to do it twice — hot (Redis) and cold (SQLite) were both built at the old width. Check widths *before* changing models with `docker exec <alfred-container> redis-cli FT.INFO idx:context`. |
 | `dimension guard skipped, an embedding model change will NOT be caught here` in logs | The guard could not read the stored width (an `FT.INFO` reply it cannot parse, or vec0 DDL that does not match the expected shape), so it stepped aside rather than guess. A model change will now surface as a raw store error instead of the actionable message above. Check the width by hand — `docker exec <alfred-container> redis-cli FT.INFO idx:context` — before changing `EMBEDDING_MODEL`/`EMBEDDING_BACKEND`. |
@@ -508,7 +620,7 @@ The rollout tool lives in `alfred-satellite` (`dev/deploy_satellites.py`) and de
 A Pi that answers mDNS but is missing from `satellites.yaml` is still deployed to, with a
 warning. So is one in the file that does not answer mDNS. Both sources exist because the
 file is authoritative today while discovery earns trust; retiring the file is
-`docs/backlog/medium/satellite-mdns-only-inventory.md`.
+[#230](https://github.com/anirudhlath/alfred/issues/230).
 
 ### When a deploy fails
 
@@ -527,4 +639,4 @@ file is authoritative today while discovery earns trust; retiring the file is
 
 A failed alfred deploy's outage floor is roughly 10–12 minutes even in the best case: up to
 300s of `/health` polling before the rollback starts, then up to another 300s verifying the
-rollback. Tracked as `docs/backlog/medium/deploy-outage-floor-timeout.md`.
+rollback. Tracked as [#223](https://github.com/anirudhlath/alfred/issues/223).

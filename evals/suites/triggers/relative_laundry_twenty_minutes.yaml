@@ -1,0 +1,18 @@
+id: triggers.relative.laundry_twenty_minutes
+prd: [4.2.relative-reminders, 4.2.dynamic-triggers]
+status: shipped
+tags: [relative]
+steps:
+  - user: "Remind me in 20 minutes to move the laundry to the dryer."
+    variants:
+      - "In twenty minutes, remind me to move the laundry over."
+      - "Set a reminder for 20 minutes from now: laundry into the dryer."
+expect:
+  - trigger_created: {type: time, run_in_seconds: {approx: 1200, tol: 60}}
+  # The tool asks for run_in_seconds over clock arithmetic in run_at.
+  - llm_tool_args:
+      tool: triggers.create_trigger
+      args: {conditions: {run_in_seconds: {approx: 1200, tol: 60}}}
+  - judge:
+      category: faithfulness
+      rubric: "Does the reply confirm a reminder in about twenty minutes to move the laundry?"

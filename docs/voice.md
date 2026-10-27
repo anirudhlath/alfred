@@ -22,7 +22,7 @@ protocol is only a transport for satellites — the STT/TTS engines are identica
 channels process depends only on this port. Adapters subclass it; the registry
 (`tts_registry.py`) maps a config name → adapter. Adding a backend is one adapter
 class + one registry entry — no caller changes (a future Apple-Silicon MLX adapter
-drops in the same way — see the backlog).
+drops in the same way — see [#227](https://github.com/anirudhlath/alfred/issues/227)).
 
 ```mermaid
 graph TD

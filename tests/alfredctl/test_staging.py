@@ -27,6 +27,8 @@ def fake_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         _git(root, "add", "-A")
         _git(root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
         (root / "untracked_new.py").write_text("y = 2\n")  # new file, not ignored
+    # An operator who exported the override would otherwise point these at a real checkout.
+    monkeypatch.delenv("ALFRED_HOME_SERVICE_DIR", raising=False)
     monkeypatch.setattr(staging, "repo_root", lambda: tmp_path / "alfred")
     monkeypatch.setattr(staging, "workspace_root", lambda: tmp_path)
     return tmp_path
@@ -79,6 +81,26 @@ def test_ensure_home_service_autoclones_when_missing(
     assert staging.ensure_home_service() == target
     assert calls and calls[0][:2] == ["git", "clone"]
     assert str(target) in calls[0]
+
+
+def test_home_service_dir_honours_the_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ALFRED_HOME_SERVICE_DIR", str(tmp_path))
+    assert staging.home_service_dir() == tmp_path.resolve()
+
+
+def test_missing_override_dir_is_an_error_not_a_clone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ALFRED_HOME_SERVICE_DIR", str(tmp_path / "missing"))
+
+    def _no_subprocess(cmd: list[str], **kwargs: object) -> object:
+        raise AssertionError(f"ran {cmd} — a pinned checkout must never be cloned or looked up")
+
+    monkeypatch.setattr(staging.subprocess, "run", _no_subprocess)
+    with pytest.raises(FileNotFoundError, match="ALFRED_HOME_SERVICE_DIR"):
+        staging.ensure_home_service()
 
 
 def test_build_stage_root_lives_under_home() -> None:

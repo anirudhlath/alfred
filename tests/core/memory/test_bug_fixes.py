@@ -2,7 +2,7 @@
 
 Covers: dim default, FT.SEARCH RETURN count, compressed TAG field,
 empty-tag filter, copy-before-delete ordering, search_text embedding,
-pattern matching, cache sharing, model load logging, config fields.
+pattern matching, model load logging, config fields.
 """
 
 from __future__ import annotations
@@ -12,25 +12,6 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
-
-# ---------------------------------------------------------------------------
-# Async iterator helper
-# ---------------------------------------------------------------------------
-
-
-class AsyncIteratorMock:
-    def __init__(self, items: list[object]) -> None:
-        self._items = iter(items)
-
-    def __aiter__(self) -> AsyncIteratorMock:
-        return self
-
-    async def __anext__(self) -> object:
-        try:
-            return next(self._items)
-        except StopIteration as exc:
-            raise StopAsyncIteration from exc
-
 
 # ---------------------------------------------------------------------------
 # Test 1: RedisVectorStore default dim matches AlfredConfig
@@ -52,16 +33,35 @@ def test_redis_vector_store_default_dim_matches_config() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _returned_fields(args: tuple[object, ...]) -> tuple[int, list[object]]:
+    """The declared RETURN count and the names that follow it, up to the next keyword."""
+    at = args.index("RETURN")
+    names: list[object] = []
+    for arg in args[at + 2 :]:
+        if arg in {"SORTBY", "LIMIT", "PARAMS", "DIALECT"}:
+            break
+        names.append(arg)
+    return int(str(args[at + 1])), names
+
+
 @pytest.mark.asyncio
 async def test_ft_search_return_count_matches_fields() -> None:
-    """The RETURN count in FT.SEARCH must match the number of field names."""
-    import inspect
+    """Every FT.SEARCH declares exactly as many RETURN fields as it names."""
+    from core.memory.redis_vector_store import RedisVectorStore
+    from core.memory.vector_store import Range
 
-    from core.memory import redis_vector_store
+    redis = AsyncMock()
+    redis.execute_command = AsyncMock(return_value=[0])
+    store = RedisVectorStore(redis=redis, dim=4)
 
-    source = inspect.getsource(redis_vector_store)
-    # RETURN 11 means 11 field names follow before SORTBY
-    assert '"11"' in source, "RETURN count should be 11 to match 11 field names"
+    await store.search([0.1, 0.2, 0.3, 0.4], limit=3)
+    await store.select({"significance": Range(below=0.4)})
+
+    searches = [c.args for c in redis.execute_command.call_args_list if c.args[0] == "FT.SEARCH"]
+    assert len(searches) == 3  # two KNN fields + one selection page
+    for args in searches:
+        count, names = _returned_fields(args)
+        assert count == len(names), args
 
 
 # ---------------------------------------------------------------------------
@@ -72,19 +72,15 @@ async def test_ft_search_return_count_matches_fields() -> None:
 @pytest.mark.asyncio
 async def test_compressed_field_is_tag_type() -> None:
     """compressed must be TAG (not TEXT) for filter syntax to work."""
-    import inspect
+    from core.memory.redis_vector_store import RedisVectorStore
 
-    from core.memory import redis_vector_store
+    redis = AsyncMock()
+    redis.execute_command = AsyncMock()
+    await RedisVectorStore(redis=redis, dim=4).ensure_index()
 
-    source = inspect.getsource(redis_vector_store)
-    lines = source.split("\n")
-    for i, line in enumerate(lines):
-        if '"compressed"' in line:
-            next_line = lines[i + 1] if i + 1 < len(lines) else ""
-            assert '"TAG"' in next_line, f"compressed field should be TAG, got: {next_line}"
-            break
-    else:
-        pytest.fail("compressed field not found in schema")
+    create = redis.execute_command.call_args_list[0].args
+    assert create[0] == "FT.CREATE"
+    assert create[create.index("compressed") + 1] == "TAG"
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +124,7 @@ async def test_copy_to_cold_writes_before_delete() -> None:
     from core.memory.vector_store import ContextMetadata, SearchResult
 
     hot = AsyncMock()
+    hot.embeddings = AsyncMock(return_value=([0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1]))
     cold = AsyncMock()
     embedder = AsyncMock()
     embedder.embed = AsyncMock(return_value=[0.1, 0.2, 0.3, 0.4])
@@ -226,32 +223,7 @@ def test_match_trigger_pattern_localizes_to_tz() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 8: ContextReader._get_snapshot shares cache between methods
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_context_reader_shares_cache_between_methods() -> None:
-    """get_rendered_context and get_entity_states should share the same cached snapshot."""
-    from core.reflex.context_reader import ContextReader
-
-    mock_redis = AsyncMock()
-    # scan_iter is a sync method that returns an async iterator — use MagicMock, not AsyncMock
-    from unittest.mock import MagicMock
-
-    mock_redis.scan_iter = MagicMock(return_value=AsyncIteratorMock([]))
-
-    reader = ContextReader(redis=mock_redis)
-
-    await reader.get_rendered_context()
-    await reader.get_entity_states()
-
-    # scan_iter should only be called ONCE (cached)
-    assert mock_redis.scan_iter.call_count == 1
-
-
-# ---------------------------------------------------------------------------
-# Test 9: EmbeddingProvider logs on load failure
+# Test 8: EmbeddingProvider logs on load failure
 # ---------------------------------------------------------------------------
 
 
@@ -268,14 +240,15 @@ def test_embedding_provider_logs_load_failure(caplog: pytest.LogCaptureFixture) 
 
 
 # ---------------------------------------------------------------------------
-# Test 10: ConsciousConfig has involuntary recall fields
+# Test 9: ConsciousConfig has involuntary recall fields
 # ---------------------------------------------------------------------------
 
 
 def test_conscious_config_has_recall_fields() -> None:
     """ConsciousConfig should have involuntary_recall_limit and threshold."""
     from core.conscious.engine import ConsciousConfig
+    from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 
-    config = ConsciousConfig(model="test")
+    config = ConsciousConfig()
     assert config.involuntary_recall_limit == 10
-    assert config.involuntary_recall_threshold == 0.4
+    assert config.involuntary_recall_threshold == DEFAULT_INVOLUNTARY_RECALL_THRESHOLD

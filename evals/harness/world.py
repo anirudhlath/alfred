@@ -1,0 +1,178 @@
+"""World fixtures: the home the fake Home Assistant serves (evals/harness/worlds/).
+
+YAML gotcha: a bare ``on``/``off`` is a boolean. HA states must be quoted
+(``state: "on"``); ``WorldEntity.state`` is a str and rejects booleans, so the mistake
+fails loudly.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Self
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from evals.harness.evidence import HaState
+
+WORLDS_DIR = Path(__file__).resolve().parent / "worlds"
+
+
+class WorldArea(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    area_id: str
+    name: str
+
+
+class WorldDevice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    name: str
+    area_id: str | None = None
+
+
+class WorldEntity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    entity_id: str = Field(pattern=r"^[a-z_]+\.[a-z0-9_]+$")
+    name: str
+    area_id: str | None = None
+    device_id: str | None = None
+    state: str
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    disabled: bool = False
+
+    @property
+    def domain(self) -> str:
+        return self.entity_id.split(".", 1)[0]
+
+    @property
+    def friendly_name(self) -> str:
+        """The name HA shows, and home-service resolves a target by: a ``friendly_name``
+        attribute, else the entity's name (home-service falls back to the registry's
+        ``original_name``, which is the name too)."""
+        return str(self.attributes.get("friendly_name") or self.name)
+
+
+def _number_selectors_are_numbers(services: dict[str, dict[str, dict[str, Any]]]) -> None:
+    """The service fields' number selectors are what the fake HA range-checks calls
+    against; a malformed one fails here, at load, not as a crash at call time."""
+    for domain, by_service in services.items():
+        for service, spec in by_service.items():
+            fields = spec.get("fields") or {}
+            where = f"services.{domain}.{service}.fields"
+            if not isinstance(fields, dict):
+                raise ValueError(f"{where} must be a mapping, got {fields!r}")
+            for key, field in fields.items():
+                if field is None:
+                    continue
+                if not isinstance(field, dict):
+                    raise ValueError(f"{where}.{key} must be a mapping, got {field!r}")
+                selector = field.get("selector")
+                if selector is None:
+                    continue
+                if not isinstance(selector, dict):
+                    raise ValueError(f"{where}.{key}.selector must be a mapping, got {selector!r}")
+                number = selector.get("number")
+                if number is None:
+                    continue
+                if not isinstance(number, dict):
+                    raise ValueError(
+                        f"{where}.{key}.selector.number must be a mapping, got {number!r}"
+                    )
+                for bound in ("min", "max"):
+                    value = number.get(bound)
+                    if value is not None and (
+                        isinstance(value, bool) or not isinstance(value, int | float)
+                    ):
+                        raise ValueError(
+                            f"{where}.{key}.selector.number.{bound} must be a number, got {value!r}"
+                        )
+
+
+class World(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    areas: list[WorldArea]
+    devices: list[WorldDevice] = Field(default_factory=list)
+    entities: list[WorldEntity]
+    services: dict[str, dict[str, dict[str, Any]]]
+    credentials: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> Self:
+        areas = {a.area_id for a in self.areas}
+        devices = {d.id for d in self.devices}
+        ids = [e.entity_id for e in self.entities]
+        if len(ids) != len(set(ids)):
+            raise ValueError("duplicate entity ids")
+        for d in self.devices:
+            if d.area_id is not None and d.area_id not in areas:
+                raise ValueError(f"{d.id}: unknown area {d.area_id}")
+        for e in self.entities:
+            if e.area_id is not None and e.area_id not in areas:
+                raise ValueError(f"{e.entity_id}: unknown area {e.area_id}")
+            if e.device_id is not None and e.device_id not in devices:
+                raise ValueError(f"{e.entity_id}: unknown device {e.device_id}")
+        _number_selectors_are_numbers(self.services)
+        return self
+
+    def initial_states(self) -> dict[str, HaState]:
+        return {
+            e.entity_id: HaState(
+                state=e.state, attributes={**e.attributes, "friendly_name": e.friendly_name}
+            )
+            for e in self.entities
+            if not e.disabled
+        }
+
+    def entity_registry(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "entity_id": e.entity_id,
+                "area_id": e.area_id,
+                "device_id": e.device_id,
+                "name": None,
+                "original_name": e.name,
+                "disabled_by": "user" if e.disabled else None,
+            }
+            for e in self.entities
+        ]
+
+    def device_registry(self) -> list[dict[str, Any]]:
+        return [
+            {"id": d.id, "area_id": d.area_id, "name": d.name, "name_by_user": None}
+            for d in self.devices
+        ]
+
+    def area_registry(self) -> list[dict[str, Any]]:
+        return [{"area_id": a.area_id, "name": a.name} for a in self.areas]
+
+    def area_of(self, entity_id: str) -> str | None:
+        """The entity's room: its own area, else its device's."""
+        entity = next((e for e in self.entities if e.entity_id == entity_id), None)
+        return None if entity is None else self._area(entity)
+
+    def entities_in(self, area_id: str, domain: str | None = None) -> list[str]:
+        """Enabled entities in the area, in world order, optionally of one domain."""
+        return [
+            e.entity_id
+            for e in self.entities
+            if not e.disabled
+            and self._area(e) == area_id
+            and (domain is None or e.domain == domain)
+        ]
+
+    def _area(self, entity: WorldEntity) -> str | None:
+        """The one room rule, as HA has it: the entity's own area wins over its device's."""
+        if entity.area_id is not None:
+            return entity.area_id
+        device = next((d for d in self.devices if d.id == entity.device_id), None)
+        return None if device is None else device.area_id
+
+
+def load_world(name: str, root: Path = WORLDS_DIR) -> World:
+    path = root / f"{name}.yaml"
+    if not path.is_file():
+        known = sorted(p.stem for p in root.glob("*.yaml"))
+        raise FileNotFoundError(f"no world {name!r} in {root}; known: {known}")
+    return World.model_validate(yaml.safe_load(path.read_text()))

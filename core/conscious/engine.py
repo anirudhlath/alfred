@@ -1,550 +1,187 @@
-"""Conscious Engine — LLM-powered System 2 reasoning with agentic tool-use loop.
+"""Conscious Engine — System 2, the conversational brain.
 
-Routes through OpenRouter via LiteLLM for provider-agnostic model access.
+A request is answered in one agent run (``core.conscious.agent``): the engine resolves
+identity, checks the budget, gathers the turn's context into ``TurnDeps`` and runs the
+agent over the session's whole message history, then stores the run's messages back
+(``core.conscious.session``). The agent's ``SpendLimits`` counts every model response,
+including those of a run that fails, and refuses a request once the day's budget is gone;
+the turn then gets the budget reply, after what it already did if it acted. A model that
+runs out of requests or retries gets the deliberating reply, because replaying the request
+would spend again and repeat its tool calls; a provider or transport failure raises, so
+the request stays pending and is retried.
+
+A run whose critical calls wait for the owner ends in ``DeferredToolRequests``: the engine
+parks it (``core.conscious.approvals.park``), which asks the owner, stores the session with
+the approval it waits on, and answers with a fixed template. The owner's next turn in that
+session is read as approving, declining or moving on from it, and resumes the parked run
+with the verdict and the turn's words in one run. A decision from the Door resumes it as a
+turn of its own (``resume_approval``), under the approval id, answered as a follow-up.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal
 
-import litellm
+from pydantic_ai import DeferredToolRequests, DeferredToolResults
+from pydantic_ai.exceptions import UnexpectedModelBehavior, UsageLimitExceeded, UserError
+from pydantic_ai.messages import ModelMessagesTypeAdapter, repair_messages
+from pydantic_ai.usage import RunUsage, UsageLimits
+from pydantic_ai_harness.spend import SpendLimitExceeded
 
-from bus.schemas.events import ActionRequest, AlfredResponse, UserRequest
-from core.conscious.action_tools import (
-    ACTION_TOOL_NAMES,
-    ACTION_TOOLS_MANIFEST,
-    dispatch_action_tool,
+from bus.schemas.events import AlfredResponse, ApprovalDecision, ParkedRun, UserRequest
+from core.conscious.agent import REQUEST_LIMIT
+from core.conscious.approvals import (
+    approval_id_for,
+    claimable_run,
+    confirmation_reply,
+    park,
+    parked_calls,
+    results_for,
+    summary_of,
 )
-from core.conscious.memory_tools import (
-    MEMORY_TOOL_PREFIX,
-    MEMORY_TOOLS_MANIFEST,
-    dispatch_memory_tool,
-)
-from core.integrations.base import IntegrationRequest
-from core.integrations.registry import IntegrationRegistry
-from core.triggers.feature import TriggerFeature  # noqa: TC001 (runtime use)
-from sdk.alfred_sdk.telemetry import track_latency
-from shared.env import is_truthy_flag
+from core.conscious.deps import TurnDeps, TurnServices
+from core.conscious.effects import EffectLedger, ledger_reply
+from core.conscious.session import text_turn
+from core.conscious.system2_prompts import fetch_system2_prompts
+from core.conscious.tools.integrations import fetch_integration_tools
+from core.identity.schemas import IdentityResult
+from core.routing.pending import claim_pending
+from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
+from shared.otel import langfuse_attributes
+from shared.prompts.link import linked_prompts
+from shared.prompts.store import PromptStore
 from shared.streams import SCRATCHPAD_QUEUE
 from shared.traced import traced
-from shared.type_map import PYTHON_TO_JSON_SCHEMA
 from shared.usertime import (
     get_user_timezone,
     is_valid_timezone,
     set_user_timezone,
 )
 
-_debug = is_truthy_flag(os.getenv("ALFRED_DEBUG"))
-# LiteLLM logging. LITELLM_LOG is litellm's official knob, but it is read once at import
-# time (already past by here), and configure_logging() drops the root logger to NOTSET — which
-# left litellm's own DEBUG handler dumping every request as one multi-hundred-KB line.
-# Pin the logger level; ALFRED_DEBUG (or an explicit LITELLM_LOG) opens it up.
-_litellm_level = os.getenv("LITELLM_LOG") or ("DEBUG" if _debug else "ERROR")
-logging.getLogger("LiteLLM").setLevel(_litellm_level.upper())
-litellm.suppress_debug_info = not _debug
-litellm.set_verbose = _debug  # type: ignore[attr-defined]
-
 if TYPE_CHECKING:
-    from core.conscious.context_assembler import ContextAssembler
-    from core.conscious.cost import CostTracker
+    from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelMessage
+    from pydantic_ai.models import Model
+    from pydantic_ai_harness.spend import SpendLimits
+
+    from bus.schemas.events import ChannelName, ContentType
+    from core.conscious.approval_classifier import ApprovalClassifier
+    from core.conscious.approvals import Decision, Notifier
     from core.conscious.identity import IdentityGate
     from core.conscious.session import SessionManager
+    from core.conscious.tools.integrations import IntegrationTool
     from core.memory.context_index import ContextIndexManager
-    from core.memory.embedding_provider import EmbeddingProvider
     from core.memory.routines.store import RoutineStore
     from core.memory.schemas import RoutineSpec
     from core.memory.vector_store import SearchResult
     from core.reflex.context_reader import ContextReader
-    from core.reflex.tool_registry import ToolInfo, ToolRegistry
+    from core.reflex.tool_registry import ToolRegistry
     from core.routing.domain_router import DomainRouter
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 
-MAX_ITERATIONS = 10
+SOURCE: Final = "conscious-engine"
+BUDGET_REPLY: Final = (
+    "I'm afraid we've reached the daily budget, sir. "
+    "I'm operating in reduced capacity — ambient actions continue, "
+    "but I'll need to defer complex requests until tomorrow."
+)
+# Follows the ledger's reply when the budget ran out after the turn acted.
+BUDGET_AFTER_ACTING: Final = (
+    "We've reached the daily budget, so I'll need to defer complex requests until tomorrow."
+)
+DELIBERATING_REPLY: Final = (
+    "I apologize, sir — I've been deliberating too long. Let me try a more direct approach."
+)
+NOT_CONFIGURED_REPLY: Final = (
+    "I'm afraid my connection to the thinking engine is not configured, sir."
+)
+# The owner's side of a Door decision, as the session records it: the Door sends no words.
+APPROVED_MARKER: Final = "[Approved from the confirmation prompt]"
+DECLINED_MARKER: Final = "[Declined from the confirmation prompt]"
+
+Mood = Literal["neutral", "concerned"]
 
 
 @dataclass
 class ConsciousConfig:
-    """LLM configuration for the Conscious Engine.
+    """Involuntary recall's settings; populate from ``AlfredConfig`` at the call site."""
 
-    Defaults are intentionally empty — populate from AlfredConfig at the call site.
-    """
-
-    model: str
-    api_key: str = ""
-    max_tokens: int = 2048
     involuntary_recall_limit: int = 10
-    involuntary_recall_threshold: float = 0.4
+    involuntary_recall_threshold: float = DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
+
+
+@dataclass(frozen=True)
+class _Resume:
+    """A parked run a reply decided: the history to continue and the verdict on its calls."""
+
+    approval_id: str
+    history: list[ModelMessage]
+    results: DeferredToolResults
 
 
 @dataclass
 class ConsciousDeps:
-    """Service dependencies injected into the Conscious Engine."""
+    """The engine's services, its agent and the model the agent runs on.
+
+    ``model`` is None when ``SYSTEM2_MODEL`` resolved to nothing at startup; every request
+    then gets the not-configured reply. ``spend`` is the daily budget the agent carries as
+    a capability; the engine reads it before a turn starts.
+    ``notifier`` asks the owner to approve a parked run; ``approval`` reads the owner's reply
+    to it, and with None no reply approves anything.
+    ``prompts`` serves the turn's prose; the default serves the repo defaults.
+    """
 
     redis: AioRedis
     identity_gate: IdentityGate
     session_mgr: SessionManager
-    cost_tracker: CostTracker
-    context_assembler: ContextAssembler
+    spend: SpendLimits[Any]
     domain_router: DomainRouter
     tool_registry: ToolRegistry
     context_reader: ContextReader
+    agent: Agent[TurnDeps, str | DeferredToolRequests]
+    model: Model | None
+    notifier: Notifier
+    approval: ApprovalClassifier | None = None
     routine_store: RoutineStore | None = None
-    trigger_feature: TriggerFeature | None = None
-    embedder: EmbeddingProvider | None = None
     context_index: ContextIndexManager | None = None
-    config: ConsciousConfig = field(default_factory=lambda: ConsciousConfig(model=""))
+    config: ConsciousConfig = field(default_factory=ConsciousConfig)
+    prompts: PromptStore = field(default_factory=PromptStore)
 
 
 class ConsciousEngine:
-    """The conversational brain of Alfred (System 2).
+    """The conversational brain of Alfred (System 2)."""
 
-    Receives UserRequest events, resolves identity, assembles context,
-    runs a multi-step agentic tool-use loop, and returns AlfredResponse.
-
-    Uses LiteLLM to route requests through OpenRouter or any supported provider.
-    """
-
-    def __init__(
-        self,
-        *,
-        deps: ConsciousDeps | None = None,
-        # Legacy kwargs — kept for backward compatibility with tests and call sites.
-        redis: AioRedis | None = None,
-        identity_gate: IdentityGate | None = None,
-        session_mgr: SessionManager | None = None,
-        cost_tracker: CostTracker | None = None,
-        context_assembler: ContextAssembler | None = None,
-        domain_router: DomainRouter | None = None,
-        tool_registry: ToolRegistry | None = None,
-        context_reader: ContextReader | None = None,
-        claude_model: str = "openrouter/anthropic/claude-sonnet-4",
-        claude_api_key: str = "",
-        claude_max_tokens: int = 2048,
-        routine_store: RoutineStore | None = None,
-        trigger_feature: TriggerFeature | None = None,
-        embedder: EmbeddingProvider | None = None,
-        context_index: ContextIndexManager | None = None,
-    ) -> None:
-        if deps is not None:
-            d = deps
-            cfg = d.config
-        else:
-            # Build from individual kwargs (backward compat)
-            required = {
-                "redis": redis,
-                "identity_gate": identity_gate,
-                "session_mgr": session_mgr,
-                "cost_tracker": cost_tracker,
-                "context_assembler": context_assembler,
-                "domain_router": domain_router,
-                "tool_registry": tool_registry,
-                "context_reader": context_reader,
-            }
-            missing = [k for k, v in required.items() if v is None]
-            if missing:
-                raise ValueError(f"Missing required deps: {', '.join(missing)}")
-            # All required deps verified non-None above; narrow for mypy
-            assert redis is not None
-            assert identity_gate is not None
-            assert session_mgr is not None
-            assert cost_tracker is not None
-            assert context_assembler is not None
-            assert domain_router is not None
-            assert tool_registry is not None
-            assert context_reader is not None
-            d = ConsciousDeps(
-                redis=redis,
-                identity_gate=identity_gate,
-                session_mgr=session_mgr,
-                cost_tracker=cost_tracker,
-                context_assembler=context_assembler,
-                domain_router=domain_router,
-                tool_registry=tool_registry,
-                context_reader=context_reader,
-                routine_store=routine_store,
-                trigger_feature=trigger_feature,
-                embedder=embedder,
-                context_index=context_index,
-                config=ConsciousConfig(
-                    model=claude_model,
-                    api_key=claude_api_key,
-                    max_tokens=claude_max_tokens,
-                ),
-            )
-            cfg = d.config
-
-        self._redis = d.redis
-        self._identity_gate = d.identity_gate
-        self._session_mgr = d.session_mgr
-        self._cost = d.cost_tracker
-        self._assembler = d.context_assembler
-        self._router = d.domain_router
-        self._tool_registry = d.tool_registry
-        self._context_reader = d.context_reader
-        self._model = cfg.model
-        self._api_key = cfg.api_key
-        self._max_tokens = cfg.max_tokens
-        self._involuntary_recall_limit = cfg.involuntary_recall_limit
-        self._involuntary_recall_threshold = cfg.involuntary_recall_threshold
-        self._routines = d.routine_store
-        self._triggers = d.trigger_feature
-        self._embedder = d.embedder
-        self._context_index = d.context_index
+    def __init__(self, *, deps: ConsciousDeps) -> None:
+        self._redis = deps.redis
+        self._identity_gate = deps.identity_gate
+        self._session_mgr = deps.session_mgr
+        self._spend = deps.spend
+        self._tool_registry = deps.tool_registry
+        self._agent = deps.agent
+        self._model = deps.model
+        self._notifier = deps.notifier
+        self._approval = deps.approval
+        self._routines = deps.routine_store
+        self._context_index = deps.context_index
+        self._prompts = deps.prompts
+        self._recall_limit = deps.config.involuntary_recall_limit
+        self._recall_threshold = deps.config.involuntary_recall_threshold
+        self._services = TurnServices(
+            redis=deps.redis,
+            router=deps.domain_router,
+            context_reader=deps.context_reader,
+            context_index=deps.context_index,
+        )
 
     @property
     def has_routine_store(self) -> bool:
         """Whether a routine store is configured."""
         return self._routines is not None
-
-    _TYPE_MAP: ClassVar[dict[str, str]] = PYTHON_TO_JSON_SCHEMA
-    # Prefix for integration tool names to distinguish from domain tools
-    _INTEGRATION_PREFIX: ClassVar[str] = "integration_"
-    # Extra argument offered on critical tools; moved off `parameters` onto ActionRequest.reason
-    _REASON_PARAM: ClassVar[str] = "reason"
-
-    @staticmethod
-    def _sanitize_tool_name(name: str) -> str:
-        """Convert dotted tool names to OpenAI-compatible format (a-zA-Z0-9_-)."""
-        return name.replace(".", "_")
-
-    @classmethod
-    def _unsanitize_tool_name(cls, name: str, tools: list[ToolInfo]) -> str:
-        """Reverse sanitized name back to original dotted form.
-
-        Integration tool names (prefixed with 'integration_') are returned as-is.
-        """
-        if name.startswith(cls._INTEGRATION_PREFIX):
-            return name
-        sanitized_to_original = {t.name.replace(".", "_"): t.name for t in tools}
-        return sanitized_to_original.get(name, name)
-
-    def _to_json_schema_type(self, py_type: str) -> str:
-        """Convert a Python type annotation string to a JSON Schema type."""
-        # Strip Optional/None union syntax
-        base = py_type.split("|")[0].strip().split("[")[0].strip()
-        return self._TYPE_MAP.get(base, "string")
-
-    def _tools_to_openai_format(self, tools: list[ToolInfo]) -> list[dict[str, Any]]:
-        """Convert ToolInfo list to OpenAI function-calling format (used by LiteLLM)."""
-        openai_tools: list[dict[str, Any]] = []
-        for t in tools:
-            properties: dict[str, Any] = {}
-            required: list[str] = []
-            for pname, pinfo in t.parameters.items():
-                properties[pname] = {
-                    "type": self._to_json_schema_type(pinfo.get("type", "string")),
-                    "description": pinfo.get("description", ""),
-                }
-                if "default" not in pinfo:
-                    required.append(pname)
-
-            if t.risk == "critical" and self._REASON_PARAM not in properties:
-                properties[self._REASON_PARAM] = {
-                    "type": "string",
-                    "description": (
-                        "One sentence, addressed to the user, saying why this action is "
-                        "needed. It is shown on the confirmation prompt."
-                    ),
-                }
-
-            openai_tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": self._sanitize_tool_name(t.name),
-                        "description": t.description,
-                        "parameters": {
-                            "type": "object",
-                            "properties": properties,
-                            "required": required,
-                        },
-                    },
-                }
-            )
-        return openai_tools
-
-    async def _integrations_to_openai_format(self) -> list[dict[str, Any]]:
-        """Convert integration capabilities to OpenAI function-calling format."""
-        openai_tools: list[dict[str, Any]] = []
-        for name in IntegrationRegistry.available():
-            instance = IntegrationRegistry.get(name)
-            try:
-                caps = await instance.get_capabilities()
-            except Exception:
-                logger.warning("Failed to get capabilities for integration %s", name)
-                continue
-            for cap in caps:
-                # Build tool name: integration_weather_get_current
-                tool_name = f"{self._INTEGRATION_PREFIX}{name}_{cap.name}"
-                properties = cap.params_schema.get("properties", {})
-                openai_tools.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": tool_name,
-                            "description": f"[{name}] {cap.description}",
-                            "parameters": {
-                                "type": "object",
-                                "properties": properties,
-                                "required": list(
-                                    k
-                                    for k, v in properties.items()
-                                    if isinstance(v, dict) and "default" not in v
-                                ),
-                            },
-                        },
-                    }
-                )
-        return openai_tools
-
-    async def _execute_integration_call(self, tool_name: str, params: dict[str, Any]) -> str:
-        """Execute an integration tool call. Returns result as string."""
-        # Parse: integration_weather_get_current -> integration="weather", action="get_current"
-        stripped = tool_name.removeprefix(self._INTEGRATION_PREFIX)
-        # Find which integration name matches (greedy match on registered names)
-        integration_name = ""
-        action = ""
-        for name in IntegrationRegistry.available():
-            prefix = f"{name}_"
-            if stripped.startswith(prefix):
-                integration_name = name
-                action = stripped.removeprefix(prefix)
-                break
-        if not integration_name:
-            return f"Error: unknown integration tool '{tool_name}'"
-
-        instance = IntegrationRegistry.get(integration_name)
-        request = IntegrationRequest(action=action, params=params)
-        result = await instance.execute(request)
-        if "error" in result.data:
-            return f"Error: {result.data['error']}"
-        return json.dumps(result.data)
-
-    async def _call_llm(
-        self,
-        system_prompt: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-        original_tools: list[ToolInfo] | None = None,
-    ) -> tuple[str, list[dict[str, Any]], int, int]:
-        """Call LLM via LiteLLM. Returns (text, tool_calls, prompt_tokens, completion_tokens).
-
-        Tool names are unsanitized back to dotted form
-        using the original_tools list for reverse mapping.
-        """
-        if not self._api_key:
-            return (
-                "I'm afraid my connection to the thinking engine is not configured, sir.",
-                [],
-                0,
-                0,
-            )
-
-        llm_messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_prompt},
-            *messages,
-        ]
-
-        kwargs: dict[str, Any] = {
-            "model": self._model,
-            "messages": llm_messages,
-            "max_tokens": self._max_tokens,
-            "api_key": self._api_key,
-        }
-        if tools:
-            kwargs["tools"] = tools
-
-        response = await litellm.acompletion(**kwargs)
-
-        choice = response.choices[0]
-        msg = choice.message
-
-        text = msg.content or ""
-        tool_calls: list[dict[str, Any]] = []
-
-        if msg.tool_calls:
-            for tc in msg.tool_calls:
-                tool_input = tc.function.arguments
-                if isinstance(tool_input, str):
-                    try:
-                        tool_input = json.loads(tool_input)
-                    except json.JSONDecodeError:
-                        tool_input = {}
-                # Map sanitized name back to original dotted name
-                fn_name = tc.function.name
-                if original_tools:
-                    fn_name = self._unsanitize_tool_name(fn_name, original_tools)
-                tool_calls.append(
-                    {
-                        "id": tc.id,
-                        "name": fn_name,
-                        "input": tool_input,
-                    }
-                )
-
-        usage = response.usage
-        return (
-            text,
-            tool_calls,
-            usage.prompt_tokens if usage else 0,
-            usage.completion_tokens if usage else 0,
-        )
-
-    def _resolve_trigger_method(self, tool_name: str) -> str | None:
-        """Check if tool_name is a trigger tool; return the method name if so."""
-        if self._triggers is None:
-            return None
-        for t in self._triggers.get_tools():
-            if t.name == tool_name:
-                return tool_name.removeprefix(f"{self._triggers.feature_name}.")
-        return None
-
-    async def _execute_trigger_call(self, method: str, params: dict[str, Any]) -> str:
-        """Execute a trigger tool call directly via TriggerFeature."""
-        if self._triggers is None:
-            return "Error: trigger feature not configured"
-        fn = getattr(self._triggers, method)
-        result: Any = await fn(**params)
-        return json.dumps(result) if not isinstance(result, str) else result
-
-    @staticmethod
-    def _make_tool_result(call_id: str, content: str) -> dict[str, Any]:
-        """Build an OpenAI-format tool result dict."""
-        return {"type": "tool_result", "tool_use_id": call_id, "content": content}
-
-    async def _dispatch_tool_call(
-        self, tc: dict[str, Any], tools: list[ToolInfo], *, is_sir: bool = True
-    ) -> dict[str, Any]:
-        """Dispatch a single tool call and return the result dict.
-
-        ``is_sir`` gates the action-tool branch only (confirmation + attention
-        tools). This is defense-in-depth: the manifest is already only offered
-        to sir turns (see ``process_request``), but a guest-turn model could
-        still hallucinate an action-tool call, so it's re-checked here at
-        dispatch time. Defaults to True so existing callers (tests, and any
-        caller that never routes to a guest turn) are unaffected — real
-        dispatch from ``process_request`` always passes the resolved identity.
-        """
-        name = tc["name"]
-        # A model can emit `"arguments": "null"`, which `_call_llm` parses to None —
-        # that means "no arguments". Anything else non-object is malformed and is
-        # refused rather than silently dispatched as a zero-argument call.
-        raw_input = tc.get("input")
-        if raw_input is None:
-            params: dict[str, Any] = {}
-        elif isinstance(raw_input, dict):
-            # Copy: the caller's dict must not be mutated by the `reason` pop below.
-            params = dict(raw_input)
-        else:
-            return self._make_tool_result(
-                tc["id"], "Error: malformed tool arguments (expected a JSON object)"
-            )
-
-        # 1. Integration tools — direct call via IntegrationRegistry
-        if name.startswith(self._INTEGRATION_PREFIX):
-            try:
-                content = await self._execute_integration_call(name, params)
-            except Exception as e:
-                content = f"Error executing integration: {e}"
-            return self._make_tool_result(tc["id"], content)
-
-        # 2. Trigger tools — direct in-process call (system-level feature)
-        trigger_method = self._resolve_trigger_method(name)
-        if trigger_method:
-            try:
-                content = await self._execute_trigger_call(trigger_method, params)
-            except Exception as e:
-                content = f"Error executing trigger: {e}"
-            return self._make_tool_result(tc["id"], content)
-
-        # 3. Memory tools — direct in-process call
-        if name.startswith(MEMORY_TOOL_PREFIX):
-            if self._context_index:
-                try:
-                    content = await dispatch_memory_tool(
-                        name,
-                        params,
-                        self._context_index,
-                        self._context_reader,
-                    )
-                except Exception as e:
-                    content = f"Error executing memory tool: {e}"
-            else:
-                content = "Memory tools not available"
-            return self._make_tool_result(tc["id"], content)
-
-        # 3b. Action tools (confirmation + attention) — direct in-process call, sir-only.
-        # Dispatch-side gate (defense-in-depth): the manifest is only handed to sir
-        # turns, but a guest-turn model could still emit a hallucinated call for one
-        # of these names, so refuse rather than execute.
-        if name in ACTION_TOOL_NAMES:
-            if not is_sir:
-                logger.warning(
-                    "Refusing action tool '%s' for non-sir identity (dispatch-side gate)", name
-                )
-                content = json.dumps({"error": "confirm/attention tools require the verified user"})
-                return self._make_tool_result(tc["id"], content)
-            try:
-                content = await dispatch_action_tool(name, params, self._redis)
-            except Exception as e:
-                content = f"Error executing action tool: {e}"
-            return self._make_tool_result(tc["id"], content)
-
-        # 4. Domain tools — route to external service via DomainRouter
-        target = ""
-        risk = "benign"
-        declares_own_reason = False
-        for t in tools:
-            if t.name == name:
-                target = t.target_service
-                risk = t.risk
-                # A tool may own a `reason` parameter; `_tools_to_openai_format` leaves
-                # that schema alone, so it belongs to the service and must not be popped.
-                declares_own_reason = self._REASON_PARAM in t.parameters
-                break
-
-        if not target:
-            return self._make_tool_result(tc["id"], f"Error: tool '{name}' not found in registry")
-
-        reason = (
-            params.pop(self._REASON_PARAM, None)
-            if risk == "critical" and not declares_own_reason
-            else None
-        )
-        action = ActionRequest(
-            source="conscious-engine",
-            target_service=target,
-            tool_name=name,
-            parameters=params,
-            reason=reason if isinstance(reason, str) and reason.strip() else None,
-        )
-        action_result = await self._router.route(action)
-        content = str(
-            action_result.result if action_result.status == "success" else action_result.error
-        )
-        return self._make_tool_result(tc["id"], content)
-
-    async def _execute_tool_calls(
-        self, tool_calls: list[dict[str, Any]], tools: list[ToolInfo], *, is_sir: bool = True
-    ) -> list[dict[str, Any]]:
-        """Execute tool calls concurrently via integration, trigger, or domain dispatch.
-
-        ``is_sir`` is forwarded to ``_dispatch_tool_call`` to gate action tools
-        at dispatch time (defense-in-depth alongside the manifest-level gate).
-        """
-        return list(
-            await asyncio.gather(
-                *(self._dispatch_tool_call(tc, tools, is_sir=is_sir) for tc in tool_calls)
-            )
-        )
 
     _ROUTINE_SUGGESTION_COOLDOWN_HOURS: ClassVar[int] = 24
 
@@ -641,27 +278,22 @@ class ConsciousEngine:
             )
             logger.info("Proactive routine suggestion published: '%s'", routine.name)
 
-    @track_latency(category="conscious")
+    # No @track_latency (#308): its buffer was never flushed, and the agent run span
+    # measures the same latency.
     @traced(name="conscious.process_request")
-    async def process_request(self, request: UserRequest) -> AlfredResponse:
-        """Process a user request through the full pipeline."""
-        now = datetime.now(UTC)
-        if request.timezone and is_valid_timezone(request.timezone):
-            tz_name = request.timezone
-            # Persist the client-supplied timezone at the domain boundary, before
-            # any tool dispatch (run_at normalization / cron) reads the stored key.
-            # set_user_timezone is write-on-change — one cheap GET per request.
-            await set_user_timezone(self._redis, request.timezone)
-        else:
-            tz_name = await get_user_timezone(self._redis)
+    async def process_request(
+        self, request: UserRequest, *, received_ms: int | None = None
+    ) -> AlfredResponse:
+        """Answer one request: identity, budget, the turn's context, one agent run.
 
-        # 1. Identity Gate
-        identity = self._identity_gate.resolve(
-            channel=request.channel,
-            identity_claim=request.identity_claim,
-            authenticated=request.authenticated,
-            identity_confidence=request.identity_confidence,
-        )
+        *received_ms* is when the request entered the requests stream, its entry id's
+        milliseconds; the runner passes it, so a side-effecting call made past the replay
+        window is refused (``RecordEffects``). A direct caller omits it: the turn starts now.
+        """
+        now = datetime.now(UTC)
+        tz_name = await self._timezone(request)
+
+        identity = self._resolve(request)
         logger.info(
             "Identity resolved: %s (method=%s, confidence=%.2f)",
             identity.identity,
@@ -669,172 +301,488 @@ class ConsciousEngine:
             identity.confidence,
         )
 
-        # 2. Budget check
-        if await self._cost.is_budget_exceeded():
+        # The clock that picks the budget day reads the zone _timezone just resolved.
+        if await self._spend.exhausted():
             logger.warning("Daily budget exceeded — returning System 1 fallback")
-            return AlfredResponse(
-                source="conscious-engine",
-                channel=request.channel,
-                session_id=request.session_id,
-                text=(
-                    "I'm afraid we've reached the daily budget, sir. "
-                    "I'm operating in reduced capacity — ambient actions continue, "
-                    "but I'll need to defer complex requests until tomorrow."
-                ),
-                actions_taken=[],
-                mood="concerned",
-            )
+            return self._reply(request, BUDGET_REPLY, [], mood="concerned")
 
-        # 3. Session
-        session = await self._session_mgr.get_or_create(request.session_id, request.channel)
-
-        # 3b. Involuntary recall — embed user query, search unified context index
-        involuntary_context: list[SearchResult] = []
-        if self._context_index and request.content:
-            try:
-                involuntary_context = await self._context_index.search_text(
-                    request.content,
-                    limit=self._involuntary_recall_limit,
-                    min_similarity=self._involuntary_recall_threshold,
-                )
-            except Exception:
-                logger.warning("Involuntary recall failed", exc_info=True)
-
-        # 3c. Routine suggestion — check candidate routines against current time
-        routine_hint: str = ""
-        if self.has_routine_store:
-            try:
-                routine_hint = self._build_routine_hint(now, tz_name)
-            except Exception:
-                logger.warning("Routine suggestion check failed", exc_info=True)
-
-        # 4. Context assembly
-        tools = await self._tool_registry.get_tools()
-
-        # Integrations are exposed as callable tools (not prompt text).
-        # Pass a truthy flag so the assembler emits the integration hint for sir.
-        has_integrations = bool(IntegrationRegistry.available())
-
-        system_prompt = self._assembler.assemble(
-            identity=identity,
-            tools_section="\n".join(f"- {t.name}: {t.description}" for t in tools),
-            integrations_section="available" if has_integrations else "",
-            proactivity_level="opinionated",
-            now=now,
-            relevant_context=involuntary_context if involuntary_context else None,
+        session = await self._session_mgr.load(
+            request.session_id, request.channel, identity.identity
+        )
+        integration_tools = await self._integration_tools(identity.identity)
+        prompts = await fetch_system2_prompts(
+            self._prompts,
+            who=identity.identity,
             channel=request.channel,
             content_type=request.content_type,
             area=request.area,
-            tz_name=tz_name,
+            integrations_available=bool(integration_tools),
         )
-        if routine_hint:
-            system_prompt = system_prompt + "\n\n" + routine_hint
+        deps = TurnDeps(
+            identity=identity,
+            session_id=request.session_id,
+            channel=request.channel,
+            request_id=request.event_id,
+            tz_name=tz_name,
+            now=now,
+            services=self._services,
+            received_ms=received_ms if received_ms is not None else int(now.timestamp() * 1000),
+            content_type=request.content_type,
+            area=request.area,
+            recall=await self._recall(request.content),
+            routine_hint=self._routine_hint(now, tz_name),
+            registry_tools=await self._tool_registry.get_tools(),
+            prompts=prompts,
+            integration_tools=integration_tools,
+        )
 
-        # 5. Build messages
-        messages: list[dict[str, Any]] = list(session["history"])
-        messages.append({"role": "user", "content": request.content})
+        history, results = session.messages, None
+        resume = await self._resume_for(request, identity.identity, session.pending_approval)
+        if resume is not None:
+            history, results = resume.history, resume.results
+            deps.approval_id = resume.approval_id
 
-        # 6. Agentic loop
-        openai_tools = self._tools_to_openai_format(tools)
-        # Add integration capabilities as callable tools (sir only)
-        if identity.identity == "sir":
-            try:
-                integration_tools = await self._integrations_to_openai_format()
-                openai_tools.extend(integration_tools)
-            except Exception:
-                logger.warning("Failed to build integration tools", exc_info=True)
-        # Add memory tools (sir only)
-        if identity.identity == "sir" and self._context_index:
-            openai_tools.extend(MEMORY_TOOLS_MANIFEST)
-        # Add confirmation + attention tools (sir only)
-        if identity.identity == "sir":
-            openai_tools.extend(ACTION_TOOLS_MANIFEST)
-        total_prompt_tokens = 0
-        total_completion_tokens = 0
-        all_actions: list[str] = []
-        final_text = ""
-
-        for _iteration in range(MAX_ITERATIONS):
-            text, tool_calls, pt, ct = await self._call_llm(
-                system_prompt, messages, openai_tools, original_tools=tools
+        usage = RunUsage()
+        text, mood, messages, deferred = await self._run(
+            deps, history, usage, prompt=request.content, said=request.content, results=results
+        )
+        pending: str | None = None
+        if deferred is not None:
+            text, messages, pending = await self._park(
+                deps,
+                deferred,
+                messages,
+                channel=request.channel,
+                content_type=request.content_type,
+                request_event_id=request.event_id,
             )
-            total_prompt_tokens += pt
-            total_completion_tokens += ct
 
-            if not tool_calls:
-                # Final response — no more tool calls
-                final_text = text
-                break
+        # Stored before the reply is published, as before. A crash between the two stores
+        # the turn, and a redelivery then runs again over a history that already holds it
+        # (or appends a ledger text turn): accepted, the same order as the text-only sessions.
+        await self._session_mgr.store_run(
+            request.session_id, messages, identity.identity, pending_approval=pending
+        )
+        await self._note(now, request.content, text, deps.actions_taken, usage)
+        return self._reply(request, text, deps.actions_taken, mood=mood)
 
-            # Execute tools and feed results back (uses original dotted names)
-            tool_results = await self._execute_tool_calls(
-                tool_calls, tools=tools, is_sir=identity.identity == "sir"
+    @traced(name="conscious.resume_approval")
+    async def resume_approval(
+        self, decision: ApprovalDecision, *, received_ms: int
+    ) -> AlfredResponse:
+        """Resume the run the owner approved or declined from the Door, as a turn of its own.
+
+        The decision carries the whole parked run, already claimed by the Door. The run
+        resumes as the record's identity on the record's session, under the approval id as
+        its request id (its own ledger and answered marker), with the verdict on its
+        deferred calls and no new prompt. *received_ms* is when the decision entered its
+        stream, so the replay guard measures from the owner's tap. Only the calls the
+        record holds are decided: a critical call the resumed run makes defers again and is
+        parked as ``process_request`` parks one. The reply is a follow-up to the request
+        that parked the run.
+
+        Raises ``UserError`` when the run's history or identity no longer reads: the record
+        is gone, so a retry could never resume it, and the runner treats the error as
+        permanent (one ``FAILED_REPLY`` follow-up, then a dead letter holding the decision).
+        """
+        run = decision.run
+        if await self._spend.exhausted():
+            logger.warning("Daily budget exceeded — the Door's decision gets the budget reply")
+            return self._followup(run, BUDGET_REPLY, [], mood="concerned")
+        try:
+            history = ModelMessagesTypeAdapter.validate_json(run.messages)
+            identity = IdentityResult.model_validate(run.identity)
+        except ValueError as exc:
+            msg = f"Approval {decision.approval_id} holds a run that no longer reads"
+            raise UserError(msg) from exc
+
+        now = datetime.now(UTC)
+        integration_tools = await self._integration_tools(identity.identity)
+        prompts = await fetch_system2_prompts(
+            self._prompts,
+            who=identity.identity,
+            channel=run.channel,
+            content_type=run.content_type,
+            area=run.area,
+            integrations_available=bool(integration_tools),
+        )
+        deps = TurnDeps(
+            identity=identity,
+            session_id=run.session_id,
+            channel=run.channel,
+            request_id=decision.approval_id,
+            tz_name=run.tz_name,
+            now=now,
+            services=self._services,
+            received_ms=received_ms,
+            content_type=run.content_type,
+            area=run.area,
+            registry_tools=await self._tool_registry.get_tools(),
+            prompts=prompts,
+            integration_tools=integration_tools,
+            approval_id=decision.approval_id,
+        )
+        logger.info("Door decides approval %s: %s", decision.approval_id, decision.decision)
+
+        marker = _marker(decision.decision)
+        usage = RunUsage()
+        text, mood, messages, deferred = await self._run(
+            deps,
+            history,
+            usage,
+            prompt=None,
+            said=marker,
+            results=results_for(run, decision.decision),
+        )
+        pending: str | None = None
+        if deferred is not None:
+            text, messages, pending = await self._park(
+                deps,
+                deferred,
+                messages,
+                channel=run.channel,
+                content_type=run.content_type,
+                request_event_id=run.request_event_id,
             )
-            all_actions.extend(tc["name"] for tc in tool_calls)
+        await self._store_resumed(decision, identity.identity, messages, text, pending)
+        await self._note(now, marker, text, deps.actions_taken, usage)
+        return self._followup(run, text, deps.actions_taken, mood=mood)
 
-            # Append assistant turn with tool calls (OpenAI format — sanitized names)
-            assistant_msg: dict[str, Any] = {"role": "assistant"}
-            if text:
-                assistant_msg["content"] = text
-            assistant_msg["tool_calls"] = [
-                {
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {
-                        "name": self._sanitize_tool_name(tc["name"]),
-                        "arguments": (
-                            json.dumps(tc["input"])
-                            if isinstance(tc["input"], dict)
-                            else str(tc["input"])
-                        ),
-                    },
-                }
-                for tc in tool_calls
-            ]
-            messages.append(assistant_msg)
+    async def _store_resumed(
+        self,
+        decision: ApprovalDecision,
+        who: str,
+        messages: list[ModelMessage],
+        text: str,
+        pending: str | None,
+    ) -> None:
+        """Store a Door resume (ruling P13). While the session still waits on this approval,
+        the resumed run's messages replace its history and *pending* (a re-park's approval)
+        is set. Otherwise a turn came in between: it closed the open call, replaced the
+        history and cleared the approval, so the resume is added to the current history as
+        text, and a re-park stays answerable from the Door alone."""
+        run = decision.run
+        session = await self._session_mgr.load(run.session_id, run.channel, who)
+        if session.pending_approval == decision.approval_id:
+            await self._session_mgr.store_run(
+                run.session_id, messages, who, pending_approval=pending
+            )
+            return
+        logger.info(
+            "A turn came before approval %s was decided; stored as text", decision.approval_id
+        )
+        await self._session_mgr.append_text_turn(
+            run.session_id, who, _marker(decision.decision), text
+        )
 
-            # Append tool results (OpenAI format)
-            for tr, tc in zip(tool_results, tool_calls, strict=True):
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": tr["content"],
-                    }
+    async def _resume_for(
+        self, request: UserRequest, who: str, approval_id: str | None
+    ) -> _Resume | None:
+        """The parked run *request* decides, claimed, with the verdict its words give.
+
+        Only the owner decides by reply, and only a run parked for them on this session
+        (``claimable_run``). The record's history is read and the reply classified before
+        the record is claimed (``GETDEL``): a slow classifier never holds a claimed record,
+        and a history that no longer reads leaves the approval unclaimed. A crash after the
+        claim loses the reply, never runs anything unapproved: the retry is a normal turn in
+        which the open call reads as interrupted, and the owner is asked again only if the
+        model proposes the call again. With no classifier every reply moves on. None when
+        there is nothing to decide or it cannot be read, or when the Door decided first or
+        the approval lapsed: the turn is then a normal one.
+
+        The history is the record's, not the session's: it ends in the open calls being
+        answered, where the session may hold a text turn after them.
+        """
+        if approval_id is None or who != "sir":
+            return None
+        run = await claimable_run(self._redis, approval_id)
+        if run is None or run.session_id != request.session_id:
+            return None
+        try:
+            history = ModelMessagesTypeAdapter.validate_json(run.messages)
+        except ValueError:
+            logger.warning(
+                "Approval %s holds a history that no longer reads; a normal turn",
+                approval_id,
+                exc_info=True,
+            )
+            return None
+        decision: Decision = "other"
+        if self._approval is not None:
+            decision = await self._approval.classify(run.calls, request.content)
+        claimed = await claim_pending(self._redis, approval_id)
+        if claimed is None:
+            logger.info("Approval %s was settled before this reply could claim it", approval_id)
+            return None
+        if claimed != run:
+            # Never expected: a record is written once (SET NX) and never changed.
+            logger.warning("Approval %s changed under the reply; nothing runs", approval_id)
+            return None
+        logger.info("Reply decides approval %s: %s", approval_id, decision)
+        return _Resume(approval_id, history, results_for(run, decision))
+
+    async def _park(
+        self,
+        deps: TurnDeps,
+        deferred: DeferredToolRequests,
+        messages: list[ModelMessage],
+        *,
+        channel: ChannelName,
+        content_type: ContentType,
+        request_event_id: str,
+    ) -> tuple[str, list[ModelMessage], str]:
+        """Park a run that deferred its critical calls, under one approval derived from the
+        turn's request id, and ask the owner. Returns the turn's reply, the history to store
+        and the approval id.
+
+        All three come from the run ``park`` returns, not the one built here: on a redelivery
+        that is the stored record, which the owner is already looking at, and its calls may
+        differ from the ones this run's model deferred.
+        """
+        calls = parked_calls(deferred)
+        run = ParkedRun(
+            approval_id=approval_id_for(deps.request_id),
+            session_id=deps.session_id,
+            channel=channel,
+            identity=deps.identity.model_dump(mode="json"),
+            request_event_id=request_event_id,
+            created_at=deps.now,
+            content_type=content_type,
+            area=deps.area,
+            tz_name=deps.tz_name,
+            summary=summary_of(calls),
+            calls=calls,
+            messages=ModelMessagesTypeAdapter.dump_json(messages).decode(),
+        )
+        parked = await park(self._redis, self._notifier, run, ledger_key=deps.request_id)
+        logger.info(
+            "Parked %d call(s) for approval %s: %s",
+            len(parked.calls),
+            parked.approval_id,
+            ", ".join(call.tool_name for call in parked.calls),
+        )
+        history = ModelMessagesTypeAdapter.validate_json(parked.messages)
+        return confirmation_reply(parked.summary), history, parked.approval_id
+
+    def _resolve(self, request: UserRequest) -> IdentityResult:
+        """Who sent *request*, by the identity gate."""
+        return self._identity_gate.resolve(
+            channel=request.channel,
+            identity_claim=request.identity_claim,
+            authenticated=request.authenticated,
+            identity_confidence=request.identity_confidence,
+        )
+
+    async def _timezone(self, request: UserRequest) -> str:
+        """The client's zone when it sent a valid one, persisted; else the stored zone."""
+        if request.timezone and is_valid_timezone(request.timezone):
+            # Persisted at the domain boundary, before any tool (run_at normalisation,
+            # cron) reads the stored key. Write-on-change: one cheap GET per request.
+            await set_user_timezone(self._redis, request.timezone)
+            return request.timezone
+        return await get_user_timezone(self._redis)
+
+    async def _recall(self, content: str) -> list[SearchResult]:
+        """Involuntary recall: memories close enough to the request to show unasked."""
+        if self._context_index is None or not content:
+            return []
+        try:
+            return await self._context_index.search_text(
+                content, limit=self._recall_limit, min_similarity=self._recall_threshold
+            )
+        except Exception:
+            logger.warning("Involuntary recall failed", exc_info=True)
+            return []
+
+    def _routine_hint(self, now: datetime, tz_name: str) -> str:
+        if self._routines is None:
+            return ""
+        try:
+            return self._build_routine_hint(now, tz_name)
+        except Exception:
+            logger.warning("Routine suggestion check failed", exc_info=True)
+            return ""
+
+    async def _integration_tools(self, who: str) -> list[IntegrationTool]:
+        """The integrations' capabilities, read once per turn; sir only."""
+        if who != "sir":
+            return []
+        try:
+            return await fetch_integration_tools()
+        except Exception:
+            logger.warning("Failed to list integration tools", exc_info=True)
+            return []
+
+    async def _run(
+        self,
+        deps: TurnDeps,
+        history: list[ModelMessage],
+        usage: RunUsage,
+        *,
+        prompt: str | None,
+        said: str,
+        results: DeferredToolResults | None = None,
+    ) -> tuple[str, Mood, list[ModelMessage], DeferredToolRequests | None]:
+        """One agent run: its reply, its mood, the session's history after it, and the calls
+        it deferred for approval, if it ended waiting on them (its reply is then empty).
+
+        *prompt* is the turn's words, None when the run only takes *results* (a Door
+        decision). A finished run's history is ``all_messages()``, compacted during the
+        run. A run that ends without its own answer leaves *history* plus the turn as text,
+        *said* and the reply, never its half-finished messages. *usage* accumulates across
+        it, for the note.
+
+        A run that resumes (*results*) takes *history* as it is: its open calls are the
+        ones being answered. Any other run first closes open calls as interrupted
+        (``repair_messages``, a no-op on a history without them): a parked run's history
+        ends in its open call, and Pydantic AI refuses a new prompt after it.
+        """
+        if results is None:
+            history = repair_messages(history)
+        model = self._model
+        if model is None:
+            return self._ended(history, said, NOT_CONFIGURED_REPLY, "neutral")
+        try:
+            with (
+                langfuse_attributes(
+                    session_id=deps.session_id, user_id=deps.who, tags=[deps.channel]
+                ),
+                linked_prompts(*deps.prompts.refs()),
+            ):
+                result = await self._agent.run(
+                    prompt,
+                    deps=deps,
+                    message_history=history,
+                    deferred_tool_results=results,
+                    model=model,
+                    usage=usage,
+                    usage_limits=UsageLimits(request_limit=REQUEST_LIMIT),
                 )
-        else:
-            if not final_text:
-                final_text = (
-                    "I apologize, sir — I've been deliberating too long. "
-                    "Let me try a more direct approach."
-                )
+            if isinstance(result.output, DeferredToolRequests):
+                return "", "neutral", result.all_messages(), result.output
+            return result.output, "neutral", result.all_messages(), None
+        except SpendLimitExceeded:
+            # A UsageLimitExceeded too, so it is caught first. Raised before a request,
+            # once an earlier response in this run (or another process) spent the day.
+            logger.warning("Daily budget spent during the run — returning the budget reply")
+            reply = await self._budget_reply(deps.request_id)
+            return self._ended(history, said, reply, "concerned")
+        except UsageLimitExceeded:
+            logger.warning("System 2 used its %d model requests without answering", REQUEST_LIMIT)
+            return self._ended(history, said, DELIBERATING_REPLY, "neutral")
+        except UnexpectedModelBehavior as exc:
+            # Retries exhausted, blank replies, or the token limit hit before any output.
+            # ModelAPIError (HTTP, connection, timeout) is a sibling, not a subclass, so a
+            # provider failure still raises and the request is retried.
+            logger.warning("System 2 gave up on the model's replies: %s", exc)
+            return self._ended(history, said, DELIBERATING_REPLY, "neutral")
 
-        # 7. Record cost
-        await self._cost.record_spend(total_prompt_tokens, total_completion_tokens, self._model)
+    @staticmethod
+    def _ended(
+        history: list[ModelMessage], said: str, text: str, mood: Mood
+    ) -> tuple[str, Mood, list[ModelMessage], None]:
+        """A turn answered with *text* instead of the run's own answer."""
+        return text, mood, [*history, *text_turn(said, text)], None
 
-        # 8. Update session
-        await self._session_mgr.append_turn(request.session_id, "user", request.content)
-        await self._session_mgr.append_turn(request.session_id, "assistant", final_text)
+    async def _budget_reply(self, request_id: str) -> str:
+        """The budget reply for a run the budget stopped partway. If the turn already
+        acted, say what it did first (``ledger_reply``), so a light that went on is never
+        answered as though nothing happened; an unreadable ledger gets the plain reply."""
+        try:
+            effects = await EffectLedger(self._redis).read(request_id)
+        except Exception:
+            logger.warning("Could not read the ledger for the budget reply", exc_info=True)
+            return BUDGET_REPLY
+        if not effects:
+            return BUDGET_REPLY
+        return f"{ledger_reply(effects)} {BUDGET_AFTER_ACTING}"
 
-        # 8b. Write observation to scratchpad queue
+    async def _note(
+        self, now: datetime, content: str, text: str, actions: list[str], usage: RunUsage
+    ) -> None:
+        """One line on the scratchpad for the Librarian: the question, never the reply."""
         try:
             timestamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-            actions_str = ", ".join(all_actions) if all_actions else "none"
+            actions_str = ", ".join(actions) if actions else "none"
             observation = (
                 f"{timestamp} [conscious] "
-                f"user='{request.content[:80]}' → {len(final_text)} chars "
-                f"(actions={actions_str}, tokens={total_prompt_tokens}+{total_completion_tokens})"
+                f"user='{content[:80]}' → {len(text)} chars "
+                f"(actions={actions_str}, tokens={usage.input_tokens}+{usage.output_tokens})"
             )
             await self._redis.lpush(SCRATCHPAD_QUEUE, observation)
         except Exception as exc:
             logger.warning("Failed to write scratchpad observation: %s", exc)
 
-        # 9. Build response
+    async def record_partial_turn(self, request: UserRequest, text: str) -> None:
+        """Store a turn answered from its side-effect ledger (*text*) in the session, as
+        text after the stored history, so the next turn knows what was done. Called once
+        the answer is published; a failed write is logged, not raised."""
+        try:
+            who = self._resolve(request).identity
+            await self._session_mgr.append_text_turn(request.session_id, who, request.content, text)
+        except Exception:
+            logger.warning("Failed to store a partial turn in the session", exc_info=True)
+
+    async def record_partial_approval(self, decision: ApprovalDecision, text: str) -> None:
+        """Store a Door decision answered from its side-effect ledger (*text*) in the
+        record's session, as the decision's marker and *text*, as ``record_partial_turn``
+        does for a request. A failed write is logged, not raised."""
+        run = decision.run
+        try:
+            who = IdentityResult.model_validate(run.identity).identity
+            await self._session_mgr.append_text_turn(
+                run.session_id, who, _marker(decision.decision), text
+            )
+        except Exception:
+            logger.warning("Failed to store a partial Door decision in the session", exc_info=True)
+
+    @staticmethod
+    def failure_reply(request: UserRequest, text: str) -> AlfredResponse:
+        """The answer to a turn that could not finish: a normal reply's channel, session,
+        source and ``in_reply_to``, no actions, concerned."""
+        return ConsciousEngine._reply(request, text, [], mood="concerned")
+
+    @staticmethod
+    def approval_failure_reply(run: ParkedRun, text: str) -> AlfredResponse:
+        """The answer to a Door decision that could not finish: a follow-up to the request
+        that parked *run*, no actions, concerned."""
+        return ConsciousEngine._followup(run, text, [], mood="concerned")
+
+    @staticmethod
+    def _followup(
+        run: ParkedRun, text: str, actions: list[str], *, mood: Mood = "neutral"
+    ) -> AlfredResponse:
+        """A reply nobody is waiting on, to the request that parked *run*."""
         return AlfredResponse(
-            source="conscious-engine",
+            source=SOURCE,
+            channel=run.channel,
+            session_id=run.session_id,
+            text=text,
+            actions_taken=actions,
+            mood=mood,
+            in_reply_to=run.request_event_id,
+            followup=True,
+        )
+
+    @staticmethod
+    def _reply(
+        request: UserRequest,
+        text: str,
+        actions: list[str],
+        *,
+        mood: Mood = "neutral",
+    ) -> AlfredResponse:
+        return AlfredResponse(
+            source=SOURCE,
             channel=request.channel,
             session_id=request.session_id,
-            text=final_text,
-            actions_taken=all_actions,
-            mood="neutral",
+            text=text,
+            actions_taken=actions,
+            mood=mood,
+            in_reply_to=request.event_id,
         )
+
+
+def _marker(decision: Literal["approve", "deny"]) -> str:
+    """The owner's side of a Door decision in the session: the Door sends no words."""
+    return APPROVED_MARKER if decision == "approve" else DECLINED_MARKER

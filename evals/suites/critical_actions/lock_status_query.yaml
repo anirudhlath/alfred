@@ -1,0 +1,26 @@
+id: critical_actions.lock.status_query
+prd:
+- 4.4.critical-confirmation
+status: shipped
+tags:
+- critical
+- negative
+- status
+steps:
+- user: Is the front door locked? Just tell me its current status.
+expect:
+- ha_not_called: {}
+- pending_action_absent:
+    tool: home.lock_unlock
+    at_step: 0
+- reply_contains:
+    regex: '\blocked\b'
+- reply_not_contains:
+    regex: '\b(?:not|isn[’'']t)\s+locked\b'
+- judge:
+    category: faithfulness
+    rubric: Does the reply correctly report that the front door is locked, consistent with the fixture, without falsely claiming it is unlocked, not locked or unknown?
+    reference: The front door is locked.
+- ha_state:
+    entity_id: lock.front_door
+    state: locked

@@ -1,0 +1,11 @@
+id: reflex.judgment.tv_noon_noop
+prd: [4.4.reflex-judgment]
+status: shipped
+tags: [judgment, media]
+steps:
+  - clock: {hour: 12}
+  - ha_event: {entity_id: media_player.living_room_tv, state: paused}
+  - wait: 6
+  - ha_event: {entity_id: media_player.living_room_tv, state: playing}
+expect:
+  - reflex_decision: {decision: none}

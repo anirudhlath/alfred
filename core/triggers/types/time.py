@@ -1,8 +1,8 @@
-"""TimeTrigger — fires on cron schedule or specific datetime."""
+"""TimeTrigger — fires on cron schedule, at a specific datetime, or after a delay."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -11,6 +11,9 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from core.triggers.models import BaseTrigger, TriggerContext
 from core.triggers.registry import TriggerRegistry
+
+# The schedule fields of TimeTrigger.Conditions; a tool call may supply at most one.
+_SCHEDULE_FIELDS = ("cron", "run_at", "run_in_seconds")
 
 
 @TriggerRegistry.register_type("time")
@@ -29,9 +32,23 @@ class TimeTrigger(BaseTrigger):
         run_at: datetime | None = Field(
             default=None,
             description=(
-                "Absolute due time, ISO-8601 WITH UTC offset "
-                "(e.g. 2026-07-16T15:00:00-06:00). Naive values are interpreted "
+                "Absolute due time for a wall-clock request ('at 3pm'), ISO-8601 WITH UTC "
+                "offset (e.g. 2026-07-16T15:00:00-06:00). Naive values are interpreted "
                 "in the user's local timezone."
+            ),
+        )
+        # Input-only: normalize_conditions resolves it to run_at at the tool boundary, so a
+        # stored trigger never carries it (exclude keeps it out of every dump).
+        run_in_seconds: float | None = Field(
+            default=None,
+            gt=0,
+            allow_inf_nan=False,
+            exclude=True,
+            description=(
+                "Delay from now in seconds, for a relative request ('in 20 minutes' -> 1200). "
+                "PREFER this over run_at for any 'in N seconds/minutes/hours': the server "
+                "resolves it to an absolute run_at, so never do that clock arithmetic "
+                "yourself. Give only one of cron, run_at, run_in_seconds."
             ),
         )
 
@@ -41,11 +58,19 @@ class TimeTrigger(BaseTrigger):
     def model_post_init(self, __context: Any) -> None:
         """Validate cron expression at construction time (fail-fast).
 
+        Also refuses an unresolved ``run_in_seconds``: a relative delay has no due
+        time until ``normalize_conditions`` anchors it to the clock, and a trigger
+        built from one would never fire.
+
         Note: `_validated_cron` is validation-only — evaluation builds a fresh
         croniter per call. Pydantic 2.13's model_copy does NOT re-run
         model_post_init; copies inherit the private attr by shallow copy
         (see CompositeTrigger.model_copy for the case where that matters).
         """
+        if self.conditions.run_in_seconds is not None:
+            raise ValueError(
+                "run_in_seconds must be resolved to run_at at creation (normalize_conditions)"
+            )
         if self.conditions.cron is not None:
             try:
                 self._validated_cron = croniter(self.conditions.cron)
@@ -96,6 +121,25 @@ class TimeTrigger(BaseTrigger):
 
     @classmethod
     def normalize_conditions(cls, conditions: dict[str, Any], tz_name: str) -> dict[str, Any]:
+        """Resolve tool-call conditions to their stored, absolute form.
+
+        One schedule field per call is enforced here, at the tool boundary, not on
+        ``Conditions``: rows stored before the rule (cron and run_at together, where
+        run_at wins) must keep loading. ``run_in_seconds`` becomes an aware ``run_at``
+        against the server clock — the model never does clock arithmetic — expressed
+        in the user's zone so it reads back as their wall-clock time.
+        """
+        supplied = [f for f in _SCHEDULE_FIELDS if conditions.get(f) is not None]
+        if len(supplied) > 1:
+            raise ValueError(
+                f"Give only one of {', '.join(_SCHEDULE_FIELDS)} (got {', '.join(supplied)})"
+            )
+        if conditions.get("run_in_seconds") is not None:
+            delay = cls.Conditions.model_validate(conditions).run_in_seconds  # > 0, finite
+            assert delay is not None  # validated from a non-None input
+            due = datetime.now(UTC) + timedelta(seconds=delay)
+            resolved = {k: v for k, v in conditions.items() if k != "run_in_seconds"}
+            return {**resolved, "run_at": due.astimezone(ZoneInfo(tz_name)).isoformat()}
         run_at = conditions.get("run_at")
         if run_at is None:
             return conditions

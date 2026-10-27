@@ -33,6 +33,8 @@ classDiagram
     BaseEvent <|-- ToolRegistration
     BaseEvent <|-- TriggerFired
     BaseEvent <|-- TriggerCreated
+    BaseEvent <|-- AlfredResponse
+    BaseEvent <|-- ApprovalDecision
 
     class BaseEvent {
         event_id: str [uuid4]
@@ -65,6 +67,13 @@ Published by microservices when a device or entity changes state. This is the pr
 | `old_state`  | `str \| None`     | Previous state value (null on first report)      |
 | `new_state`  | `str`             | Current state value                              |
 | `attributes` | `dict[str, Any]`  | Freeform attributes (brightness, color, etc.)    |
+| `context`    | `ChangeContext \| None` | Who caused the change, as the publisher resolved it; null when the publisher does not say (older publishers never send it) |
+
+`ChangeContext` fields, all optional: `id` (the platform's context id), `user_id` (the platform
+user who caused the change), `parent_id` (set when an automation or script caused it), `person`
+(the person entity of that user, when the publisher could map it) and `by_service` (default
+`false`; true when the publishing service's own call caused the change, on Alfred's request). A
+publisher that cannot say who caused a change omits the whole `context`.
 
 ### ActionRequest
 
@@ -78,7 +87,7 @@ A request to execute an MCP tool on a target microservice. Produced by the Refle
 | `tool_name`      | `str`                | MCP tool name, e.g. `smart_home.dim_lights`       |
 | `parameters`     | `dict[str, Any]`     | Tool-specific parameters                          |
 | `reason`         | `str \| None`        | Why the actor wants this; shown on the confirmation prompt. Null unless a conscious-engine critical call supplied it. **Truncated at 500 characters** (`REASON_MAX_LEN`) — it rides into APNs metadata, whose payload ceiling is 4 KB; a wordy reason is cut, never a dropped action |
-| `confirmed`      | `bool`               | Default false; set true only by the confirmation flow (contract C3) |
+| `confirmed`      | `bool`               | Default false; set true only by the confirmation flow (contract C3): a resumed run's approved call (`ctx.tool_call_approved`), or the Door's approval of an action the router held |
 
 ### ActionResult
 
@@ -146,6 +155,46 @@ Published by the Trigger Engine when a new trigger is dynamically created via CR
 | `action`       | `dict[str, Any]\|None`| Action payload, if set                             |
 | `one_shot`     | `bool`                | Whether the trigger deletes itself after firing    |
 
+### AlfredResponse
+
+Alfred's outbound answer to a user channel, on `alfred:user:responses`. Produced by the Conscious Engine.
+
+| Field          | Type                | Description                                                              |
+|----------------|---------------------|--------------------------------------------------------------------------|
+| `event_type`   | `"alfred_response"` | Fixed                                                                    |
+| `channel`      | `ChannelName`       | Which channel the request came from                                      |
+| `session_id`   | `str`               | The conversation                                                         |
+| `text`         | `str`               | The reply                                                                |
+| `voice_audio_ref` | `str \| None`    | Optional reference to a spoken rendering of the reply; nothing sets it today |
+| `actions_taken`| `list[str]`         | Tools the turn called                                                    |
+| `mood`         | `str`               | `neutral`, `pleased`, `concerned`, `amused` or `serious`                 |
+| `in_reply_to`  | `str \| None`       | The answered request's `event_id`; a channel matches on it when set       |
+| `followup`     | `bool`              | Default false. True for an answer nobody waited for: the resumed run of an approved or declined action. A late answer to a request whose caller already got a fallback is not marked here, the channels' follow-up worker recognises it by its registration (`docs/notifications.md`) |
+
+### ParkedRun and ParkedAction
+
+Not events: the two records a held critical action is stored as, at `alfred:pending:{id}`
+(TTL 300 s), told apart by `kind` (the `PENDING_RECORD` union). Every path that answers
+one claims it with `GETDEL`. Flow and diagram: [`autonomy.md`](autonomy.md).
+
+| Record | `kind` | Fields |
+|--------|--------|--------|
+| `ParkedRun` | `"parked_run"` | `approval_id`, `session_id`, `channel`, `identity`, `request_event_id`, `created_at`, `content_type`, `area`, `tz_name`, `summary`, `calls` (at least one `ParkedCall`: `tool_call_id`, `tool_name`, `target_service`, `parameters`, `reason`), `messages` (the run's history, opaque JSON) |
+| `ParkedAction` | `"action"` | `action`: the `ActionRequest` the router intercepted |
+
+### ApprovalDecision
+
+The owner's decision on a parked run, added to `alfred:approvals` when the Door confirms or
+denies it. The conscious process reads that stream (group `conscious-engine`) next to
+`alfred:user:requests` and resumes the run.
+
+| Field         | Type                  | Description                                    |
+|---------------|-----------------------|------------------------------------------------|
+| `event_type`  | `"approval_decision"` | Fixed                                          |
+| `approval_id` | `str`                 | The approval, the same id the Door shows       |
+| `decision`    | `"approve" \| "deny"` | What the owner chose                           |
+| `run`         | `ParkedRun`           | The claimed record, so the resume needs no second lookup |
+
 ## MQTT-Redis Bridge
 
 **Source:** `bus/bridge.py` | **Entry point:** `uv run python -m bus` (`bus/__main__.py`)
@@ -199,6 +248,10 @@ The bridge translates between MQTT topic separators (`/`) and Redis key separato
 | `media/state_changed`  | `alfred:media:state_changed`    |
 | `home/action_results`  | `alfred:home:action_results`    |
 | `reflex/actions`       | `alfred:reflex:actions`         |
+
+The telemetry and Admin API give some streams a short name: `home_action_results` is
+`alfred:home:action_results`, the stream `ActionResult` events go to. The names do not follow one
+rule; [`admin-api.md`](admin-api.md#streams) lists them all.
 
 Conversion functions in `bus/bridge.py`:
 - `mqtt_topic_to_stream_key("home/state_changed")` returns `"alfred:home:state_changed"`

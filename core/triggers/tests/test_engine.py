@@ -10,10 +10,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.triggers.models import ActionPayload, TriggerContext
+from bus.schemas.events import ActionRequest
+from core.triggers.models import TRIGGER_ENGINE_SOURCE, ActionPayload, TriggerContext
 from core.triggers.registry import TriggerRegistry
 from core.triggers.store import TriggerStore
-from shared.streams import EVENTS_STREAM, USER_TIMEZONE_KEY
+from shared.streams import EVENTS_MAXLEN, EVENTS_STREAM, USER_TIMEZONE_KEY
 
 
 @pytest.fixture(autouse=True)
@@ -75,6 +76,8 @@ async def test_fire_with_action_publishes_action_request(
     call_args = mock_redis.xadd.call_args
     stream_name = call_args[0][0]
     assert stream_name == "alfred:actions"
+    request = ActionRequest.model_validate_json(call_args[0][1]["event"])
+    assert request.source == TRIGGER_ENGINE_SOURCE
 
 
 @pytest.mark.asyncio
@@ -376,3 +379,28 @@ async def test_user_tz_cached_until_invalidated(fake_redis: Any, snapshot_dir: P
     # ...until the coherence hook (TriggerStore.add_on_change) clears it.
     engine.invalidate_tz_cache()
     assert await engine._user_tz() == "UTC"
+
+
+@pytest.mark.asyncio
+async def test_trigger_fired_caps_the_events_stream(
+    mock_store: AsyncMock, mock_redis: AsyncMock
+) -> None:
+    from core.triggers.engine import TriggerEngine
+
+    cls = TriggerRegistry.get("time")
+    trigger = cls(
+        trigger_id="t-1",
+        trigger_type="time",
+        name="test",
+        created_by="test",
+        created_at=datetime.now(UTC),
+        conditions={"cron": "0 7 * * *"},
+    )
+
+    await TriggerEngine(store=mock_store, redis=mock_redis).fire(
+        trigger, TriggerContext(now=datetime.now(UTC))
+    )
+
+    events_calls = [c for c in mock_redis.xadd.call_args_list if c.args[0] == EVENTS_STREAM]
+    assert len(events_calls) == 1
+    assert events_calls[0].kwargs == {"maxlen": EVENTS_MAXLEN, "approximate": True}

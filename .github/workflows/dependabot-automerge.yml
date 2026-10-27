@@ -14,7 +14,7 @@ jobs:
     env:
       HAS_BOT_APP: ${{ secrets.BOT_APP_ID != '' }}
     steps:
-      - uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2
+      - uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         id: meta
 
       - name: Decide eligibility
@@ -37,7 +37,7 @@ jobs:
           fi
           echo "ok=$ok" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         if: steps.decide.outputs.ok == 'true' && env.HAS_BOT_APP == 'true'
         id: app
         with:

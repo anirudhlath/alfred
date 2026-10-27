@@ -1,8 +1,8 @@
-"""ContextProvider protocol and data models for service context publishing."""
+"""Context data models — the shape live state is read in (see live_state.py)."""
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -20,10 +20,3 @@ class ContextSnapshot(BaseModel):
 
     controllable: dict[str, list[ContextEntry]] = {}
     sensors: dict[str, list[ContextEntry]] = {}
-
-
-@runtime_checkable
-class ContextProvider(Protocol):
-    """Protocol for services/features that provide context to Alfred."""
-
-    async def get_context(self) -> ContextSnapshot: ...

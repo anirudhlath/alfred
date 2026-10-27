@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import pytest
 
 from core.memory.context_index import ContextIndexManager
-from core.memory.vector_store import ContextMetadata, SearchResult
+from core.memory.vector_store import ContextMetadata, Range, SearchResult
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from unittest.mock import AsyncMock
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -273,6 +274,18 @@ async def test_remove_delegates_to_store_delete(
     mock_vector_store.delete.assert_awaited_once_with("ep:001")
 
 
+@pytest.mark.asyncio
+async def test_select_delegates_to_the_store(
+    manager: ContextIndexManager,
+    mock_vector_store: AsyncMock,
+) -> None:
+    where = {"significance": Range(below=0.4)}
+    mock_vector_store.select.return_value = [_make_result()]
+
+    assert await manager.select(where) == [_make_result()]
+    mock_vector_store.select.assert_awaited_once_with(where)
+
+
 # ---------------------------------------------------------------------------
 # reindex_semantic_files
 # ---------------------------------------------------------------------------
@@ -425,3 +438,229 @@ def test_parse_markdown_sections_empty_file(tmp_path: Path) -> None:
     # Single section with empty heading and empty body
     assert len(sections) == 1
     assert sections[0] == ("", "")
+
+
+# ---------------------------------------------------------------------------
+# recall — deliberate recall across hot and the archive
+# ---------------------------------------------------------------------------
+
+
+def _scored(
+    memory_id: str,
+    score: float,
+    retrieval_count: int = 0,
+    *,
+    type_: str = "episodic",
+    timestamp: float = 0.0,
+) -> SearchResult:
+    result = _make_result()
+    metadata = {"retrieval_count": retrieval_count, "type": type_, "timestamp": timestamp}
+    return result.model_copy(
+        update={
+            "id": memory_id,
+            "score": score,
+            "metadata": result.metadata.model_copy(update=metadata),
+        }
+    )
+
+
+def _store_of(*results: SearchResult) -> AsyncMock:
+    """A store that answers as a real one does: its best ``limit`` results, best first."""
+    ranked = sorted(results, key=lambda r: r.score, reverse=True)
+    store = AsyncMock()
+    store.search = AsyncMock(side_effect=lambda *, limit, **_: ranked[:limit])
+    return store
+
+
+def _depths(store: AsyncMock) -> list[int]:
+    """The ``limit`` of every search the store was asked for, in order."""
+    return [c.kwargs["limit"] for c in store.search.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_recall_finds_what_decay_moved_to_the_archive(
+    mock_vector_store: AsyncMock, mock_embedder: AsyncMock
+) -> None:
+    archive = AsyncMock()
+    archive.search = AsyncMock(return_value=[_scored("moved", 0.9), _scored("both", 0.5)])
+    mock_vector_store.search.return_value = [_scored("both", 0.6), _scored("hot", 0.4)]
+    manager = ContextIndexManager(mock_vector_store, mock_embedder, archive=archive)
+
+    results = await manager.recall("when did the boiler fail?", limit=2)
+
+    assert [(r.id, r.score) for r in results] == [("moved", 0.9), ("both", 0.6)]
+    query = await mock_embedder.embed("when did the boiler fail?")
+    hot_call = mock_vector_store.search.await_args.kwargs
+    # Deliberate recall reads the whole hot index, compressed entries included.
+    assert (hot_call["query_embedding"], hot_call["limit"], hot_call["filters"]) == (query, 2, None)
+    assert archive.search.await_args.kwargs["query_embedding"] == query
+    assert archive.search.await_args.kwargs["limit"] == 2
+
+
+@pytest.mark.asyncio
+async def test_recall_counts_only_the_hot_hits_it_returns_as_retrieved(
+    mock_vector_store: AsyncMock, mock_embedder: AsyncMock
+) -> None:
+    archive = AsyncMock()
+    archive.search = AsyncMock(return_value=[_scored("moved", 0.9)])
+    mock_vector_store.search.return_value = [_scored("kept", 0.7, 3), _scored("cut", 0.1)]
+    manager = ContextIndexManager(mock_vector_store, mock_embedder, archive=archive)
+
+    await manager.recall("q", limit=2)
+
+    updated = [c.args for c in mock_vector_store.update_metadata.await_args_list]
+    assert [(memory_id, fields["retrieval_count"]) for memory_id, fields in updated] == [
+        ("kept", 4)
+    ]
+    archive.update_metadata.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recall_without_an_archive_is_the_hot_index(
+    manager: ContextIndexManager, mock_vector_store: AsyncMock
+) -> None:
+    mock_vector_store.search.return_value = [_scored("hot", 0.4)]
+
+    assert [r.id for r in await manager.recall("q")] == ["hot"]
+
+
+@pytest.mark.asyncio
+async def test_recall_fails_when_the_archive_does(
+    mock_vector_store: AsyncMock, mock_embedder: AsyncMock
+) -> None:
+    """As EpisodicMemory.recall does: a silently half-empty answer reads as "no such
+    memory", and nothing would ever say the archive had stopped answering."""
+    archive = AsyncMock()
+    archive.search = AsyncMock(side_effect=RuntimeError("cold store latched"))
+    manager = ContextIndexManager(mock_vector_store, mock_embedder, archive=archive)
+
+    with pytest.raises(RuntimeError, match="latched"):
+        await manager.recall("q")
+
+
+# ---------------------------------------------------------------------------
+# recall — type and time filters apply before the limit (issue #311)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recall_finds_the_type_asked_for_below_the_limit(mock_embedder: AsyncMock) -> None:
+    hot = _store_of(
+        _scored("pref-1", 0.9, type_="semantic"),
+        _scored("pref-2", 0.8, type_="semantic"),
+        _scored("routine", 0.7, type_="routine"),
+        _scored("boiler-failed", 0.6),
+        _scored("boiler-serviced", 0.5),
+    )
+    manager = ContextIndexManager(hot, mock_embedder)
+
+    results = await manager.recall("boiler", limit=2, types=["episodic"])
+
+    assert [r.id for r in results] == ["boiler-failed", "boiler-serviced"]
+
+
+@pytest.mark.asyncio
+async def test_recall_finds_recent_memories_below_older_ones(mock_embedder: AsyncMock) -> None:
+    now = datetime.now(UTC)
+    old = (now - timedelta(days=40)).timestamp()
+    hot = _store_of(
+        _scored("old-1", 0.9, timestamp=old),
+        _scored("old-2", 0.8, timestamp=old),
+        _scored("recent", 0.7, timestamp=(now - timedelta(days=1)).timestamp()),
+        # Semantic sections and routines carry timestamp 0: timeless, so never too old.
+        _scored("timeless", 0.6, type_="semantic"),
+        _scored("old-3", 0.5, timestamp=old),
+    )
+    manager = ContextIndexManager(hot, mock_embedder)
+
+    results = await manager.recall("q", limit=2, since=now - timedelta(days=7))
+
+    assert [r.id for r in results] == ["recent", "timeless"]
+
+
+@pytest.mark.asyncio
+async def test_recall_ranks_an_unread_hot_match_above_a_weaker_archived_one(
+    mock_embedder: AsyncMock,
+) -> None:
+    """Having ``limit`` matches in hand is not enough to stop: the archive's match is
+    found first, but hot has not yet read down to a better one."""
+    hot = _store_of(
+        _scored("pref-1", 0.95, type_="semantic"),
+        _scored("pref-2", 0.9, type_="semantic"),
+        _scored("hot-match", 0.7),
+    )
+    archive = _store_of(_scored("cold-match", 0.5))
+    manager = ContextIndexManager(hot, mock_embedder, archive=archive)
+
+    results = await manager.recall("q", limit=1, types=["episodic"])
+
+    assert [r.id for r in results] == ["hot-match"]
+    assert _depths(hot) == [1, 2, 4]
+    # Nothing the archive has not handed back can outrank cold-match, its lowest.
+    assert _depths(archive) == [1]
+
+
+@pytest.mark.asyncio
+async def test_recall_without_filters_searches_each_store_once(mock_embedder: AsyncMock) -> None:
+    hot = _store_of(*(_scored(f"hot-{i}", 0.9 - i / 10) for i in range(5)))
+    archive = _store_of(*(_scored(f"cold-{i}", 0.85 - i / 10) for i in range(5)))
+    manager = ContextIndexManager(hot, mock_embedder, archive=archive)
+
+    results = await manager.recall("q", limit=3)
+
+    assert [r.id for r in results] == ["hot-0", "cold-0", "hot-1"]
+    assert _depths(hot) == _depths(archive) == [3]
+
+
+@pytest.mark.asyncio
+async def test_recall_reads_on_until_every_store_runs_out(mock_embedder: AsyncMock) -> None:
+    """Nothing matches: each search doubles until the store hands back fewer than it
+    was asked for, which is the store saying it has nothing else."""
+    hot = _store_of(*(_scored(f"pref-{i}", 0.9 - i / 10, type_="semantic") for i in range(5)))
+    manager = ContextIndexManager(hot, mock_embedder)
+
+    assert await manager.recall("q", limit=2, types=["routine"]) == []
+    assert _depths(hot) == [2, 4, 8]
+
+
+@pytest.mark.asyncio
+async def test_recall_leaves_the_archive_out_when_the_types_exclude_episodic(
+    mock_embedder: AsyncMock,
+) -> None:
+    """Decay moves only episodic memories, so the archive holds nothing else."""
+    hot = _store_of(_scored("routine", 0.6, type_="routine"))
+    archive = _store_of(_scored("cold", 0.9))
+    manager = ContextIndexManager(hot, mock_embedder, archive=archive)
+
+    results = await manager.recall("q", types=["routine"])
+
+    assert [r.id for r in results] == ["routine"]
+    archive.search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recall_counts_only_the_matches_it_returns_as_retrieved(
+    mock_embedder: AsyncMock,
+) -> None:
+    hot = _store_of(
+        _scored("pref", 0.9, type_="semantic"),
+        _scored("kept", 0.6, 2),
+        _scored("cut", 0.5),
+    )
+    manager = ContextIndexManager(hot, mock_embedder)
+
+    await manager.recall("q", limit=1, types=["episodic"])
+
+    updated = [c.args for c in hot.update_metadata.await_args_list]
+    assert [(memory_id, fields["retrieval_count"]) for memory_id, fields in updated] == [
+        ("kept", 3)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recall_with_no_room_returns_nothing(mock_embedder: AsyncMock) -> None:
+    hot = _store_of(_scored("hot", 0.9))
+    manager = ContextIndexManager(hot, mock_embedder)
+
+    assert await manager.recall("q", limit=0) == []
+    hot.search.assert_not_awaited()

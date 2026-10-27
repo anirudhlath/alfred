@@ -18,6 +18,7 @@ from core.notifications.adapters.websocket import WebSocketChannelAdapter
 from core.notifications.channels import ChannelRegistry
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
+from shared.otel import init_tracing
 
 # uvicorn's own default: trust loopback only.
 _DEFAULT_FORWARDED_ALLOW_IPS = "127.0.0.1"
@@ -81,6 +82,10 @@ def _resolve_forwarded_allow_ips() -> str:
 def main() -> None:
     configure_logging(service="web-channel")
     config = AlfredConfig.from_env()
+    init_tracing(
+        service_name="channels",
+        endpoint=config.otel_endpoint if config.signoz_enabled else None,
+    )
 
     # Wire channel adapters — only push to web/PWA clients.
     # iOS receives notifications via APNs; notification_id dedup is a safety net.

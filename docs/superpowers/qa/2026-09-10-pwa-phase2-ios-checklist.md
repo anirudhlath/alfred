@@ -129,7 +129,7 @@ that is running and writing events. Record the device, iOS version and date at t
       thread`: the column holds the `AC` action it named, `joined by actions_taken …`.
       This is spec §5.1's conversation turn. Ask the same question in the **Room** and
       there is nothing to tap — an Alfred bubble carries no `why?`; that is deferred, not
-      broken (`docs/backlog/low/pwa-phase2-followups.md` §11)
+      broken ([#257](https://github.com/anirudhlath/alfred/issues/257) §11)
 - [ ] Turn the network off, tap `why?`: the sheet shows the intro and a one-line
       failure — the browser's own message, which on Safari is `Load failed` — then no
       column, and it still closes. `Unreachable.` is the Room's headline and never

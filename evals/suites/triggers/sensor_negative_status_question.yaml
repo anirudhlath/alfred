@@ -1,0 +1,11 @@
+id: triggers.sensor.negative_status_question
+prd: [4.2.sensor-triggers]
+status: shipped
+tags: [sensor, negative]
+steps:
+  - user: "Is the front door open?"
+expect:
+  - trigger_not_created: {}
+  - judge:
+      category: answered
+      rubric: "Does the reply say whether the front door is open?"

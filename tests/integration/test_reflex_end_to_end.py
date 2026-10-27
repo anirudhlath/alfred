@@ -21,14 +21,18 @@ def _make_mock_registry() -> AsyncMock:
         ToolInfo(
             name="lighting.dim_lights",
             description="Dim the lights in a room.",
-            parameters={
-                "room": {"type": "str", "description": "The room to dim."},
-                "level": {"type": "int", "description": "Brightness level 0-100."},
-            },
             feature_name="lighting",
             feature_description="Smart home lighting controls.",
             target_service="home-service",
             audience="reflex",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "room": {"type": "string", "description": "The room to dim."},
+                    "level": {"type": "integer", "description": "Brightness level 0-100."},
+                },
+                "required": ["room", "level"],
+            },
         ),
     ]
     registry = AsyncMock()
@@ -62,6 +66,8 @@ async def test_full_reflex_pipeline(preferences_dir: str, tv_on_event: StateChan
     ollama_response = {
         "response": json.dumps(
             {
+                "decision": "act",
+                "reason": "TV on, dim for viewing",
                 "tool_name": "lighting.dim_lights",
                 "target_service": "home-service",
                 "parameters": {"room": "living_room", "level": 20},
@@ -83,10 +89,12 @@ async def test_full_reflex_pipeline(preferences_dir: str, tv_on_event: StateChan
             preferences_dir=preferences_dir,
             tool_registry=mock_registry,
         )
-        action = await engine.process_event(tv_on_event)
+        proposal = await engine.process_event(tv_on_event)
 
     # Structured output verification (eval contract)
-    assert action is not None
+    assert proposal.decision == "act"
+    assert proposal.reason == "TV on, dim for viewing"
+    action = proposal.action
     assert isinstance(action, ActionRequest)
     assert action.tool_name == "lighting.dim_lights"
     assert action.target_service == "home-service"
@@ -123,6 +131,7 @@ async def test_reflex_no_action_for_irrelevant_event(preferences_dir: str) -> No
             preferences_dir=preferences_dir,
             tool_registry=mock_registry,
         )
-        action = await engine.process_event(temp_event)
+        proposal = await engine.process_event(temp_event)
 
-    assert action is None
+    assert proposal.decision == "none"
+    assert proposal.action is None

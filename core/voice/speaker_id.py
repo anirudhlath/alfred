@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from loguru import logger
 
+from core.lazy import Lazy
 from shared.streams import VOICEPRINT_KEY, decode_stream_value
 
 if TYPE_CHECKING:
@@ -66,8 +67,9 @@ class SpeakerID:
         )
         self._device = device
         self._embed_fn = embed_fn
-        self._model: Any = None
-        self._load_lock = asyncio.Lock()
+        # aget_speaker_id shares one instance across the process, so the ECAPA load
+        # must be safe from any event loop and survive a cancelled caller (issue #97).
+        self._model: Lazy[Any] = Lazy(self._load_model)
 
     async def identify(self, audio_bytes: bytes) -> SpeakerMatch:
         """Identify the speaker of a 16 kHz s16 mono PCM utterance."""
@@ -108,34 +110,26 @@ class SpeakerID:
     async def _embed(self, pcm: bytes) -> np.ndarray:
         if self._embed_fn is not None:
             return await asyncio.to_thread(self._embed_fn, pcm)
-        await self._ensure_model()
         return await asyncio.to_thread(self._embed_ecapa, pcm)
 
-    async def _ensure_model(self) -> None:
-        if self._model is not None:
-            return
-        async with self._load_lock:
-            if self._model is not None:
-                return
+    def _load_model(self) -> Any:
+        from speechbrain.inference.speaker import EncoderClassifier
 
-            def _load() -> Any:
-                from speechbrain.inference.speaker import EncoderClassifier
-
-                return EncoderClassifier.from_hparams(
-                    source=_MODEL_SOURCE,
-                    savedir=str(_model_dir()),
-                    run_opts={"device": self._device},
-                )
-
-            self._model = await asyncio.to_thread(_load)
-            logger.info("SpeakerID: loaded ECAPA model on {}", self._device)
+        model = EncoderClassifier.from_hparams(
+            source=_MODEL_SOURCE,
+            savedir=str(_model_dir()),
+            run_opts={"device": self._device},
+        )
+        logger.info("SpeakerID: loaded ECAPA model on {}", self._device)
+        return model
 
     def _embed_ecapa(self, pcm: bytes) -> np.ndarray:
         import torch
 
+        model = self._model.get()  # in a worker thread already: loads on first use
         wav = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
         tensor = torch.from_numpy(wav).unsqueeze(0)
-        emb = self._model.encode_batch(tensor)  # [1, 1, 192]
+        emb = model.encode_batch(tensor)  # [1, 1, 192]
         vec = emb.squeeze().detach().cpu().numpy().astype(np.float32)
         normalized: np.ndarray = vec / (np.linalg.norm(vec) + 1e-10)
         return normalized

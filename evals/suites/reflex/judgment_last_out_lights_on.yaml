@@ -1,0 +1,10 @@
+id: reflex.judgment.last_out_lights_on
+prd: [4.4.reflex-judgment]
+status: shipped
+tags: [judgment, presence]
+steps:
+  - clock: {hour: 19}
+  - ha_event: {entity_id: person.sam, state: not_home}
+  - ha_event: {entity_id: person.alex, state: not_home}
+expect:
+  - reflex_decision: {decision: [act, ask], tool: home.light_turn_off}

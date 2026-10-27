@@ -379,6 +379,105 @@ describe("useRoom — what comes back", () => {
     expect(result.current.thinking).toBe(false);
   });
 
+  it("a followup keeps the thinking row", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Anything tomorrow?"));
+    // The late answer lands some seconds after the turn that is still in flight.
+    vi.setSystemTime(new Date(NOW.getTime() + 8_000));
+
+    act(() =>
+      chat.deliver({
+        type: "response",
+        text: "The front door is unlocked, sir.",
+        session_id: "s_9f2",
+        followup: true,
+        actions_taken: ["home.lock_unlock"],
+        mood: "pleased",
+        audio: "UklGRg==",
+      }),
+    );
+
+    // Above the spinner, which still stands for the turn that has not answered.
+    expect(kinds(result.current.items)).toEqual(["you", "alfred", "thinking"]);
+    expect(result.current.thinking).toBe(true);
+    const alfred = result.current.items.find((item) => item.kind === "alfred")!;
+    expect(alfred.kind === "alfred" && alfred.text).toBe("The front door is unlocked, sir.");
+    expect(alfred.kind === "alfred" && alfred.mood).toBe("pleased");
+    expect(alfred.kind === "alfred" && alfred.actions).toEqual(["home.lock_unlock"]);
+    expect(playWavBase64Mock).toHaveBeenCalledWith("UklGRg==");
+  });
+
+  it("answers the turn in flight as before when the reply says it is not a followup", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Anything tomorrow?"));
+    act(() => result.current.sendAudio("data:audio/mp4;base64,AAAA", 1.2));
+    expect(kinds(result.current.items)).toEqual(["you", "thinking", "transcribing"]);
+
+    act(() =>
+      chat.deliver({ type: "response", text: "Nothing, sir.", session_id: "s_9f2", followup: false }),
+    );
+
+    expect(kinds(result.current.items)).toEqual(["you", "alfred"]);
+    expect(result.current.thinking).toBe(false);
+  });
+
+  it("keeps both transient rows when a followup lands while a message and a recording are out", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Anything tomorrow?"));
+    vi.setSystemTime(new Date(NOW.getTime() + 2_000));
+    act(() => result.current.sendAudio("data:audio/mp4;base64,AAAA", 1.2));
+    vi.setSystemTime(new Date(NOW.getTime() + 5_000));
+
+    act(() =>
+      chat.deliver({ type: "response", text: "Done, sir.", session_id: "s_9f2", followup: true }),
+    );
+
+    expect(kinds(result.current.items)).toEqual(["you", "alfred", "thinking", "transcribing"]);
+  });
+
+  it("seats two followups above the spinner in the order they arrived", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Anything tomorrow?"));
+    vi.setSystemTime(new Date(NOW.getTime() + 4_000));
+    act(() =>
+      chat.deliver({ type: "response", text: "First, sir.", session_id: "s_9f2", followup: true }),
+    );
+    vi.setSystemTime(new Date(NOW.getTime() + 9_000));
+    act(() =>
+      chat.deliver({ type: "response", text: "Second, sir.", session_id: "s_9f2", followup: true }),
+    );
+
+    expect(kinds(result.current.items)).toEqual(["you", "alfred", "alfred", "thinking"]);
+    const texts = result.current.items.flatMap((item) => (item.kind === "alfred" ? [item.text] : []));
+    expect(texts).toEqual(["First, sir.", "Second, sir."]);
+  });
+
+  it("never lifts a followup past the message that came after a transient row", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendAudio("data:audio/mp4;base64,AAAA", 1.2));
+    vi.setSystemTime(new Date(NOW.getTime() + 2_000));
+    act(() => result.current.sendText("And the windows?"));
+    vi.setSystemTime(new Date(NOW.getTime() + 5_000));
+
+    act(() =>
+      chat.deliver({ type: "response", text: "Done, sir.", session_id: "s_9f2", followup: true }),
+    );
+
+    // Above the spinner it sits next to, but never above the user's own words.
+    expect(kinds(result.current.items)).toEqual(["transcribing", "you", "alfred", "thinking"]);
+  });
+
+  it("takes a followup with no turn in flight as a plain reply", () => {
+    const { result, chat } = renderRoom({ history: [], online: true });
+
+    act(() =>
+      chat.deliver({ type: "response", text: "Done, sir.", session_id: "s_9f2", followup: true }),
+    );
+
+    expect(kinds(result.current.items)).toEqual(["alfred"]);
+    expect(result.current.thinking).toBe(false);
+  });
+
   it("renders an error frame as an error row", () => {
     const { result, chat } = renderRoom({ history: [], online: true });
     act(() => result.current.sendText("Anything tomorrow?"));
@@ -503,6 +602,27 @@ describe("useRoom — what comes back", () => {
     expect(playWavBase64Mock).toHaveBeenCalledWith("UklGRg==");
   });
 
+  it("leaves a notification where its stamp puts it, with a turn in flight", () => {
+    // Only an Alfred reply is seated above the spinner; the rest of the thread
+    // stays in the order it happened.
+    const { result, chat } = renderRoom({ history: [], online: true });
+    act(() => result.current.sendText("Anything tomorrow?"));
+    vi.setSystemTime(new Date(NOW.getTime() + 3_000));
+
+    act(() =>
+      chat.deliver({
+        type: "notification",
+        title: "Bins go out tonight",
+        body: "Collection moved to Friday.",
+        urgency: "important",
+        notification_id: "ntf-5",
+        metadata: {},
+      }),
+    );
+
+    expect(kinds(result.current.items)).toEqual(["you", "thinking", "act"]);
+  });
+
   it("leaves a confirmation request to the Door", () => {
     const { result, chat } = renderRoom({ history: [], online: true });
 
@@ -591,6 +711,22 @@ describe("useRoom — silence", () => {
     act(() => void vi.advanceTimersByTime(2_000));
 
     expect(result.current.thinking).toBe(false);
+  });
+
+  it("keeps counting for the turn in flight when a followup lands", () => {
+    vi.useFakeTimers();
+    const { result, chat } = renderRoom({ history: [], online: true });
+
+    act(() => result.current.sendText("Anything tomorrow?"));
+    act(() => void vi.advanceTimersByTime(30_000));
+    act(() =>
+      chat.deliver({ type: "response", text: "Done, sir.", session_id: "s_9f2", followup: true }),
+    );
+    act(() => void vi.advanceTimersByTime(30_000));
+
+    expect(result.current.thinking).toBe(false);
+    const texts = result.current.items.flatMap((item) => (item.kind === "alfred" ? [item.text] : []));
+    expect(texts).toEqual(["Done, sir.", "No reply in 60 s."]);
   });
 
   it("cancels the timeout when the reply arrives in time", () => {

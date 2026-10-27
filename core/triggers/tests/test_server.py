@@ -100,6 +100,37 @@ def test_jsonrpc_shim(test_client: TestClient, mock_client: AsyncMock) -> None:
     mock_client.dispatch.assert_called_once()
 
 
+def test_jsonrpc_shim_answers_bad_arguments_as_invalid_params() -> None:
+    """A real client refuses bad arguments before the tool runs, naming every field."""
+    from core.triggers.feature import TriggerFeature, TriggerFeatureContext
+    from core.triggers.server import create_app
+    from core.triggers.store import TriggerStore
+    from sdk.alfred_sdk.client import AlfredClient
+
+    store = AsyncMock(spec_set=TriggerStore)
+    client = AlfredClient(service_name="trigger-engine")
+    (feature,) = client.discover_features_from_classes(
+        [TriggerFeature], ctx=TriggerFeatureContext(store=store)
+    )
+    assert isinstance(feature, TriggerFeature)
+    rpc_request: dict[str, Any] = {
+        "method": "triggers.create_trigger",
+        "params": {"name": "test", "conditions": "daily", "colour": "red"},
+        "id": "req-1",
+    }
+    response = TestClient(create_app(client=client, feature=feature)).post(
+        "/jsonrpc", json=rpc_request
+    )
+    assert response.status_code == 200
+    error = response.json()["error"]
+    assert error["code"] == -32602
+    message = error["message"]
+    assert message.startswith("Tool 'triggers.create_trigger' got invalid arguments: ")
+    for field in ("trigger_type:", "conditions:", "colour:"):
+        assert field in message
+    store.save.assert_not_awaited()
+
+
 def test_jsonrpc_shim_error(test_client: TestClient, mock_client: AsyncMock) -> None:
     """JSON-RPC shim returns error when dispatch raises."""
     mock_client.dispatch = AsyncMock(side_effect=KeyError("unknown"))

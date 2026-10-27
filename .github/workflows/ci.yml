@@ -21,7 +21,7 @@ jobs:
   python:
     uses: ./.github/workflows/python-ci.yml
     with:
-      mypy-targets: "alfredctl/ bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/"
+      mypy-targets: "alfred_cli/ alfredctl/ bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/"
 
   web:
     runs-on: ubuntu-latest
@@ -31,7 +31,7 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -58,7 +58,7 @@ jobs:
           git checkout -- public/sw.js
           exit "$status"
       - run: npm run build
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: web-dist
           path: web/dist
@@ -70,16 +70,77 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: web-dist
           path: web/dist
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.13"
           enable-cache: true
       - run: uv sync --all-extras
       - run: uv run pytest tests/core/channels/test_spa_ci.py -q
+
+  # The SDK installs into other services' environments, which resolve their own pydantic,
+  # so its tests also run against the oldest release sdk/pyproject.toml allows (#327). The
+  # floor is read from that file at run time. The root pyproject.toml repeats it, because the
+  # alfred package ships the SDK in-tree, so the step also fails if the root's floor is lower.
+  # Everything else is pinned from uv.lock. `--noconftest`: the root conftest imports
+  # `keyring`, which this venv does not install, and the SDK tests use none of its fixtures.
+  sdk-floor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          # setup-uv's cache key ignores the job, so without a suffix this small job would
+          # save under the key the full `uv sync` jobs restore from.
+          cache-suffix: sdk-floor
+      - name: SDK tests at the pydantic floor
+        # An explicit `shell: bash` runs with pipefail, so a failing `uv export` cannot leave
+        # a truncated pins file behind.
+        shell: bash
+        run: |
+          uv export --frozen --all-extras --no-hashes --no-emit-project --no-header --no-annotate \
+            | grep -vE '^(pydantic|pydantic-core)==' > "$RUNNER_TEMP/pins.txt"
+          packaging_pin=$(grep -E '^packaging==' "$RUNNER_TEMP/pins.txt")
+          floor=$(uv run --no-project --with "$packaging_pin" python - <<'EOF'
+          import tomllib
+
+          from packaging.requirements import Requirement
+          from packaging.utils import canonicalize_name
+          from packaging.version import Version
+
+
+          def pydantic_floor(path: str) -> Version:
+              with open(path, "rb") as f:
+                  deps = tomllib.load(f)["project"]["dependencies"]
+              floors = [
+                  Version(spec.version)
+                  for dep in deps
+                  if canonicalize_name((req := Requirement(dep)).name) == "pydantic"
+                  for spec in req.specifier
+                  if spec.operator == ">="
+              ]
+              if len(floors) != 1:
+                  raise SystemExit(f"{path}: expected one pydantic `>=` floor, got {deps}")
+              return floors[0]
+
+
+          sdk, root = pydantic_floor("sdk/pyproject.toml"), pydantic_floor("pyproject.toml")
+          if root < sdk:
+              raise SystemExit(f"pyproject.toml: pydantic>={root} is below the SDK's >={sdk}")
+          print(sdk)
+          EOF
+          )
+          echo "pydantic floor: $floor"
+          venv="$RUNNER_TEMP/sdk-floor"
+          uv venv --python 3.13 "$venv"
+          uv pip install --python "$venv/bin/python" -c "$RUNNER_TEMP/pins.txt" -e "sdk/[dev]" "pydantic==$floor"
+          "$venv/bin/python" -m pytest --noconftest -p no:cacheprovider sdk/ -q
 
   pr-title:
     runs-on: ubuntu-latest
@@ -128,7 +189,7 @@ jobs:
   gate:
     name: ci-ok
     if: always()
-    needs: [python, web, spa, pr-title, artifact-guard]
+    needs: [python, web, spa, sdk-floor, pr-title, artifact-guard]
     runs-on: ubuntu-latest
     steps:
       - name: All gates green?
@@ -141,7 +202,7 @@ jobs:
             exit 1
           fi
 
-  # A merge that only touches documentation (README tweak, a backlog ticket) carries no
+  # A merge that only touches documentation (README tweak, a spec edit) carries no
   # runtime change, so rebuilding the fat image and restarting the live container is pure
   # cost — it disrupts the user's home automation for zero effect. This job decides whether
   # the current push is docs-only.
@@ -258,7 +319,7 @@ jobs:
           path: home-service
 
       # The box's system Python is 3.14; a fresh checkout would otherwise default to it.
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.13"
           # Self-hosted: the runner's HOME is the real user's ~/.cache/uv, already

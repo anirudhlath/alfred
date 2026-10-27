@@ -1,4 +1,4 @@
-import { api, post, put } from "./api";
+import { api, apiWithHeaders, post, put } from "./api";
 import { dayLabel, finiteNumber, hhmm, isoMs, pastLabel, rateText, usd } from "./format";
 import type { Overview } from "./types";
 
@@ -306,25 +306,25 @@ function capOf(cost: Overview["cost"]): number | null {
 /**
  * What the cap *does*, which is the only reason a cap is on screen at all:
  * `core/conscious/engine.py` returns the System-1 fallback saying precisely
- * this when `is_budget_exceeded()`. Copy, not data — it needs no field and it
+ * this when the daily budget is exhausted. Copy, not data — it needs no field and it
  * is true of every house — so it is dropped only when there is no cap for it
  * to be about.
  *
- * The handoff's `resets 00:00` is deliberately *not* here: `core/conscious/
- * cost.py` rolls the day on `datetime.now(UTC)`, so the window resets at UTC
- * midnight and `00:00` is false for every household that is not on it.
+ * The handoff's `resets 00:00` is deliberately *not* here. It was false while
+ * the day rolled at UTC midnight; `shared/spend.py` now rolls it at the user's
+ * own midnight, so the line could come back.
  */
 const AT_THE_CAP = "at the cap, the conscious mind declines and says so";
 
 /**
  * `$1.42 of $5.00` — the spend card's own line, and the money in one place.
- * `$1.42 · no cap set` when there is nothing to measure against, and the
- * server's own silence when it reported no spend at all: a house that has
- * spent nothing today sends `cost: null`, which is a fact about the day rather
- * than a missing read.
+ * `$1.42 · no cap set` when there is nothing to measure against, and
+ * `spend unavailable` when there is no amount to show: a house that has spent
+ * nothing today sends zeros, so `cost: null` means the server could not read
+ * the counter (and an overview never read has no cost either).
  */
 export function spendHeadline(cost: Overview["cost"]): string {
-  if (cost === null) return "no spend recorded today";
+  if (cost === null) return "spend unavailable";
   const spend = usd(finiteNumber(cost.spend_usd) ?? 0);
   const cap = capOf(cost);
   return cap === null ? `$${spend} · no cap set` : `$${spend} of $${usd(cap)}`;
@@ -510,6 +510,12 @@ export interface HealthInput {
    * and only the first of those is a fact about the house.
    */
   registryRead: boolean;
+  /**
+   * That answer came back without the registry's services, because the server
+   * could not read the registry (`IntegrationListing.registryDown`). A missing
+   * home service is then no evidence of anything. Absent means a full answer.
+   */
+  registryDown?: boolean;
   /** The home service's probe; absent when the registry does not carry one. */
   home: ProbeState | undefined;
 }
@@ -519,10 +525,15 @@ export interface HealthInput {
  * reachable from a plain function call.
  *
  * Nothing on this grid claims anything before the read that would settle it: a
- * note is never more confident than the value beside it, and `not read yet` is
- * a different sentence from `not registered`.
+ * note is never more confident than the value beside it, and `not read yet` and
+ * `registry unavailable` are different sentences from `not registered`.
  */
-export function healthGrid({ overview, registryRead, home }: HealthInput): Health {
+export function healthGrid({
+  overview,
+  registryRead,
+  registryDown = false,
+  home,
+}: HealthInput): Health {
   const read = overview !== undefined;
   const connected = overview?.redis.connected === true;
   const streamCount = Object.keys(overview?.streams ?? {}).length;
@@ -553,7 +564,7 @@ export function healthGrid({ overview, registryRead, home }: HealthInput): Healt
       note: "event rate · 5-min mean",
       alive: streamCount > 0,
     },
-    home: homeCell(registryRead, home),
+    home: homeCell(registryRead, registryDown, home),
   };
 }
 
@@ -563,10 +574,17 @@ export function healthGrid({ overview, registryRead, home }: HealthInput): Healt
  * is up and answering in 210 ms would otherwise be reported by the state of its
  * keyring.
  */
-function homeCell(registryRead: boolean, home: ProbeState | undefined): HealthCell {
+function homeCell(
+  registryRead: boolean,
+  registryDown: boolean,
+  home: ProbeState | undefined,
+): HealthCell {
   if (!registryRead) return { value: "—", note: "home assistant · not read yet", alive: false };
   if (home === undefined) {
-    return { value: "—", note: "home assistant · not registered", alive: false };
+    // A listing the server answered without the registry has no services in it
+    // at all, so the home service's absence says nothing about the house.
+    const note = registryDown ? "registry unavailable" : "not registered";
+    return { value: "—", note: `home assistant · ${note}`, alive: false };
   }
   if (home.isPending) return { value: "—", note: "home assistant · testing", alive: false };
   // No latency on this branch: the number react-query is still holding belongs
@@ -716,9 +734,39 @@ export function mintPairingCode(signal?: AbortSignal): Promise<{ code: string; e
 }
 
 /**
+ * The header `GET /api/integrations` sets, to `TOOL_REGISTRY_UNAVAILABLE`, when
+ * it answered without the registry's services because it could not read the
+ * registry. Restated from `_TOOL_REGISTRY_HEADER` and `_TOOL_REGISTRY_UNAVAILABLE`
+ * in `core/channels/web_server.py`; a complete listing never carries it.
+ */
+export const TOOL_REGISTRY_HEADER = "X-Tool-Registry";
+export const TOOL_REGISTRY_UNAVAILABLE = "unavailable";
+
+/**
+ * What Connected services says over a listing that came back without the
+ * registry: the rows under it are the adapters alone, and the services that
+ * register with Alfred are missing rather than gone. The first half is the
+ * server's own 503 detail for the same outage on the per-name routes.
+ */
+export const REGISTRY_DOWN_NOTE =
+  "Tool registry unavailable · registered services are missing from this list";
+
+/** `GET /api/integrations`, and whether the server could read the registry for it. */
+export interface IntegrationListing {
+  entries: Integration[];
+  /**
+   * The answer is the adapters alone because the registry could not be read.
+   * Without it a degraded listing is the same body as a house with no services.
+   */
+  registryDown: boolean;
+}
+
+/**
  * `GET /api/integrations` — a **bare array**, not an envelope. The one endpoint
  * on this bench that answers that way (`core/channels/web_server.py`), so the
- * unwrap every neighbour does would read `undefined` here.
+ * unwrap every neighbour does would read `undefined` here. Which is also why
+ * the registry outage rides in a header: an envelope would break every reader
+ * of the array.
  *
  * The array is checked rather than asserted, which is what `body.x ?? []` does
  * for the four neighbours. Without it a 200 carrying a JSON *object* — an error
@@ -727,9 +775,17 @@ export function mintPairingCode(signal?: AbortSignal): Promise<{ code: string; e
  * takes the whole Workshop with it. `null` and a 204 were always safe; this is
  * the case that was not.
  */
+export async function fetchIntegrationListing(): Promise<IntegrationListing> {
+  const { body, headers } = await apiWithHeaders<Integration[] | null>("/api/integrations");
+  return {
+    entries: Array.isArray(body) ? body : [],
+    registryDown: headers.get(TOOL_REGISTRY_HEADER) === TOOL_REGISTRY_UNAVAILABLE,
+  };
+}
+
+/** The listing's entries alone, for the setup gate, which reads nothing else. */
 export async function fetchIntegrations(): Promise<Integration[]> {
-  const body = await api<Integration[] | null>("/api/integrations");
-  return Array.isArray(body) ? body : [];
+  return (await fetchIntegrationListing()).entries;
 }
 
 /**
@@ -807,6 +863,10 @@ export function putAttention(
  * `POST /api/admin/dnd` — a direct write, unlike the trigger controls: the route
  * sets or deletes the Redis key itself and answers with the state. The switch
  * may move on this, once a read has confirmed it.
+ *
+ * A clear that deleted a live key also queues a drain of what quiet held back,
+ * so turning it off sends the queue — the promise the Quiet section's no-expiry
+ * line makes. Queued, as `drainDeferred` is: the answer does not wait for it.
  *
  * `until` is omitted rather than sent as null, so "clear it" and "on, with no
  * expiry" are one rule: the key is only ever present when there is an instant to

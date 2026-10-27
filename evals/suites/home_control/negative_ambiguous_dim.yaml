@@ -1,0 +1,11 @@
+id: home_control.negative.ambiguous_dim
+prd: [4.4.lights-scenes]
+status: shipped
+tags: [negative]
+steps:
+  - user: "Dim it a bit."
+expect:
+  - ha_not_called: {}
+  - judge:
+      category: answered
+      rubric: "Does the reply ask which light the user means instead of acting?"

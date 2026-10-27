@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from core.librarian.consolidator import Librarian
 from core.memory.schemas import SignificanceScore
+from tests.llm_fakes import Script
 
 
 def _make_scorer_mock() -> AsyncMock:
@@ -19,7 +19,7 @@ def _make_scorer_mock() -> AsyncMock:
     return scorer
 
 
-def _make_librarian(*, api_key: str = "test-key") -> Librarian:
+def _make_librarian(*, script: Script | None = None) -> Librarian:
     context_index = AsyncMock()
     context_index.reindex_semantic_files = AsyncMock()
     return Librarian(
@@ -28,14 +28,13 @@ def _make_librarian(*, api_key: str = "test-key") -> Librarian:
         routine_store=MagicMock(),
         significance_scorer=_make_scorer_mock(),
         context_index=context_index,
-        claude_api_key=api_key,
+        model=script.model if script else None,
     )
 
 
 @pytest.mark.asyncio
 async def test_batch_extraction_single_llm_call() -> None:
     """Multiple scratchpad lines should produce exactly ONE LLM call."""
-    librarian = _make_librarian()
     lines = [
         "2026-03-19T10:00:00Z [reflex] home.turn_on_light({entity: light.living_room}) -> ok",
         "2026-03-19T10:05:00Z [reflex] home.set_temperature({entity: climate.main}) -> ok",
@@ -59,24 +58,22 @@ async def test_batch_extraction_single_llm_call() -> None:
             "semantic_key": "Good morning greeting",
         },
     ]
-    mock_response = AsyncMock()
-    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(llm_payload)))]
-    mock_response.usage = AsyncMock(prompt_tokens=200, completion_tokens=50)
+    script = Script(llm_payload)
+    librarian = _make_librarian(script=script)
 
-    with patch("litellm.acompletion", return_value=mock_response) as mock_llm:
-        pairs = await librarian._extract_episodic_entries(lines)
+    pairs = await librarian._extract_episodic_entries(lines)
 
     # Exactly ONE LLM call for all 3 lines
-    assert mock_llm.call_count == 1
+    assert script.call_count == 1
     assert len(pairs) == 3
     entry, _ = pairs[0]
     assert "light.living_room" in entry.entities
 
 
 @pytest.mark.asyncio
-async def test_batch_extraction_no_api_key() -> None:
-    """Without API key, entities should be empty (no LLM call)."""
-    lib = _make_librarian(api_key="")
+async def test_batch_extraction_without_a_model() -> None:
+    """Without a model, entities should be empty (no LLM call)."""
+    lib = _make_librarian()
     lines = ["2026-03-19T10:00:00Z [reflex] action -> result"]
     pairs = await lib._extract_episodic_entries(lines)
     assert len(pairs) == 1

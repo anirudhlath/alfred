@@ -236,6 +236,33 @@ async def _drive_conscious(
         conscious_main._shutdown.clear()
 
 
+async def test_conscious_gives_deliberate_recall_the_cold_archive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """memory_recall_memories searches through this index. Without the cold store it
+    cannot recall anything the Librarian's decay pass has moved there."""
+    import core.conscious.__main__ as conscious_main
+
+    monkeypatch.setenv("ALFRED_DATA_DIR", str(tmp_path))
+    built: dict[str, Any] = {}
+    real_index, real_cold = conscious_main.ContextIndexManager, conscious_main.SqliteVecStore
+
+    def _index(*args: Any, **kwargs: Any) -> Any:
+        built["archive"] = kwargs.get("archive")
+        return real_index(*args, **kwargs)
+
+    def _cold(*args: Any, **kwargs: Any) -> Any:
+        built["cold"] = real_cold(*args, **kwargs)
+        return built["cold"]
+
+    monkeypatch.setattr(conscious_main, "ContextIndexManager", _index)
+    monkeypatch.setattr(conscious_main, "SqliteVecStore", _cold)
+
+    await _drive_conscious(monkeypatch, FakeRedis(), CountingProvider())
+
+    assert built["archive"] is built["cold"]
+
+
 async def test_conscious_closes_the_embedding_provider(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -168,6 +168,7 @@ export function Room() {
         now={door.now}
         onClose={door.close}
         onConfirm={door.confirm}
+        onDeny={door.deny}
       />
     </main>
   );

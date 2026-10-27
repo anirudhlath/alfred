@@ -31,7 +31,7 @@ flowchart TB
         subgraph C["alfred container — one fat OCI image"]
             tini["tini (PID 1)"]
             runner["runner supervisor<br/>(ALFRED_MANAGE_INFRA=1)"]
-            redis["redis-stack-server :6379"]
+            redis["redis-server + RediSearch :6379"]
             mqtt["mosquitto :1883"]
             core["bridge · reflex · triggers ·<br/>conscious · channels · memory-ingestor"]
             home["home-service :8000"]
@@ -70,7 +70,13 @@ Inside the final stage:
   `mosquitto-clients` (MQTT broker + CLI for smoke checks), `libgomp1` (RediSearch's
   OpenMP runtime dependency)
 - **Redis** — `redis-server`/`redis-cli` binaries + `/usr/local/lib/redis/modules/*.so`
-  copied from the `redis` stage
+  copied from the `redis` stage. With no `redis-stack-server` on `PATH`, the runner
+  (`runner/__main__.py:_redis_command`) starts `redis-server --loadmodule …` from
+  `ALFRED_REDIS_MODULES_DIR` (default `/usr/local/lib/redis/modules`). `redisearch.so` is
+  required — vector memory's `FT.*` commands are RediSearch — and without it the runner
+  exits 1 before launching anything ([Troubleshooting](#runner-exits-at-startup-redis-refusing-to-start-redis-server-without-redisearchso)).
+  `rejson.so` is loaded when present but optional: nothing issues a `JSON.*` command (the
+  context index is `ON HASH`)
 - **Python deps** — `alfred[voice,memory,integrations]` and home-service's own
   `pyproject.toml` deps, installed via `uv pip install --system` in a cache-friendly
   layer *before* source is copied (deps rarely change; source changes every commit)
@@ -132,9 +138,32 @@ behavior:
 **Honest gap:** `seed` mode does not yet load dummy fixture data (a sample HA snapshot,
 sample user, sample memories) — it currently behaves identically to `ephemeral`. Fixture
 loading is deferred; see
-[`docs/backlog/medium/seed-mode-fixtures-pack.md`](backlog/medium/seed-mode-fixtures-pack.md).
+[#233](https://github.com/anirudhlath/alfred/issues/233).
 `alfredctl smoke` uses `--mode seed` purely because it needs a throwaway `/data`, not
 because fixtures exist yet.
+
+**Eval mode.** `alfredctl up --eval --persist DIR` starts a throwaway stack named
+`alfred-eval-<branch>` for `alfred evals` (docs/evals.md), apart from this branch's own
+`alfred-<branch>` container and from the deployed `alfred`. It runs `persistent` mode on
+the harness's `DIR` and supports Docker and Podman only.
+
+- It publishes 8081 and Redis (6379) on random `127.0.0.1` ports, never on the LAN, so it
+  cannot clash with a stack already on 8081. `up` prints the web URL it got; read either
+  port with `docker port alfred-eval-<branch> 8081/tcp` (or `6379/tcp`). `--expose-ha` and
+  `--expose-home` are refused, because they would publish on every interface, and so is a
+  `--port` other than the default, because the port is chosen at start.
+- It never reads `.env` and skips the doctor preflight that reads it. The secrets
+  passphrase is a fixed fake one, `alfred-eval-not-a-secret`, and is never written to
+  `DIR`. Settings reach it through `--env`; the one host value it inherits is `HF_TOKEN`,
+  which `up` forwards in every mode.
+- It sets `ALFRED_EVAL=1`. Redis then listens on the container interface with protected
+  mode off and no persistence, which is how the published port reaches it. It also sets
+  `DAILY_COST_CAP_USD=1000000`. A vLLM response costs $0, but a run against a paid model,
+  or one the price registry does not know (charged the fallback rate), would otherwise
+  trip the $5 cap mid-run. `--env` overrides either value.
+- `ALFRED_HOME_SERVICE_DIR` picks which home-service checkout a build copies, in place of
+  the sibling `../home-service`. The harness sets it to pin the version production runs. A
+  path that does not exist is an error, never a clone.
 
 ## 5. Models — cached volume, not baked
 
@@ -157,16 +186,12 @@ and never re-download gigabytes on teardown:
 - `alfredctl up --models <path>` overrides the general model volume itself (default
   `~/.cache/alfred/models`, shared across all worktrees/branches on the host).
 - **`HF_TOKEN`** — only needed for a *gated* `EMBEDDING_MODEL`. The default
-  (`sentence-transformers/all-MiniLM-L6-v2`) is ungated and downloads with no token;
+  (`BAAI/bge-m3`) is ungated and downloads with no token;
   point `EMBEDDING_MODEL` at a gated model such as `google/embeddinggemma-300m` and the
   first download of a memory-enabled service fails with an HF access error unless
   `alfredctl` can pass a `HF_TOKEN` through from your host environment. With
   `EMBEDDING_BACKEND=openai` no embedding weights are downloaded into the container at
   all — the external server holds the model, and `HF_TOKEN` is irrelevant to embeddings.
-  See
-  [`docs/backlog/high/embedding-model-gated-first-run.md`](backlog/high/embedding-model-gated-first-run.md)
-  (that ticket also tracks evaluating a non-gated default, which would remove this
-  friction entirely).
 - `HF_HUB_OFFLINE` is **not** forced — models must be reachable on first boot; once the
   cache is warm, subsequent boots are offline-capable.
 
@@ -202,7 +227,7 @@ instead of raising — that path is for throwaway dev only, never a real deploym
 
 Storing the generated passphrase as a plaintext file next to your data dir is a known
 trade-off, not the end state — see
-[`docs/backlog/low/secrets-passphrase-host-keychain.md`](backlog/low/secrets-passphrase-host-keychain.md).
+[#213](https://github.com/anirudhlath/alfred/issues/213).
 
 ## 7. Trusted networks
 
@@ -265,12 +290,19 @@ uv run alfredctl <command> [options]
 |---|---|---|
 | `doctor` | `--online/--offline` (default online) | Validates `.env` + prerequisites and prints a pass/warn/fail preflight table; live-probes OpenRouter/HA/inference unless `--offline`. Exits non-zero on any hard failure |
 | `build` | `--runtime docker\|container\|podman`, `--tag TEXT` (default `alfred:<branch-slug>`) | Stages the git-tracked context (auto-cloning the `home-service` sibling if absent) and builds the image |
-| `up` | `--runtime`, `--mode persistent\|ephemeral\|seed` (default `persistent`), `--persist PATH`, `--models PATH`, `--hf-cache PATH`, `--expose-ha`, `--expose-home`, `--port INT` (default 8081), `--env/-e KEY=VALUE` (repeatable), `--build/--no-build` (default: build) | Prints an offline preflight, builds (unless `--no-build`), removes any existing container of the same name, starts the container, prints the reachable URL |
+| `up` | `--runtime`, `--mode persistent\|ephemeral\|seed` (default `persistent`), `--persist PATH`, `--models PATH`, `--hf-cache PATH`, `--expose-ha`, `--expose-home`, `--port INT` (default 8081), `--env/-e KEY=VALUE` (repeatable), `--build/--no-build` (default: build), `--eval` (see "Eval mode" in section 4) | Prints an offline preflight, builds (unless `--no-build`), removes any existing container of the same name, starts the container, prints the reachable URL |
 | `down` | `--runtime` | Stops and removes this branch's container |
 | `logs` | `--runtime`, `--follow/-f` | Streams container logs |
 | `shell` | `--runtime` | `exec -it <container> bash` |
 | `urls` | `--runtime`, `--port INT` | Prints the reachable URL without starting/stopping anything |
 | `smoke` | `--runtime`, `--keep`, `--attach`, `--name TEXT` (requires `--attach`), `--hf-cache PATH`, `--timeout FLOAT` (default 300s), `--deep` | Boots `seed` mode (unless `--attach`, which checks an already-running container instead), runs the check suite below, tears down unless `--keep`/`--attach`; exits non-zero on any failure. `--deep` adds an end-to-end System 2 round-trip check. `--name` overrides which container is checked (default `alfred-<branch>`) |
+
+`build`, `up`, `down` and `smoke` print each runtime command before running it
+(`$ docker run --detach --name alfred-<branch> …`), so a run can be replayed by hand. The
+echoed line is redacted (`alfredctl/redact.py`, the same helper `doctor` uses): every
+`-e KEY=value` prints as `-e KEY=***` whatever the key, and a URL's credentials print as
+`***@host`. Flags, volumes, container name and image are shown as they are; fill the
+values back in to replay. The command the runtime receives is never altered.
 
 ### Worktree/branch isolation
 
@@ -468,6 +500,27 @@ raw `docker build`. Clone the sibling yourself in that case:
 git clone https://github.com/anirudhlath/alfred-home-service ../home-service
 ```
 
+### Runner exits at startup: `[redis] refusing to start redis-server without redisearch.so`
+
+**Symptom:** the container exits with status 1 seconds after starting, before any
+service starts. The runner's `[redis]` error names `ALFRED_REDIS_MODULES_DIR` and says
+what it found there (`it holds no .so files`, `the directory does not exist`, or the
+modules it did find).
+
+**Cause:** `redis-stack-server` is not on `PATH` (it never is in the image), so the
+runner starts plain `redis-server` and loads RediSearch from `ALFRED_REDIS_MODULES_DIR`
+— and `redisearch.so` is not there. That happens with an image whose `COPY --from=redis
+/usr/local/lib/redis/modules/` step was dropped or changed, or a hand-rolled
+`ALFRED_MANAGE_INFRA=1` environment whose modules live somewhere else. The runner
+refuses rather than start a Redis without its query engine: that Redis would answer
+`PING`, pass the readiness gate, and leave memory to fail later with `unknown command
+'FT.SEARCH'`.
+
+**Fix:** rebuild the image (`uv run alfredctl build`), or set `ALFRED_REDIS_MODULES_DIR`
+to the directory holding `redisearch.so` (and `rejson.so`, optional). Native dev never
+hits this — with `redis-stack-server` on `PATH`, the runner starts that and ignores the
+variable.
+
 ### `alfredctl smoke` health check times out
 
 The image's `HEALTHCHECK`/the `smoke` health poll allow up to 300s (`--timeout`) because
@@ -506,7 +559,7 @@ the proxy's address belongs in `FORWARDED_ALLOW_IPS`, never in
 
 - `seed` mode fixture loading (dummy HA snapshot, sample user, sample memories) — Section 4
 - Publishing prebuilt multi-arch images to a registry (build-from-source only today) —
-  [`docs/backlog/low/registry-publish-images.md`](backlog/low/registry-publish-images.md)
+  [#211](https://github.com/anirudhlath/alfred/issues/211)
 - Host-keychain-backed secrets passphrase instead of a plaintext file — Section 6,
-  [`docs/backlog/low/secrets-passphrase-host-keychain.md`](backlog/low/secrets-passphrase-host-keychain.md)
-- CPU-only PyTorch index to shrink the image — [`docs/backlog/medium/cpu-only-torch-index.md`](backlog/medium/cpu-only-torch-index.md)
+  [#213](https://github.com/anirudhlath/alfred/issues/213)
+- CPU-only PyTorch index to shrink the image — [#220](https://github.com/anirudhlath/alfred/issues/220)

@@ -24,6 +24,32 @@ function uid(prefix: string): string {
 
 type YouItem = Extract<TimelineItem, { kind: "you" }>;
 
+/** A turn in flight: it stands for something that has not come back yet. */
+function isTransient(item: TimelineItem): boolean {
+  return item.kind === "thinking" || item.kind === "transcribing";
+}
+
+/**
+ * A row is stamped when it is made, and a turn's transient row when the turn
+ * went out — so a follow-up, which lands while that turn still waits, sorts
+ * below the spinner it has nothing to do with. Lift each Alfred row above the
+ * run of transient rows directly over it, and no further: never past a message
+ * or a notification. Everything else keeps the place its stamp gives.
+ */
+function liftRepliesAboveTransients(sorted: TimelineItem[]): TimelineItem[] {
+  const out: TimelineItem[] = [];
+  for (const item of sorted) {
+    if (item.kind !== "alfred") {
+      out.push(item);
+      continue;
+    }
+    let at = out.length;
+    while (at > 0 && isTransient(out[at - 1])) at -= 1;
+    out.splice(at, 0, item);
+  }
+  return out;
+}
+
 function isUnsent(item: TimelineItem): item is YouItem {
   return item.kind === "you" && item.state === "unsent";
 }
@@ -277,18 +303,23 @@ export function useRoom({
       const iso = at.toISOString();
 
       if (msg.type === "response") {
+        const reply: TimelineItem = {
+          kind: "alfred",
+          id: uid("alfred"),
+          at: iso,
+          text: msg.text,
+          mood: msg.mood,
+          actions: msg.actions_taken ?? [],
+        };
         setLive((current) => [
           // Both transients go: a failed transcription answers with a `response`
           // and never a `transcription`, so this is the only thing that clears it.
-          ...current.filter((item) => item.kind !== "thinking" && item.kind !== "transcribing"),
-          {
-            kind: "alfred",
-            id: uid("alfred"),
-            at: iso,
-            text: msg.text,
-            mood: msg.mood,
-            actions: msg.actions_taken ?? [],
-          },
+          // Unless it is a follow-up — a late answer, or the reply to a run
+          // approved or declined from the Door. It answers no turn this socket
+          // is waiting on, so whatever is still in flight keeps its row, and
+          // its countdown. `items` seats the reply above those rows.
+          ...(msg.followup ? current : current.filter((item) => !isTransient(item))),
+          reply,
         ]);
         if (msg.audio) playWavBase64(msg.audio);
         return;
@@ -296,7 +327,7 @@ export function useRoom({
 
       if (msg.type === "error") {
         setLive((current) => [
-          ...current.filter((item) => item.kind !== "thinking" && item.kind !== "transcribing"),
+          ...current.filter((item) => !isTransient(item)),
           { kind: "alfred", id: uid("alfred"), at: iso, text: msg.text, actions: [], error: true },
         ]);
         return;
@@ -371,7 +402,7 @@ export function useRoom({
       ...(tombstones ?? []),
       ...live,
     ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-    return withDividers(merged, now, idleMs);
+    return withDividers(liftRepliesAboveTransients(merged), now, idleMs);
   }, [history, tombstones, live, now, idleMs]);
 
   return { items, thinking: thinkingAt !== null, sendText, sendAudio };

@@ -1,6 +1,6 @@
 ## What & why
 
-<!-- Link the backlog ticket / issue. -->
+<!-- Link the issue: `Closes #N` if this PR finishes it, `Refs #N` if it doesn't. -->
 
 ## Checklist
 

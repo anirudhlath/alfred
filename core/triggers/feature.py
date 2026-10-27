@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -11,7 +12,7 @@ from core.notifications.schema import Urgency
 from core.triggers.models import ActionPayload
 from core.triggers.registry import TriggerRegistry
 from sdk.alfred_sdk.feature import BaseFeature, ToolMeta, tool
-from shared.streams import EVENTS_STREAM
+from shared.streams import EVENTS_MAXLEN, EVENTS_STREAM
 from shared.usertime import get_user_timezone
 
 if TYPE_CHECKING:
@@ -64,6 +65,13 @@ class TriggerFeature(BaseFeature):
             "Sets notification urgency when trigger fires without an action. "
             "Default: informational."
         )
+        timing_docs = (
+            '\n\nTiming (type "time"): for a relative time ("in 20 minutes", "in 2 hours") '
+            "pass run_in_seconds (e.g. 1200) and let the server do the arithmetic — never "
+            'compute a run_at for one. For a wall-clock time ("at 3pm") pass run_at in '
+            "ISO-8601 WITH the user's current UTC offset (e.g. 2026-07-16T15:00:00-06:00), "
+            "read from the Current Time section. Never pass both."
+        )
 
         enriched: list[ToolMeta] = []
         for t in tools:
@@ -71,12 +79,16 @@ class TriggerFeature(BaseFeature):
                 continue
             if "create_trigger" in t.name:
                 enriched.append(
-                    ToolMeta(
-                        name=t.name,
+                    dataclasses.replace(
+                        t,
                         description=(
-                            t.description + "\n\n" + conditions_docs + action_docs + urgency_docs
+                            t.description
+                            + "\n\n"
+                            + conditions_docs
+                            + action_docs
+                            + urgency_docs
+                            + timing_docs
                         ),
-                        parameters=t.parameters,
                     )
                 )
             else:
@@ -143,17 +155,22 @@ class TriggerFeature(BaseFeature):
                 one_shot=one_shot,
                 urgency=validated_urgency.value,
             )
-            await self._redis.xadd(EVENTS_STREAM, {"event": event.model_dump_json()})
+            await self._redis.xadd(
+                EVENTS_STREAM,
+                {"event": event.model_dump_json()},
+                maxlen=EVENTS_MAXLEN,
+                approximate=True,
+            )
 
         return trigger.model_dump(mode="json")
 
-    @tool
+    @tool(risk="elevated")
     async def list_triggers(self, enabled_only: bool = True) -> list[dict[str, Any]]:
         """List all triggers."""
         triggers = await self._store_or_raise.list_all(enabled_only=enabled_only)
         return [t.model_dump(mode="json") for t in triggers]
 
-    @tool
+    @tool(risk="elevated")
     async def update_trigger(
         self,
         trigger_id: str,
@@ -200,13 +217,13 @@ class TriggerFeature(BaseFeature):
         await self._store_or_raise.save(updated)
         return updated.model_dump(mode="json")
 
-    @tool
+    @tool(risk="elevated")
     async def delete_trigger(self, trigger_id: str) -> dict[str, str]:
         """Delete a trigger by ID."""
         await self._store_or_raise.delete(trigger_id)
         return {"status": "deleted", "trigger_id": trigger_id}
 
-    @tool
+    @tool(risk="elevated")
     async def toggle_trigger(self, trigger_id: str, enabled: bool) -> dict[str, Any]:
         """Enable or disable a trigger."""
         target = await self._store_or_raise.get(trigger_id)

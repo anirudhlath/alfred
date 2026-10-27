@@ -20,10 +20,18 @@ from core.memory.redis_vector_store import RedisVectorStore
 from core.memory.routines.store import RoutineStore
 from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
+from core.notifications.dispatcher import NotificationDispatcher
+from core.notifications.dnd import DNDChecker
+from core.notifications.publisher import NotificationPublisher
 from core.shutdown import teardown
-from shared.config import AlfredConfig
+from shared.agents import resolve_model
+from shared.config import AlfredConfig, apply_model_env
 from shared.logging import configure_logging
+from shared.otel import init_tracing
+from shared.prompts.store import PromptStore
 from shared.redis_streams import create_redis
+from shared.spend import build_spend_limits, local_clock
+from shared.usertime import last_user_timezone
 
 if TYPE_CHECKING:
     from shared.types import AioRedis
@@ -32,8 +40,15 @@ if TYPE_CHECKING:
 async def run() -> None:
     log = configure_logging(service="librarian")
     config = AlfredConfig.from_env()
+    apply_model_env(config)
+    init_tracing(
+        service_name="librarian",
+        endpoint=config.otel_endpoint if config.signoz_enabled else None,
+    )
 
     r: AioRedis = create_redis(config.redis_url)
+    prompts = PromptStore.from_config(config, redis=r)
+    log.info("Prompts: {}", prompts.describe())
 
     embedder = None
     context_index = None
@@ -75,8 +90,27 @@ async def run() -> None:
             routine_store=RoutineStore(),
             significance_scorer=scorer,
             context_index=context_index,
-            claude_api_key=config.claude_api_key,
-            claude_model=config.claude_model,
+            model=resolve_model("LIBRARIAN_MODEL", config.librarian_model),
+            timeout_s=config.system2_timeout_s,
+            # The budget every process shares; the pass reads the user's zone first.
+            spend=build_spend_limits(
+                r, cap_usd=config.daily_cost_cap_usd, clock=local_clock(last_user_timezone)
+            ),
+            # The 80% alert is URGENT, so DND (and the calendar it would consult) never
+            # holds it back.
+            notifier=NotificationPublisher(
+                NotificationDispatcher(redis=r, dnd_checker=DNDChecker(r, calendar_adapter=None))
+            ),
+            prompts=prompts,
+            conflict_min_observations=config.conflict_min_observations,
+            conflict_min_days=config.conflict_min_days,
+            decay_migration_threshold=config.decay_migration_threshold,
+            pattern_min_occurrences=config.pattern_min_occurrences,
+            pattern_min_days=config.pattern_min_days,
+            pattern_confidence_threshold=config.pattern_confidence_threshold,
+            routine_decay_per_cycle=config.routine_decay_per_cycle,
+            routine_archive_threshold=config.routine_archive_threshold,
+            routine_suggestion_cooldown_hours=config.routine_suggestion_cooldown_hours,
         )
         result = await librarian.consolidate()
         log.info("Librarian finished: %s", result)
@@ -86,6 +120,7 @@ async def run() -> None:
         await teardown(
             closers={
                 "embedding provider": embedder.aclose if embedder is not None else None,
+                "prompt store": prompts.aclose,
                 "redis": r.aclose,
             }
         )

@@ -3,16 +3,18 @@
 Publishable Python package. The ONLY coupling between Alfred and external apps.
 
 - Must work standalone — no imports from alfred core, bus, or domains
-- Keep dependencies minimal: only `pydantic>=2.0` and `redis>=5.0` (telemetry optional)
+- Keep dependencies minimal: only `pydantic>=2.11` and `redis>=5.0` (telemetry optional)
+- `pydantic>=2.11` is the floor ([#327](https://github.com/anirudhlath/alfred/issues/327)) because 2.11.0 is the oldest release the SDK's tests pass on: 2.10 leaves `additionalProperties: true` off a `dict[str, Any]` schema, 2.8–2.9 also drop a dict's key constraints (`propertyNames`) without a warning, and nothing older has Python 3.13 wheels. CI's `sdk-floor` job runs the `sdk/` tests at whatever floor `sdk/pyproject.toml` states. The root `pyproject.toml` repeats the floor (the alfred package ships the SDK in-tree), and the same job fails if the root's is lower
 - Not published to PyPI — container builds install from source path
 
 ## Files
 
-- `alfred_sdk/__init__.py` — Core exports: `AlfredClient`, `BaseFeature`, `tool`, telemetry decorators
+- `alfred_sdk/__init__.py` — Core exports: `AlfredClient`, `BaseFeature`, `tool`, `ToolArgumentError`, telemetry decorators
 - `alfred_sdk/feature.py` — `BaseFeature` class, `@tool` decorator, Google docstring parser, manifest builders
 - `alfred_sdk/client.py` — `AlfredClient`: discovery, dispatch, registration (Redis HSET)
 - `alfred_sdk/events.py` — Standalone wire-compatible event schemas (mirrors `bus/schemas/events.py`)
-- `alfred_sdk/context.py` — `ContextSnapshot`, `ContextEntry`, `ContextProvider` protocol
+- `alfred_sdk/context.py` — `ContextSnapshot`, `ContextEntry` (the shape live state is read in)
+- `alfred_sdk/live_state.py` — live-state contract: key, `LiveStateEntry`, `LiveStateWriter` (5 s timeouts, FIFO lock, atomic replace), `read_live_state()`
 - `alfred_sdk/telemetry.py` — In-memory decorators: `@track_latency`, `@track_tokens`, `@track_event`
 
 ## Key Patterns
@@ -20,11 +22,10 @@ Publishable Python package. The ONLY coupling between Alfred and external apps.
 - `BaseFeature` + `@tool` is the ONLY way to define tools — auto-extracts metadata from docstrings + type hints
 - `@tool` supports `@tool` and `@tool(name="custom.name", description="...")` — qualified as `{feature_name}.{method_name}` by default
 - `AlfredClient.discover_features(package="my_app.features")` scans for `BaseFeature` subclasses, instantiates, populates dispatch table
-- `client.register()` → `HSET alfred:tool_registry` + context write with 10min TTL
+- `client.register()` → `HSET alfred:tool_registry`, then a capped `XADD` of a `ServiceRegistered` event to `alfred:events` — no state. The stream name and cap are duplicated as `AlfredClient.EVENTS_STREAM` and `AlfredClient.EVENTS_MAXLEN` (copies of `shared.streams`'s) — SDK stays standalone
 - `client.unregister()` → `HDEL alfred:tool_registry` on graceful shutdown
 - `client.dispatch("feature.tool_name", params)` routes to bound method (async + sync supported)
 - `AlfredClient(credentials_schema=CredentialSchema(...), credentials_endpoint="http://host:port/credentials")` declares credential needs; core pushes stored values to that endpoint on every `register()`
-- `client.register()` also publishes a `ServiceRegistered` event to `alfred:events` (constant duplicated as `AlfredClient.EVENTS_STREAM` — SDK stays standalone)
 - `@tool(audience="reflex"|"conscious", risk="benign"|"elevated"|"critical")` — defaults `conscious`/`benign`; carried into `ToolManifest`
 
 ## Testing
@@ -40,6 +41,7 @@ pytest sdk/tests/                 # integration tests (schema compatibility)
 - `events.py` are standalone copies of `bus/schemas/events.py` — `test_schema_compatibility.py` verifies round-trip serialization; must pass after any schema changes
 - Never put `conftest.py` in `tests/` — causes namespace collision with `sdk/tests/` (both have `__init__.py`). Use root `conftest.py` for repo-wide fixtures.
 - Tool name collisions: last registration wins, logged as warnings
-- Context key `alfred:context:{service-name}` expires in 600s (10min) — long-running services need periodic re-registration
-- Complex type hints stored as `str()` representation in manifests (e.g., `dict[str, Any]`)
-- `client.py`'s two `redis.asyncio.from_url()` calls keep redis-py defaults (including the redis-py 8 `socket_timeout=5s`) — the SDK only issues short non-blocking commands (hset/xadd/hdel/set), so a 5s read timeout is acceptable/desirable for startup calls. Blocking stream reads belong in core via `shared.redis_streams.create_redis` (SDK cannot import `shared`).
+- **Deploy order for a manifest change: core first, services repin after.** Core reads both an old manifest (legacy `parameters` only — `legacy_input_schema()` in `core/reflex/tool_registry.py` derives its schema) and a current one (`input_schema` only). Reflex in a core older than [#325](https://github.com/anirudhlath/alfred/issues/325) renders a tool without `parameters` with no arguments (a core older than [#300](https://github.com/anirudhlath/alfred/issues/300) offers System 2 none either), so a service on this SDK must not register against it
+- `dispatch()`/`dispatch_sync()` validate a `@tool`'s arguments (lax mode) against `ToolMeta.arguments_model` — the same signature model `input_schema` is generated from, kept off the wire (not compared, not in `ToolManifest`) — and pass only the supplied arguments, coerced, so omitted ones take the method's own defaults, as does a `null` for a defaulted parameter whose type refuses `None`; a missing, invalid or unexpected argument raises `ToolArgumentError` (a `ValueError`, naming the tool and every field, copy- and pickle-safe) before the tool runs. `dataclasses.replace` keeps the model, so after a `parameters`/`input_schema` replace dispatch still validates against the signature, not the new schema; a hand-built `ToolMeta` has none (`**kwargs` tools), so it is called with the raw params as before
+- Each tool's `input_schema` (one JSON Schema, generated by Pydantic from the signature, `title` keywords stripped) is what models see; `Annotated[..., Field(...)]` keeps its constraints and description there. `ToolParameter.type` is the legacy name string (`str()` of complex hints, `Annotated` unwrapped) and `ToolParameter.default` the schema's JSON default (None when Pydantic leaves it out, e.g. a sentinel), both on `ToolMeta.parameters` only — the authoring form, never sent: `ToolManifest` carries `input_schema` alone since [#325](https://github.com/anirudhlath/alfred/issues/325). `*args`/`**kwargs`/positional-only parameters, unresolvable hints, types Pydantic cannot describe in full (a union it would narrow, a model left not fully defined), a parameter without a default hidden by `SkipJsonSchema`, and a default set through a pydantic `Field` (`= Field(5)`, or `default`/`default_factory` in `Annotated`, which a call never applies — write `x: Annotated[int, Field(ge=0)] = 5`) raise `TypeError` at discovery. A docstring `Args:` description wins over `Field(description=...)`. An unresolvable hint is usually a type imported under `if TYPE_CHECKING:` with `from __future__ import annotations` — import it at runtime
+- `client.py`'s two `redis.asyncio.from_url()` calls keep redis-py defaults (including the redis-py 8 `socket_timeout=5s`) — the SDK only issues short non-blocking commands (hset/xadd/hdel), so a 5s read timeout is acceptable/desirable for startup calls. Blocking stream reads belong in core via `shared.redis_streams.create_redis` (SDK cannot import `shared`). `live_state.py`'s writer sets `socket_timeout`/`socket_connect_timeout` to 5 s explicitly.

@@ -38,5 +38,5 @@
   local STT/TTS (CPU) dominates elapsed time
 - Record which LLM/model was configured; network conditions and MacBook CPU load will vary
   results run-to-run
-- If latency regularly exceeds ~6-8s, file a `docs/backlog/` ticket rather than trying to fix
+- If latency regularly exceeds ~6-8s, file an issue rather than trying to fix
   it as part of this QA pass

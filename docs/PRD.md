@@ -1,6 +1,6 @@
 # Alfred — Product Requirements Document
 
-**Status:** Living document. Capability statuses current as of **2026-10-01**.
+**Status:** Living document. Capability statuses current as of **2026-10-27**.
 **Maintenance rule:** any PR that adds or changes a user-facing capability updates the
 relevant row(s) in the [Capability Catalog](#4-capability-catalog) in the same branch.
 
@@ -71,7 +71,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 
 | Capability | Status | Reference |
 |---|---|---|
-| Web app — a phone-first PWA, installable to the home screen: the Room (the conversation, hold-to-talk voice, notifications and what is held back), the Door (a critical action approved behind a slide, against its own fuse), and the passkey gates and first-run setup in front of both | Shipped | `docs/web-frontend.md`, spec `2026-09-04-mobile-first-pwa-client-design.md` |
+| Web app — a phone-first PWA, installable to the home screen: the Room (the conversation, hold-to-talk voice, notifications and what is held back), the Door (a critical action approved behind a slide, or declined, against its own fuse), and the passkey gates and first-run setup in front of both | Shipped | `docs/web-frontend.md`, spec `2026-09-04-mobile-first-pwa-client-design.md` |
 | Web app — the Workshop: the Activity bench over all eight live event streams (solo one, pause the feed, page back through history, read any event's whole payload), and *Why Alfred did that* — the causal thread joining one row to the activity around it by the ids the server holds | Shipped | `docs/web-frontend.md`, plan `2026-09-10-pwa-phase2-workshop-and-activity.md`, PRs #241 and #242 |
 | Web app — the Workshop's other three benches: Memory (episodic recall over hot and cold, semantic documents, the routine lifecycle, the scratchpad), Triggers (browse, filter, toggle and fire) and System (health, spend, quiet hours, sessions, connected services, passkeys and pairing, the reflex attention set, nightly consolidation) | Shipped | `docs/web-frontend.md`, plan `2026-09-16-pwa-phase3-memory-triggers-system.md`, PR #244 |
 | Web app — installs and opens with no network: the icon set and a manifest in each theme's colours; a hand-written service worker that keeps the app shell on the phone (never anything the house said), so the app launches offline and takes each deploy at its next navigation without reinstalling; an offer to take a changed worker without closing the app; a kill switch that empties every installed copy remotely; and launch gates that say the phone is offline, or that the house is not answering, instead of saying signed out | In branch | `docs/web-frontend.md` ("The service worker", "The gates"), plan `2026-09-16-pwa-phase4-install-and-offline.md`, device checklist `2026-09-16-pwa-phase4-ios-checklist.md` (unrun) |
@@ -80,7 +80,8 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Voice in the browser/app (speech-to-text, neural spoken replies) | Shipped | `docs/voice.md` |
 | Physical wake-word satellites ("Hey Alfred" devices per room, room-aware context) | In review | spec `2026-07-15-voice-satellite-design.md`, PR #29 |
 | Speaker identification (who is talking, voice enrollment) | In review | PR #29 |
-| Multi-step conversations with session continuity (30-min sessions, any channel) | Shipped | `docs/architecture.md` |
+| Multi-step conversations with session continuity (30-min sessions, any channel): within a session Alfred carries the whole conversation, including what his tools did and returned, into the next turn; on a shared satellite session a change of speaker starts the conversation over | Shipped | `docs/llm.md` (Sessions) |
+| A failed request is answered once, and never repeats what it already did: a model hiccup is retried with backoff, one that cannot be completed gets a plain apology instead of silence, and one that failed after acting is answered with what was and was not done, so a light is never switched, a door unlocked or a calendar event booked twice. Requests more than five minutes old are not run, and a slow one stops acting once it passes five minutes (one that already acted is answered with what it did); a late answer is never shown as the answer to the next message | Shipped | `docs/llm.md` |
 
 ### 4.2 Proactivity & triggers
 
@@ -93,6 +94,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Sensor-driven triggers on live home state (verified end-to-end) | Shipped | PR #22 |
 | Sub-5-second reminder firing (scheduled wakeups replacing polling) | In review | PR #27 |
 | Client-timezone awareness (reminders in your timezone, wherever you are) | In review | PR #27 |
+| Relative reminders ("in 20 minutes") timed by the server clock — Alfred asks for a delay (`run_in_seconds`) and never does the clock arithmetic itself | In review | PR #252 |
 | Proactive notifications with urgency levels, DND windows, deferred delivery | Shipped | `docs/notifications.md` |
 | Delivery to Signal, web (with spoken announcement when urgent), and iOS push | Shipped | `docs/notifications.md` |
 | Reflex "attention set" — Alfred tunes which entities wake the fast mind, and can retune itself (`attention_*` tools); readable and editable over `GET`/`PUT /api/admin/attention`, and on the phone from the Workshop's System bench › Reflex (which carries the status of the Workshop row in §4.1) | Shipped | PR #235 |
@@ -107,7 +109,8 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Episodic memory: significant events recorded with hot (fast) and cold (archival) tiers | Shipped | spec `2026-03-24-phase3-memory-completion-design.md` |
 | Semantic memory: preferences and profile as human-readable documents | Shipped | same |
 | Procedural memory: routines with a full lifecycle (detected → confirmed → decayed) | Shipped | same |
-| Nightly librarian consolidation: conflict resolution, pattern detection, contextual decay | Shipped | same |
+| Nightly librarian consolidation: conflict resolution, pattern detection | Shipped | same |
+| Contextual decay: routine memories move to the cold archive while important and recently recalled ones stay hot, and deliberate recall still reaches the archive | In review | PR #247, `research/experiments/EXP-006-memory-decay.md` (before the fixes), `research/experiments/EXP-007-memory-decay-fixed.md` (after) |
 | Two-stage recall: automatic context assembly + deliberate memory search during reasoning | Shipped | same |
 | Significance scoring (a heuristic amygdala deciding what is worth remembering) | Shipped | same |
 | Passive observation: home state changes the reflex sees but chooses not to act on are still remembered | In review | spec `2026-09-03-passive-observation-design.md` |
@@ -124,9 +127,11 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Token-to-live Home Assistant onboarding (credentials via UI, zero config files) | In review | PR #28 ships the mechanism; the HA card itself lands with Plan 2 |
 | Full-home device discovery from HA's own registries (rooms, devices, friendly names) | Planned | HA integration spec, Plan 2 |
 | Generated control surface for every controllable domain (climate, covers, locks, media…) | Planned | same |
-| Live state streaming without HA-side setup (WebSocket ingest) | Planned | same |
-| Tiered autonomy: reflex touches only benign devices; risky domains need the conscious mind | Planned | same, Plan 3 |
-| Confirmation required for critical actions (locks, alarm, garage) — even when you asked | Planned | same, Plan 3 |
+| Live state streaming without HA-side setup (WebSocket ingest) | Shipped | `alfred-home-service` repo (WebSocket ingest); [#281](https://github.com/anirudhlath/alfred/issues/281) (live state written per event, read fresh) |
+| Reflex judgment calls: the fast mind sees the time, who is home and the house by room, and decides act, ask or nothing on common sense and learned habits — recorded in shadow mode for a week of review before it acts | In review | [#285](https://github.com/anirudhlath/alfred/issues/285), spec `2026-10-07-reflex-context-design.md` |
+| Who did it: every home change says whether a person, Alfred, an automation or something outside caused it; a private report lists what Alfred changed and why | Shipped | `docs/attribution.md`, spec `2026-10-24-reflex-anticipation-design.md` |
+| Tiered autonomy: reflex touches only benign devices; risky domains need the conscious mind | Planned | HA integration spec, Plan 3 |
+| Confirmation required for critical actions (locks, alarm, garage) — even when you asked. Alfred parks the action and asks; you answer in the conversation or on the Door, and he tells you what happened, even if it takes a while | Shipped | `docs/autonomy.md`, `docs/notifications.md`, [#317](https://github.com/anirudhlath/alfred/issues/317) |
 
 ### 4.5 Integrations & credentials
 
@@ -149,11 +154,12 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 |---|---|---|
 | Passkey (WebAuthn) login: biometric sign-in, no passwords stored | Shipped | `docs/webauthn.md` |
 | Trusted-network gating for credential-equivalent operations, with a 5-minute pairing code minted by a signed-in device — on the phone, from the Workshop's System bench › Devices & identity — as the alternative for passkey registration only | Shipped | PR #235 |
-| Session and passkey management: list/end sessions, log out everywhere, remove a passkey (never the last). The phone's System bench lists and ends sessions, signs out of the device in hand and lists passkeys; **removal is API-only** until there is a confirmation design for taking away the passkey you are holding | Shipped | PR #235, `docs/backlog/low/pwa-phase3-followups.md` §11 |
+| Session and passkey management: list/end sessions, log out everywhere, remove a passkey (never the last). The phone's System bench lists and ends sessions, signs out of the device in hand and lists passkeys; **removal is API-only** until there is a confirmation design for taking away the passkey you are holding | Shipped | PR #235, [#258](https://github.com/anirudhlath/alfred/issues/258) §11 |
 | Identity confidence levels per channel (Signal-verified vs local claim) | Shipped | `docs/architecture.md` |
 | Guest access choices captured at onboarding (which controls guests may use) | Shipped | onboarding wizard |
+| Guest tool scoping in conversation: a guest is offered only everyday (benign) controls; risky controls, integrations, and Alfred's own memory and attention tools stay with the verified user, and are refused if named anyway. A guest may create a trigger whose action is an everyday control (or a plain reminder), but cannot list, change, disable or delete triggers | Shipped | `docs/llm.md` |
 | Guest boundary enforcement via tiered autonomy | Planned | HA integration spec, Plan 3 |
-| Daily cloud-spend cap with alerting before the ceiling | Shipped | `docs/architecture.md` |
+| Daily cloud-spend cap with alerting before the ceiling: one budget shared by every process, rolling over at the user's midnight; at the cap, or with a cap of 0 or less, every model request is refused, local ones included | Shipped | `docs/llm.md` |
 
 ### 4.7 Operations & quality
 
@@ -164,8 +170,8 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 |---|---|---|
 | Unified runner: one process supervises all services, restarts crashes, hot-reloads code | Shipped | `docs/architecture.md` |
 | Admin API: live telemetry socket, stream pages, trigger management, overview | Shipped | `docs/admin-api.md` |
-| …surfaced on the phone: telemetry and stream inspection in the Workshop's Activity bench, memory and trigger management on its Memory and Triggers benches, and health, sessions, services and identity on System. No service restart or log download — neither has a route | Shipped | `docs/web-frontend.md`, `docs/backlog/low/pwa-phase3-followups.md`, PR #244 |
-| Eval harness: regression + live modes, custom judgment metrics, run comparison | Shipped | `docs/evals-runner.md` |
+| …surfaced on the phone: telemetry and stream inspection in the Workshop's Activity bench, memory and trigger management on its Memory and Triggers benches, and health, sessions, services and identity on System. No service restart or log download — neither has a route | Shipped | `docs/web-frontend.md`, [#258](https://github.com/anirudhlath/alfred/issues/258), PR #244 |
+| Eval harness: utterance-level goldens against the real stack, deterministic checks plus a calibrated judge, PRD coverage enforced | Shipped | `docs/evals.md` |
 | Model warmup at startup (no cold-start latency on first request) | Shipped | spec `2026-04-16-startup-warmup-design.md` |
 | Self-describing health for external services, surfaced on the phone in the Workshop's System bench › Connected services — a state word, a dot and the credential form built from the service's own schema (the Mission Control *Settings* screen this row used to name is gone) | In review | PR #28, `docs/web-frontend.md` |
 | One-command containerized deployment (`alfredctl`: build/up/down/logs/shell/urls/smoke — Docker, Apple `container`, Podman; worktree-isolated; persistent/ephemeral/seed data modes) | Shipped | `docs/containerization.md` |
@@ -237,9 +243,9 @@ answer one at a time.
 ## 8. Roadmap
 
 **Near** — land what's in review (instant reminders #27, credential flow #28, voice
-satellites #29); then the Home Assistant integration Plans 2–3: full-home discovery and
-live state, followed by the attention set, tiered autonomy, and critical-action
-confirmations. Outcome: the real apartment becomes Alfred's body.
+satellites #29); then the Home Assistant integration Plans 2–3: full-home discovery,
+followed by the attention set and tiered autonomy (live
+state has shipped). Outcome: the real apartment becomes Alfred's body.
 
 **Mid** — the satellite hardware line (Raspberry Pi provisioning, custom "hey Alfred"
 wake word, per-room presence); guest enforcement throughout; routine-aware contextual
@@ -257,9 +263,10 @@ SDK, and this document are for.
 |---|---|
 | System architecture & diagrams | `docs/architecture.md` |
 | Event bus & schemas | `docs/event-bus.md` |
+| Who caused each home change, and the oversight report | `docs/attribution.md` |
 | Building a service on the SDK | `docs/sdk.md` |
 | Credentials & secrets | `docs/secrets.md` |
 | Triggers | `docs/trigger-engine.md`, `docs/notifications.md` |
 | Original & expanded vision | `docs/superpowers/specs/2026-03-10-project-alfred-design.md`, `…2026-03-19-alfred-expanded-vision-design.md` |
 | Every feature's design history | `docs/superpowers/specs/` |
-| Deferred work | `docs/backlog/` (priority tiers) |
+| Deferred work | [GitHub Issues](https://github.com/anirudhlath/alfred/issues) (`priority: *` labels) |

@@ -38,7 +38,7 @@
 | `web/src/room/Room.tsx` | pass `idleMs` to `useRoom` and to the chat socket (Tasks 4, 5) |
 | `web/src/App.test.tsx` | session-window integration test (Task 4) |
 | `web/src/lib/chat-socket.ts`, `chat-socket.test.ts` | session id rotation (Task 5) |
-| `docs/web-frontend.md`, QA checklist, `docs/backlog/low/pwa-phase1-followups.md` | Task 6 |
+| `docs/web-frontend.md`, QA checklist, [#256](https://github.com/anirudhlath/alfred/issues/256) | Task 6 |
 
 ---
 
@@ -1233,7 +1233,7 @@ the server assigned — the same boundary the Room windows on."
 - Modify: `docs/admin-api.md` (the `session.idle_minutes` bullet, now behaviour)
 - Modify: `docs/superpowers/qa/2026-09-07-pwa-phase1-ios-checklist.md` (§4.4, §4.10 and a
   new section)
-- Modify: `docs/backlog/low/pwa-phase1-followups.md` (append §8–§11)
+- Modify: [#256](https://github.com/anirudhlath/alfred/issues/256) (append §8–§11)
 
 Everything here is written from the source at the end of Task 5, not from this plan: the
 prose below was drafted before Tasks 3–5 landed and several of its claims did not survive

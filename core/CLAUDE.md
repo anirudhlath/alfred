@@ -4,13 +4,27 @@ This directory contains Alfred's brain:
 
 ## Reflex (`reflex/`) — System 1 SLM Engine
 
-Fast event → action loop via local SLM (Ollama).
+Fast event → decision loop via a local SLM (vLLM through `REFLEX_BACKEND=openai` in production). Shadow mode (#285): decisions are recorded, nothing executes.
 
-- `engine.py` — SLM inference with dynamic tool prompt + TriggerFired reasoning
-- `tool_registry.py` — Reads tool manifests from Redis `alfred:tool_registry`
-- `runner.py` — Event loop orchestration + `ensure_consumer_group()` + `publish_observation()` utilities
+- `engine.py` — `ReflexEngine`: gathers preferences, reflex-audience tools, live state and timezone; returns a `ReflexProposal` (act/ask/none/invalid) for StateChanged and TriggerFired
+- `prompt.py` — pure prompt builder: rules + tools, Preferences, Now, House by `attributes.area`, What changed / Trigger fired; `HOUSE_DOMAINS`
+- `decision.py` — `parse_decision()`: model reply → `ReflexProposal`, tool validated against Reflex's tools; anything else is `invalid` with the raw text
+- `tool_registry.py` — Reads tool manifests from Redis `alfred:tool_registry`. `ToolInfo.input_schema` is each tool's one argument description: the schema the manifest ships, or, for an old SDK's manifest, one derived at parse time from its legacy `parameters` by `legacy_input_schema()` (the only reader of that map). Reflex renders `ToolInfo.parameter_names`
+- `context_reader.py` — `ContextReader`: reads live state fresh on every call through the SDK's `read_live_state()` (no cache) and renders it for the prompts; says `Live home state unavailable.` when no service has any; `get_snapshot()` and `get_user_timezone()` feed Reflex's prompt
+- `runner.py` — Event loop orchestration + `ensure_consumer_group()`, `observe_passively()`, `publish_observation()`, `publish_proposal()`, `count_decision()` (shadow mode, #285)
+- `decision_log.py` — `DecisionLog`: `record()` keeps every decision that reached the model (event, cause, prompt, proposal) on `alfred:reflex:decision_log` for up to 30 days or 10,000 entries, whichever comes first, best-effort; `read(since=)` returns them for slice 2's replay set
+- `shadow_report.py` — `python -m core.reflex.shadow_report --days N`: Markdown of daily decision counts and every act/ask/invalid proposal, for #285's shadow review
+- `availability.py` — `bridge_availability()`: drops transitions into `unavailable`/`unknown` and bridges a return from them (or from no state) to one `last → new` change, or drops it as a blip (hash `alfred:reflex:last_known_state`, one field per entity, ordered by stream entry ID; decisions under `alfred:reflex:returned:{entry_id}`); runs before the attention gate, replay-safe
 - `__main__.py` — Two consumer loops: (1) `HOME_STATE_STREAM` for StateChanged, (2) `EVENTS_STREAM` for TriggerFired (group `reflex-trigger-fired`)
 - TriggerFired handling: Path A (notification) fires first, Path B (SLM reasoning) is isolated — SLM failures never block notification delivery
+
+## Attribution (`attribution/`) — Who Did It
+
+Who caused each home state change, kept privately, each stream up to 30 days or its cap, the day counters 30 days (`docs/attribution.md`). Every write is best-effort: a refused write logs a warning and never raises into routing or Reflex.
+
+- `cause.py` — `cause_of(context)`: `alfred` (`by_service`) → `person` (`user_id`) → `automation` (`parent_id`) → `outside`; `None` with no context. `cause_words(context, name=None)` phrases it (`by Alex`, `by a person`, `by Alfred`, `by an automation`, `by a switch, app or device`)
+- `log.py` — `record_call()` (a successful call, with the `context_id` the service returned; `DomainRouter.route` calls it) and `record_change()` (counts the cause in `alfred:attribution:causes:<UTC date>` and logs a person's, Alfred's or an automation's change; the Reflex runner calls it with the stream entry id, which a `counted:` marker turns into once per entry)
+- `report.py` — `python -m core.attribution.report --days N`: counts by cause, each call Alfred made with the changes it caused (joined on the context id or its parent), then everyone else's changes; names people and devices, so private
 
 ## Memory (`memory/`) — Three-Layer System
 
@@ -19,15 +33,17 @@ Episodic + semantic + procedural, biologically inspired.
 - `embedding_provider.py` — EmbeddingProvider ABC (concrete `warmup()`/`aclose()` defaults) + SentenceTransformer (lazy-loaded, async via to_thread)
 - `openai_embedding_provider.py` — `OpenAICompatEmbeddingProvider`: `/v1/embeddings` over HTTP (vLLM `--runner pooling`), verifies the served width on every response
 - `embedding_backend.py` — `build_embedding_provider(config)`: the `EMBEDDING_BACKEND` seam (registry keyed by backend name); services call this, never a concrete provider
-- `vector_store.py` — VectorStore ABC with dual-embedding search (content + semantic key) + `update_metadata()` for retrieval stats
-- `redis_vector_store.py` — Hot store (RediSearch HNSW), uses CONTEXT_INDEX/CONTEXT_PREFIX; latches a proven dimension mismatch against the existing index and raises from `add`/`search`/`count` — `delete`/`exists`/`update_metadata` skip `ensure_index()` and keep working
-- `sqlite_vec_store.py` — Cold store (sqlite-vec), with v1→v2 migration; the same dimension latch, raised from every operation that opens the file (they all reach `_ensure_schema()` via `_get_db()`). **Cold is the last stop** — `copy_to_cold_and_remove()` deletes the hot copy once it has written here, so deleting this file discards archived memories permanently, with no re-embed path to rebuild them
+- `vector_store.py` — VectorStore ABC with dual-embedding search (content + semantic key) + `update_metadata()` for retrieval stats + `replace_content()` (rewrites an entry's text and content vector, False when the entry is gone)
+- `redis_vector_store.py` — Hot store (RediSearch; exact `ADHOC_BF` KNN, metadata `select()`, stored vectors via `embeddings()`), uses CONTEXT_INDEX/CONTEXT_PREFIX; latches a proven dimension mismatch against the existing index and raises from `add`/`search`/`count` — `delete`/`exists`/`update_metadata` skip `ensure_index()` and keep working
+- `sqlite_vec_store.py` — Cold store (sqlite-vec, cosine `vec0` tables, metadata `select()` on timestamp/significance), with v1→v2→v3→v4 migrations (v3 rebuilds pre-v3 L2 tables as cosine, keeping every vector; v4 deletes the vectors no entry owns, which re-adds orphaned before `add()` became an upsert — issue #279); the same dimension latch, raised from every operation that opens the file (they all reach `_ensure_schema()` via `_get_db()`). **Cold is the last stop** — `copy_to_cold_and_remove()` deletes the hot copy once it has written here, so deleting this file discards archived memories permanently, with no re-embed path to rebuild them
 - `significance.py` — SignificanceScorer: 4 dims (safety/novelty/personal/emotional)
-- `context_index.py` — ContextIndexManager: unified search across all memory types, owns RedisVectorStore
-- `episodic/memory.py` — EpisodicMemory: hot+cold unified interface; `recall()` gathers hot and cold with `return_exceptions=False` **on purpose** (see Gotchas)
+- `context_index.py` — ContextIndexManager: unified search across all memory types, owns RedisVectorStore; `recall()` (deliberate recall) adds the cold archive through `recall.py`, `select()` hands the decay pass its candidates
+- `episodic/memory.py` — EpisodicMemory: hot+cold unified interface; `recall()` merges hot and cold through `recall.py`, as `ContextIndexManager.recall()` does
+- `recall.py` — `recall_hot_and_cold()`: the one hot + cold merge both recalls share — each id once at its best score (hot on a tie), `types`/`since` applied before the limit by reading each store deeper, the cold store skipped when `types` excludes episodic, stats recorded only for returned hot hits; gathers with `return_exceptions=False` **on purpose** (see Gotchas)
 - `schemas.py` — Memory-specific Pydantic models
 - `routines/patterns.py` — `match_trigger_pattern()`: shared by engine + librarian
-- `ingestor.py` — Memory Ingestor (hippocampus): consumes `ReflexObservation` from `REFLEX_OBSERVATIONS_STREAM`, writes to `EpisodicMemory` via `SignificanceScorer`
+- `ingestor.py` — Memory Ingestor (hippocampus): consumes `ReflexObservation` from `REFLEX_OBSERVATIONS_STREAM`, writes to `EpisodicMemory` via `SignificanceScorer`; stamps the text with the triggering event's local time (required `tz`), keeps the semantic key time-free
+- `migrate_observations.py` — one-off for entries stored before #265's slice 1: deletes stored availability blips and stamps the rest (`python -m core.memory.migrate_observations [--apply]`, dry run by default, re-runnable)
 - `ingestor_main.py` — Entry point for Memory Ingestor service (`python -m core.memory.ingestor_main`)
 
 ## Triggers (`triggers/`) — Dynamic Trigger Engine
@@ -58,25 +74,34 @@ graph LR
 - New trigger types: subclass `BaseTrigger`, define `Conditions` model, implement `evaluate()`, decorate with `@TriggerRegistry.register_type("name")`
 - Storage: Redis hash `alfred:triggers` (primary) + YAML snapshots in `$ALFRED_DATA_DIR/triggers/` (default `data/triggers/`, gitignored) — resolved via `core.memory.paths.triggers_snapshot_dir()`
 - CRUD exposed via `TriggerFeature(BaseFeature)` with dynamic tool descriptions from `TriggerRegistry.build_conditions_docs()`
+- `friendly_type()` (`core/triggers/registry.py`) is LLM-aware: it renders a `datetime` condition field as an ISO 8601 hint (`"string (ISO 8601, e.g. …)"`) in those docs
 
 ## Conscious (`conscious/`) — System 2 Cloud LLM
 
-Agentic tool-use loop with parallel execution (`asyncio.gather`).
+One Pydantic AI agent per request (`agent.py`); see `docs/llm.md`.
 
-- `engine.py` — Full reasoning loop: budget check → involuntary recall → tool dispatch → response
-- `context_assembler.py` — Two-stage: involuntary recall (auto semantic search) + deliberate recall (memory tools)
-- `memory_tools.py` — Internal tools: `recall_memories`, `get_live_state` (dispatched in-process, NOT via SDK/ToolRegistry)
-- `cost.py` — Daily cap tracking, 80% alert via NotificationPublisher
+- `engine.py` — one turn: budget check → identity/session → involuntary recall → `TurnDeps` → agent run → session, scratchpad note (the agent's `SpendLimits` counts spend). A run that defers critical calls is parked (`_park`) instead of answered; `resume_approval()` resumes one on a Door decision, and a sir reply while the session has a `pending_approval` is classified and resumes it
+- `approvals.py` — parking a run and resuming it: `park()` (the `ParkedRun` record, the notification, the `parked` ledger entries), `claimable_run()`, `results_for()` (`ToolApproved` / `ToolDenied`), `describe_call()` / `summary_of()` (what the owner is asked to approve: each call's tool and every parameter, with the model's reason only as a short quoted aside), `confirmation_reply()`
+- `approval_classifier.py` — `ApprovalClassifier.classify()`: a reply read as approve / deny / other on `APPROVAL_MODEL` (static instructions; the calls and the reply travel as `<actions>` / `<reply>` data in the user message); an unvalidated output, a missing model or an exhausted budget is `other`, while a provider or transport error propagates (the delivery is retried, then dead-lettered)
+- `runner.py` — `process_request_entry()` and `process_approval_entry()`: one delivery of one request or one Door decision from `alfred:approvals`, live or redelivered (`reclaim_due`, per stream); answers once (answered marker), caps at `MAX_DELIVERIES`, answers expired and exhausted turns with `FAILED_REPLY` and dead-letters them
+- `failures.py` — `classify()` (permanent vs transient), `dead_letter()`, `FAILED_REPLY`, `MAX_DELIVERIES`
+- `effects.py` — the side-effect ledger: `RecordEffects` capability, `EffectLedger`, `ledger_reply()`; a toolset marks a side-effecting tool with `SIDE_EFFECT` in its `ToolDefinition` metadata
+- `agent.py` — `build_system2_agent()`, `system2_toolsets()` (priority order), `REQUEST_LIMIT`
+- `tools/` — the catalog and its toolsets; every tool is named by `tools/names.wire_name`; `tools/search.py` is the tool search that loads non-reflex registry tools on demand
+- `memory_tools.py` — `recall_memories()`, `get_live_state()`: the memory toolset's bodies
+- `system2_prompts.py` — `System2Prompts`, `fetch_system2_prompts()`: which prose sections a turn includes (personality, voice delivery, identity, location, integrations, proactivity), rendered from the prompt store (`shared/prompts/`) before the run
+- `context_assembler.py` — `assemble()`: the instructions, the rendered sections with the turn's data between them: time, involuntary recall, routine hint (no tool list)
 - `identity.py` — Signal phone + local-claim trust (confidence=0.7) for web_pwa, voice, and ios channels
-- `session.py` — Redis-backed sessions, 30min timeout
-- `prompts/` — System prompt templates
+- `session.py` — Redis-backed sessions, 30min timeout; stores the run's whole message history per session (tool calls and results included) and the speaker who wrote it: a different speaker reads no history
+- `history.py` — the history bounds: truncate-only `ToolOutputLimits` (`TOOL_RESULT_MAX_CHARS`), `ClearToolResults` (`CLEAR_TOOL_RESULTS_OVER_TOKENS`, `TOOL_RESULTS_KEPT`, `CLEAR_AT_LEAST_TOKENS`) and `SlidingWindowCompaction` (`SESSION_MAX_MESSAGES`, `SESSION_KEPT_MESSAGES`)
 
-### Tool Dispatch (4 categories)
-1. Integration tools (prefix `integration_`) → `IntegrationRegistry.execute()`
-2. Trigger tools → in-process `TriggerFeature` methods
-3. Memory tools (prefix `memory_`) → in-process `dispatch_memory_tool()`
-4. Domain tools → `DomainRouter` to external services
-- `__main__.py` runs a 15-min background loop (`asyncio.wait_for`) for proactive routine suggestions; ignored suggestions have confidence decremented over time
+### Tools (one catalog, five toolsets in priority order)
+1. Trigger tools (`tools/triggers.py`) → in-process `TriggerFeature` methods, arguments validated and coerced first by the tool's `ToolMeta.validate_arguments`; a `ToolArgumentError` becomes a `ModelRetry` naming each field (a retry prompt, up to `TOOL_RETRIES`)
+2. Memory tools (`tools/memory.py`, prefix `memory_`) → `memory_tools.py`; sir-only
+3. Attention (`tools/attention.py`); sir-only. No tool approves anything: a critical registry call defers (`ApprovalRequired`) and the run is parked for the owner (`approvals.py`)
+4. Integration tools (`tools/integrations.py`, prefix `integration_`) → `IntegrationRegistry.execute()`; sir-only
+5. Registry tools (`tools/registry.py`) → `DomainRouter` to external services; a guest is offered `benign` risk only; non-reflex tools are deferred and found through `search_tools` (`tools/search.py`)
+- `__main__.py` reads `alfred:user:requests` and `alfred:approvals` through one consumer group (`conscious-engine`, `_ENTRY_RUNNERS`) and reclaims each; it also runs `_consume_internal_actions` on `alfred:actions` and reports the outcome of a router-held action it executes (`_report_outcome`), and a 15-min background loop (`asyncio.wait_for`) for proactive routine suggestions; ignored suggestions have confidence decremented over time
 
 ## Voice (`voice/`) — Voice I/O
 
@@ -94,17 +119,18 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `scheduler.py` — Periodic scheduler wired into conscious process (1hr default, `LIBRARIAN_INTERVAL_SECONDS` env var)
 - Scratchpad drain: atomic RENAME prevents race; processing key survives crashes for recovery
 - Conflict resolution: requires >=5 observations over >=14 days to contradict existing preference
-- Decay formula is subtractive: `age_factor - significance*2 - recency*1.5 - frequency*1.0` — high significance/recency/frequency resists cold migration
+- Decay formula is subtractive: `age_factor - significance*2 - recency*1.5 - frequency*1.0` — high significance/recency/frequency resists cold migration. Candidates come from `select()` by metadata ranges (`decay_candidate_ranges()`), never from a similarity search
 - Compression at cold migration: groups entries by entity+date, LLM summarization, writes summary to cold, marks originals `compressed="yes"`
 - Routine indexing: detected routines indexed into `idx:context` on detection, removed on archive
 
 ## Channels (`channels/`) — User-Facing I/O
 
-- `web_server.py` — FastAPI + WebSocket on port 8081, STT/TTS loaded off the event loop (async getters + background warmup, `asyncio.to_thread` for transcribe/synthesize), onboarding wizard, session persistence, iOS channel support, device registration, trusted network auth. Lifespan also starts the satellite bridge (`load_satellites()` non-empty → `SatelliteBridge` + `SatelliteChannelAdapter` registration)
+- `web_server.py` — FastAPI + WebSocket on port 8081, STT/TTS loaded off the event loop (async getters + background warmup, `asyncio.to_thread` for transcribe/synthesize), onboarding wizard, session persistence, iOS channel support, device registration, trusted network auth, the Door's confirm/deny/pending routes and the follow-up channel sink (`_followup_sink`). Lifespan also starts the satellite bridge (`load_satellites()` non-empty → `SatelliteBridge` + `SatelliteChannelAdapter` registration)
 - `signal_bridge/` — Signal CLI subprocess, forwards inbound → `USER_REQUESTS_STREAM`, outbound via adapter
 - `satellite/` — Wyoming voice satellite bridge (physical devices, not the web/iOS voice pipeline): `config.py` (fleet loader, `SATELLITES_CONFIG`), `endpointing.py` (streaming VAD via `pysilero-vad`, `UtteranceCollector`), `bridge.py` (`SatelliteConnection`/`SatelliteBridge` — one persistent reconnecting TCP client per device), `pipeline.py` (`SatellitePipeline`: STT → Conscious round-trip → TTS). See `docs/voice-satellites.md`
-- `request_bus.py` — `publish_and_wait()`: shared XADD-then-XREAD request/response helper, used by both the WebSocket handler and `SatellitePipeline`
-- `voice_models.py` — shared lazy Whisper/TTS/SpeakerID loaders for the channels process (`aget_stt`, `aget_tts`, `aget_speaker_id`)
+- `request_bus.py` — `publish_and_wait()`: shared XADD-then-XREAD request/response helper, used by both the WebSocket handler and `SatellitePipeline`; it registers the wait under `alfred:followup:{event_id}` (600 s) before sending and marks it `late` on a timeout, so the answer can still be delivered
+- `followups.py` — `followup_worker()` (group `channels-followups` on `alfred:user:responses`): delivers late answers and Door resumes through the web server's channel sink; ACKs every entry (best effort, no reclaim)
+- `voice_models.py` — shared lazy Whisper/TTS/SpeakerID loaders for the channels process (`aget_stt`, `aget_tts`, `aget_speaker_id`). STT/TTS load through `Lazy` (`core/lazy.py`) on one shared lock, so they load one at a time — never a module-level `asyncio.Lock`, which binds to the first event loop that contends on it (#97); `aget_speaker_id` needs no lock because it never awaits
 - `__main__.py` — Port retry (5 attempts on EADDRINUSE with exponential backoff)
 
 ## Notifications (`notifications/`) — Proactive System
@@ -115,7 +141,7 @@ Agentic tool-use loop with parallel execution (`asyncio.gather`).
 - `dnd.py` — DNDChecker (manual Redis key + calendar meeting detection)
 - `channels.py` — `ChannelAdapter` ABC + `ChannelRegistry` (decorator-based registration)
 - `publisher.py` — Public API (thin facade over dispatcher)
-- `adapters/` — Signal, WebSocket, APNs, Satellite concrete adapters (Voice adapter exists but is not loaded in channels process; TTS for URGENT notifications is handled inline by the WebSocket adapter). `SatelliteChannelAdapter` (`adapters/satellite.py`) is URGENT-only, registered only when `config/satellites.yaml` has entries, and broadcasts TTS-synthesized speech to every currently-connected satellite via `SatelliteBridge.play_wav_all()`
+- `adapters/` — Signal, WebSocket, APNs, Satellite concrete adapters. There is no voice adapter: URGENT TTS rides inside the WebSocket adapter's single `notification` frame — a second adapter pushing audio to the same sessions would speak it twice (#56). Both TTS-speaking adapters synthesise via `synthesize_async` (`channels/voice_models.py`), never on the loop. `SatelliteChannelAdapter` (`adapters/satellite.py`) is URGENT-only, registered only when `config/satellites.yaml` has entries, and broadcasts TTS-synthesized speech to every currently-connected satellite via `SatelliteBridge.play_wav_all()`
 
 ### Notification Data Flow
 
@@ -150,10 +176,11 @@ uv run python -m core.channels   # Web + Signal channels
 
 ## Gotchas
 
+- **Deploy order for a manifest change: core first, services repin after** ([#325](https://github.com/anirudhlath/alfred/issues/325)). Core reads both the legacy form (`parameters` only) and the current one (`input_schema` only), and Reflex renders both byte-identically (`tests/core/reflex/test_prompt_wire_forms.py`, which its shadow week depends on). Never drop `legacy_input_schema()` while any service may still pin an SDK from before #300
 - Memory tools are INTERNAL — dispatched in-process, NOT via BaseFeature/SDK/ToolRegistry
 - `ContextIndexManager.search_text()` embeds query internally — callers don't need separate EmbeddingProvider
-- `SentenceTransformerProvider._load()` is thread-safe and blocks on first call — services warm it via `core/warmup.py` (`start_warmup()`) background tasks at startup, warming through `EmbeddingProvider.warmup()` so the check is the backend's own
-- `EpisodicMemory.recall()` gathers the hot and cold searches at the default `return_exceptions=False`, so a cold-store failure discards the hot results that already succeeded and admin search returns 503 — do NOT "fix" that by flipping it: `return_exceptions=True` swallows every cold failure silently and forever, which is the dimension guard's own failure mode in the other direction (`sqlite_vec_store._verify_vec_dim` documents the trade)
+- `SentenceTransformerProvider` loads its model once, from any thread, through `Lazy` (`core/lazy.py`) and blocks on first call — services warm it via `core/warmup.py` (`start_warmup()`) background tasks at startup, warming through `EmbeddingProvider.warmup()` so the check is the backend's own
+- `recall_hot_and_cold()` (`memory/recall.py`, behind `EpisodicMemory.recall()` and `ContextIndexManager.recall()`) gathers the hot and cold searches at the default `return_exceptions=False`, so a cold-store failure discards the hot results that already succeeded and admin search returns 503 — do NOT "fix" that by flipping it: `return_exceptions=True` swallows every cold failure silently and forever, which is the dimension guard's own failure mode in the other direction (`sqlite_vec_store._verify_vec_dim` documents the trade)
 - Both vector stores refuse to run against a store built at a different embedding width and latch it; the recovery is the exception text they print (per-store, and the hot store's `DD` flag is destructive) — never a summary of it
 - Never construct an embedding provider directly in a service — go through `build_embedding_provider()` (`memory/embedding_backend.py`, dispatches on `EMBEDDING_BACKEND`) and release it with `provider.aclose()` inside `core/shutdown.py`'s `teardown()`; the HTTP backend owns a connection pool, the in-process one no-ops
 - Trigger type modules must be imported before use to trigger `@TriggerRegistry.register_type()` decorators
@@ -162,7 +189,7 @@ uv run python -m core.channels   # Web + Signal channels
 - Signal bridge expects `signal-cli` binary in PATH
 - TTS backends (Kokoro default, Piper fallback) auto-download from the HF Hub — see docs/voice.md
 - kokoro-onnx reads the process-global `ONNX_PROVIDER` env var at construction — `KokoroTTS.__init__` sets it from `KOKORO_ONNX_PROVIDER` (`auto` → CUDA when available, else CPU); `onnxruntime` and `onnxruntime-gpu` cannot coexist (4090 swaps packages, see docs/voice.md)
-- TTS fallback semantics (`voice_models.get_tts()`): runtime init failure of the configured backend logs a loud warning and falls back — never cached, so later calls retry; `_FAILED` is cached permanently only when every backend fails with ImportError
+- TTS fallback semantics (`voice_models.get_tts()`): runtime init failure of the configured backend logs a loud warning and falls back — never cached, so later calls retry; the failure (None) is cached permanently only when every backend fails with ImportError
 - TriggerStore coherence is pub/sub (`alfred:triggers:changed`) — never mutate `alfred:triggers` without going through TriggerStore
 - User timezone lives at `alfred:user:timezone` via `shared/usertime.py` — resolution stored → `ALFRED_TIMEZONE` → UTC. Clients send their IANA zone per message; the conscious engine (not the web channel) persists it via `set_user_timezone` (write-on-change)
 

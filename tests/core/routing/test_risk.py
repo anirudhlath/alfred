@@ -64,3 +64,35 @@ async def test_registered_tool_without_a_risk_field_is_benign() -> None:
     assert (
         await tool_risk(_redis(_MANIFEST.encode()), "home-service", "home.legacy_tool") == "benign"
     )
+
+
+_CRITICAL_DOOR = {"name": "home.unlock_door", "risk": "critical"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("manifest", "expected"),
+    [
+        (123, "unknown"),
+        (["home.unlock_door"], "unknown"),
+        ("home.unlock_door", "unknown"),
+        ({"features": 123}, "unknown"),
+        ({"features": {"name": "home"}}, "unknown"),
+        ({"features": [123, ["x"]]}, "unknown"),
+        ({"features": [{"tools": 123}]}, "unknown"),
+        ({"features": [{"tools": [123, ["home.unlock_door"], "home.unlock_door"]}]}, "unknown"),
+        # Garbage beside a well-formed declaration is skipped, never allowed to mask
+        # it: reading "unknown" here would let System 2 run a critical tool unconfirmed.
+        ({"features": [123, {"tools": 5}, {"tools": [["x"], 7, _CRITICAL_DOOR]}]}, "critical"),
+    ],
+)
+async def test_wrong_shape_manifest_does_not_raise(manifest: object, expected: str) -> None:
+    """Valid JSON of the wrong shape fails closed instead of raising.
+
+    ``.get``/iteration on an int or list used to raise inside ``DomainRouter.route()``'s
+    enforcement path — a 500 rather than a routed or rejected action.
+    """
+    from core.routing.risk import tool_risk
+
+    redis = _redis(json.dumps(manifest).encode())
+    assert await tool_risk(redis, "home-service", "home.unlock_door") == expected

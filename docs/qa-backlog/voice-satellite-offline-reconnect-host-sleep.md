@@ -53,7 +53,7 @@
   fake-satellite tests (`test_bridge.py` uses `asyncio` cancellation and mocked delays, not a
   real suspended NIC)
 - The backoff-reset-on-short-session behavior has a known refinement backlogged in
-  `docs/backlog/low/satellite-reconnect-min-uptime.md` (a misbehaving satellite that
+  [#131](https://github.com/anirudhlath/alfred/issues/131) (a misbehaving satellite that
   handshakes then immediately drops can retry at a constant ~1s forever) — if the sleep/wake
   cycle happens to reproduce a rapid reconnect/drop loop, note it, but this is already a
   known, accepted v1 limitation, not a new bug to report

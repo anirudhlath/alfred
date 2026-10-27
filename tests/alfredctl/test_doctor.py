@@ -376,29 +376,6 @@ def test_check_reports_a_proven_wrong_host_as_fail(monkeypatch: pytest.MonkeyPat
     assert "serves no embeddings route" in check.detail
 
 
-@pytest.mark.parametrize(
-    ("raw", "shown"),
-    [
-        ("http://user:pw@vllm.example:8001", "http://***@vllm.example:8001"),
-        ("https://tok@embed.example/v1", "https://***@embed.example/v1"),
-        # A password containing @: httpx reads the *last* @ as the delimiter, so
-        # stopping at the first one leaves the tail of the password on screen.
-        ("http://user:p@ss@vllm.example:8001", "http://***@vllm.example:8001"),
-        # No scheme at all: httpx rejects it, but doctor still prints it in the
-        # UnsupportedProtocol detail, so it has to be redacted before it gets there.
-        ("user:pw@vllm.example:8001", "***@vllm.example:8001"),
-        ("//user:pw@vllm.example:8001", "//***@vllm.example:8001"),
-        # No userinfo, and an @ that belongs to the path: all left alone.
-        ("http://vllm.example:8001", "http://vllm.example:8001"),
-        ("http://vllm.example/models/a@b", "http://vllm.example/models/a@b"),
-        ("vllm.example:8001/models/p@th", "vllm.example:8001/models/p@th"),
-        ("", ""),
-    ],
-)
-def test_redact_userinfo(raw: str, shown: str) -> None:
-    assert doctor._redact_userinfo(raw) == shown
-
-
 def test_embedding_host_credentials_are_not_echoed(tmp_path: Path) -> None:
     """Operators paste doctor output into issues; basic-auth in a host must not ride along."""
     env = _write_env(
@@ -447,3 +424,107 @@ def test_probe_detail_redacts_credentials() -> None:
     # Redacted where it is printed, intact where it is sent.
     assert "hunter2" not in detail
     assert "hunter2" in seen["url"]
+
+
+@pytest.fixture
+def _clean_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``load_env`` merges ``os.environ``, so a stray variable would leak into the checks."""
+    for name in (
+        "SYSTEM2_MODEL",
+        "LIBRARIAN_MODEL",
+        "APPROVAL_MODEL",
+        "VLLM_BASE_URL",
+        "OPENAI_BASE_URL",
+        "OPENAI_COMPAT_HOST",
+        "CLAUDE_MODEL",
+        "OPENROUTER_API_KEY",
+        "CLAUDE_API_KEY",
+        "SYSTEM2_MAX_TOKENS",
+        "SYSTEM2_TIMEOUT_S",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_vllm_model_with_a_known_family_passes(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(
+        tmp_path, "SYSTEM2_MODEL=vllm:gemma-4-26b-a4b\nOPENAI_COMPAT_HOST=http://localhost:8000\n"
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "pass"
+    assert "http://localhost:8000/v1" in _detail(checks, "conscious (System 2)")
+
+
+def test_vllm_model_with_no_known_family_warns(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(tmp_path, "SYSTEM2_MODEL=vllm:house-brain\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "warn"
+    assert "house-brain" in _detail(checks, "conscious (System 2)")
+
+
+def test_direct_claude_string_fails(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(tmp_path, "OPENROUTER_API_KEY=sk-or-v1-abc\nCLAUDE_MODEL=claude-sonnet-4-6\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "fail"
+    assert "not a model string Alfred can use" in _detail(checks, "conscious (System 2)")
+
+
+def test_librarian_model_is_checked_when_it_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _clean_llm_env: None
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("CLAUDE_API_KEY", raising=False)
+    env = _write_env(
+        tmp_path,
+        "SYSTEM2_MODEL=vllm:gemma-x\nLIBRARIAN_MODEL=openrouter:anthropic/claude-sonnet-4\n",
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "fail"
+    assert "LIBRARIAN_MODEL" in _detail(checks, "conscious (System 2)")
+
+
+def test_an_approval_model_that_differs_is_checked(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(
+        tmp_path, "SYSTEM2_MODEL=vllm:gemma-x\nAPPROVAL_MODEL=openrouter:vendor/small\n"
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "fail"
+    detail = _detail(checks, "conscious (System 2)")
+    assert "APPROVAL_MODEL=openrouter:vendor/small needs OPENROUTER_API_KEY" in detail
+    assert "approval by reply is off" in detail
+    assert "the Door still approves" in detail
+
+
+def test_an_approval_model_that_works_is_listed(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(tmp_path, "SYSTEM2_MODEL=vllm:gemma-x\nAPPROVAL_MODEL=vllm:qwen-small\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "pass"
+    detail = _detail(checks, "conscious (System 2)")
+    assert "APPROVAL_MODEL=vllm:qwen-small" in detail
+    assert "approval by reply is off" not in detail
+
+
+def test_a_system2_model_the_approval_role_falls_back_to_names_the_consequence(
+    tmp_path: Path, _clean_llm_env: None
+) -> None:
+    env = _write_env(tmp_path, "SYSTEM2_MODEL=house-brain\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "fail"
+    detail = _detail(checks, "conscious (System 2)")
+    assert "SYSTEM2_MODEL=house-brain is not a model string" in detail
+    assert "approval by reply is off" in detail
+    assert detail.count("SYSTEM2_MODEL=house-brain") == 1
+
+
+def test_bad_max_tokens_fails_naming_it(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(tmp_path, "OPENROUTER_API_KEY=sk-or-v1-abc\nSYSTEM2_MAX_TOKENS=many\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "fail"
+    assert "SYSTEM2_MAX_TOKENS" in _detail(checks, "conscious (System 2)")
+
+
+def test_legacy_openai_model_with_a_base_url_passes(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(
+        tmp_path, "CLAUDE_MODEL=openai/gemma-x\nOPENAI_BASE_URL=http://localhost:9/v1\n"
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, "conscious (System 2)") == "pass"

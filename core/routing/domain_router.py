@@ -7,9 +7,9 @@ depth — the Reflex prompt filter is the first layer):
    tool with risk above "benign" are rejected and recorded as a
    ReflexObservation — a hallucinated tool name cannot actuate a lock.
 2. Unconfirmed requests targeting a ``risk == "critical"`` tool are parked in
-   ``alfred:pending_actions:{request_id}`` (TTL 5 min) and an URGENT
-   notification asks the user to confirm. Confirmed requests
-   (``confirmed=True``) pass through without re-interception.
+   ``alfred:pending:{request_id}`` (TTL 5 min) and an URGENT notification asks
+   the user to confirm. Confirmed requests (``confirmed=True``) pass through
+   without re-interception.
 
 Enforcement requires a Redis handle; ``DomainRouter()`` without one routes
 unconditionally (offline/eval contexts and legacy tests).
@@ -17,20 +17,29 @@ unconditionally (offline/eval contexts and legacy tests).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Final, Protocol, runtime_checkable
 
 from loguru import logger
 
 from bus.schemas.events import ActionRequest, ActionResult
+from core.attribution.log import record_call
 from core.notifications.schema import Urgency
 from core.reflex.runner import publish_observation
-from core.routing.pending import store_pending_action
+from core.routing.pending import (
+    CONFIRMATION_TITLE,
+    confirmation_body,
+    confirmation_metadata,
+    store_pending_action,
+)
 from core.routing.risk import tool_risk
 from shared.streams import REFLEX_OBSERVATIONS_STREAM
 
 if TYPE_CHECKING:
     from core.notifications.publisher import NotificationPublisher
     from shared.types import AioRedis
+
+# An intercepted critical action's error: this prefix, then the pending action's id.
+CONFIRMATION_REQUIRED_PREFIX: Final = "confirmation_required:"
 
 
 @runtime_checkable
@@ -103,19 +112,13 @@ class DomainRouter:
         await store_pending_action(redis, action)
         if self._notifier is not None:
             await self._notifier.publish(
-                title="Confirmation required",
-                body=(
-                    f"Alfred wants to run '{action.tool_name}' on "
-                    f"{action.target_service} — confirm?"
-                ),
+                title=CONFIRMATION_TITLE,
+                body=confirmation_body(action.tool_name, action.target_service),
                 source="domain-router",
                 urgency=Urgency.URGENT,
-                metadata={
-                    "pending_action_id": action.request_id,
-                    "tool_name": action.tool_name,
-                    "parameters": action.parameters,
-                    "reason": action.reason,
-                },
+                metadata=confirmation_metadata(
+                    action.request_id, action.tool_name, action.parameters, action.reason
+                ),
             )
         else:
             logger.warning(
@@ -127,7 +130,7 @@ class DomainRouter:
             action.tool_name,
             action.request_id,
         )
-        return self._error_result(action, f"confirmation_required:{action.request_id}")
+        return self._error_result(action, f"{CONFIRMATION_REQUIRED_PREFIX}{action.request_id}")
 
     async def route(self, action: ActionRequest) -> ActionResult:
         """Route an ActionRequest to the appropriate domain agent."""
@@ -146,7 +149,12 @@ class DomainRouter:
             if risk == "critical" and not action.confirmed:
                 return await self._intercept_critical(self._redis, action)
 
-        return await agent.execute_action(action)
+        result = await agent.execute_action(action)
+        if self._redis is not None:
+            # Log the call so the change it causes can be tied back to it. Best-effort:
+            # record_call never raises, so the agent's result is returned as it came.
+            await record_call(self._redis, action, result)
+        return result
 
     async def execute_action(self, action: ActionRequest) -> ActionResult:
         """Alias for route() — satisfies DomainAgent protocol."""

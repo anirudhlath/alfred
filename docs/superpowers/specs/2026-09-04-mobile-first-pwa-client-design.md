@@ -150,7 +150,7 @@ cryptographic state.
 `NoCacheStaticMiddleware` stamps `no-cache, no-store, must-revalidate` on every `.js`,
 `.css`, `.html`. With hashed Vite asset names that is both unnecessary and actively harmful
 to a PWA — the shell re-downloads on every cold launch over cellular. Fix per the existing
-backlog item `docs/backlog/low/web-asset-cache-headers.md`: `immutable, max-age=31536000`
+backlog item [#138](https://github.com/anirudhlath/alfred/issues/138): `immutable, max-age=31536000`
 for `/assets/*`, `no-cache` for `index.html` only.
 
 ### 3.5 NPM proxy host configuration
@@ -229,7 +229,7 @@ These are not polish items; each one visibly breaks the app if ignored.
 | 5 | The software keyboard covers fixed-position elements | `visualViewport` listener pins the composer; `interactive-widget=resizes-content` in the viewport meta |
 | 6 | Rubber-band scroll makes a standalone app feel like a web page | `overscroll-behavior: none` on the shell, preserved inside scroll containers |
 | 7 | iOS blocks `Audio.play()` without a direct gesture, more strictly than desktop | One shared `AudioContext`, unlocked on the first tap anywhere in the app, through which all TTS and URGENT notification audio plays. Resolves `docs/qa-backlog/audio-context-unlock-before-first-urgent-notification.md` |
-| 8 | Safari's `MediaRecorder` has no WebM; the current `VoiceButton` hard-codes `audio/webm;codecs=opus` and dies | Feature-detect `audio/mp4` → `audio/aac` → browser default. Backend already accepts aac/m4a/wav. Resolves `docs/backlog/medium/webapp-voice-safari-codec.md` |
+| 8 | Safari's `MediaRecorder` has no WebM; the current `VoiceButton` hard-codes `audio/webm;codecs=opus` and dies | Feature-detect `audio/mp4` → `audio/aac` → browser default. Backend already accepts aac/m4a/wav. Resolves [#100](https://github.com/anirudhlath/alfred/issues/100) |
 | 9 | Web Push on iOS works only for PWAs **already added to the homescreen**, and `Notification.requestPermission()` must be called from a user gesture | Permission cannot be requested on a first web visit. The install step is a prerequisite the app has to explain and sequence. See §6 |
 | 9b | iOS has no `beforeinstallprompt` — there is no programmatic "install" button | The app must *teach* the Share → Add to Home Screen gesture, detect standalone mode, and only then offer notifications |
 | 10 | iOS suspends and kills standalone PWAs aggressively | Rehydrate on `visibilitychange`: reconnect both sockets, re-send `session_id` from `localStorage`, refetch vitals, and reconcile the feed gap via `GET /api/admin/streams/{name}` (the telemetry socket starts at `$` and replays nothing) |

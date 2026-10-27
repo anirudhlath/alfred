@@ -2,25 +2,72 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
 import re
-from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any, Literal, TypeVar, overload
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar, get_origin, overload
 
-from pydantic import BaseModel
+from pydantic import (
+    BaseModel,
+    Field,
+    PydanticUndefinedAnnotation,
+    PydanticUserError,
+    ValidationError,
+    create_model,
+    field_validator,
+)
+from pydantic.fields import FieldInfo
+from pydantic.json_schema import GenerateJsonSchema
 
-from .context import ContextSnapshot
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from pydantic.json_schema import JsonSchemaWarningKind
 
 # ── Pydantic Manifest Models (write-side, for Redis registration) ──
 
 
+# Python type names, as `ToolParameter.type` carries them → JSON Schema types.
+JSON_TYPE_BY_PYTHON_NAME: dict[str, str] = {
+    "str": "string",
+    "int": "integer",
+    "float": "number",
+    "bool": "boolean",
+    "dict": "object",
+    "list": "array",
+}
+
+
 class ToolParameter(BaseModel):
-    """Schema for a single tool parameter in the manifest."""
+    """One parameter of a tool, as ``ToolMeta.parameters`` describes it.
+
+    This is how a tool built by hand is described; its ``input_schema`` is assembled
+    from these (``input_schema_from_parameters``), and only that schema goes on the wire
+    (issue #325). ``type`` is a Python type name. A hand-built tool sets ``required``
+    and, for an exact schema, ``json_schema``; without it the schema is derived from
+    ``type``.
+    """
 
     type: str
     description: str = ""
     default: Any = None
+    required: bool = False
+    json_schema: dict[str, Any] | None = None
+
+    @field_validator("json_schema")
+    @classmethod
+    def _own_json_schema(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Keep a deep copy, so the caller changing its dict later cannot change this one.
+
+        Args:
+            value: The ``json_schema`` as passed in.
+
+        Returns:
+            A deep copy of it.
+        """
+        return copy.deepcopy(value)
 
 
 ToolAudience = Literal["reflex", "conscious"]
@@ -51,11 +98,17 @@ class CredentialSchema(BaseModel):
 
 
 class ToolManifest(BaseModel):
-    """Schema for a single tool in the manifest."""
+    """Schema for a single tool in the manifest.
+
+    A tool's arguments go on the wire once, as ``input_schema``. SDKs before issue #325
+    also wrote the legacy ``parameters`` map; Alfred core still reads a manifest that
+    carries only that map, deriving the schema from it.
+    """
 
     name: str
     description: str = ""
-    parameters: dict[str, ToolParameter] = {}
+    # The tool's arguments as one JSON Schema object: what a model is offered.
+    input_schema: dict[str, Any] = {}
     audience: ToolAudience = "conscious"
     risk: ToolRisk = "benign"
 
@@ -78,18 +131,206 @@ class ServiceManifest(BaseModel):
     credentials_endpoint: str | None = None
 
 
+# ── input_schema assembly (hand-built tools) ──
+
+
+def _base_type_name(type_name: str) -> str:
+    """``"list[str]"`` → ``"list"``, ``"datetime.datetime | None"`` → ``"datetime.datetime"``."""
+    return type_name.split("|")[0].strip().split("[")[0].strip()
+
+
+def input_schema_from_parameters(parameters: Mapping[str, ToolParameter]) -> dict[str, Any]:
+    """Assemble a tool's JSON Schema from per-parameter metadata.
+
+    For tools built by hand (no signature to read) and for manifests written before
+    ``input_schema`` existed. A parameter's ``json_schema`` wins over its ``type`` name.
+
+    Args:
+        parameters: Parameter name → its metadata.
+
+    Returns:
+        An object schema with ``properties`` and ``required``.
+    """
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for name, param in parameters.items():
+        # A deep copy: the schema must share nothing with the parameter it came from.
+        prop: dict[str, Any] = (
+            copy.deepcopy(param.json_schema)
+            if param.json_schema is not None
+            else {"type": JSON_TYPE_BY_PYTHON_NAME.get(_base_type_name(param.type), "string")}
+        )
+        if param.description and "description" not in prop:
+            prop["description"] = param.description
+        properties[name] = prop
+        if param.required:
+            required.append(name)
+    return {"type": "object", "properties": properties, "required": required}
+
+
+def check_object_schema(schema: object) -> dict[str, Any]:
+    """Check that a tool's ``input_schema`` is an object schema a model can be offered.
+
+    The one copy of the check: ``ToolMeta`` runs it on a schema passed in explicitly,
+    and Alfred's tool registry on every schema a manifest ships.
+
+    Args:
+        schema: The candidate schema.
+
+    Returns:
+        ``schema`` itself, unchanged, once it has passed.
+
+    Raises:
+        ValueError: ``schema`` is not a dict, its ``type`` is not ``"object"``, its
+            ``properties`` are present but not a dict of schemas (dicts), or its
+            ``required`` is present but not a list of strings.
+    """
+    if not isinstance(schema, dict):
+        raise ValueError(f"input_schema is a {type(schema).__name__}, not a JSON object")
+    if schema.get("type") != "object":
+        raise ValueError(f"input_schema's type is {schema.get('type')!r}, not 'object'")
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict) or not all(
+        isinstance(prop, dict) for prop in properties.values()
+    ):
+        raise ValueError("input_schema's properties are not a dict of schemas")
+    required = schema.get("required", [])
+    if not isinstance(required, list) or not all(isinstance(name, str) for name in required):
+        raise ValueError("input_schema's required is not a list of parameter names")
+    return schema
+
+
+# ── Dispatch-time argument errors ──
+
+
+class ToolArgumentError(ValueError):
+    """A tool was dispatched with arguments its signature refuses.
+
+    ``AlfredClient.dispatch()``/``dispatch_sync()`` raise it before the tool runs, for a
+    missing, an invalid and an unexpected argument alike. The message names the tool
+    and every failing argument by its parameter name.
+
+    Attributes:
+        tool_name: The tool's qualified name.
+        problems: ``(path, message)`` per failing argument: the signature's order, then
+            unexpected arguments. ``path`` is the parameter name, dotted into a nested
+            value (``window.start``), and empty when the arguments are not an object.
+    """
+
+    def __init__(self, tool_name: str, problems: Sequence[tuple[str, str]]) -> None:
+        self.tool_name = tool_name
+        self.problems = tuple(problems)
+        details = "; ".join(f"{path}: {msg}" if path else msg for path, msg in self.problems)
+        super().__init__(f"Tool '{tool_name}' got invalid arguments: {details}")
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # BaseException rebuilds from `args` (the message alone), which `__init__` refuses.
+        return (type(self), (self.tool_name, self.problems))
+
+
 # ── ToolMeta dataclass ──
 
 
 @dataclass(frozen=True)
 class ToolMeta:
-    """Extracted metadata for a single tool method."""
+    """Extracted metadata for a single tool method.
+
+    ``input_schema`` is the tool's arguments as one JSON Schema object. Left empty, it
+    is assembled from ``parameters``. Passed in, it must pass ``check_object_schema``
+    (construction raises ``TypeError`` naming the tool otherwise), and a deep copy of
+    it is kept, so the caller changing its dict later cannot change this frozen meta.
+    ``parameters`` is copied into a new dict for the same reason.
+
+    ``dataclasses.replace(meta, parameters=new)`` keeps the old ``input_schema``, which
+    then no longer matches ``new``; pass ``input_schema={}`` as well to re-derive it.
+    Either way dispatch still validates against the method's signature, not ``new``.
+
+    ``arguments_model`` is the Pydantic model ``@tool`` discovery builds from the
+    method's signature, the same one ``input_schema`` is generated from, and
+    ``validate_arguments`` checks a call's arguments against it. It describes the method,
+    not the manifest, so ``replace`` keeps it: the schema and the model match for a
+    discovered tool and a description-only ``replace``, not after a ``replace`` of
+    ``parameters`` or ``input_schema``. It stays beside the tool: it is not
+    compared, not in the repr, and never copied into a ``ToolManifest``. A tool built by
+    hand leaves it ``None`` and is called with its arguments as they arrive.
+    """
 
     name: str
     description: str
     parameters: dict[str, ToolParameter]
     audience: ToolAudience = "conscious"
     risk: ToolRisk = "benign"
+    input_schema: dict[str, Any] = field(default_factory=dict)
+    arguments_model: type[BaseModel] | None = field(default=None, repr=False, compare=False)
+
+    def validate_arguments(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Check a call's arguments against the tool's signature, coercing them (lax mode).
+
+        An ISO string becomes a ``datetime``, an enum value its member, a dict the
+        nested model, ``"5"`` an ``int``. Only the arguments the call supplied are
+        returned, so an omitted one still takes the method's own default. A ``null``
+        for a parameter with a default, whose type refuses ``None``, counts as omitted;
+        any other ``null`` is validated like any other value.
+
+        Args:
+            params: The arguments as decoded from JSON, keyed by parameter name.
+
+        Returns:
+            Keyword arguments for the method, by parameter name. ``params`` itself,
+            unchanged, for a tool without an ``arguments_model``.
+
+        Raises:
+            ToolArgumentError: ``params`` is not an object, or an argument is missing,
+                invalid or unexpected; every failing argument is named.
+        """
+        model = self.arguments_model
+        if model is None:
+            return params
+        if not isinstance(params, Mapping):
+            problem = f"Arguments must be a JSON object, not {type(params).__name__}"
+            raise ToolArgumentError(self.name, [("", problem)])
+        # Fields are positional (`p0`, `p1`, ...) with the parameter name as alias.
+        names = {key: info.alias or key for key, info in model.model_fields.items()}
+        validated, cause = _validate_against(model, params)
+        if cause is not None:
+            # Models send `null` for an optional argument they mean to leave out: one the
+            # type refuses, on a parameter with a default, is dropped so the default applies.
+            fields = model.model_fields.items()
+            defaulted = {names[key] for key, info in fields if not info.is_required()}
+            nulled = {
+                head
+                for error in cause.errors(include_url=False)
+                for head in error["loc"][:1]
+                if head in defaulted and params[head] is None
+            }
+            if nulled:
+                kept = {key: value for key, value in params.items() if key not in nulled}
+                validated, cause = _validate_against(model, kept)
+        problems: list[tuple[str, str]] = []
+        if cause is not None:
+            # Error locations are by alias, so they name parameters, never `p0`.
+            problems.extend(
+                (".".join(str(part) for part in error["loc"]), error["msg"])
+                for error in cause.errors(include_url=False)
+            )
+        accepted = set(names.values())
+        problems.extend((key, "Unexpected argument") for key in params if key not in accepted)
+        if problems or validated is None:
+            raise ToolArgumentError(self.name, problems) from cause
+        return {names[key]: getattr(validated, key) for key in validated.model_fields_set}
+
+    def __post_init__(self) -> None:
+        # A new dict: keys the caller adds or removes later cannot drift from the schema.
+        object.__setattr__(self, "parameters", dict(self.parameters))
+        if not self.input_schema:
+            # Frozen dataclass: object.__setattr__ is the sanctioned way to fill a derived field.
+            object.__setattr__(self, "input_schema", input_schema_from_parameters(self.parameters))
+            return
+        try:
+            check_object_schema(self.input_schema)
+        except ValueError as exc:
+            raise TypeError(f"Tool '{self.name}': {exc}") from exc
+        object.__setattr__(self, "input_schema", copy.deepcopy(self.input_schema))
 
 
 # ── Docstring parser ──
@@ -141,6 +382,182 @@ def _parse_google_docstring_args(docstring: str) -> dict[str, str]:
     return args
 
 
+# ── input_schema generation (@tool methods) ──
+
+# Keywords whose values are data, not schemas: a "title" inside them is left alone.
+# A `discriminator`'s `mapping` is keyed by tag values, which may be "title".
+_LITERAL_KEYWORDS = frozenset({"default", "enum", "const", "examples", "discriminator"})
+# Keywords whose values map names to schemas: the names are never keywords.
+_SCHEMA_MAPS = frozenset({"properties", "$defs", "patternProperties"})
+
+# Parameter kinds a dispatcher cannot pass by keyword (`AlfredClient.dispatch` calls fn(**params)).
+_NOT_BY_KEYWORD_KINDS = (
+    inspect.Parameter.VAR_POSITIONAL,
+    inspect.Parameter.VAR_KEYWORD,
+    inspect.Parameter.POSITIONAL_ONLY,
+)
+
+
+class _UndescribableSchemaError(Exception):
+    """A schema Pydantic could only generate by quietly dropping part of a type."""
+
+
+class _ToolSchemaGenerator(GenerateJsonSchema):
+    """Pydantic's JSON Schema generator, with its warnings turned into errors.
+
+    Pydantic narrows what it cannot describe in silence: an ``int | Callable[[], int]``
+    parameter becomes ``{"type": "integer"}`` (a ``skipped-choice``, which it does not
+    even warn about by default). A model shown that schema would be shown a different
+    tool, so every warning kind fails the tool instead. The exception is a default JSON
+    cannot carry (a sentinel object), which is only left out: the parameter stays
+    optional, which is all a model needs to know.
+    """
+
+    def emit_warning(self, kind: JsonSchemaWarningKind, detail: str) -> None:
+        """Drop ``non-serializable-default``; raise for every other kind.
+
+        Args:
+            kind: Pydantic's warning kind.
+            detail: Pydantic's description of what it skipped.
+
+        Raises:
+            _UndescribableSchemaError: For any kind but ``non-serializable-default``.
+        """
+        if kind == "non-serializable-default":
+            return
+        raise _UndescribableSchemaError(f"{kind}: {detail}")
+
+
+def _strip_titles(node: Any) -> Any:
+    """Drop Pydantic's generated ``title`` keywords: tokens for the model, no meaning.
+
+    A property or model *named* ``title`` is kept (names under ``properties``/``$defs``
+    are walked as names), and data under ``default``/``enum``/``const``/``examples``/
+    ``discriminator`` is never touched.
+
+    Args:
+        node: A JSON Schema, or any value inside one.
+
+    Returns:
+        A copy of ``node`` without its ``title`` keywords.
+    """
+    if isinstance(node, list):
+        return [_strip_titles(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key == "title" and isinstance(value, str):
+            continue
+        if key in _SCHEMA_MAPS and isinstance(value, dict):
+            out[key] = {name: _strip_titles(schema) for name, schema in value.items()}
+        elif key in _LITERAL_KEYWORDS:
+            out[key] = value
+        else:
+            out[key] = _strip_titles(value)
+    return out
+
+
+def _sets_a_field_default(param: inspect.Parameter, hint: Any) -> bool:
+    """Whether a pydantic ``Field`` sets the parameter's default, where a call never sees it.
+
+    ``x: int = Field(5)`` makes the ``FieldInfo`` itself the Python default, and a
+    ``Field(default=...)`` or ``Field(default_factory=...)`` inside ``Annotated`` is
+    a default only the schema knows: either way, the schema and the call disagree.
+
+    Args:
+        param: The tool's parameter.
+        hint: Its resolved type hint, ``Annotated`` metadata kept.
+
+    Returns:
+        True when a ``Field`` holds the default instead of the signature.
+    """
+    if isinstance(param.default, FieldInfo):
+        return True
+    if get_origin(hint) is Annotated:
+        return any(
+            isinstance(meta, FieldInfo) and not meta.is_required() for meta in hint.__metadata__
+        )
+    return False
+
+
+def _validate_against(
+    model: type[BaseModel], params: Mapping[str, Any]
+) -> tuple[BaseModel | None, ValidationError | None]:
+    """``model.model_validate(params)``, as the instance or the error it raised."""
+    try:
+        return model.model_validate(params), None
+    except ValidationError as exc:
+        return None, exc
+
+
+def _signature_arguments(
+    qualified_name: str,
+    params: list[inspect.Parameter],
+    hints: dict[str, Any],
+    doc_args: dict[str, str],
+) -> tuple[type[BaseModel], dict[str, Any]]:
+    """Build a model of a tool's arguments from its signature, and its JSON Schema.
+
+    One model serves both: the schema a model is offered is generated from it, and
+    dispatch validates the arguments with it, so for a discovered tool, and one whose
+    description alone ``replace`` changes, the two cannot drift. A ``replace`` of
+    ``parameters``/``input_schema`` changes the schema but not the model: dispatch still
+    validates against the method's signature (see ``ToolMeta``). Fields are
+    positional names with the parameter name as alias, so a parameter may be called
+    anything (``model_config``, ``_private``) without colliding with BaseModel.
+
+    Args:
+        qualified_name: The tool's name, for error messages.
+        params: The tool's parameters, ``self``/``cls`` excluded.
+        hints: Resolved type hints by parameter name, ``Annotated`` metadata kept.
+        doc_args: Descriptions from the docstring's ``Args:`` section by parameter name.
+
+    Returns:
+        The arguments model, and an object schema generated from it, ``title`` keywords
+        stripped, always with ``type``, ``properties`` and ``required``.
+
+    Raises:
+        TypeError: A parameter's type cannot be described as JSON Schema, in full, or a
+            parameter without a default is hidden from the schema (``SkipJsonSchema``).
+    """
+    fields: dict[str, Any] = {}
+    for index, param in enumerate(params):
+        default = ... if param.default is inspect.Parameter.empty else param.default
+        doc = doc_args.get(param.name)
+        # Pass a description only when the docstring has one: `description=None` would
+        # override one given by `Annotated[..., Field(description=...)]`.
+        field_info = (
+            Field(default, alias=param.name, description=doc)
+            if doc
+            else Field(default, alias=param.name)
+        )
+        fields[f"p{index}"] = (hints.get(param.name, Any), field_info)
+    try:
+        model = create_model("ToolArgs", **fields)
+        schema: dict[str, Any] = model.model_json_schema(
+            by_alias=True, schema_generator=_ToolSchemaGenerator
+        )
+    # PydanticUserError covers schema-generation and invalid-for-JSON-Schema errors and a
+    # model left not fully defined; PydanticUndefinedAnnotation is a NameError, not one.
+    except (PydanticUserError, PydanticUndefinedAnnotation, _UndescribableSchemaError) as exc:
+        raise TypeError(
+            f"Tool '{qualified_name}': cannot describe its parameters as JSON Schema: {exc}"
+        ) from exc
+    schema = _strip_titles(schema)
+    schema.setdefault("properties", {})
+    schema.setdefault("required", [])
+    # `SkipJsonSchema` hides a parameter from the schema. With a default that is fine (the
+    # call falls back to it); without one, no model could ever supply it.
+    for param in params:
+        if param.default is inspect.Parameter.empty and param.name not in schema["properties"]:
+            raise TypeError(
+                f"Tool '{qualified_name}': parameter '{param.name}' has no default but is "
+                "hidden from its JSON Schema, so no model could supply it"
+            )
+    return model, schema
+
+
 def _extract_tool_meta(
     fn: Any,
     feature_name: str,
@@ -158,6 +575,18 @@ def _extract_tool_meta(
         description_override: Optional explicit description.
         audience: Which engine sees the tool ("reflex" or "conscious").
         risk: Dispatch risk gate ("benign", "elevated", "critical").
+
+    Returns:
+        The tool's metadata, with ``input_schema`` generated from the same signature
+        model it keeps as ``arguments_model`` for dispatch.
+
+    Raises:
+        TypeError: A parameter cannot be passed by keyword (``*args``, ``**kwargs``,
+            positional-only), a pydantic ``Field`` sets a parameter's default (``= Field(5)``,
+            or ``default``/``default_factory`` in ``Annotated``), a type hint cannot be
+            resolved (usually a type imported under ``if TYPE_CHECKING:`` in a module with
+            ``from __future__ import annotations``), a type cannot be described as JSON
+            Schema, or a parameter without a default is hidden from the schema.
     """
     from typing import get_type_hints
 
@@ -168,24 +597,44 @@ def _extract_tool_meta(
     # Parse parameter descriptions from Google-style docstring
     doc_args = _parse_google_docstring_args(docstring) if docstring else {}
 
-    # Extract type hints (skip self, cls, return)
+    # Extract type hints (skip self, cls, return). The schema reads them with their
+    # `Annotated` metadata (constraints, descriptions); the legacy type names without it,
+    # so those names stay what they always were.
     try:
-        hints = get_type_hints(fn)
-    except Exception:
-        hints = {}
+        hints = get_type_hints(fn, include_extras=True)
+        legacy_hints = get_type_hints(fn)
+    except Exception as exc:  # NameError for an unresolvable forward reference, among others
+        raise TypeError(f"Tool '{qualified_name}': cannot resolve its type hints: {exc}") from exc
 
     sig = inspect.signature(fn)
+    params = [p for name, p in sig.parameters.items() if name not in ("self", "cls")]
+    for param in params:
+        if param.kind in _NOT_BY_KEYWORD_KINDS:
+            raise TypeError(
+                f"Tool '{qualified_name}': parameter '{param.name}' must be passable by "
+                "keyword (no *args, **kwargs or positional-only parameters)"
+            )
+        if _sets_a_field_default(param, hints.get(param.name)):
+            raise TypeError(
+                f"Tool '{qualified_name}': parameter '{param.name}' takes its default from a "
+                "pydantic Field, which a call to the method never applies; put the default on "
+                "the parameter itself (`x: Annotated[int, Field(ge=0)] = 5`)"
+            )
+
+    arguments_model, input_schema = _signature_arguments(qualified_name, params, hints, doc_args)
+
     parameters: dict[str, ToolParameter] = {}
-    for param_name, param in sig.parameters.items():
-        if param_name in ("self", "cls"):
-            continue
-        type_str = getattr(hints.get(param_name), "__name__", str(hints.get(param_name, "Any")))
-        param_desc = doc_args.get(param_name, "")
-        default = param.default if param.default is not inspect.Parameter.empty else None
-        parameters[param_name] = ToolParameter(
-            type=type_str,
-            description=param_desc,
-            default=default,
+    for param in params:
+        legacy_hint = legacy_hints.get(param.name)
+        parameters[param.name] = ToolParameter(
+            type=getattr(legacy_hint, "__name__", str(legacy_hints.get(param.name, "Any"))),
+            description=doc_args.get(param.name, ""),
+            # The schema's JSON default, never the raw Python one: an Enum becomes its
+            # value, and a default JSON cannot carry (a sentinel) becomes None, so the
+            # parameter always serialises. A parameter the schema skips (`SkipJsonSchema`)
+            # has no property at all, and so no default.
+            default=input_schema["properties"].get(param.name, {}).get("default"),
+            required=param.default is inspect.Parameter.empty,
         )
 
     return ToolMeta(
@@ -194,6 +643,8 @@ def _extract_tool_meta(
         parameters=parameters,
         audience=audience,
         risk=risk,
+        input_schema=input_schema,
+        arguments_model=arguments_model,
     )
 
 
@@ -239,9 +690,9 @@ class BaseFeature:
             ToolManifest(
                 name=t.name,
                 description=t.description,
-                parameters=dict(t.parameters),
                 audience=t.audience,
                 risk=t.risk,
+                input_schema=t.input_schema,
             )
             for t in self.get_tools()
         ]
@@ -250,10 +701,6 @@ class BaseFeature:
             description=self.get_description(),
             tools=tool_manifests,
         )
-
-    async def get_context(self) -> ContextSnapshot:
-        """Return structured context for this feature. Override in subclasses."""
-        return ContextSnapshot()
 
 
 # ── @tool Decorator ──

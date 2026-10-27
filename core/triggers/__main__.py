@@ -27,7 +27,7 @@ from core.memory.paths import triggers_snapshot_dir
 from core.reflex.runner import ensure_consumer_group
 from core.triggers.engine import TriggerEngine
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
-from core.triggers.models import BaseTrigger, TriggerContext
+from core.triggers.models import TRIGGER_ENGINE_SOURCE, BaseTrigger, TriggerContext
 from core.triggers.server import create_app
 from core.triggers.store import TriggerStore
 from sdk.alfred_sdk.client import AlfredClient
@@ -38,17 +38,20 @@ from shared.streams import ACTIONS_STREAM, HOME_STATE_STREAM, decode_stream_valu
 
 logger = logging.getLogger(__name__)
 
+# A consumer group's name is Redis state (its read position), so it keeps its own literal:
+# renaming the service must not orphan the group.
 GROUP = "trigger-engine"
 CONSUMER = "worker-1"
 SNAPSHOT_DIR = triggers_snapshot_dir()
 
 # ACTIONS_STREAM consumer (internal trigger actions from admin API). A distinct
 # consumer GROUP so this process sees every entry independently of the home-agent
-# and conscious-engine groups; we only act on target_service="trigger-engine"
-# entries and ack-and-skip everything else.
+# and conscious-engine groups; we only act on entries whose target_service is this
+# service's name (TRIGGER_ENGINE_SOURCE, which it registers as) and ack-and-skip
+# everything else.
 ACTIONS_GROUP = "triggers-internal"
 ACTIONS_CONSUMER = "worker-1"
-TARGET_SERVICE = "trigger-engine"
+TARGET_SERVICE = TRIGGER_ENGINE_SOURCE
 
 _shutdown = asyncio.Event()
 
@@ -307,7 +310,7 @@ async def run(config: AlfredConfig) -> None:
 
     # Register CRUD tools via public AlfredClient API
     client = AlfredClient(
-        service_name="trigger-engine",
+        service_name=TRIGGER_ENGINE_SOURCE,
         service_endpoint="http://localhost:8001",
         redis_url=config.redis_url,
     )

@@ -8,7 +8,7 @@
 - Redis Stack + Mosquitto running: `brew install redis-stack mosquitto && brew services start redis-stack mosquitto`
 - `home-service` running against a real/dev Home Assistant instance:
   `cd ../home-service && uv run uvicorn app.server:app --port 8000` (needs `HA_TOKEN`)
-- A real LLM API key configured for the Conscious Engine (LiteLLM/OpenRouter) — this must be
+- A real LLM API key configured for the Conscious Engine (`SYSTEM2_MODEL`, see `docs/llm.md`) — this must be
   the actual cloud LLM, not the evals' mocked backend
 - `config/satellites.yaml` created from `config/satellites.yaml.example` with one entry
   pointed at `127.0.0.1` (e.g. `name: dev-mac`, `area: Office` to match the dev satellite

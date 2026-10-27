@@ -1,0 +1,10 @@
+id: home_control.lights.turn_off_room
+prd: [4.4.lights-scenes]
+status: shipped
+tags: [lights]
+steps:
+  - user: "Turn off the lights in the living room."
+    variants: ["Kill the living room lights."]
+expect:
+  - ha_state: {entity_id: light.living_room_lamp, state: "off"}
+  - ha_not_called: {entity_id: light.kitchen_pendants}

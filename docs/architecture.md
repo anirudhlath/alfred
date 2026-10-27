@@ -7,7 +7,7 @@ Alfred is an ambient, voice-first multi-agent system for smart environments. It 
 The system uses a **dual-process cognitive model**:
 
 - **System 1 (Reflex Engine)** -- a local Small Language Model (Ollama, default `gpt-oss:20b`) handles the fast path. Every state-change event passes through the SLM, which decides in sub-500ms whether an action is needed and, if so, which tool to call.
-- **System 2 (Conscious Engine)** -- a cloud LLM (Claude) handles complex reasoning, multi-step planning, and ambiguous user requests. Receives `UserRequest` events, assembles context from integrations and memory, runs an agentic tool-use loop, and returns `AlfredResponse` events.
+- **System 2 (Conscious Engine)** -- a cloud LLM (Claude) handles complex reasoning, multi-step planning, and ambiguous user requests. Receives `UserRequest` events, assembles context from integrations and memory, runs one Pydantic AI agent per request, with every tool in one catalog ([docs/llm.md](llm.md)), and returns `AlfredResponse` events.
 
 The system is governed by four non-negotiable architectural pillars:
 
@@ -65,6 +65,8 @@ image contents, `alfredctl` command reference, data lifecycle modes, and trouble
 
 The full path from a physical device state change to an executed action:
 
+> **Shadow mode ([#285](https://github.com/anirudhlath/alfred/issues/285)):** Reflex currently stops at the decision. The `execute_action` steps below do not run until #286.
+
 ```mermaid
 sequenceDiagram
     participant HA as Home Assistant
@@ -83,6 +85,11 @@ sequenceDiagram
     MQTT->>Bridge: Deliver message
     Bridge->>Redis: XADD alfred:home:state_changed
     Redis->>Runner: XREADGROUP (consumer group)
+    Runner->>Redis: HGET + HSET alfred:reflex:last_known_state
+    opt Return from unavailable/unknown/no state
+        Runner->>Redis: GET, else SET alfred:reflex:returned:{entry_id}
+    end
+    Note over Runner: unavailable/unknown → no information: dropped here,<br/>or bridged to one last → new change
     Runner->>Engine: process_event(StateChangedEvent)
     Engine->>Engine: Load preferences + build tool prompt
     Engine->>Ollama: POST /api/chat (prompt + event + tools)
@@ -96,7 +103,6 @@ sequenceDiagram
         Svc-->>Agent: JSON-RPC response
         Agent-->>Runner: ActionResult
         Runner->>Redis: XADD alfred:home:action_results
-        Runner->>Redis: LPUSH alfred:scratchpad:queue
         Runner->>Redis: XADD alfred:reflex:observations (action + result)
     else No action — passive observation
         Runner->>Redis: SET alfred:observer:seen:{entity_id} NX EX 300
@@ -111,9 +117,12 @@ sequenceDiagram
 
 **Key behaviors:**
 
-- If Ollama is down, `process_event` raises an exception. The Runner does NOT ACK the message, so Redis redelivers it on the next `XREADGROUP` cycle.
-- If the SLM returns `{"action": "none"}`, no action is dispatched and the message is ACKed normally — but the event is no longer forgotten. `observe_passively()` (`core/reflex/runner.py`) publishes a `ReflexObservation` with `action=None` to `alfred:reflex:observations`, debounced per entity by a `SET NX EX` on `alfred:observer:seen:{entity_id}` (`OBSERVATION_DEBOUNCE_SECONDS`, default 300). The write is best-effort and wrapped in its own `try` — a failure is logged and the message is still ACKed, because a passive observation is bookkeeping for an event the engine has already finished handling, and propagating would feed every no-action event back into a fresh SLM inference on the next reclaim pass. See 3.7.1 and [the design spec](superpowers/specs/2026-09-03-passive-observation-design.md).
-- The SLM response is validated: `target_service` must match a registered service in the tool registry. Unknown services are rejected.
+- `unavailable`, `unknown` and a missing old state carry no information. Before the attention gate, `bridge_availability()` (`core/reflex/availability.py`) drops any transition into `unavailable`/`unknown`, and compares an entity coming back — from either, or as `None → state` when HA re-adds it after a restart — with its last real state in `alfred:reflex:last_known_state`: the same state is a blip and is dropped, a different one goes on as a single `last → new` change (`off → unavailable → on` is `off → on`). Running ahead of the gate means a blip costs no inference and does not start the gate's 5 s cooldown, which would swallow a real change right behind it. A return with no known state (first sight, or a fresh hash) is dropped. A failed lookup drops the return; a failed write only logs. Replays are safe, keyed on the stream entry ID, which Redis assigns in arrival order and keeps across redelivery: each return's decision is kept for ten minutes under `alfred:reflex:returned:{entry_id}` and reused by any replay, and the known state only moves forward in entry order, so a late replay cannot roll it back. A replay still retries the known-state write, in case its first delivery lost it.
+- Each change is attributed before the attention gate: `record_change()` (`core/attribution/log.py`) reads the event's `context` into one of four causes (`person`, `alfred`, `automation`, `outside`; `unknown` when an older home-service sent none), counts it in `alfred:attribution:causes:<UTC date>` once per stream entry, and logs a person's, Alfred's or an automation's change to `alfred:attribution:changes`. The cause then rides into Reflex's `## What changed` line (`by Alex`), the memory summary and the shadow report, and `DomainRouter` logs each executed call with its `context_id`; `python -m core.attribution.report --days 7` joins the two. Best-effort like every attribution write. See [attribution.md](attribution.md).
+- If Ollama is down, `process_event` raises an exception. The Runner does NOT ACK the message; its reclaim pass (`reclaim_replayable`, every few cycles) replays it, as long as it is under five minutes old.
+- Reflex runs in **shadow mode** ([#285](https://github.com/anirudhlath/alfred/issues/285)): `engine.process_event()` returns a `ReflexProposal` and the runner executes nothing. Every decision increments `alfred:reflex:decisions:<UTC date>` (one hash per day, one field per decision, 30-day TTL). An **act**, **ask** or **invalid** proposal is published as a `ReflexObservation` with `proposal` set and `action`/`result` empty, bypassing the debounce below. Both writes are best-effort: a failure is logged and the entry is still ACKed. `python -m core.reflex.shadow_report --days 7` prints them for review.
+- On **none**, the event is still not forgotten. `observe_passively()` (`core/reflex/runner.py`) publishes a `ReflexObservation` with `action=None` to `alfred:reflex:observations`, debounced per entity by a `SET NX EX` on `alfred:observer:seen:{entity_id}` (`OBSERVATION_DEBOUNCE_SECONDS`, default 300). The write is best-effort and wrapped in its own `try` — a failure is logged and the message is still ACKed, because a passive observation is bookkeeping for an event the engine has already finished handling, and propagating would feed every no-action event back into a fresh SLM inference on the next reclaim pass. See 3.7.1 and [the design spec](superpowers/specs/2026-09-03-passive-observation-design.md).
+- The SLM response is validated by `parse_decision()` (`core/reflex/decision.py`): `tool_name` must be one of Reflex's registered tools, or the proposal is **invalid**. The model never picks the service: `target_service` comes from the tool's registry entry, and one in the reply is ignored.
 
 ## 3. Component Architecture
 
@@ -131,6 +140,7 @@ graph TB
         Engine[Reflex Engine]
         Observer["observe_passively()<br/>per-entity debounce"]
         CtxReader[ContextReader]
+        Attribution["Attribution<br/>record_change / record_call<br/>(core/attribution/)"]
         Registry[ToolRegistry]
         MemReader[Memory Reader]
         ScratchWriter[ScratchpadWriter]
@@ -168,9 +178,11 @@ graph TB
         ConsEngine[ConsciousEngine]
         IdentityGate[IdentityGate]
         SessionMgr[SessionManager]
-        CostTracker[CostTracker]
-        CtxAssembler[ContextAssembler]
-        ActionTools["Action Tools<br/>confirm_pending_action +<br/>attention_* (sir-only)"]
+        Spend["SpendLimits<br/>(shared/spend.py)"]
+        CtxAssembler["assemble()<br/>(context_assembler.py)"]
+        ActionTools["Attention Tools<br/>attention_* (sir-only)"]
+        Approvals["Approvals<br/>park / resume<br/>(approvals.py)"]
+        Classifier["ApprovalClassifier<br/>(approval role)"]
     end
 
     subgraph "Memory System"
@@ -212,12 +224,11 @@ graph TB
         WebChannel --> CredPushWorker
     end
 
-    subgraph "Evals Runner"
-        EvalsCLI["Evals CLI<br/><code>uv run python -m evals</code>"]
-        EvalsScenarios["YAML Scenarios"]
-        EvalsCtx["Context Fixtures"]
-        EvalsConscious["System 2 Evals<br/>DeepEval metrics"]
-        EvalsRegression["Regression Mode<br/>Mocked Ollama"]
+    subgraph "Eval Harness (host side)"
+        EvalsCLI["alfred evals<br/><code>uv run alfred evals run</code>"]
+        FakeHA["fake HA<br/>Home Assistant WebSocket double"]
+        LLMProxy["LLM proxy<br/>records every chat completion"]
+        EvalsMemory["Memory-Decay Eval<br/>throwaway Redis + simulated clock"]
     end
 
     subgraph "Research Vault"
@@ -233,8 +244,12 @@ graph TB
     AttnSet -->|SADD/SMEMBERS<br/>alfred:attention:*| Redis
     AttnSet --> Engine
     Runner --> DomRouter
+    Runner -->|record_change| Attribution
+    DomRouter -->|record_call| Attribution
+    Attribution -->|"HINCRBY alfred:attribution:causes:*<br/>XADD alfred:attribution:changes + :calls"| Redis
+    Engine -->|"XADD alfred:reflex:decision_log"| Redis
     DomRouter --> HomeAgent
-    DomRouter -->|SET/GETDEL<br/>alfred:pending_actions:*| Redis
+    DomRouter -->|SET/GETDEL<br/>alfred:pending:*| Redis
     Runner --> ScratchWriter
     Runner --> TelCollector
     Runner -->|"action is None"| Observer
@@ -246,7 +261,7 @@ graph TB
     Engine --> Registry
     Engine --> MemReader
     Engine -->|POST /api/chat| Ollama
-    CtxReader -->|GET alfred:context:*| Redis
+    CtxReader -->|HKEYS registry + HGETALL alfred:live_state:*| Redis
     Registry -->|HGETALL alfred:tool_registry| Redis
     MemReader -->|read| Prefs
     ScratchWriter -->|LPOP queue| Redis
@@ -255,6 +270,7 @@ graph TB
     HomeAgent -->|HGET endpoint| Redis
     HomeAgent -->|POST JSON-RPC| HomeSvc
     HomeSvc -->|register/unregister| Redis
+    HomeSvc -->|LiveStateWriter<br/>alfred:live_state:*| Redis
     HomeSvc <-->|HA API| HA
 
     TelCollector -->|flush CSV| CSV
@@ -274,15 +290,17 @@ graph TB
     ConsMain --> ConsEngine
     ConsMain --> IdentityGate
     ConsMain --> SessionMgr
-    ConsMain --> CostTracker
+    ConsMain --> Spend
     ConsEngine --> CtxAssembler
     ConsEngine -->|POST /v1/messages| Claude["Claude API"]
-    ConsEngine -->|XREAD requests| Redis
+    ConsEngine -->|XREADGROUP requests<br/>and approvals| Redis
     ConsEngine -->|XADD responses| Redis
     ConsEngine -->|domain tool calls| DomRouter
     ConsEngine -->|sir-only tool calls| ActionTools
-    ActionTools -->|GETDEL + XADD alfred:actions| Redis
     ActionTools -->|SADD/SREM alfred:attention:*| Redis
+    ConsEngine -->|critical calls| Approvals
+    Approvals -->|SET NX / GETDEL<br/>alfred:pending:*| Redis
+    ConsEngine -->|reply to a pending confirmation| Classifier
     CtxAssembler --> IntRegistry
     CtxAssembler --> EpisodicStore
     CtxAssembler --> MemReader
@@ -291,7 +309,7 @@ graph TB
     IntRegistry --> HealthInt
     IntRegistry --> RobinhoodInt
     SessionMgr -->|GET/SET sessions| Redis
-    CostTracker -->|GET/SET cost| Redis
+    Spend -->|"EVAL spend counter<br/>{alfred:spend}:*"| Redis
     IdentityGate -->|voiceprint lookup| Redis
     Ingestor -->|"XREADGROUP + reclaim_stale<br/>alfred:reflex:observations"| Redis
     Ingestor --> Scorer
@@ -318,15 +336,17 @@ graph TB
     CredPushWorker -->|XREADGROUP channels-credentials| Redis
     CredPushWorker -->|POST credentials_endpoint| HomeSvc
 
-    EvalsCLI -->|build_prompt + parse_response| Engine
-    EvalsCLI -->|POST /api/chat| Ollama
-    EvalsCLI -->|load| EvalsScenarios
-    EvalsCLI -->|load| EvalsCtx
-    EvalsCLI -->|HGETALL tools| Redis
-    EvalsCLI -->|flush CSV| CSV
-    EvalsConscious -->|custom metrics| EvalsCLI
-    EvalsRegression -->|mocked Ollama| EvalsCLI
+    EvalsCLI -->|"XADD alfred:user:requests"| Redis
+    EvalsCLI -->|"XREAD alfred:user:responses"| Redis
+    HomeSvc <-->|"HA WebSocket"| FakeHA
+    Engine -->|chat completions| LLMProxy
+    ConsEngine -->|chat completions| LLMProxy
+    Librarian -->|chat completions| LLMProxy
+    EvalsCLI -->|"alfred evals memory"| EvalsMemory
+    EvalsMemory -->|"real decay + recall, simulated clock"| EpisodicStore
 ```
+
+The `alfred evals run` edges (requests, the fake HA and the LLM proxy) exist only for a throwaway eval stack, where the fake HA stands in for Home Assistant and every LLM call goes through the proxy to vLLM; see [docs/evals.md](evals.md).
 
 ### 3.1 Event Bus: MQTT Bridge + Redis Streams
 
@@ -347,24 +367,23 @@ The bridge subscribes to MQTT topics `home/#` and `media/#` by default and liste
 
 ### 3.2 Reflex Engine (System 1 SLM Inference)
 
-**Files:** `core/reflex/engine.py`, `core/reflex/ollama_client.py`
+**Files:** `core/reflex/engine.py`, `core/reflex/prompt.py`, `core/reflex/decision.py`, `core/reflex/inference.py` (backends `openai_client.py`, `ollama_client.py`)
 
-The `ReflexEngine` class is the System 1 fast path. It is a pure inference component with no side effects -- it takes a `StateChangedEvent` and returns an `ActionRequest | None`.
+The `ReflexEngine` class is the System 1 fast path. It has no effect on the house, and keeps only a private decision log (`alfred:reflex:decision_log`) -- it takes a `StateChangedEvent` (or a `TriggerFired`) and returns a `ReflexProposal`: **act**, **ask**, **none** or **invalid** ([#285](https://github.com/anirudhlath/alfred/issues/285), [design](superpowers/specs/2026-10-07-reflex-context-design.md)).
 
 **How it works:**
 
 1. Loads user preferences from `core/memory/preferences/` (cached after first read).
-2. Fetches registered tools from `ToolRegistry` (cached, invalidatable via `reload_tools()`).
-3. Fetches entity context from `ContextReader` (cached with 5-minute TTL, renders as Markdown).
-4. Builds a system prompt dynamically from the tool registry -- tool names, parameters, and descriptions are injected at runtime; nothing is hardcoded.
-5. Constructs a user prompt with entity context, preferences, and event details.
-5. Sends the combined prompt to Ollama via `/api/chat` with `format: "json"`.
-6. Parses the JSON response: either `{"action": "none"}` or `{"tool_name": "...", "target_service": "...", "parameters": {...}}`.
-7. Validates `target_service` against registered services. Rejects unknown services.
+2. Fetches the `audience == "reflex"` tools from `ToolRegistry` (5-minute cache, invalidatable via `reload_tools()`).
+3. Reads live state fresh through `ContextReader.get_snapshot()`, and the user's timezone through `ContextReader.get_user_timezone()`.
+4. Builds the prompt with `core/reflex/prompt.py`, ordered from stable to volatile so vLLM's prefix cache covers as much as it can: rules and compact tools, `## Preferences`, `## Now` (local time, time of day, sun, people), `## House` (the actionable domains, one line per room by `attributes.area` — see [live-state.md](live-state.md#well-known-attributes)), then `## What changed` in one line or `## Trigger fired`. About 1,000 tokens.
+5. Sends it through `core/reflex/inference.py` (`REFLEX_BACKEND`: `openai` for vLLM in production, `ollama` by default) with `temperature=0`, JSON output and, on the OpenAI-compatible backend, `max_tokens=150`.
+6. `parse_decision()` turns the reply into a `ReflexProposal`, validating the tool against Reflex's own tool list. Anything else becomes **invalid**, keeping the raw text.
+7. Writes one record to the decision log (`alfred:reflex:decision_log`): the event, who caused it, the exact prompt and the proposal. Best-effort and private; a refused write logs a warning and never changes the proposal. See [attribution.md](attribution.md).
 
-The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer. The `@track_tokens(model="ollama")` decorator on `ollama_client.infer` records token usage.
+**Shadow mode (slice 1 of #285 → #286 → #287):** nothing a proposal names is executed. The runner counts every decision and records act, ask and invalid proposals; see section 2.
 
-**Ollama client** (`core/reflex/ollama_client.py`): thin async wrapper using a long-lived `httpx.AsyncClient` for TCP connection reuse on the hot path.
+The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer (the measured latency includes the sub-millisecond decision-log write), and `@track_tokens` on each backend's `infer` records token usage.
 
 #### 3.2.1 AttentionSet (Tiered Autonomy — Reflex Gating)
 
@@ -392,18 +411,53 @@ The `ToolRegistry` reads tool manifests from the Redis hash `alfred:tool_registr
 ToolInfo(
     name="lighting.dim_lights",
     description="Dim lights in a room",
-    parameters={"room": {"type": "str"}, "level": {"type": "int"}},
     feature_name="lighting",
     feature_description="Smart home lighting control",
     target_service="home-service",
+    audience="conscious",
+    risk="benign",
+    input_schema={
+        "type": "object",
+        "properties": {"room": {"type": "string"}, "level": {"type": "integer", "default": 50}},
+        "required": ["room"],
+    },
 )
 ```
+
+`input_schema` is the tool's arguments as one JSON Schema object, and the only
+description of them `ToolInfo` keeps. System 2 offers it to the model, and Reflex's prompt
+renders each tool's parameter names from its `properties`, in the schema's order
+(`ToolInfo.parameter_names`). The SDK generates it from each `@tool` signature, or
+assembles it from a hand-built tool's `ToolParameter`s, and since
+[#325](https://github.com/anirudhlath/alfred/issues/325) sends nothing else (see
+[docs/sdk.md](sdk.md)). `ToolInfo` checks it with the SDK's `check_object_schema()`; a
+tool built without one takes no arguments.
+
+A manifest written by an older SDK carries the legacy `parameters` map, and one written
+before `input_schema` existed has no schema, or an empty one. For such a manifest the
+registry derives the schema at parse time from `parameters` with `legacy_input_schema()`,
+the only code in core that reads the map, keeping today's `required` rule: a parameter is
+required when it says so, or, without a `required` key, when it has no `default` key.
+Old SDKs wrote `"default": null` for every parameter, so such a manifest marks nothing
+required ([#300](https://github.com/anirudhlath/alfred/issues/300)). A manifest that ships
+a schema has its `parameters`, if any, left unread. Both forms render the same Reflex
+prompt, byte for byte, so core can ship before services repin their SDK.
+
+One malformed entry never takes the others down. A tool whose name is missing or empty,
+whose description (or its feature's name or description) is not a string, whose
+`audience` or `risk` is not one the SDK's `ToolAudience`/`ToolRisk` allow, whose
+`input_schema` fails the SDK's `check_object_schema()`, or which ships no schema and has
+malformed legacy `parameters` is skipped with a
+`Skipping malformed tool` WARNING. A feature that is not an object, or whose `tools` are
+not a list, is skipped with a `Skipping malformed feature` WARNING. A service whose
+manifest is not a JSON object, or whose `features` are not a list, is skipped with a
+WARNING of its own (invalid JSON logs an ERROR). Everything else still loads.
 
 The registry is a read-only layer. Writing happens on the microservice side via `AlfredClient.register()` (see SDK section below).
 
 ### 3.4 alfred-sdk (Microservice Integration)
 
-**Files:** `sdk/alfred_sdk/feature.py`, `sdk/alfred_sdk/client.py`, `sdk/alfred_sdk/telemetry.py`
+**Files:** `sdk/alfred_sdk/feature.py`, `sdk/alfred_sdk/client.py`, `sdk/alfred_sdk/live_state.py`, `sdk/alfred_sdk/telemetry.py`
 
 The SDK is a standalone Python package -- it has no imports from `alfred/core`, `alfred/bus`, or `alfred/domains`. It is the only coupling point between Alfred and external microservices.
 
@@ -411,16 +465,16 @@ The SDK is a standalone Python package -- it has no imports from `alfred/core`, 
 
 - **`BaseFeature`** -- base class for grouping related tools. Subclass it and decorate methods with `@tool`. Tool metadata (name, description, parameters) is auto-extracted from Python type hints and Google-style docstrings.
 - **`@tool`** -- marks a method as an MCP tool. Supports both bare `@tool` and `@tool(name="...", description="...")`.
-- **`ContextProvider`** -- protocol for features that publish entity context. `BaseFeature` provides a default no-op; features override `get_context()` to return a `ContextSnapshot`.
+- **`LiveStateWriter` / `read_live_state()`** -- Alfred's live-state contract (`sdk/alfred_sdk/live_state.py`). A service publishes what its devices are doing through the writer as events arrive; core reads it with `read_live_state()`.
 - **`AlfredClient`** -- the entry point for microservices. Key operations:
   - `discover_features(package)` -- scans a Python package for `BaseFeature` subclasses, instantiates them, and builds a dispatch table.
-  - `register()` -- writes the service manifest to Redis `alfred:tool_registry` via `HSET`, and writes merged entity context to `alfred:context:{service_name}` with a 10-minute TTL.
+  - `register()` -- writes the service manifest to Redis `alfred:tool_registry` via `HSET`, then appends a capped `ServiceRegistered` to `alfred:events`. It carries no device state.
   - `unregister()` -- removes the service from the registry via `HDEL` on graceful shutdown.
   - `dispatch(method, params)` -- routes an incoming MCP call to the correct bound method on the feature instance.
 
-**Registration flow:** microservice starts --> discovers features --> calls `register()` --> Alfred's `ToolRegistry` sees tools on next `HGETALL`, `ContextReader` sees entity context on next cache miss.
+**Registration flow:** microservice starts --> discovers features --> calls `register()` --> Alfred's `ToolRegistry` sees tools on next `HGETALL`. Live state flows separately, through `LiveStateWriter`, and is read fresh on every prompt.
 
-See `docs/context-provider.md` for full details on the context publishing and consumption pipeline.
+See `docs/live-state.md` for the live-state contract and lifecycle.
 
 ### 3.5 Trigger Engine (Proactive Automation)
 
@@ -435,7 +489,7 @@ The Trigger Engine enables proactive behavior -- actions that fire based on time
 - **`TriggerEngine`** -- dual evaluation loops (scheduled wakeup on `next_fire_time()` + event listener) with deterministic fire logic.
 - **`TriggerFeature`** -- `BaseFeature` subclass exposing CRUD tools with dynamic descriptions.
 
-**Trigger types:** `time` (cron/datetime), `sensor` (entity/state/attribute match), `composite` (N-of-M child conditions).
+**Trigger types:** `time` (cron/datetime, or a relative `run_in_seconds` delay resolved to a datetime at creation), `sensor` (entity/state/attribute match), `composite` (N-of-M child conditions).
 
 **Fire logic:** If `trigger.action` is set, publishes `ActionRequest` to `alfred:actions`. If `None`, publishes `TriggerFired` to `alfred:events` for the Reflex Engine to handle.
 
@@ -464,7 +518,7 @@ Alfred's memory is biologically-inspired with three layers:
 
 **Episodic Memory** (`core/memory/episodic/`):
 
-Two-tier storage: Redis for hot (recent) entries, SQLite for cold archive. Entries are `EpisodicEntry` models with timestamps, source, content, and importance scores. Embeddings are computed via the configured embedding backend (see [3.7.2](#372-embedding-backends)) for semantic search. A `DecayScheduler` handles time-based importance decay.
+Two-tier storage: Redis for hot (recent) entries, SQLite for cold archive. Entries are `EpisodicEntry` models with timestamps, source, content, and importance scores. Embeddings are computed via the configured embedding backend (see [3.7.2](#372-embedding-backends)) for semantic search; hot KNN is exact (`HYBRID_POLICY ADHOC_BF`), cold tables measure cosine. The Librarian's decay pass (`Librarian._apply_decay`) moves episodic entries from hot to cold by migration pressure (age against significance, recency and retrieval frequency): it selects its candidates by metadata, compresses related entries by entity and day, and copies each with the vectors hot already holds. Deliberate recall (`memory_recall_memories` → `ContextIndexManager.recall()`) and admin search (`EpisodicMemory.recall()`) search both tiers through one merge, `recall_hot_and_cold()` (`core/memory/recall.py`), which applies type and time filters before the limit; involuntary recall searches hot only. Measured by the memory-decay eval (`docs/evals-memory.md`).
 
 **Semantic Memory** (`core/memory/profile/`, `core/memory/preferences/`):
 
@@ -499,8 +553,28 @@ group). It handles **two** shapes of observation:
 
 | `obs.action` | `EpisodicEntry.source` | Summary | Frequency key used for novelty |
 |---|---|---|---|
-| an `ActionRequest` | `"reflex"` | `[reflex:{origin}] {tool_name}({params}) → {status}` | `alfred:entity:freq` |
-| `None` (passive) | `"observation"` | `[observation] {entity}: {old} → {new} (key=value, …)` | `alfred:entity:freq:observed` |
+| an `ActionRequest` | `"reflex"` | `[reflex:{origin}] {when} — {tool_name}({params}) → {status}` | `alfred:entity:freq` |
+| `None` (passive) | `"observation"` | `[observation] {when} — {entity}: {old} → {new} (key=value, …)` | `alfred:entity:freq:observed` |
+
+`{when}` is the triggering event's local weekday, date and time (`Sat 2026-10-03 18:39`).
+It comes from `trigger_event["timestamp"]` — for a state change, the time home-service
+stamped as it forwarded HA's event — not from when the observation was built, which is
+after Reflex inference. It is rendered in the user's zone (`get_user_timezone`, read per
+entry), and the entry's `timestamp` is the same event time; the observation's own time is
+the fallback when the trigger event carries none. Without it a lamp that turns off every
+evening was the same text, with the same embedding, every evening. The semantic keys stay
+time-free, so a time-free query still matches them at the recall floor calibrated for
+them. `tz` is a required argument of `ingest_observation`, for the same reason
+`passive_scorer` is. The Librarian's pattern-detection prompt lists entry times in the
+same local zone, which is also the zone a routine's `trigger_pattern` is matched in.
+
+Entries stored before both changes are brought into line once, by hand, after the deploy:
+`python -m core.memory.migrate_observations` (`--apply` to write; a dry run otherwise). In
+both stores it deletes every stored observation whose transition touches `unavailable` or
+`unknown` — the ingestor wrote a missing state as `unknown` — and stamps the rest from the
+entry's own timestamp, re-embedding the text through `VectorStore.replace_content()`, which
+writes only while the entry is still there. Stamped entries are left alone, so it can run
+again.
 
 **Passive observations** are the no-action path described in [Section 2](#2-event-pipeline):
 the Reflex Engine saw the event, considered it, and did nothing. Before this existed the
@@ -520,17 +594,17 @@ because an omitted keyword silently produced exactly that contamination.
 
 **Delivery.** Entry ids are `obs.observation_id`, minted at publish time, so a redelivery
 overwrites the same `ctx:{id}` hash instead of writing a second copy. The loop ACKs only
-on success and therefore reclaims its PEL — with `reclaim_stale()`, the one deliberate
-exception to `reclaim_replayable()` in the codebase, because a ten-minute-old observation
+on success and therefore reclaims its PEL — with `reclaim_stale()`, a deliberate
+exception to `reclaim_replayable()` (the Conscious Engine's `reclaim_due()` is the other), because a ten-minute-old observation
 is still worth *remembering* even though it is too stale to *act on*. Unparseable payloads
 are ACKed and dropped; an entry that parses but fails deterministically downstream is
 retried at most `_MAX_DELIVERY_ATTEMPTS` (5) times, counted in
 `alfred:memory:ingest:attempts`, then ACKed away — otherwise it sits at the head of the
 PEL and starves everything behind it.
 
-Passive observations surface in the episodic tab of the web Memory page, rendered by
-`web/src/lib/format.ts` as `{entity}: {old} → {new}` rather than the bare word
-"observation". Full rationale and the seven-day review point:
+Passive observations surface in the episodic tab of the web Memory page as their
+summary text. `toEpisodicRow` (`web/src/lib/memory.ts`) drops the leading local-time
+stamp, since the row prints the entry's time itself. Full rationale and the seven-day review point:
 [docs/superpowers/specs/2026-09-03-passive-observation-design.md](superpowers/specs/2026-09-03-passive-observation-design.md).
 
 #### 3.7.2 Embedding backends
@@ -598,26 +672,27 @@ embeds the user's query inline in the reply path).
 
 ### 3.8 Conscious Engine (System 2)
 
-**Files:** `core/conscious/engine.py`, `core/conscious/identity.py`, `core/conscious/session.py`, `core/conscious/cost.py`, `core/conscious/context_assembler.py`
+**Files:** `core/conscious/engine.py`, `core/conscious/agent.py`, `core/conscious/deps.py`, `core/conscious/tools/`, `core/conscious/identity.py`, `core/conscious/session.py`, `core/conscious/context_assembler.py`, `shared/spend.py`
 
-The Conscious Engine handles complex user requests via the Claude API with an agentic tool-use loop.
+The Conscious Engine handles complex user requests with a Pydantic AI agent; [docs/llm.md](llm.md) covers the model settings, the tool catalog and the retries.
 
 **Pipeline:**
 
 1. **IdentityGate** (`identity.py`) -- resolves `identity_claim` from a `UserRequest` to a verified identity (sir/guest). Supports Signal phone lookup, WebAuthn session verification, and voiceprint matching.
-2. **SessionManager** (`session.py`) -- manages conversation sessions in Redis (`alfred:sessions:{id}`). Maintains message history with a configurable window.
-3. **CostTracker** (`cost.py`) -- enforces daily Claude API budget via Redis key `alfred:cost:daily`. Tracks input/output tokens and maps to dollar cost.
-4. **ContextAssembler** (`context_assembler.py`) -- gathers context from integrations, episodic memory, and preferences. Builds the system prompt with Alfred's identity and available data.
-5. **ConsciousEngine** (`engine.py`) -- runs the agentic loop: sends the request to Claude with tools, executes tool calls, feeds results back, repeats until Claude produces a final text response. Returns an `AlfredResponse`.
+2. **SessionManager** (`session.py`) -- manages conversation sessions in Redis (`alfred:sessions:{id}`). Stores each run's whole message history (tool calls and results included) per session, with compaction bounding it (`core/conscious/history.py`); a change of speaker starts the session over.
+3. **SpendLimits** (`shared/spend.py`) -- the daily budget every agent carries, a $0 local one included, on one atomic counter shared by all processes (`{alfred:spend}:*`). It refuses a model request once the day's spend reaches `DAILY_COST_CAP_USD` and sends the 80% alert once a day. See [docs/llm.md](llm.md#spend).
+4. **`assemble()`** (`context_assembler.py`) -- builds the system prompt for a turn from the rendered prose sections, with the current time, involuntary recall and the routine hint between them.
+5. **ConsciousEngine** (`engine.py`) -- runs the `system2` agent once per request: the agent offers the catalog's tools, validates and dispatches each call, feeds results back, and returns the final text, within ten model requests. Returns an `AlfredResponse`. A critical call does not dispatch: the run ends with the call deferred, and the engine parks it (below).
+6. **Approvals** (`approvals.py`, `approval_classifier.py`) -- holds a run that deferred critical calls in one pending record, and resumes it on the owner's decision: a reply in the conversation, read by the `ApprovalClassifier`, or a Door decision read from `alfred:approvals`. The conscious loop reads that stream and `alfred:user:requests` through one consumer group, so a decision gets the same reclaim and dead-letter policy as a turn.
 
-**Identity prompts** are in `core/conscious/prompts/` -- separate system prompts for sir vs guest interactions, enforcing the privacy boundary.
+**System 2's prose** (personality, voice delivery, identity, location, integrations, proactivity) is served by the prompt store (`shared/prompts/`); the sir and guest identity sections are separate prompts, enforcing the privacy boundary.
 
-**Action tools** (`core/conscious/action_tools.py`) -- `confirm_pending_action` (republishes a
-parked critical action once the user approves) and `attention_add`/`attention_remove`/`attention_list`
-(reshape the Reflex `AttentionSet`, see 3.2.1), dispatched in-process like memory tools. Offered
-in the tool manifest only when `identity.identity == "sir"`, and re-checked at dispatch time in
-`_dispatch_tool_call()` -- a guest turn that somehow emits one of these calls is refused rather
-than executed (defense-in-depth). See [docs/autonomy.md](autonomy.md).
+**Attention tools** (`core/conscious/tools/attention.py`) --
+`attention_add`/`attention_remove`/`attention_list` (reshape the Reflex `AttentionSet`, see
+3.2.1). They form a sir-only toolset: never offered on a guest turn, and refused at call time
+if a guest turn names one anyway (defense-in-depth). There is no tool that confirms an
+action: confirmation is the owner's reply or the Door, never the model's. See
+[docs/autonomy.md](autonomy.md) and [docs/llm.md](llm.md).
 
 ### 3.9 Integration Registry
 
@@ -644,8 +719,8 @@ The `DataSanitizer` (`sanitizer.py`) strips sensitive data from integration resp
 **Web Channel** (`core/channels/`):
 
 FastAPI + WebSocket server on port 8081. Receives user messages (text or audio) via
-WebSocket, publishes `UserRequest` to `alfred:user:requests`, waits for `AlfredResponse` on
-`alfred:user:responses`, and sends the response back. Supports voice input via the voice
+WebSocket, publishes `UserRequest` to `alfred:user:requests`, waits for the `AlfredResponse`
+on `alfred:user:responses` whose `in_reply_to` names that request, and sends it back. Supports voice input via the voice
 pipeline.
 
 **Admin API** (`core/channels/admin_api.py`):
@@ -704,12 +779,14 @@ The `DomainRouter` maps `ActionRequest` events to the correct domain agent based
 Reflex prompt filter, 3.2.1): every `route()` call looks up the tool's risk
 (`tool_risk()`, default `"benign"`); a Reflex-sourced request above benign risk is rejected
 and recorded as a `ReflexObservation`, and an unconfirmed `risk == "critical"` request is
-parked (not executed) via the **pending-action store** (`core/routing/pending.py`,
-Redis key `alfred:pending_actions:{request_id}`, 5-minute TTL) while an URGENT notification
-asks the user to confirm. Confirmation -- via `POST /api/actions/{id}/confirm` or the
-`confirm_pending_action` action tool (3.8) -- atomically `GETDEL`s the pending entry and
-republishes it with `confirmed=True`, so concurrent confirms of the same id can never both
-execute. Full flow and sequence diagram: [docs/autonomy.md](autonomy.md).
+parked (not executed) via the **pending store** (`core/routing/pending.py`, Redis key
+`alfred:pending:{id}`, 5-minute TTL) while an URGENT notification asks the user to confirm.
+The store holds two kinds of record: a `ParkedAction` for an action the router itself
+intercepted, and a `ParkedRun` for a System 2 run that deferred its critical calls (3.8).
+Confirmation -- `POST /api/actions/{id}/confirm`, or for a parked run also a reply in the
+conversation -- atomically `GETDEL`s the record, so concurrent answers to the same id can never
+both execute; an action is then republished with `confirmed=True`, a run is resumed. Full flow
+and sequence diagram: [docs/autonomy.md](autonomy.md).
 
 ### 3.12 Telemetry
 
@@ -731,46 +808,17 @@ Runs as a background task in the Reflex Runner (30-second flush interval). Reads
 
 Typed Pydantic models for each metric category: `LatencyMetric`, `TokenMetric`, `EventMetric`. These define canonical CSV column headers.
 
-### 3.13 Evals Runner
+### 3.13 Eval Harness
 
-**Files:** `evals/__main__.py`, `evals/pipeline.py`, `evals/scorer.py`, `evals/inference.py`, `evals/context_fixtures.py`
+**Files:** `evals/cli.py`, `evals/harness/`, `evals/suites/`, `evals/coverage.yaml`
 
-Three-layer eval strategy:
+**PRD Eval Suite** (`evals/harness/`):
 
-**System 1 Evals** (existing):
+`alfred evals run` asserts the PRD's LLM-decided requirements with utterance-level goldens against the real assembled stack. Each suite boots a throwaway copy of the fat image (`alfredctl up --eval`), with every LLM role on the local vLLM model. The host-side driver plays each golden over the container's own bus: it `XADD`s a `UserRequest` to `alfred:user:requests` and reads the `AlfredResponse` from `alfred:user:responses`. Home-service talks to a fake Home Assistant that serves a fictional world and records every `call_service`, and System 1, System 2 and the Librarian reach vLLM through a proxy that records every chat completion. Deterministic checks over that evidence, plus a rubric judge trusted only in categories that agree with hand labels, score each golden over several epochs and variants. A scorecard reports them by PRD row, and `evals/coverage.yaml` with its pytest check keeps every PRD row mapped to goldens, tests or a stated reason. Built on Inspect AI. See [docs/evals.md](evals.md).
 
-Scenario-based evaluation that tests the Reflex Engine's SLM output. Reuses the engine's public API (`build_prompt()`, `parse_response()`) to ensure eval prompts match production prompts exactly. YAML scenarios in `evals/scenarios/<domain>/` define event + expected action pairs.
+**Memory-Decay Eval** (`evals/memory/`):
 
-**System 1 Regression Mode** (`evals/regression/`):
-
-Mocked Ollama client (`MockOllamaClient`) for deterministic CI runs without GPU. Canned responses keyed by entity ID substring matching. Run via `python -m evals regression`.
-
-**System 2 Evals** (`evals/conscious/`):
-
-Custom metrics for Conscious Engine output quality:
-
-| Metric | What it checks |
-|--------|---------------|
-| `ButlerPersonalityScore` | Formal language, "sir" address, absence of casual markers |
-| `PrivacyLeakScore` | No personal data leaked to guest identities |
-| `ProactivityRelevanceScore` | Unsolicited suggestions are contextually useful (stub) |
-| `MemoryRetrievalPrecision` | Retrieved memories actually appear in the response |
-
-YAML scenarios in `evals/conscious/scenarios/` define user requests + expected behavior (mentions, forbidden mentions, tool call counts, metric thresholds). Run via `python -m evals conscious`.
-
-**Good Morning Demo** (`evals/e2e/demo_good_morning.py`):
-
-End-to-end script that publishes a `UserRequest` to Redis, waits for an `AlfredResponse`, and scores it with all custom metrics. Exercises every Phase 3 component. Run via `python -m evals demo`.
-
-**Other capabilities:**
-
-- Context fixtures in `evals/contexts/` replay captured HA state
-- Parallel execution within each run
-- Multi-run aggregation (`-n N`) with per-scenario pass rates
-- Pluggable backends (Ollama, LM Studio) via `InferFn` protocol
-- Run comparison diffs verdict changes and latency deltas
-
-See [docs/evals-runner.md](evals-runner.md) for full documentation.
+Replays weeks of a simulated house against the real memory stack (RediSearch in a throwaway container, sqlite-vec, the configured embedding model, the real write path and `Librarian._apply_decay` on a simulated clock) and compares decay policies by what recall returns. No LLM. Run via `python -m evals memory run`; see `docs/evals-memory.md`.
 
 ## 4. Notification System
 
@@ -782,13 +830,15 @@ graph LR
     DND -->|inactive| CR[ChannelRegistry]
     CR --> Signal[Signal]
     CR --> WS[WebSocket]
-    CR --> Voice[Voice TTS]
+    CR --> APNs[APNs]
+    CR --> Sat[Voice satellites]
     Defer -->|drain trigger| Disp
 ```
 
 The notification system is deterministic — no LLM calls. The Dispatcher checks DND state,
 defers non-urgent notifications during DND, and routes to auto-discovered channel adapters
-by urgency level. URGENT notifications always bypass DND.
+by urgency level. URGENT notifications always bypass DND. Which adapter takes which urgency,
+and which surfaces speak, is listed in [docs/notifications.md](notifications.md).
 
 ## 4.5 Authentication (WebAuthn)
 
@@ -814,14 +864,15 @@ graph LR
 
 | Event Type | Source | Purpose | Key Fields |
 |---|---|---|---|
-| `StateChangedEvent` | Microservices via MQTT | Reports a device/entity state change | `domain`, `entity_id`, `old_state`, `new_state`, `attributes` |
+| `StateChangedEvent` | Microservices via MQTT | Reports a device/entity state change | `domain`, `entity_id`, `old_state`, `new_state`, `attributes`, `context` (who caused it: `id`, `user_id`, `parent_id`, `person`, `by_service`; absent from older publishers — see [attribution.md](attribution.md)) |
 | `ActionRequest` | Reflex Engine | Requests a tool execution on a microservice | `target_service`, `tool_name`, `parameters` |
 | `ActionResult` | Domain agents | Reports the outcome of a tool execution | `request_id`, `tool_name`, `status`, `result`, `error` |
 | `TelemetryEvent` | Any component | Observability metric | `metric_type`, `category`, `value`, `unit` |
 | `ToolRegistration` | Microservices | Announces available tools | `service_name`, `service_endpoint`, `tools` |
 | `TriggerFired` | Trigger Engine | A trigger's conditions were met (no direct action) | `trigger_id`, `trigger_name`, `trigger_type`, `context` |
 | `UserRequest` | Interaction channels | Inbound user interaction (text/audio) | `channel`, `session_id`, `identity_claim`, `content_type`, `content` |
-| `AlfredResponse` | Conscious Engine | Outbound response to user | `channel`, `session_id`, `text`, `actions_taken`, `mood` |
+| `AlfredResponse` | Conscious Engine | Outbound response to user | `channel`, `session_id`, `text`, `actions_taken`, `mood`, `in_reply_to` (the answered request's `event_id`), `followup` (an answer nobody waited for) |
+| `ApprovalDecision` | Web channel | The owner's Door decision on a parked run | `approval_id`, `decision`, `run` |
 | `TriggerCreated` | Trigger Engine | A trigger was dynamically created | `trigger_type`, `name`, `conditions`, `action`, `one_shot` |
 | `ReflexObservation` | Reflex Runner, DomainRouter | Records what the reflex did — or saw and chose not to do (`action`/`result` are `None`) | `origin`, `trigger_event`, `action`, `result`, `decision_context` |
 
@@ -837,25 +888,38 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:scratchpad:queue` | List | Pending scratchpad observations (drained by `ScratchpadWriter` only) |
 | `alfred:librarian:queue` | List | Consolidation feed — writer fan-out, drained by the Librarian |
 | `alfred:librarian:status` | Hash | Librarian run status — `last_run_at` (ISO), `reviewed` (count, as str), `next_run_at` (ISO); written best-effort by the consolidator and scheduler |
-| `alfred:context:{service}` | String (JSON) | Service entity context snapshot (TTL 600s) |
+| `alfred:live_state:{service}` | Hash | A service's live state, one `LiveStateEntry` JSON per entity ID; written by `LiveStateWriter`, cleared on disconnect (`docs/live-state.md`) |
+| `alfred:events` | Stream | Bus events (`TriggerFired`, `TriggerCreated`, `ServiceRegistered`); every producer passes `MAXLEN ~ 10000` (`EVENTS_MAXLEN`) |
 | `alfred:triggers` | Hash | Trigger ID → JSON (Trigger Engine runtime store) |
 | `alfred:triggers:changed` | Pub/Sub | Cross-process `TriggerStore` coherence (saved/deleted/tz-changed) |
 | `alfred:user:timezone` | String | User's IANA timezone (`shared/usertime.py`; resolution: stored → `ALFRED_TIMEZONE` env → UTC) |
 | `alfred:user:requests` | Stream | Inbound user requests from channels |
-| `alfred:user:responses` | Stream | Outbound Alfred responses to channels |
-| `alfred:sessions:{id}` | String (JSON) | Conversation session state |
-| `alfred:cost:daily` | String (JSON) | Daily Claude API cost tracking |
+| `alfred:user:responses` | Stream | Outbound Alfred responses to channels; the `channels-followups` group delivers the follow-ups among them (`core/channels/followups.py`) |
+| `alfred:approvals` | Stream | `ApprovalDecision`s from the Door, read by the Conscious Engine (group `conscious-engine`) next to `alfred:user:requests` |
+| `alfred:followup:{event_id}` | String | A channel's wait for a response (`waiting`, then `late` if it gave up; TTL 600s, `core/channels/request_bus.py`) |
+| `alfred:sessions:{id}` | Hash | Conversation session: `channel`, `created_at`, `identity`, `messages` (the run's message history as JSON; TTL `SESSION_TIMEOUT_MINUTES`) |
+| `{alfred:spend}:*` | String + Hash (harness `RedisSpendStore`) | Daily spend counter; `alfred:spend:alert:{day}` marks the 80% alert as sent |
+| `alfred:conscious:dead_letters` | Stream | Turns the Conscious Engine gave up on — `entry_id`, `event`, `error_type`, `error`, `deliveries`, `reason` (`permanent`, `exhausted`, `expired`, `stale`, `partial`); `MAXLEN ~ 1000` |
+| `alfred:conscious:answered:{event_id}` | String | Set in the same transaction as a request's response (TTL 3600s), so a redelivery after a crash before the ACK answers nothing |
+| `alfred:conscious:effects:{event_id}` | List | The request's side-effecting tool calls as JSON `{tool, args, status}` (`started`/`ok`/`failed`/`parked`; TTL 3600s); a turn that fails or is redelivered after acting answers from it instead of acting again |
 | `alfred:memory:episodic` | Stream | Hot episodic memory entries |
 | `alfred:reflex:observations` | Stream | `ReflexObservation` feed — reflex actions *and* passive observations, drained by the `memory-ingestor` group |
 | `alfred:entity:freq` | Sorted Set | Entity sighting counts behind the novelty dimension of `SignificanceScorer` (novelty = `1/count`) |
 | `alfred:entity:freq:observed` | Sorted Set | The same counts for **passive** observations only — a separate population, so ~200–300 entries/day cannot flatten novelty for real reflex actions |
+| `alfred:reflex:last_known_state` | Hash | Entity ID → JSON `{state, entry}`: its last real state (never `unavailable`/`unknown`) and the `alfred:home:state_changed` entry ID that set it, for the Reflex runner's availability bridge (`core/reflex/availability.py`); only ever moves forward in entry order |
+| `alfred:reflex:returned:{entry_id}` | String | The bridge's decision for one returning stream entry — JSON `{left}`, the state it came back from or `null` for a blip (TTL 600s), so a replay is bridged the same way |
+| `alfred:attribution:calls` | Stream | One `AlfredCall` per successful call Alfred made (time, part of Alfred, tool, parameters, reason, the `context_id` the service returned), written by `DomainRouter`; kept up to 30 days or `MAXLEN ~ 20000`, whichever comes first (`core/attribution/log.py`, [attribution.md](attribution.md)) |
+| `alfred:attribution:changes` | Stream | One `AttributedChange` per state change caused by a person, Alfred or an automation, with its context, written by the Reflex runner; kept up to 30 days or `MAXLEN ~ 50000`, whichever comes first |
+| `alfred:attribution:causes:<UTC date>` | Hash | One counter per cause (`person`, `alfred`, `automation`, `outside`, `unknown`) for that UTC day's state changes that passed the availability bridge (TTL 30 days) |
+| `alfred:attribution:counted:{entry_id}` | String | Marks a `alfred:home:state_changed` entry as counted, so a redelivered entry is counted once (`SET NX`, TTL 600s, `REPLAY_MARKER_TTL_SECONDS`) |
+| `alfred:reflex:decision_log` | Stream | One record per decision that reached the model — event, cause, exact prompt, proposal — for slice 2's replay set; kept up to 30 days or `MAXLEN ~ 10000`, whichever comes first (`core/reflex/decision_log.py`) |
 | `alfred:observer:seen:{entity_id}` | String | Per-entity passive-observation debounce (`SET NX EX`, TTL `OBSERVATION_DEBOUNCE_SECONDS`, default 300); present means "already recorded this entity recently, skip" |
 | `alfred:memory:ingest:attempts` | Hash | Stream-entry ID → delivery count for the Memory Ingestor; at 5 the entry is ACK-dropped so a deterministically-failing entry cannot starve the PEL (TTL 3600s, crash-safety net only) |
 | `alfred:identity:voiceprint` | Hash | Voiceprint embeddings for identity |
 | `alfred:notifications:queue` | Stream | Proactive notification queue |
 | `alfred:attention:{domain}` | Set | Tier-2 Reflex attention set membership (`core/reflex/attention.py`) |
 | `alfred:attention:{domain}:seen` | Set | Sticky removals -- entities the YAML seed must not re-add |
-| `alfred:pending_actions:{request_id}` | String (JSON) | Parked critical `ActionRequest` awaiting confirmation (TTL 300s, `core/routing/pending.py`) |
+| `alfred:pending:{id}` | String (JSON) | A held critical action awaiting the owner: a `ParkedRun` (System 2 run, id = approval id) or a `ParkedAction` (router-intercepted `ActionRequest`, id = request id); TTL 300s, written `SET NX`, claimed by `GETDEL` (`core/routing/pending.py`) |
 | `alfred:auth:{session_id}` | Hash | Passkey session: `authenticated`, `credential_id`, `created_at`, `ip`, `user_agent`, `channel` (TTL 8h, `core/identity/auth_routes.py`) |
 | `alfred:webauthn:pairing` | String | The active 6-digit device-pairing code (TTL 300s, single-use) |
 | `alfred:webauthn:pairing:fails:{bucket}` | String (int) | Wrong guesses from one client address — a single IPv4 address (`203.0.113.5`) or an IPv6 /64 (`2001:db8::/64`) (TTL 300s); at 10 that client is refused for the rest of the TTL, even with the correct code — the code itself stays live for every other client |
@@ -872,6 +936,26 @@ At-least-once is only real if the loop reclaims its own pending-entries list: `X
 delivers *new* messages only, so an entry left un-ACKed by a failure is never redelivered on its
 own. The Memory Ingestor (`memory-ingestor` on `alfred:reflex:observations`) reclaims every ~60s
 via `reclaim_stale()` and caps redeliveries at 5 — see 3.7.1 and the rule in `CLAUDE.md`.
+Both Reflex loops (`reflex-engine` on `alfred:home:state_changed`, `reflex-trigger-fired` on
+`alfred:events`) reclaim on the same cadence via `reclaim_replayable()`, which ACK-drops anything
+older than 5 minutes rather than act on it — that age limit is also what bounds their
+redeliveries. The Conscious Engine reclaims on every pass of its loop via `reclaim_due()`: it
+counts each entry's deliveries, redelivers on a doubling backoff (15 s, then 30 s), and after
+`MAX_DELIVERIES` (3) answers the user with a fixed apology and writes the turn to the
+`alfred:conscious:dead_letters` stream instead of dropping it. An entry past the 5-minute replay
+window is answered and dead-lettered rather than run; an answered marker and a side-effect ledger
+keep a redelivery from answering or acting twice (see [llm.md](llm.md#retries)). The same loop
+reads Door decisions from `alfred:approvals` with the same policy. All of them ACK a
+payload that can never parse.
+
+One loop deliberately does not reclaim: the channels' follow-up worker (`channels-followups` on
+`alfred:user:responses`) ACKs every entry, delivered or not. Its delivery is best effort and a
+late reply is worthless once its 600 s registration lapses, so there is no PEL to reclaim. Its
+group is created at the stream's end and resumes from its last read after a restart (see
+[notifications.md](notifications.md#follow-ups-late-answers-and-door-resumes)). The worker
+makes the group inside its retry loop, so a Redis that is not up yet is retried, and makes it
+again at the stream's end when a flush or a restore drops it (`NOGROUP`); what was published
+while it was gone is not delivered.
 
 ## 6. Configuration
 
@@ -958,11 +1042,11 @@ uv run mypy bus/ core/ domains/ evals/ runner/ sdk/ shared/ telemetry/
 # Run tests
 uv run pytest
 
-# Run evals
-uv run python -m evals run                  # System 1 evals (requires Ollama)
-uv run python -m evals regression           # System 1 regression (mocked, CI-safe)
-uv run python -m evals conscious            # System 2 evals (dry-run)
-uv run python -m evals demo                 # Good Morning end-to-end demo
+# Run evals (Docker, a local vLLM and the evals extra; see docs/evals.md)
+uv run alfred evals calibrate                       # judge agreement with hand labels
+uv run alfred evals list                            # goldens, their status and PRD rows
+uv run alfred evals run home_control conversation   # throwaway stacks, scorecard by PRD row
+uv run python -m evals memory run                   # memory-decay simulation
 ```
 
 ### 7.5 Shutdown

@@ -1,6 +1,13 @@
 """Redis stream and key constants — single source of truth."""
 
+from datetime import timedelta
+from typing import Final
+
 EVENTS_STREAM = "alfred:events"
+# Approximate cap on EVENTS_STREAM (XADD MAXLEN ~), passed by every producer — the same
+# value and style as bus/bridge.py's FORWARD_MAXLEN. alfred-sdk keeps a copy
+# (AlfredClient.EVENTS_MAXLEN); sdk/tests/test_schema_compatibility.py checks they agree.
+EVENTS_MAXLEN = 10_000
 ACTIONS_STREAM = "alfred:actions"
 SCRATCHPAD_QUEUE = "alfred:scratchpad:queue"
 # Consolidation feed. The ScratchpadWriter forwards here after appending to
@@ -11,12 +18,35 @@ LIBRARIAN_QUEUE = "alfred:librarian:queue"
 LIBRARIAN_STATUS_KEY = "alfred:librarian:status"
 TRIGGERS_KEY = "alfred:triggers"
 TOOL_REGISTRY_KEY = "alfred:tool_registry"
-CONTEXT_KEY_PREFIX = "alfred:context:"
+# Last prompt text fetched from Langfuse, per prompt and label (shared.prompts.store).
+# A format string: PROMPT_COPY_KEY.format(name=..., label=...).
+PROMPT_COPY_KEY = "alfred:prompts:{name}:{label}"
 
 # Home domain streams (used by MQTT bridge + Reflex Runner)
 HOME_STATE_STREAM = "alfred:home:state_changed"
 HOME_ACTION_RESULTS_STREAM = "alfred:home:action_results"
 REFLEX_OBSERVATIONS_STREAM = "alfred:reflex:observations"
+# Daily Reflex decision counts (#285): one hash per UTC day, one field per decision.
+REFLEX_DECISIONS_PREFIX = "alfred:reflex:decisions:"
+
+# Who caused each home state change. Private logs, each kept ATTRIBUTION_MAX_AGE: an append
+# (shared.redis_streams.append_capped) trims everything older, and the MAXLEN caps bound a
+# busy house.
+# Alfred's own successful calls: {"call": AlfredCall JSON}.
+ATTRIBUTION_CALLS_STREAM = "alfred:attribution:calls"
+# Changes with a nameable cause (person, alfred, automation): {"change": AttributedChange JSON}.
+ATTRIBUTION_CHANGES_STREAM = "alfred:attribution:changes"
+# + UTC date -> hash, one field per cause (plus "unknown" for an event with no context).
+ATTRIBUTION_CAUSES_PREFIX = "alfred:attribution:causes:"
+# + stream entry ID -> "1" (short TTL): the entry's change is already counted, so a redelivery
+# of it (an un-ACKed entry the reclaim pass replays) is not counted twice.
+ATTRIBUTION_COUNTED_PREFIX = "alfred:attribution:counted:"
+# What Reflex decided about each event and why, one entry per event.
+REFLEX_DECISION_LOG_STREAM = "alfred:reflex:decision_log"
+ATTRIBUTION_MAX_AGE = timedelta(days=30)
+ATTRIBUTION_CALLS_MAXLEN: Final = 20_000
+ATTRIBUTION_CHANGES_MAXLEN: Final = 50_000
+REFLEX_DECISION_LOG_MAXLEN: Final = 10_000
 
 # Phase 3: Conscious Engine
 USER_REQUESTS_STREAM = "alfred:user:requests"
@@ -26,6 +56,16 @@ DND_STATE_KEY = "alfred:memory:dnd"
 DEFERRED_NOTIFICATIONS_KEY = "alfred:notifications:deferred"
 NOTIFICATION_DISPATCH_STREAM = "alfred:notifications:dispatch"
 DEVICE_TOKENS_KEY = "alfred:push:devices"
+# Turns the Conscious Engine gave up on (permanent failure, deliveries exhausted, or
+# redelivered past the replay window): entry id, event, error, deliveries, reason.
+DEAD_LETTER_STREAM = "alfred:conscious:dead_letters"
+# + UserRequest.event_id -> set (with a TTL) once that request's answer is published and
+# before its entry is ACKed, so a redelivery after a crash in between answers nothing.
+ANSWERED_KEY = "alfred:conscious:answered:{}"
+# + UserRequest.event_id -> LIST of JSON {tool, args, status}, one per side-effecting
+# tool call the turn made, written before the call and updated after it (with a TTL), so
+# a turn that fails or is redelivered after acting answers from it instead of acting twice.
+EFFECTS_KEY = "alfred:conscious:effects:{}"
 
 # Phase 3: Memory
 VOICEPRINT_KEY = "alfred:identity:voiceprint"
@@ -51,16 +91,41 @@ INGEST_ATTEMPTS_KEY = "alfred:memory:ingest:attempts"
 # what keeps episodic memory readable.
 OBSERVED_ENTITY_PREFIX = "alfred:observer:seen:"
 
-# Phase 3: Runtime config + cost
+# Last real state per entity (hash field -> JSON {state, entry}: the state and the
+# stream entry ID that set it), never `unavailable`/`unknown`. The Reflex runner
+# compares an entity coming back against it, so a device that drops off the network
+# and returns unchanged is not recorded as two changes. Plus, per returning entry
+# (+ entry ID -> JSON {left}: the state it came back from, null for a blip; short
+# TTL), the decision a replay of that entry reuses.
+LAST_KNOWN_STATE_KEY = "alfred:reflex:last_known_state"
+AVAILABILITY_DECISION_PREFIX = "alfred:reflex:returned:"
+
+# Phase 3: Runtime config
 RUNTIME_CONFIG_KEY = "alfred:config:runtime"
-COST_DAILY_KEY = "alfred:cost:daily"
+
+# Spend (shared.spend). RedisSpendStore keeps one hash per budget window under
+# `{SPEND_PREFIX}:<budget>|<window>|<scope>|<bucket>` — the braces are a hash tag the store
+# adds itself, so the prefix carries none. The alert marker (+ the budget day, SET NX
+# EX 172800) makes the 80% alert fire once a day across every process.
+SPEND_PREFIX = "alfred:spend"
+SPEND_ALERT_KEY = "alfred:spend:alert:{}"
 
 # Phase 3: Integration registry
 INTEGRATION_REGISTRY_KEY = "alfred:integration_registry"
 
-# Attention set + pending critical actions (Real-Home HA Integration, Plan 3)
+# Attention set (Real-Home HA Integration, Plan 3)
 ATTENTION_PREFIX = "alfred:attention:"  # + domain → Redis SET of entity_ids
-PENDING_ACTIONS_PREFIX = "alfred:pending_actions:"  # + request_id → ActionRequest JSON, TTL 300s
+
+# Deferred approvals. + approval id -> PendingRecord JSON (a parked run or a router-held
+# action), TTL 300 s; every resolution path claims it with GETDEL, so it resolves once.
+PENDING_PREFIX: Final = "alfred:pending:"
+# ApprovalDecision events, published by the API when the owner taps Confirm or Deny.
+APPROVALS_STREAM: Final = "alfred:approvals"
+# + request_id -> marker (SET with a 600 s TTL) when a caller stopped waiting for it, so its
+# late answer is delivered as a follow-up instead of being dropped.
+FOLLOWUP_KEY: Final = "alfred:followup:{}"
+# Approximate cap (XADD MAXLEN ~) on HOME_ACTION_RESULTS_STREAM, passed by every producer.
+ACTION_RESULTS_MAXLEN: Final = 1000
 
 # Trigger cache coherence + user timezone
 TRIGGERS_CHANGED_CHANNEL = "alfred:triggers:changed"

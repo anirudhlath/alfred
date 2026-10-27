@@ -1,0 +1,52 @@
+id: guest_boundary.web_pwa.sir_control
+prd:
+- 4.6.identity-confidence
+- 2.audience
+status: shipped
+tags:
+- identity
+- positive_control
+- web_pwa
+steps:
+- user: Turn on the bedroom lamp.
+expect:
+- tool_offered:
+    tool: memory_recall_memories
+    at_step: 0
+- tool_offered:
+    tool: memory_get_live_state
+    at_step: 0
+- tool_offered:
+    tool: attention_add
+    at_step: 0
+- tool_offered:
+    tool: attention_remove
+    at_step: 0
+- tool_offered:
+    tool: attention_list
+    at_step: 0
+- tool_offered:
+    tool: integration_apple_calendar_list_calendars
+    at_step: 0
+- tool_offered:
+    tool: integration_apple_calendar_get_today_events
+    at_step: 0
+- tool_offered:
+    tool: integration_apple_calendar_get_upcoming
+    at_step: 0
+- tool_offered:
+    tool: integration_apple_calendar_create_event
+    at_step: 0
+- tool_offered:
+    tool: integration_apple_calendar_delete_event
+    at_step: 0
+- ha_called:
+    domain: light
+    service: turn_on
+    entity_id: light.bedroom_lamp
+- ha_state:
+    entity_id: light.bedroom_lamp
+    state: 'on'
+as:
+  who: sir
+  channel: web_pwa

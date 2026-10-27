@@ -1,0 +1,9 @@
+id: triggers.timezone.tokyo_morning
+prd: [4.2.client-timezone]
+status: shipped
+tags: [timezone]
+as: {tz: Asia/Tokyo}
+steps:
+  - user: "Remind me tomorrow at 8:15 in the morning to buy train tickets."
+expect:
+  - trigger_created: {type: time, at_local: {time: "08:15", tz: Asia/Tokyo}}

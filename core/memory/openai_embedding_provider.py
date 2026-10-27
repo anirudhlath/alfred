@@ -33,7 +33,7 @@ from shared.config import DEFAULT_EMBEDDING_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 # Connect gets its own, much tighter budget: involuntary recall embeds the user's
-# query inline in the reply path (core/conscious/engine.py:654), so an unreachable
+# query inline in the reply path (ConsciousEngine._recall), so an unreachable
 # host must fail in seconds rather than hold a reply for the whole read budget.
 _CONNECT_TIMEOUT_SECONDS = 5.0
 # Server error bodies land in logs (core/memory/ingestor.py logs str(e) per event);

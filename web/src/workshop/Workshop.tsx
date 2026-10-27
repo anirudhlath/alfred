@@ -60,7 +60,7 @@ export const Workshop = memo(function Workshop({ open, onClose, onWhy, onHeld }:
           next open starts clean. One bad body from one of System's five reads
           used to take Activity, Memory and Triggers down with it, because all
           four hooks live in the one panel below (`lib/system.ts`,
-          `fetchIntegrations`). */}
+          `fetchIntegrationListing`). */}
       <ErrorBoundary fallback={<BenchFailed onClose={onClose} />}>
         <WorkshopPanel onClose={onClose} onWhy={onWhy} onHeld={onHeld} />
       </ErrorBoundary>
@@ -192,7 +192,7 @@ function WorkshopPanel({ onClose, onWhy, onHeld }: WorkshopPanelProps) {
    * outlives its form is the thing that decision exists to prevent. The
    * scroll position goes with them, which is a cost rather than a choice —
    * measured and backlogged as item 15 of the phase 3 plan, which task 11
-   * files as `docs/backlog/low/pwa-phase3-followups.md`.
+   * files as issue #258.
    *
    * A `switch` rather than a lookup object because it is the shape TypeScript
    * checks: `Bench` is a closed union of four, and a fifth member would fail to

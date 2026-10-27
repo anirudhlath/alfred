@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from alfredctl import launch
 from alfredctl import runtime as runtime_module
 from alfredctl.launch import LaunchPlan, build_plan
 from alfredctl.runtime import Runtime
@@ -43,6 +42,7 @@ def _plan(
     extra_env: list[str] | None = None,
     env_file: Path | None = None,
     passphrase: str = "pp",
+    eval_mode: bool = False,
 ) -> LaunchPlan:
     return build_plan(
         rt,
@@ -56,6 +56,7 @@ def _plan(
         extra_env=extra_env if extra_env is not None else [],
         env_file=env_file,
         passphrase=passphrase,
+        eval_mode=eval_mode,
     )
 
 
@@ -110,7 +111,7 @@ def test_mode_and_passphrase_set() -> None:
 
 
 def test_docker_linux_adds_add_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(launch.sys, "platform", "linux")
+    monkeypatch.setattr(runtime_module.sys, "platform", "linux")
     args = _plan(rt=DOCKER).run_args
     assert "--add-host" in args
     assert args[args.index("--add-host") + 1] == "host.docker.internal:host-gateway"
@@ -289,3 +290,78 @@ def test_openai_compat_host_rewritten_to_gateway(tmp_path: Path) -> None:
     env_file.write_text("OPENAI_COMPAT_HOST=http://localhost:8000\n")
     args = _plan(env_file=env_file).run_args
     assert "OPENAI_COMPAT_HOST=http://host.docker.internal:8000" in args
+
+
+# --- eval mode: the throwaway stack `alfred evals` drives from the host --------------
+
+
+def test_eval_mode_publishes_loopback_random_ports_for_web_and_redis() -> None:
+    args = _plan(mode="persistent", persist=Path("/tmp/eval"), eval_mode=True).run_args
+    assert "127.0.0.1::8081" in args and "127.0.0.1::6379" in args
+    assert "8081:8081" not in args
+
+
+def test_eval_mode_names_the_container_apart() -> None:
+    plan = _plan(mode="persistent", persist=Path("/tmp/eval"), eval_mode=True)
+    assert plan.name.startswith("alfred-eval-")
+
+
+def test_eval_mode_mounts_data_sets_eval_flag_and_lifts_cost_cap() -> None:
+    args = _plan(mode="persistent", persist=Path("/tmp/eval"), eval_mode=True).run_args
+    assert "/tmp/eval:/data" in args
+    assert "ALFRED_EVAL=1" in args and "DAILY_COST_CAP_USD=1000000" in args
+
+
+def test_eval_mode_env_flag_still_wins() -> None:
+    args = _plan(
+        mode="persistent",
+        persist=Path("/tmp/eval"),
+        eval_mode=True,
+        extra_env=["DAILY_COST_CAP_USD=5"],
+    ).run_args
+    assert "DAILY_COST_CAP_USD=5" in args and "DAILY_COST_CAP_USD=1000000" not in args
+
+
+def test_eval_mode_needs_a_persist_dir() -> None:
+    with pytest.raises(ValueError, match="persist"):
+        _plan(mode="persistent", persist=None, eval_mode=True)
+
+
+def test_eval_mode_rejects_the_apple_runtime() -> None:
+    with pytest.raises(ValueError, match="docker and podman"):
+        _plan(rt=APPLE, mode="persistent", persist=Path("/tmp/eval"), eval_mode=True)
+
+
+@pytest.mark.parametrize("flag", ["expose_ha", "expose_home"])
+def test_eval_mode_rejects_the_expose_flags(flag: str) -> None:
+    """Both publish on every interface (1883, 8000): a no-secret stack open to the LAN,
+    on the same host ports the deployed stack may hold."""
+    with pytest.raises(ValueError, match="expose"):
+        _plan(
+            mode="persistent",
+            persist=Path("/tmp/eval"),
+            eval_mode=True,
+            expose_ha=flag == "expose_ha",
+            expose_home=flag == "expose_home",
+        )
+
+
+def test_eval_mode_refuses_an_env_file(tmp_path: Path) -> None:
+    """ "Never reads .env" holds in the plan itself, not only in the CLI that calls it."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("HA_TOKEN=real\n")
+    with pytest.raises(ValueError, match="env file"):
+        _plan(mode="persistent", persist=Path("/tmp/eval"), eval_mode=True, env_file=env_file)
+
+
+def test_eval_mode_asks_up_to_resolve_the_published_port() -> None:
+    """A random host port is unknown until the container starts; `localhost:8081` would
+    point at the deployed stack instead."""
+    plan = _plan(mode="persistent", persist=Path("/tmp/eval"), eval_mode=True)
+    assert plan.url_hint == "resolve-port"
+
+
+def test_non_eval_plan_sets_no_eval_flag() -> None:
+    args = _plan(mode="persistent", persist=Path("/tmp/live")).run_args
+    assert not any(a.startswith(("ALFRED_EVAL=", "DAILY_COST_CAP_USD=")) for a in args)
+    assert _plan().name.startswith("alfred-") and not _plan().name.startswith("alfred-eval-")

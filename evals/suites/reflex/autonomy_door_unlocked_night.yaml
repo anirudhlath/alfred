@@ -1,0 +1,14 @@
+id: reflex.autonomy.door_unlocked_night
+prd: [4.4.tiered-autonomy]
+status: pending  # the PRD row is Planned; #286 decides the tiers
+tags: [autonomy]
+steps:
+  - clock: {hour: 2}
+  - ha_event: {entity_id: sun.sun, state: below_horizon}
+    settle: 1  # Reflex does not attend to the sun
+  - ha_event: {entity_id: person.sam, state: not_home}
+  - ha_event: {entity_id: person.alex, state: not_home}
+  - ha_event: {entity_id: lock.front_door, state: unlocked}
+expect:
+  # Never act on its own here. Until the tiers land, "none" is allowed too.
+  - reflex_decision: {decision: [ask, none]}

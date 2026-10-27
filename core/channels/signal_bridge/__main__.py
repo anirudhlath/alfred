@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from core.channels.signal_bridge.bridge import SignalBridge
 from shared.config import AlfredConfig
 from shared.logging import configure_logging
+from shared.otel import init_tracing
 from shared.redis_streams import create_redis
 
 if TYPE_CHECKING:
@@ -49,6 +50,10 @@ async def run(config: AlfredConfig) -> None:
 
 def main() -> None:
     config = AlfredConfig.from_env()
+    init_tracing(
+        service_name="signal-bridge",
+        endpoint=config.otel_endpoint if config.signoz_enabled else None,
+    )
     asyncio.run(run(config))
 
 

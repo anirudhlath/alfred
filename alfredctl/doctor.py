@@ -17,16 +17,19 @@ warning, never a hard failure, so ``doctor`` is safe to run anywhere.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from dotenv import dotenv_values
 
+from alfredctl.redact import redact_userinfo
+
 if TYPE_CHECKING:
     from pathlib import Path
 
     import httpx
+
+    from shared.config import LlmSettings
 
 Status = Literal["pass", "warn", "fail"]
 
@@ -65,25 +68,6 @@ def _host_side(url: str) -> str:
     return url.replace("host.docker.internal", "localhost").replace(
         "host.containers.internal", "localhost"
     )
-
-
-# Authority-only: userinfo is everything between the start of the authority and the
-# last "@" before the path, so an @ inside a path is left alone and this cannot raise
-# the way urlsplit can on a malformed authority. Two details earn their keep:
-# ``[^/]*@`` is greedy to the *last* @ because httpx delimits there too (a password may
-# contain one), and the scheme is optional because a schemeless host still reaches the
-# output — httpx rejects it, and the rejection detail quotes the URL back.
-_USERINFO_RE = re.compile(r"^([a-zA-Z][\w+.-]*://|//)?[^/]*@")
-
-
-def _redact_userinfo(url: str) -> str:
-    """Hide any ``user:password@`` before a URL is printed.
-
-    Doctor output is pasted into issues and chat, and EMBEDDING_HOST / HA_HOST /
-    OLLAMA_HOST can carry basic-auth credentials. Display only — the request itself is
-    still made with the URL as configured.
-    """
-    return _USERINFO_RE.sub(r"\1***@", url)
 
 
 def _probe(url: str, headers: dict[str, str] | None = None) -> tuple[bool, str]:
@@ -150,7 +134,7 @@ def _probe_embedding_dim(
     import httpx
 
     url = _host_side(f"{host.rstrip('/')}/v1/embeddings")
-    shown = _redact_userinfo(url)
+    shown = redact_userinfo(url)
     key = api_key.strip()
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     body = {"model": model, "input": "alfredctl doctor probe"}
@@ -185,33 +169,65 @@ def _probe_embedding_dim(
     return width, "pass", f"HTTP {resp.status_code}"
 
 
+_CONSCIOUS = "conscious (System 2)"
+# What an unusable approval model costs: replies to a confirmation all read as "other".
+_NO_APPROVAL_MODEL = "approval by reply is off (the Door still approves)"
+
+
+def _check_model(setting: str, model: str, llm: LlmSettings) -> tuple[str, str]:
+    """(status, detail) for one role's model string."""
+    from shared.config import vllm_family_known
+
+    provider, _, name = model.partition(":")
+    if provider == "openrouter" and name:
+        key = llm.openrouter_api_key
+        if not key or key.startswith("__"):
+            return "fail", f"{setting}={model} needs OPENROUTER_API_KEY (or CLAUDE_API_KEY)"
+        return "pass", f"{setting}={model}"
+    if provider == "vllm" and name:
+        if not vllm_family_known(name):
+            return "warn", (
+                f"{setting}={model}: {name!r} names no known model family, so Pydantic AI "
+                "uses its default profile — serve the model under its own name (gemma…, qwen…)"
+            )
+        return "pass", f"{setting}={model} at {redact_userinfo(llm.vllm_base_url)}"
+    return "fail", (
+        f"{setting}={model} is not a model string Alfred can use "
+        "(want vllm:<served-name> or openrouter:<vendor>/<model>)"
+    )
+
+
 def _check_conscious(env: dict[str, str], online: bool) -> DoctorCheck:
-    model = env.get("CLAUDE_MODEL", "openrouter/anthropic/claude-sonnet-4")
-    openrouter = env.get("OPENROUTER_API_KEY", "").strip()
-    anthropic = env.get("CLAUDE_API_KEY", "").strip()
-    key = openrouter or anthropic
-    if not key or key.startswith("__"):
-        return DoctorCheck(
-            "conscious (System 2)",
-            "fail",
-            "no OPENROUTER_API_KEY / CLAUDE_API_KEY — cloud reasoning disabled",
-        )
-    if model.startswith("openrouter/") and not openrouter:
-        return DoctorCheck(
-            "conscious (System 2)",
-            "warn",
-            f"CLAUDE_MODEL={model} needs OPENROUTER_API_KEY, only CLAUDE_API_KEY set",
-        )
-    if online and openrouter:
-        ok, detail = _probe(
-            "https://openrouter.ai/api/v1/key", headers={"Authorization": f"Bearer {openrouter}"}
+    from shared.config import resolve_llm_settings
+
+    try:
+        llm = resolve_llm_settings(env)
+    except RuntimeError as exc:
+        return DoctorCheck(_CONSCIOUS, "fail", str(exc))
+    roles = [("SYSTEM2_MODEL", llm.system2_model)]
+    if llm.librarian_model != llm.system2_model:
+        roles.append(("LIBRARIAN_MODEL", llm.librarian_model))
+    if llm.approval_model != llm.system2_model:
+        roles.append(("APPROVAL_MODEL", llm.approval_model))
+    results = [_check_model(setting, model, llm) for setting, model in roles]
+    # The approval role is System 2's model unless APPROVAL_MODEL names another.
+    approval = results[-1] if roles[-1][0] == "APPROVAL_MODEL" else results[0]
+    for status in ("fail", "warn"):
+        bad = [detail for st, detail in results if st == status]
+        if bad:
+            if status == "fail" and approval[0] == "fail":
+                bad.append(_NO_APPROVAL_MODEL)
+            return DoctorCheck(_CONSCIOUS, status, "; ".join(bad))
+    detail = "; ".join(d for _, d in results)
+    if online and any(model.startswith("openrouter:") for _, model in roles):
+        ok, probe = _probe(
+            "https://openrouter.ai/api/v1/key",
+            headers={"Authorization": f"Bearer {llm.openrouter_api_key}"},
         )
         if not ok:
-            return DoctorCheck(
-                "conscious (System 2)", "warn", f"key set but probe failed: {detail}"
-            )
-        return DoctorCheck("conscious (System 2)", "pass", f"OpenRouter key valid ({detail})")
-    return DoctorCheck("conscious (System 2)", "pass", f"key set, model={model}")
+            return DoctorCheck(_CONSCIOUS, "warn", f"key set but probe failed: {probe}")
+        return DoctorCheck(_CONSCIOUS, "pass", f"{detail}; OpenRouter key valid ({probe})")
+    return DoctorCheck(_CONSCIOUS, "pass", detail)
 
 
 def _check_reflex(env: dict[str, str], online: bool) -> DoctorCheck:
@@ -229,10 +245,10 @@ def _check_reflex(env: dict[str, str], online: bool) -> DoctorCheck:
             ok, detail = _probe(f"{host.rstrip('/')}/v1/models")
             status: Status = "pass" if ok else "warn"
             return DoctorCheck(
-                "reflex (System 1)", status, f"openai backend {_redact_userinfo(host)} ({detail})"
+                "reflex (System 1)", status, f"openai backend {redact_userinfo(host)} ({detail})"
             )
         return DoctorCheck(
-            "reflex (System 1)", "pass", f"openai backend {_redact_userinfo(host)}, model={model}"
+            "reflex (System 1)", "pass", f"openai backend {redact_userinfo(host)}, model={model}"
         )
     host = env.get("OLLAMA_HOST", "http://localhost:11434").strip()
     if online:
@@ -241,10 +257,10 @@ def _check_reflex(env: dict[str, str], online: bool) -> DoctorCheck:
             return DoctorCheck(
                 "reflex (System 1)",
                 "warn",
-                f"Ollama at {_redact_userinfo(host)} unreachable: {detail}",
+                f"Ollama at {redact_userinfo(host)} unreachable: {detail}",
             )
         return DoctorCheck("reflex (System 1)", "pass", f"Ollama reachable ({detail})")
-    return DoctorCheck("reflex (System 1)", "pass", f"ollama backend {_redact_userinfo(host)}")
+    return DoctorCheck("reflex (System 1)", "pass", f"ollama backend {redact_userinfo(host)}")
 
 
 def _check_home_assistant(env: dict[str, str], online: bool) -> DoctorCheck:
@@ -262,7 +278,7 @@ def _check_home_assistant(env: dict[str, str], online: bool) -> DoctorCheck:
         )
         if not ok:
             return DoctorCheck(
-                "home assistant", "warn", f"token set but {_redact_userinfo(host)} probe: {detail}"
+                "home assistant", "warn", f"token set but {redact_userinfo(host)} probe: {detail}"
             )
         return DoctorCheck("home assistant", "pass", f"reachable ({detail})")
     return DoctorCheck("home assistant", "pass", "token set")
@@ -340,7 +356,7 @@ def _check_embeddings(env: dict[str, str], online: bool) -> DoctorCheck:
     if backend == "openai":
         # Gating is irrelevant on this path — the server holds the weights, not us.
         # Redacted for display only; the probe below still uses the configured host.
-        where = f"via {_redact_userinfo(host)} (timeout {timeout:g}s)"
+        where = f"via {redact_userinfo(host)} (timeout {timeout:g}s)"
         if not online:
             return DoctorCheck("memory embeddings", status, f"model={model} {where}, {note}")
         served, verdict, detail = _probe_embedding_dim(
@@ -355,7 +371,7 @@ def _check_embeddings(env: dict[str, str], online: bool) -> DoctorCheck:
             return DoctorCheck(
                 "memory embeddings",
                 "fail",
-                f"{_redact_userinfo(host)} emits {served} dims for {model} but the index is "
+                f"{redact_userinfo(host)} emits {served} dims for {model} but the index is "
                 f"built at {dim} — "
                 f"the vector store refuses to start on the mismatch",
             )

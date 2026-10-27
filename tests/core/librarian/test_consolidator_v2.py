@@ -2,19 +2,37 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
-import json
+import itertools
+import logging
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-import pytest
+    from pydantic_ai_harness.spend import SpendLimits
 
-from core.librarian.consolidator import ConflictItem, Librarian, _group_by_entity_date
+import fakeredis
+import pytest
+from pydantic_ai_harness.spend import SpendEntry, SpendLimitExceeded
+
+from core.librarian.agents import ConflictItem, build_librarian_agents
+from core.librarian.consolidator import (
+    Librarian,
+    _group_by_entity_date,
+    decay_candidate_ranges,
+    migration_pressure,
+)
 from core.memory.schemas import EpisodicEntry, SignificanceScore
-from core.memory.vector_store import ContextMetadata, SearchResult
+from core.memory.vector_store import ContextMetadata, Range, SearchResult
+from core.notifications.publisher import NotificationPublisher
+from core.notifications.schema import Urgency
+from shared.config import DEFAULT_DECAY_MIGRATION_THRESHOLD, AlfredConfig
+from shared.spend import build_spend_limits, local_clock
+from tests.llm_fakes import Script
 
 _UTC = datetime.UTC
 _TS = datetime.datetime(2026, 3, 19, tzinfo=_UTC)
@@ -22,7 +40,7 @@ _TS = datetime.datetime(2026, 3, 19, tzinfo=_UTC)
 
 def _make_librarian(
     *,
-    api_key: str = "test-key",
+    script: Script | None = None,
     scorer: Any = None,
     context_index: Any = None,
     episodic_memory: Any = None,
@@ -48,7 +66,7 @@ def _make_librarian(
         routine_store=MagicMock(),
         significance_scorer=scorer,
         context_index=context_index,
-        claude_api_key=api_key,
+        model=script.model if script else None,
     )
 
 
@@ -60,7 +78,6 @@ def _make_librarian(
 @pytest.mark.asyncio
 async def test_analyse_batch_returns_entities_significance_semantic_key() -> None:
     """LLM call should return entities, significance dims, and semantic key."""
-    librarian = _make_librarian()
     summaries = ["User turned on light.living_room at 10pm"]
     llm_payload = [
         {
@@ -69,16 +86,10 @@ async def test_analyse_batch_returns_entities_significance_semantic_key() -> Non
             "semantic_key": "Evening lighting preference in living room",
         }
     ]
-    mock_response = AsyncMock()
-    mock_response.choices = [
-        AsyncMock(message=AsyncMock(content=str(llm_payload).replace("'", '"')))
-    ]
-    import json
+    script = Script(llm_payload)
+    librarian = _make_librarian(script=script)
 
-    mock_response.choices[0].message.content = json.dumps(llm_payload)
-
-    with patch("litellm.acompletion", return_value=mock_response):
-        results = await librarian._analyse_batch(summaries)
+    results = await librarian._analyse_batch(summaries)
 
     assert len(results) == 1
     result = results[0]
@@ -91,9 +102,9 @@ async def test_analyse_batch_returns_entities_significance_semantic_key() -> Non
 
 
 @pytest.mark.asyncio
-async def test_analyse_batch_fallback_without_api_key() -> None:
-    """Without API key, _analyse_batch returns list of empty dicts."""
-    librarian = _make_librarian(api_key="")
+async def test_analyse_batch_fallback_without_a_model() -> None:
+    """Without a model, _analyse_batch returns list of empty dicts."""
+    librarian = _make_librarian()
     results = await librarian._analyse_batch(["some event"])
     assert results == [{}]
 
@@ -101,26 +112,153 @@ async def test_analyse_batch_fallback_without_api_key() -> None:
 @pytest.mark.asyncio
 async def test_analyse_batch_fallback_on_llm_error() -> None:
     """On LLM failure, _analyse_batch returns empty dicts (graceful degradation)."""
-    librarian = _make_librarian()
-    with patch("litellm.acompletion", side_effect=Exception("network error")):
-        results = await librarian._analyse_batch(["event 1", "event 2"])
+    librarian = _make_librarian(script=Script(Exception("network error")))
+    results = await librarian._analyse_batch(["event 1", "event 2"])
     assert results == [{}, {}]
 
 
-@pytest.mark.asyncio
-async def test_analyse_batch_pads_short_response() -> None:
-    """If LLM returns fewer items than summaries, missing slots are filled with {}."""
-    librarian = _make_librarian()
-    mock_response = AsyncMock()
-    import json
+def _budget(redis: Any, cap_usd: float = 10.0) -> SpendLimits[Any]:
+    """Today's budget on *redis*."""
+    return build_spend_limits(redis, cap_usd=cap_usd, clock=local_clock(lambda: "UTC"))
 
-    single_item = [{"entities": ["x"], "significance": {}, "semantic_key": "x"}]
-    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(single_item)))]
-    with patch("litellm.acompletion", return_value=mock_response):
-        results = await librarian._analyse_batch(["a", "b", "c"])
-    assert len(results) == 3
-    assert results[1] == {}
-    assert results[2] == {}
+
+async def _spend(spend: SpendLimits[Any], usd: str) -> None:
+    (status,) = await spend.status()
+    await spend.store.add_many(  # type: ignore[union-attr]
+        [SpendEntry(key=status.key, usd=Decimal(usd), requests=1)]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_spent_budget_skips_the_pass_before_it_drains_anything(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    script = Script()
+    librarian = _make_librarian(script=script)
+    librarian._spend = _budget(fakeredis.FakeAsyncRedis())
+    await _spend(librarian._spend, "10")
+
+    with caplog.at_level(logging.WARNING, logger="core.librarian.consolidator"):
+        result = await librarian.consolidate()
+
+    assert result["skipped"] == "daily budget exhausted"
+    assert any("budget" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+    librarian._redis.rename.assert_not_awaited()  # type: ignore[attr-defined]
+    librarian._redis.lrange.assert_not_awaited()  # type: ignore[attr-defined]
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_cap_of_zero_skips_the_pass() -> None:
+    script = Script()
+    librarian = _make_librarian(script=script)
+    librarian._spend = _budget(fakeredis.FakeAsyncRedis(), cap_usd=0.0)
+
+    result = await librarian.consolidate()
+
+    assert result["skipped"] == "daily budget exhausted"
+    librarian._redis.lrange.assert_not_awaited()  # type: ignore[attr-defined]
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_budget_spent_mid_pass_skips_the_rest_and_keeps_the_scratchpad(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    librarian = _make_librarian(script=Script())
+    librarian._reindex_routines = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    librarian._drain_scratchpad = AsyncMock(return_value=["obs"])  # type: ignore[method-assign]
+    librarian._extract_episodic_entries = AsyncMock(  # type: ignore[method-assign]
+        side_effect=SpendLimitExceeded("Budget 'daily' exhausted for this day")
+    )
+
+    with caplog.at_level(logging.WARNING, logger="core.librarian.consolidator"):
+        result = await librarian.consolidate()
+
+    assert result["skipped"] == "daily budget exhausted"
+    assert any("budget" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+    # The processing key survives, so the next pass picks the observations up again.
+    librarian._redis.delete.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_a_spent_budget_is_not_swallowed_by_a_steps_fallback() -> None:
+    script = Script()
+    librarian = _make_librarian(script=script)
+    spend = _budget(fakeredis.FakeAsyncRedis())
+    await _spend(spend, "10")
+    librarian._agents = build_librarian_agents(script.model, spend=spend)
+
+    with pytest.raises(SpendLimitExceeded):
+        await librarian._analyse_batch(["event"])
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_each_librarian_call_checks_the_alert() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    spend = _budget(redis)
+    await _spend(spend, "8.5")
+    dispatcher = AsyncMock()
+    notifier = NotificationPublisher(dispatcher)
+    script = Script([{"entities": [], "significance": {}, "semantic_key": "k"}])
+    librarian = Librarian(
+        redis=redis,
+        episodic_memory=AsyncMock(),
+        routine_store=MagicMock(),
+        significance_scorer=AsyncMock(),
+        context_index=AsyncMock(),
+        model=script.model,
+        spend=spend,
+        notifier=notifier,
+    )
+
+    await librarian._analyse_batch(["event"])
+
+    dispatcher.dispatch.assert_awaited_once()
+    (notification,) = dispatcher.dispatch.await_args.args
+    assert notification.title == "Budget Warning"
+    assert notification.urgency is Urgency.URGENT
+
+
+@pytest.mark.asyncio
+async def test_pattern_detection_works_through_an_output_tool() -> None:
+    """OpenRouter's profile has no JSON-schema output; the output tool carries the list."""
+    routine_store = MagicMock()
+    routine_store.list_all.return_value = []
+    script = Script(_PATTERN_LLM_PAYLOAD, json_schema_output=False)
+    librarian = _make_librarian(script=script)
+    librarian._routines = routine_store
+    entries = [_make_entry_with_id(f"ep-{i}", days_ago=i * 2) for i in range(5)]
+
+    result = await librarian._detect_patterns(entries)
+
+    assert [r.name for r in result] == ["evening_dim"]
+    assert script.requests[0][1].model_request_parameters.output_mode == "tool"
+
+
+@pytest.mark.asyncio
+async def test_analyse_batch_retries_a_short_response() -> None:
+    """A short answer would shift entities onto the wrong observation; it is retried."""
+    one = [{"entities": ["x"], "significance": {}, "semantic_key": "x"}]
+    three = [{"entities": [n], "significance": {}, "semantic_key": n} for n in "abc"]
+    script = Script(one, three)
+    librarian = _make_librarian(script=script)
+
+    results = await librarian._analyse_batch(["a", "b", "c"])
+
+    assert [r["semantic_key"] for r in results] == ["a", "b", "c"]
+    assert script.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_analyse_batch_falls_back_when_the_retry_is_short_too() -> None:
+    one = [{"entities": ["x"], "significance": {}, "semantic_key": "x"}]
+    script = Script(one, one)
+    librarian = _make_librarian(script=script)
+
+    assert await librarian._analyse_batch(["a", "b", "c"]) == [{}, {}, {}]
+    assert script.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -131,10 +269,7 @@ async def test_analyse_batch_pads_short_response() -> None:
 @pytest.mark.asyncio
 async def test_extract_episodic_entries_populates_semantic_key() -> None:
     """When LLM returns a semantic key, it should be set on the EpisodicEntry."""
-    librarian = _make_librarian()
     lines = ["2026-03-19T10:00:00Z [reflex] home.turn_on_light({entity: light.living_room}) -> ok"]
-    import json
-
     llm_payload = [
         {
             "entities": ["light.living_room"],
@@ -142,11 +277,10 @@ async def test_extract_episodic_entries_populates_semantic_key() -> None:
             "semantic_key": "Evening lighting preference in living room",
         }
     ]
-    mock_response = AsyncMock()
-    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(llm_payload)))]
+    script = Script(llm_payload)
+    librarian = _make_librarian(script=script)
 
-    with patch("litellm.acompletion", return_value=mock_response):
-        pairs = await librarian._extract_episodic_entries(lines)
+    pairs = await librarian._extract_episodic_entries(lines)
 
     assert len(pairs) == 1
     entry, llm_sig = pairs[0]
@@ -158,8 +292,8 @@ async def test_extract_episodic_entries_populates_semantic_key() -> None:
 
 @pytest.mark.asyncio
 async def test_extract_episodic_entries_fallback_empty_analysis() -> None:
-    """Without API key, entries still have empty semantic_key and empty llm_sig."""
-    librarian = _make_librarian(api_key="")
+    """Without a model, entries still have empty semantic_key and empty llm_sig."""
+    librarian = _make_librarian()
     lines = ["2026-03-19T10:00:00Z [reflex] action -> result"]
     pairs = await librarian._extract_episodic_entries(lines)
     assert len(pairs) == 1
@@ -186,7 +320,6 @@ async def test_consolidate_writes_to_episodic_memory_not_store() -> None:
     context_index.reindex_semantic_files = AsyncMock()
 
     librarian = _make_librarian(
-        api_key="",
         episodic_memory=episodic_memory,
         scorer=scorer,
         context_index=context_index,
@@ -221,14 +354,6 @@ async def test_consolidate_merges_heuristic_and_llm_significance() -> None:
     )
     context_index = AsyncMock()
     context_index.reindex_semantic_files = AsyncMock()
-    librarian = _make_librarian(
-        episodic_memory=episodic_memory,
-        scorer=scorer,
-        context_index=context_index,
-    )
-
-    import json
-
     llm_payload = [
         {
             "entities": ["smoke.detector"],
@@ -236,16 +361,20 @@ async def test_consolidate_merges_heuristic_and_llm_significance() -> None:
             "semantic_key": "Smoke detector alert",
         }
     ]
-    mock_response = AsyncMock()
-    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(llm_payload)))]
+    script = Script(llm_payload)
+    librarian = _make_librarian(
+        script=script,
+        episodic_memory=episodic_memory,
+        scorer=scorer,
+        context_index=context_index,
+    )
 
     lines = [b"2026-03-19T10:00:00Z [trigger] smoke detector fired -> alert sent"]
     librarian._redis.lrange.side_effect = [[], lines]
     librarian._redis.rename.return_value = None
     librarian._redis.delete.return_value = None
 
-    with patch("litellm.acompletion", return_value=mock_response):
-        await librarian.consolidate()
+    await librarian.consolidate()
 
     call_args = episodic_memory.write.call_args
     sig: SignificanceScore = call_args[0][1]
@@ -263,7 +392,7 @@ async def test_consolidate_reindexes_semantic_files_at_end() -> None:
     """consolidate() must call context_index.reindex_semantic_files() at end of cycle."""
     context_index = AsyncMock()
     context_index.reindex_semantic_files = AsyncMock()
-    librarian = _make_librarian(api_key="", context_index=context_index)
+    librarian = _make_librarian(context_index=context_index)
 
     lines = [b"2026-03-19T10:00:00Z [reflex] action -> ok"]
     librarian._redis.lrange.side_effect = [[], lines]
@@ -280,7 +409,7 @@ async def test_consolidate_reindex_not_called_on_empty_scratchpad() -> None:
     """reindex_semantic_files should NOT be called when scratchpad is empty."""
     context_index = AsyncMock()
     context_index.reindex_semantic_files = AsyncMock()
-    librarian = _make_librarian(api_key="", context_index=context_index)
+    librarian = _make_librarian(context_index=context_index)
 
     librarian._redis.lrange.return_value = []
     librarian._redis.rename.side_effect = Exception("no such key")
@@ -292,8 +421,8 @@ async def test_consolidate_reindex_not_called_on_empty_scratchpad() -> None:
 
 
 @pytest.mark.asyncio
-async def test_consolidate_heuristic_only_when_no_api_key() -> None:
-    """When no API key, significance comes from heuristic scorer alone (source=heuristic)."""
+async def test_consolidate_heuristic_only_without_a_model() -> None:
+    """Without a model, significance comes from heuristic scorer alone (source=heuristic)."""
     episodic_memory = AsyncMock()
     scorer = AsyncMock()
     scorer.score.return_value = SignificanceScore(
@@ -302,7 +431,6 @@ async def test_consolidate_heuristic_only_when_no_api_key() -> None:
     context_index = AsyncMock()
     context_index.reindex_semantic_files = AsyncMock()
     librarian = _make_librarian(
-        api_key="",
         episodic_memory=episodic_memory,
         scorer=scorer,
         context_index=context_index,
@@ -396,26 +524,19 @@ async def test_apply_conflict_resolutions_new_appends(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_update_semantic_memory_confirm_makes_no_change(tmp_path: Path) -> None:
     """When all resolutions are 'confirm', learned.md should remain unchanged."""
-    librarian = _make_librarian()
-    librarian._preferences_dir = tmp_path
 
     learned = tmp_path / "learned.md"
     original = "---\ndomain: general\n---\n\n# Learned Preferences\n\n- Prefers 72°F\n"
     learned.write_text(original)
 
-    # Pass 1: extract returns a preference
-    extract_response = AsyncMock()
-    extract_response.choices = [
-        AsyncMock(message=AsyncMock(content="PREFERENCE: temperature: Prefers 72°F"))
-    ]
-
-    # Pass 2: conflict resolution returns confirm
-    conflict_response = AsyncMock()
+    # Pass 1: extract returns a preference; pass 2: conflict resolution returns confirm
     conflict_payload = [{"type": "confirm", "line": "Prefers 72°F", "explanation": "Consistent"}]
-    conflict_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(conflict_payload)))]
+    librarian = _make_librarian(
+        script=Script([{"domain": "temperature", "observation": "Prefers 72°F"}], conflict_payload)
+    )
+    librarian._preferences_dir = tmp_path
 
-    with patch("litellm.acompletion", side_effect=[extract_response, conflict_response]):
-        result = await librarian._update_semantic_memory([_make_entry()])
+    result = await librarian._update_semantic_memory([_make_entry()])
 
     # confirm → no changes → returns 0
     assert result == 0
@@ -425,21 +546,11 @@ async def test_update_semantic_memory_confirm_makes_no_change(tmp_path: Path) ->
 @pytest.mark.asyncio
 async def test_update_semantic_memory_new_preference_appended(tmp_path: Path) -> None:
     """New preference is written to learned.md."""
-    librarian = _make_librarian()
-    librarian._preferences_dir = tmp_path
 
     learned = tmp_path / "learned.md"
     original = "---\ndomain: general\n---\n\n# Learned Preferences\n\n- Prefers 72°F\n"
     learned.write_text(original)
 
-    extract_response = AsyncMock()
-    extract_response.choices = [
-        AsyncMock(
-            message=AsyncMock(content="PREFERENCE: lighting: Prefers warm lighting in evening")
-        )
-    ]
-
-    conflict_response = AsyncMock()
     conflict_payload = [
         {
             "type": "new",
@@ -447,10 +558,15 @@ async def test_update_semantic_memory_new_preference_appended(tmp_path: Path) ->
             "explanation": "Observed 3x",
         }
     ]
-    conflict_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(conflict_payload)))]
+    librarian = _make_librarian(
+        script=Script(
+            [{"domain": "lighting", "observation": "Prefers warm lighting in evening"}],
+            conflict_payload,
+        )
+    )
+    librarian._preferences_dir = tmp_path
 
-    with patch("litellm.acompletion", side_effect=[extract_response, conflict_response]):
-        result = await librarian._update_semantic_memory([_make_entry()])
+    result = await librarian._update_semantic_memory([_make_entry()])
 
     assert result == 1
     content = learned.read_text()
@@ -460,19 +576,11 @@ async def test_update_semantic_memory_new_preference_appended(tmp_path: Path) ->
 @pytest.mark.asyncio
 async def test_update_semantic_memory_contradict_updates_preference(tmp_path: Path) -> None:
     """Contradicted preference is replaced with provenance note."""
-    librarian = _make_librarian()
-    librarian._preferences_dir = tmp_path
 
     learned = tmp_path / "learned.md"
     original = "---\ndomain: general\n---\n\n# Learned Preferences\n\n- Prefers 72°F\n"
     learned.write_text(original)
 
-    extract_response = AsyncMock()
-    extract_response.choices = [
-        AsyncMock(message=AsyncMock(content="PREFERENCE: temperature: Prefers 68°F"))
-    ]
-
-    conflict_response = AsyncMock()
     conflict_payload = [
         {
             "type": "contradict",
@@ -481,10 +589,12 @@ async def test_update_semantic_memory_contradict_updates_preference(tmp_path: Pa
             "explanation": "Last 5 observations show 68°F",
         }
     ]
-    conflict_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(conflict_payload)))]
+    librarian = _make_librarian(
+        script=Script([{"domain": "temperature", "observation": "Prefers 68°F"}], conflict_payload)
+    )
+    librarian._preferences_dir = tmp_path
 
-    with patch("litellm.acompletion", side_effect=[extract_response, conflict_response]):
-        result = await librarian._update_semantic_memory([_make_entry()])
+    result = await librarian._update_semantic_memory([_make_entry()])
 
     assert result == 1
     content = learned.read_text()
@@ -495,20 +605,13 @@ async def test_update_semantic_memory_contradict_updates_preference(tmp_path: Pa
 @pytest.mark.asyncio
 async def test_update_semantic_memory_fallback_on_conflict_llm_failure(tmp_path: Path) -> None:
     """When conflict resolution LLM fails, falls back to append-only behavior."""
-    librarian = _make_librarian()
+    # Conflict LLM raises an error
+    librarian = _make_librarian(
+        script=Script([{"domain": "temp", "observation": "Prefers 70°F"}], Exception("LLM error"))
+    )
     librarian._preferences_dir = tmp_path
 
-    extract_response = AsyncMock()
-    extract_response.choices = [
-        AsyncMock(message=AsyncMock(content="PREFERENCE: temp: Prefers 70°F"))
-    ]
-
-    # Conflict LLM raises an error
-    with patch(
-        "litellm.acompletion",
-        side_effect=[extract_response, Exception("LLM error")],
-    ):
-        result = await librarian._update_semantic_memory([_make_entry()])
+    result = await librarian._update_semantic_memory([_make_entry()])
 
     # Fallback: should still write (append-only)
     assert result == 1
@@ -517,9 +620,9 @@ async def test_update_semantic_memory_fallback_on_conflict_llm_failure(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_update_semantic_memory_no_api_key_returns_zero(tmp_path: Path) -> None:
-    """Without API key, _update_semantic_memory returns 0."""
-    librarian = _make_librarian(api_key="")
+async def test_update_semantic_memory_without_a_model_returns_zero(tmp_path: Path) -> None:
+    """Without a model, _update_semantic_memory returns 0."""
+    librarian = _make_librarian()
     librarian._preferences_dir = tmp_path
     result = await librarian._update_semantic_memory([_make_entry()])
     assert result == 0
@@ -527,15 +630,11 @@ async def test_update_semantic_memory_no_api_key_returns_zero(tmp_path: Path) ->
 
 @pytest.mark.asyncio
 async def test_update_semantic_memory_none_output_returns_zero(tmp_path: Path) -> None:
-    """When LLM returns NONE, _update_semantic_memory returns 0."""
-    librarian = _make_librarian()
+    """When the model finds no preference, _update_semantic_memory returns 0."""
+    librarian = _make_librarian(script=Script([]))
     librarian._preferences_dir = tmp_path
 
-    mock_response = AsyncMock()
-    mock_response.choices = [AsyncMock(message=AsyncMock(content="NONE"))]
-
-    with patch("litellm.acompletion", return_value=mock_response):
-        result = await librarian._update_semantic_memory([_make_entry()])
+    result = await librarian._update_semantic_memory([_make_entry()])
 
     assert result == 0
 
@@ -543,20 +642,14 @@ async def test_update_semantic_memory_none_output_returns_zero(tmp_path: Path) -
 @pytest.mark.asyncio
 async def test_update_semantic_memory_creates_learned_md_if_missing(tmp_path: Path) -> None:
     """learned.md is created with a header skeleton when it doesn't exist."""
-    librarian = _make_librarian()
+
+    conflict_payload = [{"type": "new", "content": "Likes pasta", "explanation": "Observed"}]
+    librarian = _make_librarian(
+        script=Script([{"domain": "food", "observation": "Likes pasta"}], conflict_payload)
+    )
     librarian._preferences_dir = tmp_path
 
-    extract_response = AsyncMock()
-    extract_response.choices = [
-        AsyncMock(message=AsyncMock(content="PREFERENCE: food: Likes pasta"))
-    ]
-
-    conflict_response = AsyncMock()
-    conflict_payload = [{"type": "new", "content": "Likes pasta", "explanation": "Observed"}]
-    conflict_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(conflict_payload)))]
-
-    with patch("litellm.acompletion", side_effect=[extract_response, conflict_response]):
-        result = await librarian._update_semantic_memory([_make_entry()])
+    result = await librarian._update_semantic_memory([_make_entry()])
 
     assert result == 1
     learned = tmp_path / "learned.md"
@@ -608,7 +701,7 @@ async def test_apply_decay_migrates_old_low_significance_entries() -> None:
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (30 * 86400)
     old_entry = _make_search_result("old-entry-1", old_ts, significance=0.1, retrieval_count=0)
 
-    context_index.search_text = AsyncMock(return_value=[old_entry])
+    context_index.select = AsyncMock(return_value=[old_entry])
 
     migrated = await librarian._apply_decay(decay_migration_threshold=0.5)
 
@@ -626,15 +719,15 @@ async def test_apply_decay_spares_high_significance_entries() -> None:
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
     # Entry: 30 days old, high significance=0.95, retrieval_count=0
-    # pressure = 30 * (1-0.95) * 1.0 = 30 * 0.05 = 1.5 but threshold=5.0 → spared
+    # pressure ≈ 1.0 - 1.9 - 0.02 ≈ -0.92, far under the production default → spared
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (30 * 86400)
     important_entry = _make_search_result(
         "important-1", old_ts, significance=0.95, retrieval_count=0
     )
 
-    context_index.search_text = AsyncMock(return_value=[important_entry])
+    context_index.select = AsyncMock(return_value=[important_entry])
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=5.0)
+    migrated = await librarian._apply_decay()
 
     assert migrated == 0
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
@@ -650,13 +743,13 @@ async def test_apply_decay_spares_frequently_retrieved_entries() -> None:
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
     # Entry: 30 days old, low sig=0.1, but retrieval_count=100
-    # pressure = 30 * 0.9 * (1/101) ≈ 0.267 < threshold=1.0 → spared
+    # pressure = 1.0 - 0.2 - 0.02 - 1.0 ≈ -0.22, under the production default → spared
     old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (30 * 86400)
     popular_entry = _make_search_result("popular-1", old_ts, significance=0.1, retrieval_count=100)
 
-    context_index.search_text = AsyncMock(return_value=[popular_entry])
+    context_index.select = AsyncMock(return_value=[popular_entry])
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
+    migrated = await librarian._apply_decay()
 
     assert migrated == 0
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
@@ -679,9 +772,11 @@ async def test_apply_decay_skips_non_episodic_entries() -> None:
         "rout-1", old_ts, significance=0.1, retrieval_count=0, entry_type="routine"
     )
 
-    context_index.search_text = AsyncMock(return_value=[semantic_entry, routine_entry])
+    context_index.select = AsyncMock(return_value=[semantic_entry, routine_entry])
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
+    # At the production default these would migrate (pressure ≈ 0.78) if they were
+    # episodic, so only the type filter keeps them.
+    migrated = await librarian._apply_decay()
 
     assert migrated == 0
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
@@ -696,7 +791,7 @@ async def test_apply_decay_handles_search_failure_gracefully() -> None:
 
     librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
 
-    context_index.search_text = AsyncMock(side_effect=Exception("search failed"))
+    context_index.select = AsyncMock(side_effect=Exception("search failed"))
 
     migrated = await librarian._apply_decay()
 
@@ -717,7 +812,7 @@ async def test_apply_decay_migration_error_continues_for_other_entries() -> None
     entry1 = _make_search_result("entry-1", old_ts, significance=0.1, retrieval_count=0)
     entry2 = _make_search_result("entry-2", old_ts, significance=0.1, retrieval_count=0)
 
-    context_index.search_text = AsyncMock(return_value=[entry1, entry2])
+    context_index.select = AsyncMock(return_value=[entry1, entry2])
 
     # First migration fails, second succeeds
     episodic_memory.copy_to_cold_and_remove.side_effect = [Exception("migrate failed"), None]
@@ -739,12 +834,226 @@ async def test_apply_decay_skips_zero_timestamp_entries() -> None:
 
     zero_ts_entry = _make_search_result("zero-ts", 0.0, significance=0.0, retrieval_count=0)
 
-    context_index.search_text = AsyncMock(return_value=[zero_ts_entry])
+    context_index.select = AsyncMock(return_value=[zero_ts_entry])
 
-    migrated = await librarian._apply_decay(decay_migration_threshold=1.0)
+    # Read as an epoch timestamp it would be ~56 years old and migrate at the default,
+    # so only the zero-timestamp guard keeps it.
+    migrated = await librarian._apply_decay()
 
     assert migrated == 0
     episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_reads_pressure_at_the_injected_now() -> None:
+    """``now`` is the clock seam the memory eval simulates time through.
+
+    The entry is written "today" by the wall clock, so at the real now it is far below
+    the threshold; at an injected now 30 days later it is the design table's ~0.78 row.
+    """
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    written = datetime.datetime.now(datetime.UTC)
+    entry = _make_search_result("fresh", written.timestamp(), significance=0.1, retrieval_count=0)
+    context_index.select = AsyncMock(return_value=[entry])
+
+    assert await librarian._apply_decay() == 0
+    episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
+
+    later = written + datetime.timedelta(days=30)
+    assert await librarian._apply_decay(now=later) == 1
+    episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_measures_retrieval_recency_from_the_injected_now() -> None:
+    """A retrieval stamped at the simulated time resists migration at that time."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    now = datetime.datetime(2026, 3, 1, tzinfo=datetime.UTC)
+    old = _make_search_result(
+        "recalled",
+        (now - datetime.timedelta(days=30)).timestamp(),
+        significance=0.1,
+        retrieval_count=0,
+    )
+    recalled = old.model_copy(
+        update={
+            "metadata": old.metadata.model_copy(
+                update={
+                    "retrieval_count": 3,
+                    "last_retrieved": (now - datetime.timedelta(hours=2)).timestamp(),
+                }
+            )
+        }
+    )
+    context_index.select = AsyncMock(return_value=[recalled])
+
+    assert await librarian._apply_decay(now=now) == 0
+    episodic_memory.copy_to_cold_and_remove.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Decay candidates: selected by metadata, so none is missed (EXP-006)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("threshold", "max_significance"), [(0.2, 0.4), (0.5, 0.25), (-10.0, 5.5)])
+async def test_apply_decay_selects_candidates_by_metadata(
+    threshold: float, max_significance: float
+) -> None:
+    """Every timestamped entry below the one significance that can still reach the threshold.
+
+    The pass used to take the nearest hits to a placeholder query, which saw ~19 entries of
+    thousands, most of them sections, routines and young memories.
+    """
+    context_index = AsyncMock()
+    context_index.select = AsyncMock(return_value=[])
+    librarian = _make_librarian(episodic_memory=AsyncMock(), context_index=context_index)
+
+    await librarian._apply_decay(decay_migration_threshold=threshold)
+
+    context_index.select.assert_awaited_once_with(
+        {"timestamp": Range(above=0.0), "significance": Range(below=max_significance)}
+    )
+    context_index.search_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_never_queries_when_nothing_can_reach_the_threshold() -> None:
+    """Pressure never exceeds 1.0, so master's threshold of 1.0 has nothing to look for."""
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=AsyncMock(), context_index=context_index)
+
+    assert await librarian._apply_decay(decay_migration_threshold=1.0) == 0
+    context_index.select.assert_not_awaited()
+
+
+@pytest.mark.parametrize("threshold", [-1.0, 0.0, 0.2, 0.5, 0.99])
+@pytest.mark.parametrize("significance", [-0.5, 0.0, 0.105, 0.355, 0.39, 0.4, 0.6, 1.0])
+@pytest.mark.parametrize("age_days", [0.5, 6.0, 17.0, 30.0, 400.0])
+@pytest.mark.parametrize(("retrieval_count", "days_since"), [(0, None), (2, 1.0), (40, 20.0)])
+def test_selection_never_excludes_an_entry_decay_would_move(
+    threshold: float,
+    significance: float,
+    age_days: float,
+    retrieval_count: int,
+    days_since: float | None,
+) -> None:
+    pressure = migration_pressure(
+        age_days, significance, retrieval_count, age_days if days_since is None else days_since
+    )
+    ranges = decay_candidate_ranges(threshold)
+    if pressure <= threshold:
+        return
+    assert ranges is not None
+    below = ranges["significance"].below
+    assert below is not None
+    assert significance < below
+
+
+# ---------------------------------------------------------------------------
+# Decay threshold: reachable by construction (#201)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("age_days", [0.0, 1.0, 30.0, 365.0, 36_500.0])
+@pytest.mark.parametrize("significance", [0.0, 0.1, 0.5, 1.0])
+@pytest.mark.parametrize("retrieval_count", [0, 1, 10, 10_000])
+@pytest.mark.parametrize("days_since_last_retrieved", [0.0, 7.0, 365.0, 36_500.0])
+def test_migration_pressure_never_exceeds_one(
+    age_days: float, significance: float, retrieval_count: int, days_since_last_retrieved: float
+) -> None:
+    """Age caps at 1.0 and every other term only subtracts, so `> 1.0` can never fire.
+
+    Exactly 1.0 is reachable in floating point: a year-old, never-retrieved entry's
+    recency term is ~1e-23 and rounds away.
+    """
+    pressure = migration_pressure(
+        age_days, significance, retrieval_count, days_since_last_retrieved
+    )
+    assert pressure <= 1.0
+
+
+def test_default_threshold_is_reachable_and_shared() -> None:
+    assert DEFAULT_DECAY_MIGRATION_THRESHOLD < 1.0
+    assert AlfredConfig().decay_migration_threshold == DEFAULT_DECAY_MIGRATION_THRESHOLD
+
+
+@pytest.mark.parametrize(
+    ("age_days", "significance", "retrieval_count", "days_since", "migrates"),
+    [
+        # The D4 design's behaviour table (2026-04-16-d3-d4-pattern-detection-decay-design.md)
+        (30.0, 0.1, 0, 30.0, True),  # low significance, never retrieved: ~0.78
+        (30.0, 0.8, 0, 30.0, False),  # high significance: ~-0.6
+        (7.0, 0.1, 3, 1.0, False),  # retrieved yesterday: deeply negative
+        (60.0, 0.3, 1, 30.0, False),  # the borderline row: ~0.18, just under
+    ],
+)
+def test_default_threshold_matches_the_design_table(
+    age_days: float, significance: float, retrieval_count: int, days_since: float, migrates: bool
+) -> None:
+    pressure = migration_pressure(age_days, significance, retrieval_count, days_since)
+    assert (pressure > DEFAULT_DECAY_MIGRATION_THRESHOLD) is migrates
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_default_migrates_old_unimportant_entry() -> None:
+    """With no threshold passed, an old, zero-significance, never-read entry leaves hot storage."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (45 * 86400)
+    entry = _make_search_result("stale-1", old_ts, significance=0.0, retrieval_count=0)
+    context_index.select = AsyncMock(return_value=[entry])
+
+    assert await librarian._apply_decay() == 1
+    episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("significance", [0.355, 0.105])
+async def test_apply_decay_default_sweeps_passive_observations(significance: float) -> None:
+    """Passive observations score 0.355 on a first sighting and ~0.105 once novelty is spent.
+
+    Both must leave hot storage once old and unread: they are the volume decay exists for.
+    """
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (45 * 86400)
+    entry = _make_search_result("obs-1", old_ts, significance=significance, retrieval_count=0)
+    entry.metadata.source = "observation"
+    context_index.select = AsyncMock(return_value=[entry])
+
+    assert await librarian._apply_decay() == 1
+
+
+@pytest.mark.asyncio
+async def test_consolidate_runs_decay_on_empty_scratchpad() -> None:
+    """Decay reads the hot store, so an empty scratchpad must not skip it (#202)."""
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    librarian._redis.lrange.return_value = []
+    librarian._redis.rename.side_effect = Exception("no such key")
+
+    old_ts = datetime.datetime.now(datetime.UTC).timestamp() - (45 * 86400)
+    entry = _make_search_result("stale-1", old_ts, significance=0.0, retrieval_count=0)
+    context_index.select = AsyncMock(return_value=[entry])
+
+    result = await librarian.consolidate()
+
+    assert result["entries_processed"] == 0
+    assert result["archived"] == 1
+    episodic_memory.copy_to_cold_and_remove.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -769,9 +1078,9 @@ def _make_entry_with_id(
 
 
 @pytest.mark.asyncio
-async def test_detect_patterns_returns_empty_without_api_key() -> None:
-    """Without API key, _detect_patterns returns []."""
-    librarian = _make_librarian(api_key="")
+async def test_detect_patterns_returns_empty_without_a_model() -> None:
+    """Without a model, _detect_patterns returns []."""
+    librarian = _make_librarian()
     entries = [_make_entry_with_id(f"ep-{i}") for i in range(5)]
     result = await librarian._detect_patterns(entries)
     assert result == []
@@ -793,9 +1102,6 @@ async def test_detect_patterns_returns_candidate_routines() -> None:
     routine_store = MagicMock()
     routine_store.list_all.return_value = []
 
-    librarian = _make_librarian()
-    librarian._routines = routine_store
-
     entries = [_make_entry_with_id(f"ep-{i}", days_ago=i * 2) for i in range(5)]
 
     llm_payload = [
@@ -807,11 +1113,11 @@ async def test_detect_patterns_returns_candidate_routines() -> None:
             "learned_from": ["ep-0", "ep-2", "ep-4"],
         }
     ]
-    mock_response = AsyncMock()
-    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(llm_payload)))]
+    script = Script(llm_payload)
+    librarian = _make_librarian(script=script)
+    librarian._routines = routine_store
 
-    with patch("litellm.acompletion", return_value=mock_response):
-        result = await librarian._detect_patterns(entries)
+    result = await librarian._detect_patterns(entries)
 
     assert len(result) == 1
     assert result[0].name == "evening_dim"
@@ -829,10 +1135,6 @@ async def test_detect_patterns_skips_below_confidence_threshold() -> None:
     routine_store = MagicMock()
     routine_store.list_all.return_value = []
 
-    librarian = _make_librarian()
-    librarian._routines = routine_store
-    librarian._pattern_confidence_threshold = 0.7
-
     entries = [_make_entry_with_id(f"ep-{i}") for i in range(5)]
 
     llm_payload = [
@@ -844,11 +1146,12 @@ async def test_detect_patterns_skips_below_confidence_threshold() -> None:
             "learned_from": ["ep-0", "ep-1"],
         }
     ]
-    mock_response = AsyncMock()
-    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(llm_payload)))]
+    script = Script(llm_payload)
+    librarian = _make_librarian(script=script)
+    librarian._routines = routine_store
+    librarian._pattern_confidence_threshold = 0.7
 
-    with patch("litellm.acompletion", return_value=mock_response):
-        result = await librarian._detect_patterns(entries)
+    result = await librarian._detect_patterns(entries)
 
     assert result == []
     routine_store.save.assert_not_called()
@@ -872,9 +1175,6 @@ async def test_detect_patterns_skips_existing_routines() -> None:
     routine_store = MagicMock()
     routine_store.list_all.return_value = [existing_routine]
 
-    librarian = _make_librarian()
-    librarian._routines = routine_store
-
     entries = [_make_entry_with_id(f"ep-{i}") for i in range(5)]
 
     llm_payload = [
@@ -886,11 +1186,11 @@ async def test_detect_patterns_skips_existing_routines() -> None:
             "learned_from": ["ep-0", "ep-1", "ep-2"],
         }
     ]
-    mock_response = AsyncMock()
-    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(llm_payload)))]
+    script = Script(llm_payload)
+    librarian = _make_librarian(script=script)
+    librarian._routines = routine_store
 
-    with patch("litellm.acompletion", return_value=mock_response):
-        result = await librarian._detect_patterns(entries)
+    result = await librarian._detect_patterns(entries)
 
     assert result == []
 
@@ -898,11 +1198,10 @@ async def test_detect_patterns_skips_existing_routines() -> None:
 @pytest.mark.asyncio
 async def test_detect_patterns_handles_llm_failure_gracefully() -> None:
     """On LLM failure, _detect_patterns returns [] without raising."""
-    librarian = _make_librarian()
+    librarian = _make_librarian(script=Script(Exception("LLM down")))
     entries = [_make_entry_with_id(f"ep-{i}") for i in range(5)]
 
-    with patch("litellm.acompletion", side_effect=Exception("LLM down")):
-        result = await librarian._detect_patterns(entries)
+    result = await librarian._detect_patterns(entries)
 
     assert result == []
 
@@ -915,18 +1214,18 @@ async def test_detect_patterns_filters_old_entries() -> None:
     routine_store = MagicMock()
     routine_store.list_all.return_value = []
 
-    librarian = _make_librarian()
+    script = Script()
+    librarian = _make_librarian(script=script)
     librarian._routines = routine_store
 
     # All entries are 31+ days old
     old_entries = [_make_entry_with_id(f"ep-{i}", days_ago=31 + i) for i in range(5)]
 
     # Should return early without calling LLM
-    with patch("litellm.acompletion") as mock_llm:
-        result = await librarian._detect_patterns(old_entries)
+    result = await librarian._detect_patterns(old_entries)
 
     assert result == []
-    mock_llm.assert_not_called()
+    assert script.call_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1102,14 +1401,14 @@ async def test_consolidate_includes_pattern_detection_in_result() -> None:
     """consolidate() result should include patterns_detected and lifecycle_updates keys."""
     context_index = AsyncMock()
     context_index.reindex_semantic_files = AsyncMock()
-    context_index.search_text = AsyncMock(return_value=[])
+    context_index.select = AsyncMock(return_value=[])
 
     from unittest.mock import MagicMock
 
     routine_store = MagicMock()
     routine_store.list_all.return_value = []
 
-    librarian = _make_librarian(api_key="", context_index=context_index)
+    librarian = _make_librarian(context_index=context_index)
     librarian._routines = routine_store
 
     lines = [b"2026-03-24T08:00:00Z [reflex] morning lights on -> success"]
@@ -1228,13 +1527,6 @@ _PATTERN_LLM_PAYLOAD = [
 ]
 
 
-def _pattern_llm_response() -> Any:
-    """An LLM response yielding one 0.8-confidence candidate."""
-    mock_response = AsyncMock()
-    mock_response.choices = [AsyncMock(message=AsyncMock(content=json.dumps(_PATTERN_LLM_PAYLOAD)))]
-    return mock_response
-
-
 @pytest.mark.asyncio
 async def test_detect_patterns_leaves_confidence_history_empty() -> None:
     """Detection does not seed the history — the lifecycle pass writes the first sample."""
@@ -1242,12 +1534,11 @@ async def test_detect_patterns_leaves_confidence_history_empty() -> None:
 
     routine_store = MagicMock()
     routine_store.list_all.return_value = []
-    librarian = _make_librarian()
+    librarian = _make_librarian(script=Script(_PATTERN_LLM_PAYLOAD))
     librarian._routines = routine_store
     entries = [_make_entry_with_id(f"ep-{i}", days_ago=i * 2) for i in range(5)]
 
-    with patch("litellm.acompletion", return_value=_pattern_llm_response()):
-        result = await librarian._detect_patterns(entries)
+    result = await librarian._detect_patterns(entries)
 
     assert result[0].confidence_history == []
 
@@ -1268,12 +1559,11 @@ async def test_new_candidate_records_exactly_one_sample_per_consolidation_pass()
     routine_store.save.side_effect = _save
     routine_store.list_all.side_effect = lambda: list(stored)
 
-    librarian = _make_librarian()
+    librarian = _make_librarian(script=Script(_PATTERN_LLM_PAYLOAD))
     librarian._routines = routine_store
     entries = [_make_entry_with_id(f"ep-{i}", days_ago=i * 2) for i in range(5)]
 
-    with patch("litellm.acompletion", return_value=_pattern_llm_response()):
-        await librarian._detect_patterns(entries)
+    await librarian._detect_patterns(entries)
 
     with patch("core.librarian.consolidator.datetime") as mock_dt:
         mock_dt.now.return_value = dt.datetime(2026, 3, 24, 12, 0, 0, tzinfo=dt.UTC)
@@ -1394,7 +1684,7 @@ async def test_decay_high_significance_resists_migration() -> None:
     """Entry with high significance should NOT be migrated even if old."""
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[_make_decay_search_result(significance=0.8, age_days=30)]
     )
 
@@ -1409,7 +1699,7 @@ async def test_decay_old_low_significance_migrates() -> None:
     """Old entry with low significance and no retrievals should be migrated."""
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[_make_decay_search_result(significance=0.1, age_days=30)]
     )
 
@@ -1424,7 +1714,7 @@ async def test_decay_recently_retrieved_resists_migration() -> None:
     """Entry retrieved yesterday should resist migration due to recency."""
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[
             _make_decay_search_result(
                 significance=0.1,
@@ -1445,7 +1735,7 @@ async def test_decay_frequently_retrieved_resists_migration() -> None:
     """Entry with high retrieval count should resist migration."""
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[
             _make_decay_search_result(
                 significance=0.1,
@@ -1467,7 +1757,7 @@ async def test_decay_last_retrieved_zero_fallback_to_age() -> None:
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
     # Old entry, low significance, last_retrieved=0.0 (default/never)
-    context_index.search_text = AsyncMock(
+    context_index.select = AsyncMock(
         return_value=[_make_decay_search_result(significance=0.1, age_days=60)]
     )
 
@@ -1501,6 +1791,24 @@ def test_group_by_entity_date_no_entities_ungrouped() -> None:
     groups, ungrouped = _group_by_entity_date([result])
     assert len(groups) == 0
     assert len(ungrouped) == 1
+
+
+@pytest.mark.parametrize("order", list(itertools.permutations(range(3))))
+def test_group_by_entity_date_does_not_depend_on_candidate_order(
+    order: tuple[int, ...],
+) -> None:
+    """A memory naming two entities joins whichever of their buckets exists first, so the
+    grouping must not depend on how the pass happened to find its candidates."""
+    entries = []
+    for entry_id, entities in (("both", "light.a,light.b"), ("b", "light.b"), ("a", "light.a")):
+        entry = _make_decay_search_result(entry_id=entry_id, age_days=31, significance=0.05)
+        entry.metadata.entities = entities
+        entries.append(entry)
+
+    groups, ungrouped = _group_by_entity_date([entries[i] for i in order])
+
+    assert sorted(sorted(r.id for r in group) for group in groups) == [["a", "both"]]
+    assert [r.id for r in ungrouped] == ["b"]
 
 
 def test_group_by_entity_date_different_days_separate() -> None:
@@ -1556,26 +1864,19 @@ async def test_compression_creates_summary_and_marks_originals() -> None:
 
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(return_value=results)
+    context_index.select = AsyncMock(return_value=results)
 
-    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    script = Script(
+        {
+            "summary": "Kitchen light was toggled on then off during the evening.",
+            "semantic_key": "kitchen light evening activity",
+        }
+    )
+    librarian = _make_librarian(
+        script=script, episodic_memory=episodic_memory, context_index=context_index
+    )
 
-    llm_response = AsyncMock()
-    llm_response.choices = [
-        AsyncMock(
-            message=AsyncMock(
-                content=json.dumps(
-                    {
-                        "summary": "Kitchen light was toggled on then off during the evening.",
-                        "semantic_key": "kitchen light evening activity",
-                    }
-                )
-            )
-        )
-    ]
-
-    with patch("litellm.acompletion", return_value=llm_response):
-        await librarian._apply_decay(decay_migration_threshold=-10.0)
+    await librarian._apply_decay(decay_migration_threshold=-10.0)
 
     assert episodic_memory.copy_to_cold_and_remove.await_count >= 2
 
@@ -1588,14 +1889,16 @@ async def test_compression_single_entry_no_llm_call() -> None:
 
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(return_value=[result])
+    context_index.select = AsyncMock(return_value=[result])
 
-    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    script = Script()
+    librarian = _make_librarian(
+        script=script, episodic_memory=episodic_memory, context_index=context_index
+    )
 
-    with patch("litellm.acompletion") as mock_llm:
-        count = await librarian._apply_decay(decay_migration_threshold=-10.0)
+    count = await librarian._apply_decay(decay_migration_threshold=-10.0)
 
-    mock_llm.assert_not_called()
+    assert script.call_count == 0
     assert count == 1
 
 
@@ -1616,27 +1919,21 @@ async def test_detect_patterns_indexes_routine_in_context() -> None:
     context_index.index_routine = AsyncMock()
     context_index.reindex_semantic_files = AsyncMock()
 
-    librarian = _make_librarian(context_index=context_index)
-    librarian._routines = routine_store
-
     entries = [_make_entry_with_id(f"ep-{i}") for i in range(5)]
 
-    llm_payload = json.dumps(
-        [
-            {
-                "name": "test_routine",
-                "trigger_pattern": "20:00 daily",
-                "steps": [{"description": "Turn off lights"}],
-                "confidence": 0.8,
-                "learned_from": ["ep-0", "ep-1", "ep-2"],
-            }
-        ]
-    )
-    mock_response = AsyncMock()
-    mock_response.choices = [AsyncMock(message=AsyncMock(content=llm_payload))]
+    llm_payload = [
+        {
+            "name": "test_routine",
+            "trigger_pattern": "20:00 daily",
+            "steps": [{"description": "Turn off lights"}],
+            "confidence": 0.8,
+            "learned_from": ["ep-0", "ep-1", "ep-2"],
+        }
+    ]
+    librarian = _make_librarian(script=Script(llm_payload), context_index=context_index)
+    librarian._routines = routine_store
 
-    with patch("litellm.acompletion", return_value=mock_response):
-        result = await librarian._detect_patterns(entries)
+    result = await librarian._detect_patterns(entries)
 
     assert len(result) == 1
     context_index.index_routine.assert_awaited_once()
@@ -1780,8 +2077,8 @@ async def test_lifecycle_confidence_below_threshold_archives() -> None:
 
 
 @pytest.mark.asyncio
-async def test_compression_fallback_concatenation_when_no_api_key() -> None:
-    """Without an API key, compression should concatenate contents instead of LLM call."""
+async def test_compression_fallback_concatenation_without_a_model() -> None:
+    """Without a model, compression should concatenate contents instead of LLM call."""
     import time
 
     now = time.time()
@@ -1822,20 +2119,154 @@ async def test_compression_fallback_concatenation_when_no_api_key() -> None:
 
     episodic_memory = AsyncMock()
     context_index = AsyncMock()
-    context_index.search_text = AsyncMock(return_value=results)
+    context_index.select = AsyncMock(return_value=results)
 
-    # No API key → no LLM call, fallback to concatenation
+    # No model → no LLM call, fallback to concatenation
     librarian = _make_librarian(
-        api_key="",
         episodic_memory=episodic_memory,
         context_index=context_index,
     )
 
-    with patch("litellm.acompletion") as mock_llm:
-        await librarian._apply_decay(decay_migration_threshold=-10.0)
+    await librarian._apply_decay(decay_migration_threshold=-10.0)
 
-    mock_llm.assert_not_called()
     assert episodic_memory.copy_to_cold_and_remove.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_apply_decay_bounds_concurrent_migrations() -> None:
+    """A backlog pass moves thousands of memories. Started all at once they exhausted the
+    shared Redis pool — redis-py raises "Too many connections" past 100 — so most failed,
+    and every other user of that pool failed with them."""
+    in_flight = peak = 0
+
+    async def migrate(_result: SearchResult) -> None:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0)
+        in_flight -= 1
+
+    singles = []
+    for i in range(100):
+        entry = _make_decay_search_result(entry_id=f"single-{i}", age_days=31, significance=0.05)
+        entry.metadata.entities = ""
+        singles.append(entry)
+    grouped = []
+    for i in range(40):
+        for half in ("a", "b"):
+            entry = _make_decay_search_result(
+                entry_id=f"group-{i}-{half}", age_days=31, significance=0.05
+            )
+            entry.metadata.entities = f"light.l{i}"
+            grouped.append(entry)
+
+    episodic_memory = AsyncMock()
+    episodic_memory.copy_to_cold_and_remove.side_effect = migrate
+    context_index = AsyncMock()
+    context_index.select = AsyncMock(return_value=singles + grouped)
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+
+    with patch("core.librarian.consolidator.DECAY_MIGRATION_CONCURRENCY", 4, create=True):
+        migrated = await librarian._apply_decay()
+
+    assert migrated == 180
+    assert 1 < peak <= 4
+
+
+def _kitchen_group(*contents: str) -> list[SearchResult]:
+    group = []
+    for i, content in enumerate(contents):
+        entry = _make_decay_search_result(entry_id=f"k{i}", age_days=31, significance=0.05)
+        entry.content = content
+        group.append(entry)
+    return group
+
+
+@pytest.mark.asyncio
+async def test_compression_summarises_only_the_originals_that_moved() -> None:
+    """An original that fails to move stays hot and is grouped again on the next pass, so
+    a summary written for it now would be written twice."""
+    group = _kitchen_group("kitchen light on", "kitchen light off", "kitchen light dimmed")
+
+    async def migrate(result: SearchResult) -> None:
+        if result.id == "k1":
+            raise ConnectionError("Too many connections")
+
+    episodic_memory = AsyncMock()
+    episodic_memory.copy_to_cold_and_remove.side_effect = migrate
+    librarian = _make_librarian(episodic_memory=episodic_memory)
+
+    migrated = await librarian._compress_and_migrate(group)
+
+    assert migrated == 2
+    librarian._cold_store.add.assert_awaited_once()
+    summary = librarian._cold_store.add.await_args.kwargs["content"]
+    assert "kitchen light on" in summary
+    assert "kitchen light dimmed" in summary
+    assert "kitchen light off" not in summary
+
+
+@pytest.mark.asyncio
+async def test_a_budget_spent_at_compression_still_writes_the_fallback_summary() -> None:
+    """The originals have already left hot, so a refused summary call must not lose the
+    summary: no later pass would ever see them again."""
+    script = Script()
+    episodic_memory = AsyncMock()
+    librarian = _make_librarian(episodic_memory=episodic_memory)
+    spend = _budget(fakeredis.FakeAsyncRedis())
+    await _spend(spend, "10")
+    librarian._agents = build_librarian_agents(script.model, spend=spend)
+
+    migrated = await librarian._compress_and_migrate(
+        _kitchen_group("kitchen light on", "kitchen light off")
+    )
+
+    assert migrated == 2
+    assert episodic_memory.copy_to_cold_and_remove.await_count == 2
+    librarian._cold_store.add.assert_awaited_once()
+    summary = librarian._cold_store.add.await_args.kwargs["content"]
+    assert summary == "kitchen light on | kitchen light off"
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_budget_spent_during_decay_summarises_every_group_it_moved() -> None:
+    script = Script()
+    grouped = []
+    for i in range(3):
+        for half in ("a", "b"):
+            entry = _make_decay_search_result(
+                entry_id=f"group-{i}-{half}", age_days=31, significance=0.05
+            )
+            entry.metadata.entities = f"light.l{i}"
+            grouped.append(entry)
+    episodic_memory = AsyncMock()
+    context_index = AsyncMock()
+    context_index.select = AsyncMock(return_value=grouped)
+    librarian = _make_librarian(episodic_memory=episodic_memory, context_index=context_index)
+    spend = _budget(fakeredis.FakeAsyncRedis())
+    await _spend(spend, "10")
+    librarian._agents = build_librarian_agents(script.model, spend=spend)
+
+    migrated = await librarian._apply_decay()
+
+    assert migrated == 6
+    assert librarian._cold_store.add.await_count == 3
+    assert script.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_compression_writes_no_summary_when_no_original_moved() -> None:
+    episodic_memory = AsyncMock()
+    episodic_memory.copy_to_cold_and_remove.side_effect = ConnectionError("Too many connections")
+    librarian = _make_librarian(episodic_memory=episodic_memory)
+
+    migrated = await librarian._compress_and_migrate(
+        _kitchen_group("kitchen light on", "kitchen light off")
+    )
+
+    assert migrated == 0
+    librarian._cold_store.add.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1843,7 +2274,7 @@ async def test_consolidate_records_status_on_empty_scratchpad() -> None:
     """Even a no-op cycle stamps last_run_at/reviewed so the dashboard shows it ran."""
     from shared.streams import LIBRARIAN_STATUS_KEY
 
-    librarian = _make_librarian(api_key="")
+    librarian = _make_librarian()
     librarian._redis.lrange.return_value = []
     librarian._redis.rename.side_effect = Exception("no such key")
 
@@ -1863,7 +2294,7 @@ async def test_consolidate_records_status_on_empty_scratchpad() -> None:
 async def test_record_next_run_writes_next_run_at() -> None:
     from shared.streams import LIBRARIAN_STATUS_KEY
 
-    librarian = _make_librarian(api_key="")
+    librarian = _make_librarian()
     at = datetime.datetime(2026, 9, 4, 9, 30, tzinfo=_UTC)
 
     await librarian.record_next_run(at)
@@ -1878,7 +2309,7 @@ async def test_status_write_failure_does_not_break_consolidation() -> None:
     """`_record_run` is best-effort: the stamp fails, the cycle still reports."""
     from shared.streams import LIBRARIAN_STATUS_KEY
 
-    librarian = _make_librarian(api_key="")
+    librarian = _make_librarian()
     librarian._redis.lrange.return_value = []
     librarian._redis.rename.side_effect = Exception("no such key")
     librarian._redis.hset.side_effect = ConnectionError("redis down")
@@ -1909,7 +2340,6 @@ async def test_consolidate_records_reviewed_count_of_drained_lines() -> None:
     context_index.reindex_semantic_files = AsyncMock()
 
     librarian = _make_librarian(
-        api_key="",
         episodic_memory=episodic_memory,
         scorer=scorer,
         context_index=context_index,

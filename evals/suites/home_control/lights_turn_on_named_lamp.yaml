@@ -1,0 +1,14 @@
+id: home_control.lights.turn_on_named_lamp
+prd: [4.4.lights-scenes, principle.3]
+status: shipped
+tags: [lights]
+steps:
+  - user: "Turn on the bedroom lamp."
+    variants: ["Bedroom lamp on, please.", "Could you switch on the lamp in the bedroom?"]
+expect:
+  - ha_called: {domain: light, service: turn_on, entity_id: light.bedroom_lamp}
+  - ha_state: {entity_id: light.bedroom_lamp, state: "on"}
+  - ha_not_called: {domain: light, service: turn_off}
+  - judge:
+      category: answered
+      rubric: "Does the reply confirm that the bedroom lamp is on?"

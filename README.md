@@ -13,7 +13,7 @@ Alfred processes real-time events from smart home devices, responds to voice and
 Alfred uses a **dual-process cognitive model**:
 
 - **System 1 (Reflex Engine)** — a local SLM (Ollama) handles the fast path. State-change events pass through the SLM in sub-500ms to decide whether an action is needed.
-- **System 2 (Conscious Engine)** — Claude handles complex reasoning, multi-step planning, and conversational requests via an agentic tool-use loop.
+- **System 2 (Conscious Engine)** — Claude handles complex reasoning, multi-step planning, and conversational requests through a Pydantic AI agent with one tool catalog (see [docs/llm.md](docs/llm.md)).
 
 ```mermaid
 flowchart TB
@@ -37,7 +37,7 @@ flowchart TB
     subgraph CORE["Dual-Process Core"]
         Reflex["Reflex Engine — System 1<br/>local SLM (Ollama), fast path"]
         Triggers["Trigger Engine<br/>LLM-created triggers,<br/>deterministic firing"]
-        Conscious["Conscious Engine — System 2<br/>Claude agentic tool-use loop<br/>sessions, cost caps, identity gate"]
+        Conscious["Conscious Engine — System 2<br/>Pydantic AI agent, one tool catalog<br/>sessions, cost caps, identity gate"]
     end
 
     Streams -->|StateChangedEvent| Reflex
@@ -68,7 +68,7 @@ flowchart TB
     Conscious --> Integrations["IntegrationRegistry<br/>weather, calendar, health, robinhood"]
     Conscious --> Notify["Notification Dispatcher<br/>APNs push, WebSocket, voice TTS"]
 
-    Evals["Evals Runner<br/>DeepEval metrics + mocked regression suite"] -.-> Reflex
+    Evals["PRD Eval Suite<br/>goldens on a throwaway stack, vLLM in every role"] -.-> Reflex
     Evals -.-> Conscious
     Telemetry["Telemetry<br/>OpenTelemetry + latency/token CSVs"] -.-> Reflex
 ```
@@ -197,7 +197,7 @@ uv sync --all-extras       # everything (voice, integrations, memory, evals)
 uv sync --extra dev --extra voice         # WhisperSTT + PiperTTS
 uv sync --extra dev --extra integrations  # Calendar, Robinhood
 uv sync --extra dev --extra memory        # Sentence transformers, sqlite-vec
-uv sync --extra dev --extra evals         # DeepEval
+uv sync --extra dev --extra evals         # Inspect AI eval harness (alfred evals)
 ```
 
 ```bash
@@ -227,13 +227,14 @@ uv run alfredctl smoke --deep # also drives a real request through System 2 (nee
 ## Evals
 
 ```bash
-uv run python -m evals run                  # System 1 (requires Ollama)
-uv run python -m evals regression           # System 1 regression (mocked, CI-safe)
-uv run python -m evals conscious            # System 2 (dry-run)
-uv run python -m evals demo                 # Good Morning end-to-end demo
-uv run python -m evals run -n 5             # Repeat 5x with aggregate stats
-uv run python -m evals compare <run1> <run2> # Compare two runs
+uv run alfred evals calibrate                         # judge agreement with hand labels
+uv run alfred evals list                              # goldens, their status and PRD rows
+uv run alfred evals run home_control conversation     # throwaway stacks, scorecard by PRD row
+uv run python -m evals memory run                     # memory-decay simulation (docs/evals-memory.md)
 ```
+
+The PRD suites need Docker, a local vLLM and the `evals` extra (`uv sync --all-extras`); see
+[docs/evals.md](docs/evals.md).
 
 ## Development
 
@@ -258,13 +259,15 @@ annotated source of truth, split into a short **REQUIRED** section and defaulted
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OPENROUTER_API_KEY` | — | System 2 cloud LLM key (required for reasoning) |
-| `CLAUDE_MODEL` | `openrouter/anthropic/claude-sonnet-4` | System 2 model (LiteLLM string) |
+| `SYSTEM2_MODEL` | `openrouter:anthropic/claude-sonnet-4` | System 2 model (Pydantic AI string: `openrouter:<vendor>/<model>` or `vllm:<served-name>`; see `docs/llm.md`) |
+| `VLLM_BASE_URL` | first set of `OPENAI_BASE_URL` (legacy `openai/` `CLAUDE_MODEL` only), `OPENAI_COMPAT_HOST`, `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended | Where `vllm:` models are served |
 | `REFLEX_BACKEND` | `ollama` | System 1 backend: `ollama` \| `openai` |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API (localhost auto-rewritten in-container) |
 | `HA_HOST` | `http://localhost:8123` | Home Assistant base URL |
 | `HA_TOKEN` | — | HA long-lived token (required for home control) |
 | `EMBEDDING_BACKEND` | `sentence_transformers` | Memory embedding backend: `sentence_transformers` \| `openai` |
-| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Model under either backend; ungated, `EMBEDDING_DIM` auto-tracks it |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Model under either backend; ungated, ~2.3 GB, `EMBEDDING_DIM` auto-tracks it |
+| `INVOLUNTARY_RECALL_THRESHOLD` | `0.575` | Lowest similarity a memory is recalled into a reply at. Per-model scale: calibrated for bge-m3, so recalibrate it when you change the model |
 | `ALFRED_TRUSTED_NETWORKS` | — | Extra trusted CIDRs (loopback + LAN + Tailscale trusted by default) |
 | `ALFRED_TRUSTED_NETWORKS_STRICT` | — | Trust **only** loopback, Tailscale and the CIDRs above — drops the RFC1918 defaults. Required when Alfred is reachable from the internet |
 | `FORWARDED_ALLOW_IPS` | loopback | The reverse proxy's own address, so uvicorn rewrites the client IP and scheme from `X-Forwarded-*`. Never `*`. See [`docs/deployment.md`](docs/deployment.md) "Behind a reverse proxy" |

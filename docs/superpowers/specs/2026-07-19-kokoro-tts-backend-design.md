@@ -3,7 +3,7 @@
 - **Status:** Approved
 - **Date:** 2026-07-19 (revised 2026-07-20)
 - **Author:** Lead Engineer (Claude) + owner
-- **Related:** `docs/backlog/medium/voice-model-configurability.md` (realized by this spec), `docs/superpowers/specs/2026-07-15-voice-satellite-design.md`, `docs/voice-satellites.md`
+- **Related:** [#98](https://github.com/anirudhlath/alfred/issues/98) (realized by this spec), `docs/superpowers/specs/2026-07-15-voice-satellite-design.md`, `docs/voice-satellites.md`
 
 ## 1. Motivation
 
@@ -144,7 +144,7 @@ Kokoro's g2p is `phonemizer-fork → espeak-ng` (kokoro-onnx uses phonemizer **d
 - `docs/voice.md` — TTS subsystem doc (ABC seam, backends, HF download, EP selection, espeak wiring).
 - `tests/core/voice/test_tts_kokoro.py`, `test_tts_registry.py`, `test_tts_backend.py`, `test_espeak_smoke.py`; `tests/core/channels/test_voice_models_tts.py`; `tests/shared/test_config_tts.py`.
 - `.github/workflows/voice-smoke.yml` — non-gating macOS+Linux phonemization smoke.
-- `docs/backlog/medium/kokoro-mlx-mac-adapter.md` — MLX fast-follow ticket (§12).
+- [#227](https://github.com/anirudhlath/alfred/issues/227) — MLX fast-follow ticket (§12).
 
 **Modified**
 - `core/channels/voice_models.py` — `get_tts()` reads the registry + config; returns `TTSBackend | None`; fallback logic. Signatures unchanged.
@@ -206,7 +206,7 @@ Default flips to Kokoro; first run auto-downloads the model from HF. Piper remai
 
 ## 12. Future work
 
-- **Kokoro-MLX Mac adapter (fast-follow, backlogged).** Benchmarked on the M4 Max: ~5–8× faster than ONNX CPU (short reply 0.076 s / RTF 0.019 vs 0.4 s / RTF 0.15) with native 48 kHz output. Deferred because: (a) `kokoro-mlx` sets `requires-python <3.13`, so it needs **vendoring** of its MIT pure-Python inference to run on Alfred's 3.13; (b) it drags `torch` + spaCy + `en_core_web_sm` via `misaki[en]`; (c) its espeak init resists the standard fix (needs an `espeakng_loader` monkeypatch to a working espeak); (d) alpha (v0.1.2, single maintainer). The ABC port makes it a drop-in `KokoroMLXTTS(TTSBackend)` adapter (Mac-only, auto-selected on Apple Silicon) once those are settled. Tracked in `docs/backlog/medium/kokoro-mlx-mac-adapter.md`.
+- **Kokoro-MLX Mac adapter (fast-follow, backlogged).** Benchmarked on the M4 Max: ~5–8× faster than ONNX CPU (short reply 0.076 s / RTF 0.019 vs 0.4 s / RTF 0.15) with native 48 kHz output. Deferred because: (a) `kokoro-mlx` sets `requires-python <3.13`, so it needs **vendoring** of its MIT pure-Python inference to run on Alfred's 3.13; (b) it drags `torch` + spaCy + `en_core_web_sm` via `misaki[en]`; (c) its espeak init resists the standard fix (needs an `espeakng_loader` monkeypatch to a working espeak); (d) alpha (v0.1.2, single maintainer). The ABC port makes it a drop-in `KokoroMLXTTS(TTSBackend)` adapter (Mac-only, auto-selected on Apple Silicon) once those are settled. Tracked in [#227](https://github.com/anirudhlath/alfred/issues/227).
 - Streaming TTS via `create_stream()` (per-sentence) to cut time-to-first-audio.
 - Kokoro int8 backend option for the `alfred-satellite` Pis (footprint).
 - Per-channel voice selection.

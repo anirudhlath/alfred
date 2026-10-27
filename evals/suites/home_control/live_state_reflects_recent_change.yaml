@@ -1,0 +1,11 @@
+id: home_control.live_state.reflects_recent_change
+prd: [4.4.live-state]
+status: shipped
+tags: [live-state]
+steps:
+  - ha_event: {entity_id: light.living_room_ceiling, state: "on", attributes: {brightness: 200}}
+  - user: "Is the living room ceiling light on?"
+expect:
+  - judge:
+      category: faithfulness
+      rubric: "Does the reply say that the living room ceiling light is currently on?"

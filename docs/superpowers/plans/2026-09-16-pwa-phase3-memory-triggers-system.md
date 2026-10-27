@@ -145,7 +145,7 @@ Identical to phases 1 and 2, repeated because they are load-bearing:
 | `web/src/workshop/ActivityBench.tsx` | Drop the duplicate `role="status"` on the feed banner | 10 |
 | `web/src/room/Room.tsx` | Hold the Held-back sheet opened from System › Quiet | 10 |
 | `web/src/lib/types.ts`, `web/src/test/fixtures.ts` | Server-mirroring types and the payload fixtures the tests share | 1, 4, 7 |
-| `web/README.md`, `docs/web-frontend.md`, `docs/backlog/low/pwa-phase3-followups.md`, `docs/superpowers/qa/2026-09-16-pwa-phase3-ios-checklist.md` | Docs, backlog, QA | 11 |
+| `web/README.md`, `docs/web-frontend.md`, [#258](https://github.com/anirudhlath/alfred/issues/258), `docs/superpowers/qa/2026-09-16-pwa-phase3-ios-checklist.md` | Docs, backlog, QA | 11 |
 
 ### The contract between tasks (names used exactly as spelled)
 
@@ -1011,11 +1011,11 @@ const openHeld = useCallback(() => setSheetOpen(true), []);
 
 ## Task 11: Docs, backlog, QA checklist
 
-**Files:** Modify `web/README.md`, `docs/web-frontend.md`; create `docs/backlog/low/pwa-phase3-followups.md`, `docs/superpowers/qa/2026-09-16-pwa-phase3-ios-checklist.md`; modify `docs/backlog/low/pwa-phase2-followups.md`.
+**Files:** Modify `web/README.md`, `docs/web-frontend.md`; create [#258](https://github.com/anirudhlath/alfred/issues/258), `docs/superpowers/qa/2026-09-16-pwa-phase3-ios-checklist.md`; modify [#257](https://github.com/anirudhlath/alfred/issues/257).
 
 - [ ] **Step 1: `docs/web-frontend.md`** — a "The Workshop's four benches" section: the bench-is-a-pure-view convention, hooks-in-the-panel and why (state survives a tab change), the `enabled` gate, the three-shapes episodic adapter (a short version of task 1's table), and decision 6's queued-vs-applied rule as the house style for every fire-and-forget control.
 - [ ] **Step 2: `web/README.md`** — the new files in the structure list, and one line under System: *Web Push (the Reach card) lands with phase 5; the card is deliberately absent rather than inert.*
-- [ ] **Step 3: `docs/backlog/low/pwa-phase3-followups.md`** — one entry per deviation from the table above that a backend change would close, each stating the endpoint that would close it:
+- [ ] **Step 3: [#258](https://github.com/anirudhlath/alfred/issues/258)** — one entry per deviation from the table above that a backend change would close, each stating the endpoint that would close it:
   1. episodic search metadata (best rejected score, threshold, corpus sizes) — `recall()` would have to return them
   2. an embedder readiness probe, so the model pill can be honest before the first search
   3. an `id` on browse-hot rows — the `CONTEXT_PREFIX` key, currently discarded
@@ -1036,7 +1036,7 @@ const openHeld = useCallback(() => setSheetOpen(true), []);
   18. **The health dot sits above its value rather than 8 px to its left** (`Alfred.dc.html:358`), and the value carries `font-mono` where the prototype's `stat` role is DM Sans. Both were kept for the reason the four-card row above gives: the column is what fits the 2×2 grid inside a section-width card at 360 px.
   19. **Two copy deviations already shipped**: `2.1 ev/s` against the handoff's `2.1/s` (`rateText` is shared with the Room status line, where the handoff itself writes `ev/s`), and `resets 00:00` dropped from the spend note (`core/conscious/cost.py:70` rolls the day on `datetime.now(UTC)`, so the string is false for any household outside UTC). Both would close with a backend that reported the window it actually uses.
   20. **`bus · redis · 1 streams`** — `lib/system.ts`'s bus note is `${streamCount} streams` with no singular, so a household running one stream reads an ungrammatical count. Found by mutation testing in task 8's fix round and pinned as it stands (`system.test.ts`, "calls the rate alive on a house carrying a single stream") rather than corrected inside a bench commit; the handoff's example only ever shows three.
-- [ ] **Step 4: `docs/backlog/low/pwa-phase2-followups.md`** — close item §3 (the live region), noting task 10 moved it into the header.
+- [ ] **Step 4: [#257](https://github.com/anirudhlath/alfred/issues/257)** — close item §3 (the live region), noting task 10 moved it into the header.
 - [ ] **Step 5: the QA checklist** — device steps in the phase-2 checklist's format, covering: all four benches reachable and each one's first paint; the episodic search keyboard (does the field zoom? it must not); a trigger toggle showing the queued note and the row not moving; a trigger toggle over a dropped connection; DND on and off from System and the Room's row agreeing; Held back opening from both places; the pairing code readable at arm's length; **the Triggers kind chips at 360 px — five `flex-1` chips give ~60.8 px each and "Composite" at 13 px medium is right at that width, so check it does not clip or wrap** (task 6 shipped `whitespace-nowrap px-1` rather than guess); Save & test from off-LAN showing the network sentence; VoiceOver hearing one announcement per socket drop, not two; **three minutes sitting on Activity with VoiceOver on, confirming the header says nothing while the rate ticks** (`role="status"` implies `aria-atomic="true"`, and jsdom cannot tell whether iOS diffs the accessibility tree or the DOM); every bench under a 60 s socket outage.
 - [ ] **Step 6: Commit** `docs(web): phase 3 conventions, backlog and device checklist`
 

@@ -77,7 +77,15 @@ export const AUTH_STATUS_PATH = "/api/auth/status";
  */
 const isStatusRead = (path: string): boolean => path === AUTH_STATUS_PATH;
 
-export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * `api`, with the response's headers beside the body — for a route that says
+ * something in a header its body cannot (`fetchIntegrationListing`). One
+ * transport either way, so the 401/403 announcements cannot drift apart.
+ */
+export async function apiWithHeaders<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<{ body: T; headers: Headers }> {
   const resp = await fetch(path, {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
@@ -96,8 +104,12 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   // 204 has no body; `await resp.json()` would throw on it.
-  if (resp.status === 204) return undefined as T;
-  return (await resp.json()) as T;
+  const body = resp.status === 204 ? (undefined as T) : ((await resp.json()) as T);
+  return { body, headers: resp.headers };
+}
+
+export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  return (await apiWithHeaders<T>(path, init)).body;
 }
 
 export const post = <T>(path: string, body?: unknown): Promise<T> =>

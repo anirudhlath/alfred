@@ -2437,7 +2437,7 @@ git commit -m "feat(web): command palette, SPA fallback serving, container web b
 - `docs/qa-backlog/web-onboarding-e2e.md` — fresh state → wizard → memory files written, skip-defaults respected (high/e2e)
 - `docs/qa-backlog/web-admin-controls.md` — DND toggle affects notification deferral; drain delivers; trigger fire executes action; librarian run logs consolidation (high/integration)
 
-- [ ] **Step 3: Backlog tickets** for deferred niceties: `docs/backlog/low/web-asset-cache-headers.md`, `docs/backlog/low/web-light-theme.md`, `docs/backlog/medium/web-activity-virtualized-list.md` (feed perf beyond 500 entries).
+- [ ] **Step 3: Backlog tickets** for deferred niceties: [#138](https://github.com/anirudhlath/alfred/issues/138), [#140](https://github.com/anirudhlath/alfred/issues/140), [#99](https://github.com/anirudhlath/alfred/issues/99) (feed perf beyond 500 entries).
 
 - [ ] **Step 4: Final quality gate**
 

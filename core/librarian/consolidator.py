@@ -4,7 +4,9 @@ The Librarian replays the scratchpad, extracts episodic entries,
 updates semantic memory (preferences + profile), detects patterns
 for procedural memory, and applies decay to old entries.
 
-Uses Claude for LLM-powered extraction and conflict resolution.
+LLM calls go through the agents in core/librarian/agents.py, on LIBRARIAN_MODEL, under
+the process's daily budget: a spent budget skips the pass (``SpendLimitExceeded`` is never
+taken by a step's fallback), and the scratchpad waits for the next one.
 Atomic file writes: write to .tmp then os.rename() for memory files.
 On failure, the scratchpad accumulates — memory files never left partial.
 """
@@ -12,15 +14,20 @@ On failure, the scratchpad accumulates — memory files never left partial.
 from __future__ import annotations
 
 import asyncio
-import json
+import contextlib
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel
+from pydantic_ai_harness.spend import SpendLimitExceeded
 
+from core.librarian.agents import (
+    LibrarianTask,
+    build_librarian_agents,
+)
 from core.memory.paths import preferences_dir as _preferences_dir
 from core.memory.paths import profile_dir as _profile_dir
 from core.memory.schemas import (
@@ -30,51 +37,116 @@ from core.memory.schemas import (
     RoutineStep,
     SignificanceScore,
 )
+from core.memory.vector_store import Range
+from shared.config import DEFAULT_DECAY_MIGRATION_THRESHOLD, DEFAULT_SYSTEM2_TIMEOUT_S
+from shared.prompts.names import (
+    LIBRARIAN_ANALYSE,
+    LIBRARIAN_COMPRESS,
+    LIBRARIAN_EXTRACT,
+    LIBRARIAN_PATTERNS,
+    LIBRARIAN_RESOLVE,
+)
+from shared.prompts.store import PromptStore
+from shared.spend import ALERT_SOURCE, alert_if_needed
 from shared.streams import LIBRARIAN_QUEUE, LIBRARIAN_STATUS_KEY
+from shared.usertime import get_user_timezone
 
 if TYPE_CHECKING:
+    from pydantic_ai.models import Model
+    from pydantic_ai_harness.spend import SpendLimits
+
+    from core.librarian.agents import ConflictItem
     from core.memory.context_index import ContextIndexManager
     from core.memory.episodic.memory import EpisodicMemory
     from core.memory.routines.store import RoutineStore
     from core.memory.significance import SignificanceScorer
     from core.memory.vector_store import SearchResult
+    from core.notifications.publisher import NotificationPublisher
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Semantic conflict resolution models
-# ---------------------------------------------------------------------------
-
-
-class ConflictItem(BaseModel):
-    """A single item in the conflict resolution LLM response."""
-
-    type: Literal["confirm", "contradict", "new"]
-    # Used by "confirm" and "contradict" (the existing preference line)
-    line: str = ""
-    # Used by "contradict" — the new value
-    old: str = ""
-    new: str = ""
-    # Used by "new" — the content to append
-    content: str = ""
-    explanation: str = ""
-
-
 _DEFAULT_PREFERENCES_DIR = str(_preferences_dir())
+_BUDGET_SKIPPED: dict[str, Any] = {"entries_processed": 0, "skipped": "daily budget exhausted"}
 _DEFAULT_PROFILE_DIR = str(_profile_dir())
+
+# migration_pressure()'s ceiling: its age factor caps here and every other term subtracts.
+MAX_MIGRATION_PRESSURE = 1.0
+# How strongly significance resists migration in migration_pressure().
+SIGNIFICANCE_WEIGHT = 2.0
+# Migrations (single entries or compressed groups) one decay pass runs at once. Each
+# holds a hot-store Redis connection while it moves, and that pool is the service's
+# own: redis-py caps it at 100 and raises "Too many connections" past that rather than
+# waiting. The first pass after deploy moves the whole backlog — thousands at once
+# without this cap, which failed most of them (EXP-008).
+DECAY_MIGRATION_CONCURRENCY = 8
+
+
+def migration_pressure(
+    age_days: float,
+    significance: float,
+    retrieval_count: int,
+    days_since_last_retrieved: float,
+) -> float:
+    """How strongly an episodic entry is pushed from hot to cold storage.
+
+    Age pushes; significance, recent retrieval and frequent retrieval resist::
+
+        age_factor          = min(age_days / 30, 1)
+        retrieval_recency   = exp(-days_since_last_retrieved / 7)
+        retrieval_frequency = min(log2(retrieval_count + 1) / 5, 1)
+        pressure = age_factor - 2*significance - 1.5*recency - frequency
+
+    Never above 1.0: ``age_factor`` caps at 1.0 and every other term only subtracts (in
+    floating point a very old, never-retrieved entry reaches exactly 1.0), so a
+    migration threshold must sit below 1.0 to ever fire
+    (``DEFAULT_DECAY_MIGRATION_THRESHOLD``).
+    """
+    from math import exp, log2
+
+    age_factor = min(age_days / 30.0, MAX_MIGRATION_PRESSURE)
+    retrieval_recency = exp(-days_since_last_retrieved / 7.0)
+    retrieval_frequency = min(log2(retrieval_count + 1) / 5.0, 1.0)
+    return (
+        age_factor
+        - significance * SIGNIFICANCE_WEIGHT
+        - retrieval_recency * 1.5
+        - retrieval_frequency * 1.0
+    )
+
+
+def decay_candidate_ranges(threshold: float) -> dict[str, Range] | None:
+    """Metadata ranges that hold every entry whose pressure can exceed ``threshold``.
+
+    ``age_factor`` is at most 1 and the recency and frequency terms only subtract, so
+    ``pressure > threshold`` needs ``significance < (1 - threshold) / 2`` — whatever the
+    entry's age or retrievals, and whatever its significance's sign. Entries without a
+    timestamp (semantic sections, routines) are never decayed. ``None`` when no entry can
+    exceed the threshold at all.
+    """
+    if threshold >= MAX_MIGRATION_PRESSURE:
+        return None
+    return {
+        "timestamp": Range(above=0.0),
+        "significance": Range(below=(MAX_MIGRATION_PRESSURE - threshold) / SIGNIFICANCE_WEIGHT),
+    }
 
 
 def _group_by_entity_date(
     results: list[SearchResult],
 ) -> tuple[list[list[SearchResult]], list[SearchResult]]:
-    """Group decayed entries by (shared_entity, date) for compression."""
+    """Group decayed entries by (shared_entity, date) for compression.
+
+    An entry naming several entities joins the first of their buckets that already
+    exists, so entries are taken oldest first (then by id): the grouping is a function
+    of the entries, not of the order the decay pass happened to find them in.
+    """
     from collections import defaultdict
 
     buckets: dict[tuple[str, str], list[SearchResult]] = defaultdict(list)
     ungrouped: list[SearchResult] = []
 
-    for result in results:
+    for result in sorted(results, key=lambda r: (r.metadata.timestamp, r.id)):
         entities_str = result.metadata.entities
         if not entities_str:
             ungrouped.append(result)
@@ -145,11 +217,14 @@ class Librarian:
         context_index: ContextIndexManager,
         preferences_dir: str = _DEFAULT_PREFERENCES_DIR,
         profile_dir: str = _DEFAULT_PROFILE_DIR,
-        claude_api_key: str = "",
-        claude_model: str = "openrouter/anthropic/claude-sonnet-4",
+        model: Model | None = None,
+        timeout_s: float = DEFAULT_SYSTEM2_TIMEOUT_S,
+        spend: SpendLimits[Any] | None = None,
+        notifier: NotificationPublisher | None = None,
+        prompts: PromptStore | None = None,
         conflict_min_observations: int = 5,
         conflict_min_days: int = 14,
-        decay_migration_threshold: float = 1.0,
+        decay_migration_threshold: float = DEFAULT_DECAY_MIGRATION_THRESHOLD,
         pattern_min_occurrences: int = 3,
         pattern_min_days: int = 7,
         pattern_confidence_threshold: float = 0.6,
@@ -166,8 +241,21 @@ class Librarian:
         self._context_index = context_index
         self._preferences_dir = Path(preferences_dir)
         self._profile_dir = Path(profile_dir)
-        self._api_key = claude_api_key
-        self._model = claude_model
+        # No model: every LLM step takes its fallback (heuristic significance,
+        # concatenated summaries, no preferences or patterns).
+        self._spend = spend
+        self._agents = (
+            build_librarian_agents(
+                model,
+                timeout_s=timeout_s,
+                spend=spend,
+                after_ask=self._alert if spend is not None else None,
+            )
+            if model is not None
+            else None
+        )
+        self._prompts = prompts if prompts is not None else PromptStore()
+        self._send_alert = notifier.urgent(ALERT_SOURCE) if notifier else None
         self._conflict_min_observations = conflict_min_observations
         self._conflict_min_days = conflict_min_days
         self._decay_migration_threshold = decay_migration_threshold
@@ -180,6 +268,20 @@ class Librarian:
         self._indexed_routine_content: dict[str, str] = {}
 
     _PROCESSING_KEY = f"{LIBRARIAN_QUEUE}:processing"
+
+    async def _alert(self) -> None:
+        """After each call: today's 80% alert, if this process is the one to send it."""
+        if self._spend is not None:
+            await alert_if_needed(self._spend, self._redis, self._send_alert)
+
+    async def _budget_spent(self) -> bool:
+        """Whether today's budget is gone, read before a pass starts (fails closed)."""
+        if self._spend is None or self._agents is None:
+            return False
+        # The budget day is the user's: refresh the zone its clock reads.
+        with contextlib.suppress(Exception):
+            await get_user_timezone(self._redis)
+        return await self._spend.exhausted()
 
     async def _drain_scratchpad(self) -> list[str]:
         """Atomically drain the scratchpad queue.
@@ -214,54 +316,28 @@ class Librarian:
           - ``significance``: dict with keys safety/novelty/personal/emotional (0-1 floats)
           - ``semantic_key``: str — human-readable rewrite for vector indexing
 
-        Falls back to empty dicts on any error.
+        Falls back to empty dicts with no model, on any error, or when the model's count is
+        still wrong after its retry.
         """
-        if not self._api_key or not summaries:
+        agents = self._agents
+        if agents is None or not summaries:
             return [{} for _ in summaries]
+        numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(summaries))
         try:
-            import litellm  # runtime import — optional dependency
-
-            numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(summaries))
-            system_prompt = (
-                "You are a memory analyst for a home automation assistant. "
-                "For each numbered observation, return a JSON array (one element per observation). "
-                "Each element must have:\n"
-                '  "entities": list of entity ids, room names, or people mentioned\n'
-                '  "significance": object with float fields safety/novelty/personal/emotional '
-                "(each 0.0-1.0, where 1.0 is most significant)\n"
-                '  "semantic_key": short human-readable phrase summarising the core meaning '
-                "(used for vector search)\n\n"
-                "safety=1.0 for emergencies/alarms, novelty=1.0 for first-time events, "
-                "personal=1.0 for direct user interactions, emotional=1.0 for strong sentiment.\n"
-                "Return ONLY the JSON array with no surrounding text.\n"
-                "Example for 2 observations:\n"
-                '[\n  {"entities": ["light.living_room"], '
-                '"significance": {"safety": 0.0, "novelty": 0.3, "personal": 0.5, '
-                '"emotional": 0.2}, '
-                '"semantic_key": "Evening lighting preference in living room"},\n'
-                '  {"entities": ["climate.main"], '
-                '"significance": {"safety": 0.0, "novelty": 0.0, "personal": 0.3, '
-                '"emotional": 0.1}, '
-                '"semantic_key": "Thermostat set to comfortable temperature"}\n]'
-            )
-            response = await litellm.acompletion(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": numbered},
-                ],
+            analyses = await agents.ask(
+                agents.analyse,
+                numbered,
+                LibrarianTask(
+                    await self._prompts.get(LIBRARIAN_ANALYSE), expected_items=len(summaries)
+                ),
                 max_tokens=max(300, 150 * len(summaries)),
-                api_key=self._api_key,
             )
-            raw = response.choices[0].message.content or "[]"
-            parsed: list[dict[str, Any]] = json.loads(raw)
-            # Pad/trim to match input length
-            while len(parsed) < len(summaries):
-                parsed.append({})
-            return parsed[: len(summaries)]
+        except SpendLimitExceeded:
+            raise
         except Exception as exc:
             logger.warning("Batch analysis failed: %s", exc)
             return [{} for _ in summaries]
+        return [a.model_dump() for a in analyses]
 
     async def _extract_episodic_entries(
         self, scratchpad_lines: list[str]
@@ -269,8 +345,8 @@ class Librarian:
         """Extract episodic entries with LLM enrichment.
 
         Returns a list of ``(EpisodicEntry, llm_significance)`` tuples where
-        ``llm_significance`` is the raw significance dict from the LLM (may be
-        empty if no API key or on error).
+        ``llm_significance`` is the raw significance dict from the LLM (empty with no
+        model or on error).
         """
         parsed: list[tuple[str, str]] = []
         for line in scratchpad_lines:
@@ -325,52 +401,32 @@ class Librarian:
         conflict_min_observations: int,
         conflict_min_days: int,
     ) -> list[ConflictItem]:
-        """Call Claude to compare new observations against existing learned.md.
+        """Compare new observations against the existing learned.md.
 
         Returns a structured list of ConflictItem decisions.
         Falls back to empty list on any error.
         """
+        agents = self._agents
+        if agents is None:
+            return []
+        user_content = (
+            f"EXISTING PREFERENCES:\n{existing_content}\n\nNEW OBSERVATIONS:\n{new_summaries}"
+        )
         try:
-            import litellm  # runtime import — optional dependency
-
-            system_prompt = (
-                "You are a memory conflict resolver for a home automation assistant. "
-                "Given EXISTING learned preferences and NEW observations, classify each new "
-                "observation against the existing preferences.\n\n"
-                "Return a JSON array where each element has:\n"
-                '  "type": "confirm" | "contradict" | "new"\n'
-                '  For "confirm": "line" (existing preference text), "explanation"\n'
-                '  For "contradict": "old" (existing text), "new" (revised text), "explanation"\n'
-                '  For "new": "content" (the new preference to add), "explanation"\n\n'
-                f"IMPORTANT: Only allow 'contradict' if supported by at least "
-                f"{conflict_min_observations} consistent observations over at least "
-                f"{conflict_min_days} days. Otherwise use 'confirm' or 'new'.\n"
-                "Return ONLY the JSON array.\n"
-                "Example:\n"
-                "[\n"
-                '  {"type": "confirm", "line": "Prefers 72°F", '
-                '"explanation": "Consistent with recent data"},\n'
-                '  {"type": "contradict", "old": "Prefers 72°F", "new": "Prefers 68°F", '
-                '"explanation": "Last 5 observations show 68°F"},\n'
-                '  {"type": "new", "content": "Prefers warm lighting in evening", '
-                '"explanation": "Observed 3 times this week"}\n'
-                "]"
-            )
-            user_content = (
-                f"EXISTING PREFERENCES:\n{existing_content}\n\nNEW OBSERVATIONS:\n{new_summaries}"
-            )
-            response = await litellm.acompletion(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
+            return await agents.ask(
+                agents.resolve,
+                user_content,
+                LibrarianTask(
+                    await self._prompts.get(
+                        LIBRARIAN_RESOLVE,
+                        min_observations=conflict_min_observations,
+                        min_days=conflict_min_days,
+                    )
+                ),
                 max_tokens=800,
-                api_key=self._api_key,
             )
-            raw = response.choices[0].message.content or "[]"
-            parsed = json.loads(raw)
-            return [ConflictItem.model_validate(item) for item in parsed]
+        except SpendLimitExceeded:
+            raise
         except Exception as exc:
             logger.warning("Conflict resolution failed: %s", exc)
             return []
@@ -431,7 +487,8 @@ class Librarian:
 
         Returns the number of files updated.
         """
-        if not self._api_key or not entries:
+        agents = self._agents
+        if agents is None or not entries:
             return 0
 
         summaries = "\n".join(f"- {e.summary}" for e in entries)
@@ -439,41 +496,16 @@ class Librarian:
         today = datetime.now(UTC).strftime("%Y-%m-%d")
 
         try:
-            import litellm  # runtime import — optional dependency
-
             # Pass 1: extract candidate preferences from observations
-            extract_response = await litellm.acompletion(
-                model=self._model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Analyze these home assistant observations. "
-                            "If you detect a clear user preference (e.g., preferred temperature, "
-                            "routine change, dietary preference), output it as:\n"
-                            "PREFERENCE: <domain>: <observation>\n"
-                            "Only output high-confidence observations. "
-                            "If nothing is notable, output NONE."
-                        ),
-                    },
-                    {"role": "user", "content": summaries},
-                ],
+            preferences = await agents.ask(
+                agents.extract,
+                summaries,
+                LibrarianTask(await self._prompts.get(LIBRARIAN_EXTRACT)),
                 max_tokens=500,
-                api_key=self._api_key,
             )
-            result_text: str = extract_response.choices[0].message.content or ""
-            if "NONE" in result_text or not result_text.strip():
+            if not preferences:
                 return 0
-
-            candidate_lines = [
-                line.replace("PREFERENCE:", "").strip()
-                for line in result_text.splitlines()
-                if line.startswith("PREFERENCE:")
-            ]
-            if not candidate_lines:
-                return 0
-
-            candidates_text = "\n".join(f"- {c}" for c in candidate_lines)
+            candidates_text = "\n".join(f"- {p.domain}: {p.observation}" for p in preferences)
 
             # Read existing learned.md (or build skeleton)
             if learned_path.exists():
@@ -509,21 +541,43 @@ class Librarian:
             self._write_semantic_file(learned_path, updated_content)
             return 1
 
+        except SpendLimitExceeded:
+            raise
         except Exception as exc:
             logger.warning("Semantic memory update failed: %s", exc)
         return 0
 
     async def _compress_and_migrate(self, group: list[SearchResult]) -> int:
-        """Compress a group of related entries into a summary, then migrate originals.
+        """Migrate a group of related entries, then write one summary of those that moved.
 
-        Calls LLM to generate a summary + semantic_key for the group. Falls back
-        to concatenation if LLM fails or no API key. Writes summary to cold store
-        directly (not via EpisodicMemory to avoid re-embedding), then migrates
-        originals with compressed="yes" marker.
+        Originals move first, with a compressed="yes" marker. One that fails stays hot
+        and is grouped again on the next pass, so the summary covers only the ones that
+        moved — summarising it now would summarise it twice. Calls LLM to generate a
+        summary + semantic_key; falls back to concatenation with no model or on failure,
+        a spent budget included (the originals have moved; no later pass would see them).
+        Writes the summary to cold store directly (not via EpisodicMemory). A summary
+        that fails to write loses nothing: the originals are in cold with their own
+        vectors.
 
         Returns the number of original entries migrated.
         """
         from core.memory.vector_store import ContextMetadata
+
+        moved: list[SearchResult] = []
+        for result in group:
+            try:
+                marked = result.model_copy(
+                    update={"metadata": result.metadata.model_copy(update={"compressed": "yes"})}
+                )
+                await self._episodic_memory.copy_to_cold_and_remove(marked)
+                moved.append(result)
+            except Exception as exc:
+                logger.warning(
+                    "Compression: failed to migrate original entry %s: %s", result.id, exc
+                )
+        if not moved:
+            return 0
+        group = moved
 
         lines = [f"- [{r.id}] {r.content}" for r in group]
         group_text = "\n".join(lines)
@@ -539,33 +593,20 @@ class Librarian:
         # Generate summary via LLM
         summary_text = ""
         semantic_key_text = ""
-        if self._api_key:
+        agents = self._agents
+        if agents is not None:
             try:
-                import litellm
-
-                system_prompt = (
-                    "You are a memory compressor for a home automation assistant. "
-                    "Given multiple related episodic memory entries, produce a single "
-                    "concise summary and a short semantic key phrase. "
-                    "Return ONLY valid JSON with keys "
-                    '"summary" and "semantic_key". No other text.\n'
-                    'Example: {"summary": "Kitchen lights toggled on then off.", '
-                    '"semantic_key": "kitchen light activity"}'
-                )
-                response = await litellm.acompletion(
-                    model=self._model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": group_text},
-                    ],
+                compressed = await agents.ask(
+                    agents.compress,
+                    group_text,
+                    LibrarianTask(await self._prompts.get(LIBRARIAN_COMPRESS)),
                     max_tokens=200,
-                    api_key=self._api_key,
                 )
-                raw = response.choices[0].message.content or "{}"
-                parsed: dict[str, str] = json.loads(raw)
-                summary_text = parsed.get("summary", "")
-                semantic_key_text = parsed.get("semantic_key", "")
+                summary_text = compressed.summary
+                semantic_key_text = compressed.semantic_key
             except Exception as exc:
+                # A spent budget included: the originals have already moved, so the free
+                # fallback below must still write their summary.
                 logger.warning("Compression: LLM summarization failed: %s", exc)
 
         # Fallback: concatenate contents
@@ -606,64 +647,37 @@ class Librarian:
             )
         except Exception as exc:
             logger.warning("Compression: failed to write summary entry: %s", exc)
-            # Still migrate originals even if summary write fails
 
-        # Migrate all originals with compressed marker
-        migrated = 0
-        for result in group:
-            try:
-                marked = result.model_copy(
-                    update={"metadata": result.metadata.model_copy(update={"compressed": "yes"})}
-                )
-                await self._episodic_memory.copy_to_cold_and_remove(marked)
-                migrated += 1
-            except Exception as exc:
-                logger.warning(
-                    "Compression: failed to migrate original entry %s: %s", result.id, exc
-                )
-
-        return migrated
+        return len(moved)
 
     async def _apply_decay(
         self,
-        decay_migration_threshold: float = 1.0,
-        search_query: str = "general context memory event",
-        search_limit: int = 500,
+        decay_migration_threshold: float = DEFAULT_DECAY_MIGRATION_THRESHOLD,
+        now: datetime | None = None,
     ) -> int:
         """Migrate old low-significance hot entries to cold storage.
 
-        Uses a subtractive formula where significance and retrieval
-        activity resist the migration pressure from age:
-
-            age_factor = min(days_old / 30.0, 1.0)
-            retrieval_recency = exp(-days_since_last_retrieved / 7.0)
-            retrieval_frequency = min(log2(count + 1) / 5.0, 1.0)
-
-            pressure = (
-                age_factor
-                - significance * 2.0
-                - retrieval_recency * 1.5
-                - retrieval_frequency * 1.0
-            )
-
-        Entries with pressure > decay_migration_threshold are migrated to cold.
+        Entries whose ``migration_pressure()`` exceeds ``decay_migration_threshold``
+        are migrated to cold. The pressure never exceeds 1.0, so the threshold must sit
+        below it.
+        Candidates are every hot entry ``decay_candidate_ranges()`` admits, selected by
+        metadata — not the nearest hits to a query, which once saw ~19 of thousands.
         Related entries (same entity + same day) are compressed into a single
         summary before migration.
+        ``now`` defaults to the wall clock; the memory eval (``evals/memory``) passes a
+        simulated one so it can replay weeks of decay in minutes.
         Returns the number of entries migrated.
         """
-        from math import exp, log2
-
+        ranges = decay_candidate_ranges(decay_migration_threshold)
+        if ranges is None:
+            return 0
         try:
-            results = await self._context_index.search_text(
-                query=search_query,
-                limit=search_limit,
-                min_similarity=0.0,
-            )
+            results = await self._context_index.select(ranges)
         except Exception as exc:
             logger.warning("Decay: failed to retrieve hot entries: %s", exc)
             return 0
 
-        now = datetime.now(UTC).timestamp()
+        now_ts = (now or datetime.now(UTC)).timestamp()
         to_migrate: list[SearchResult] = []
 
         for result in results:
@@ -674,26 +688,19 @@ class Librarian:
             if timestamp <= 0:
                 continue
 
-            age_days = (now - timestamp) / 86400.0
+            age_days = (now_ts - timestamp) / 86400.0
             significance = result.metadata.significance
             retrieval_count = result.metadata.retrieval_count
             last_retrieved = result.metadata.last_retrieved
 
             # Fallback: if last_retrieved was never set, assume never retrieved
             if last_retrieved > 0:
-                days_since_last_retrieved = (now - last_retrieved) / 86400.0
+                days_since_last_retrieved = (now_ts - last_retrieved) / 86400.0
             else:
                 days_since_last_retrieved = age_days
 
-            age_factor = min(age_days / 30.0, 1.0)
-            retrieval_recency = exp(-days_since_last_retrieved / 7.0)
-            retrieval_frequency = min(log2(retrieval_count + 1) / 5.0, 1.0)
-
-            pressure = (
-                age_factor
-                - significance * 2.0
-                - retrieval_recency * 1.5
-                - retrieval_frequency * 1.0
+            pressure = migration_pressure(
+                age_days, significance, retrieval_count, days_since_last_retrieved
             )
 
             if pressure > decay_migration_threshold:
@@ -712,21 +719,25 @@ class Librarian:
         # Group related entries for compression
         groups, ungrouped = _group_by_entity_date(to_migrate)
 
-        # Compress groups and migrate ungrouped in parallel
+        # Compress groups and migrate ungrouped in parallel, a bounded number at a time
+        slots = asyncio.Semaphore(DECAY_MIGRATION_CONCURRENCY)
+
         async def _migrate_single(result: SearchResult) -> int:
-            try:
-                await self._episodic_memory.copy_to_cold_and_remove(result)
-                return 1
-            except Exception as exc:
-                logger.warning("Decay: failed to migrate entry %s: %s", result.id, exc)
-                return 0
+            async with slots:
+                try:
+                    await self._episodic_memory.copy_to_cold_and_remove(result)
+                    return 1
+                except Exception as exc:
+                    logger.warning("Decay: failed to migrate entry %s: %s", result.id, exc)
+                    return 0
 
         async def _compress_group(group: list[SearchResult]) -> int:
-            try:
-                return await self._compress_and_migrate(group)
-            except Exception as exc:
-                logger.warning("Decay: compression failed for group: %s", exc)
-                return 0
+            async with slots:
+                try:
+                    return await self._compress_and_migrate(group)
+                except Exception as exc:
+                    logger.warning("Decay: compression failed for group: %s", exc)
+                    return 0
 
         migration_counts = await asyncio.gather(
             *(_compress_group(g) for g in groups),
@@ -744,15 +755,15 @@ class Librarian:
     ) -> list[RoutineSpec]:
         """Detect repeated behavioural patterns across recent episodic entries.
 
-        Calls Claude with the last 30 days of entries and asks it to identify
+        Gives the model the last 30 days of entries and asks it to identify
         patterns that occurred 3+ times over 7+ days.  Returns candidate
         ``RoutineSpec`` objects (state="candidate") that have not yet been saved;
         the caller decides whether to persist them.
 
-        Falls back to an empty list when no API key is configured or on any
-        error.
+        Falls back to an empty list with no model or on any error.
         """
-        if not self._api_key or not recent_entries:
+        agents = self._agents
+        if agents is None or not recent_entries:
             return []
 
         # Gather all routines already stored to avoid re-creating duplicates
@@ -764,82 +775,63 @@ class Librarian:
         if not window_entries:
             return []
 
+        # Local time: a routine's trigger_pattern is matched in the user's zone
+        # (match_trigger_pattern), and observation text carries local time too.
+        try:
+            tz_name = await get_user_timezone(self._redis)
+        except Exception as exc:
+            logger.warning("Pattern detection skipped, user timezone unreadable: %s", exc)
+            return []
+        tz = ZoneInfo(tz_name)
         summaries = "\n".join(
-            f"- [{e.id}] {e.timestamp.strftime('%Y-%m-%dT%H:%M')} {e.summary}"
+            f"- [{e.id}] {e.timestamp.astimezone(tz).strftime('%a %Y-%m-%d %H:%M')} {e.summary}"
             for e in window_entries
         )
 
-        system_prompt = (
-            "You are a pattern analyst for a home automation assistant. "
-            "Given episodic memory entries, identify repeated behavioural patterns. "
-            f"Only report patterns with at least {self._pattern_min_occurrences} occurrences "
-            f"spread over at least {self._pattern_min_days} different days. "
-            "\n\n"
-            "PAY SPECIAL ATTENTION to entries with source 'reflex' — these are automatic "
-            "System 1 (Reflex Engine) actions taken without conscious reasoning. Look for:\n"
-            "- Repeated reflex actions that may be unnecessary or counterproductive "
-            "(e.g., lights turning on for pet motion at night)\n"
-            "- Reflex patterns that could be optimised or overridden by a learned routine\n"
-            "- Reflex actions that are consistent and beneficial (validate as good behaviour)\n\n"
-            "Return a JSON array of pattern objects. Each object must have:\n"
-            '  "name": short snake_case identifier (e.g. "evening_dim")\n'
-            '  "trigger_pattern": when it happens (e.g. "20:00 daily", "weekday morning")\n'
-            '  "steps": array of {"description": str} objects\n'
-            '  "confidence": float 0.0-1.0\n'
-            '  "learned_from": array of episodic entry IDs (from the [id] prefix)\n\n'
-            "Return ONLY the JSON array. If no patterns qualify, return [].\n"
-            "Example:\n"
-            '[\n  {"name": "evening_dim", "trigger_pattern": "20:00 daily",\n'
-            '   "steps": [{"description": "Dim living room lights to 30%"}],\n'
-            '   "confidence": 0.75, "learned_from": ["ep-1", "ep-3", "ep-7"]}\n]'
-        )
-
         try:
-            import litellm  # runtime import — optional dependency
-
-            response = await litellm.acompletion(
-                model=self._model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": summaries},
-                ],
+            patterns = await agents.ask(
+                agents.patterns,
+                summaries,
+                LibrarianTask(
+                    await self._prompts.get(
+                        LIBRARIAN_PATTERNS,
+                        min_occurrences=self._pattern_min_occurrences,
+                        min_days=self._pattern_min_days,
+                        tz_name=tz_name,
+                    )
+                ),
                 max_tokens=1000,
-                api_key=self._api_key,
             )
-            raw: str = response.choices[0].message.content or "[]"
-            parsed: list[dict[str, Any]] = json.loads(raw)
+        except SpendLimitExceeded:
+            raise
         except Exception as exc:
             logger.warning("Pattern detection LLM call failed: %s", exc)
             return []
 
         candidates: list[RoutineSpec] = []
-        for item in parsed:
+        for item in patterns:
             try:
-                name: str = item.get("name", "")
-                if not name or name in existing_names:
+                if not item.name or item.name in existing_names:
                     continue
-                confidence: float = float(item.get("confidence", 0.0))
-                if confidence < self._pattern_confidence_threshold:
+                if item.confidence < self._pattern_confidence_threshold:
                     continue
                 steps = [
-                    RoutineStep(description=s.get("description", ""))
-                    for s in item.get("steps", [])
-                    if s.get("description")
+                    RoutineStep(description=s.description) for s in item.steps if s.description
                 ]
                 candidate = RoutineSpec(
-                    name=name,
-                    trigger_pattern=item.get("trigger_pattern", ""),
+                    name=item.name,
+                    trigger_pattern=item.trigger_pattern,
                     steps=steps,
-                    confidence=confidence,
-                    learned_from=item.get("learned_from", []),
+                    confidence=item.confidence,
+                    learned_from=list(item.learned_from),
                     state="candidate",
                 )
                 self._routines.save(candidate)
                 candidates.append(candidate)
                 logger.info(
                     "Pattern detected: '%s' (confidence=%.2f, occurrences=%d)",
-                    name,
-                    confidence,
+                    candidate.name,
+                    candidate.confidence,
                     len(candidate.learned_from),
                 )
                 # Index in context for involuntary recall
@@ -871,8 +863,6 @@ class Librarian:
         routines = self._routines.list_all()
         now = datetime.now(UTC)
         updated = 0
-
-        from shared.usertime import get_user_timezone
 
         tz_name = await get_user_timezone(self._redis)
 
@@ -1041,10 +1031,22 @@ class Librarian:
         await self._redis.hset(LIBRARIAN_STATUS_KEY, mapping={"next_run_at": at.isoformat()})
 
     async def consolidate(self) -> dict[str, Any]:
-        """Run one consolidation cycle.
+        """Run one consolidation cycle, or skip it when today's budget is spent.
 
         Returns a summary dict for logging/telemetry.
         """
+        try:
+            if await self._budget_spent():
+                logger.warning("Daily budget exhausted — skipping this Librarian pass")
+                return dict(_BUDGET_SKIPPED)
+            return await self._consolidate()
+        except SpendLimitExceeded as exc:
+            # Before the episodic writes, the processing key survives and the next pass
+            # replays it; after them, only the later steps are lost.
+            logger.warning("Daily budget spent mid-pass — skipping the rest of it: %s", exc)
+            return dict(_BUDGET_SKIPPED)
+
+    async def _consolidate(self) -> dict[str, Any]:
         logger.info("Librarian consolidation started")
 
         # 0. Ensure routines from YAML store are indexed for involuntary recall
@@ -1053,9 +1055,19 @@ class Librarian:
         # 1. Drain scratchpad
         lines = await self._drain_scratchpad()
         if not lines:
-            logger.info("Scratchpad empty — nothing to consolidate")
+            # Decay reads the hot store, not the scratchpad: passive observations reach
+            # episodic memory without ever passing through the queue, so a house nobody
+            # has spoken to still fills hot storage and still needs it emptied.
+            archived = await self._apply_decay(
+                decay_migration_threshold=self._decay_migration_threshold,
+            )
+            logger.info("Scratchpad empty — decay only; archived %d", archived)
             await self._record_run(0)
-            return {"entries_processed": 0, "routines_reindexed": routines_reindexed}
+            return {
+                "entries_processed": 0,
+                "routines_reindexed": routines_reindexed,
+                "archived": archived,
+            }
 
         logger.info("Draining %d scratchpad entries", len(lines))
 

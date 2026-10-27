@@ -7,11 +7,14 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Collection, Mapping
+    from datetime import datetime
     from pathlib import Path
 
     from core.memory.embedding_provider import EmbeddingProvider
-    from core.memory.vector_store import VectorStore
+    from core.memory.vector_store import Range, VectorStore
 
+from core.memory.recall import EPISODIC, recall_hot_and_cold
 from core.memory.vector_store import ContextMetadata, SearchResult, record_retrievals
 
 
@@ -28,10 +31,15 @@ class ContextIndexManager:
         store: VectorStore,
         embedder: EmbeddingProvider,
         semantic_dirs: list[Path] | None = None,
+        *,
+        archive: VectorStore | None = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
         self._semantic_dirs = semantic_dirs or []
+        # Where decay moves episodic memories (the cold store) — searched only by
+        # deliberate recall.
+        self._archive = archive
 
     async def index_episodic(
         self,
@@ -49,7 +57,7 @@ class ContextIndexManager:
             self._embedder.embed(semantic_key or content),
         )
         metadata = ContextMetadata(
-            type="episodic",
+            type=EPISODIC,
             source=source,
             entities=",".join(entities),
             timestamp=timestamp,
@@ -165,6 +173,40 @@ class ContextIndexManager:
         if update_stats and results:
             await record_retrievals(self._store, results)
         return results
+
+    async def recall(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        types: Collection[str] | None = None,
+        since: datetime | None = None,
+    ) -> list[SearchResult]:
+        """Deliberate recall: the whole hot index plus the archive, best ``limit`` by score.
+
+        Compressed entries are included, and the hot hits returned are recorded as
+        retrieved — deliberate recall is what the decay pass counts as using a memory.
+        Without the archive, nothing decay had moved out of hot could be recalled.
+
+        ``types`` and ``since`` filter before the limit (issue #311). The merge, its
+        filters and why an archive failure fails the recall are ``recall_hot_and_cold``'s
+        (``core/memory/recall.py``), which ``EpisodicMemory.recall`` shares.
+        """
+        hits = await recall_hot_and_cold(
+            query,
+            self._embedder,
+            self._store,
+            self._archive,
+            limit,
+            types=types,
+            since=since,
+            update_stats=True,
+        )
+        return [hit.result for hit in hits]
+
+    async def select(self, where: Mapping[str, Range]) -> list[SearchResult]:
+        """Entries chosen by metadata ranges, not similarity — see ``VectorStore.select``."""
+        return await self._store.select(where)
 
     async def remove(self, id: str) -> None:  # noqa: A002
         """Remove an entry from the index."""

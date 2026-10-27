@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import logging
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from core.reflex.tool_registry import ToolRegistry
+from core.reflex.tool_registry import ToolInfo, ToolRegistry, legacy_input_schema
 
 
 def _make_manifest(service_name: str, features: list[dict[str, Any]]) -> str:
@@ -60,8 +62,9 @@ async def test_get_tools_parses_manifest() -> None:
     assert tools[0].target_service == "home-service"
     assert tools[0].feature_name == "lighting"
     assert tools[0].feature_description == "Smart home lighting controls."
-    assert "room" in tools[0].parameters
-    assert tools[0].parameters["room"]["type"] == "str"
+    # An old-SDK manifest: its schema is derived from `parameters`, in their order.
+    assert tools[0].parameter_names == ("room", "level")
+    assert tools[0].input_schema["properties"]["room"]["type"] == "string"
 
 
 @pytest.mark.asyncio
@@ -131,3 +134,334 @@ async def test_get_services_returns_registered_services() -> None:
     services = registry.get_registered_services(tools)
 
     assert services == {"home-service"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_manifest", [b"123", b"[]", b'["ok"]', b'"text"', b"true", b"null"])
+async def test_get_tools_non_object_manifest_skipped(
+    bad_manifest: bytes, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Valid JSON that isn't an object is skipped with a WARNING naming the entry.
+
+    ``json.loads`` accepts it, so the ``JSONDecodeError`` guard never fires, and
+    ``.get`` on an int/list used to raise — taking down discovery for every service.
+    """
+    mock_redis = AsyncMock()
+    mock_redis.hgetall.return_value = {
+        b"bad-service": bad_manifest,
+        b"good-service": _make_manifest("good-service", [LIGHTING_FEATURE]).encode(),
+    }
+
+    with caplog.at_level(logging.WARNING, logger="core.reflex.tool_registry"):
+        tools = await ToolRegistry(mock_redis).get_tools()
+
+    assert [t.name for t in tools] == ["lighting.dim_lights", "lighting.turn_off_lights"]
+    assert all(t.target_service == "good-service" for t in tools)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "bad-service" in warnings[0].getMessage()
+
+
+def _registry_with(*features: dict[str, Any]) -> ToolRegistry:
+    mock_redis = AsyncMock()
+    mock_redis.hgetall.return_value = {
+        b"svc": _make_manifest("svc", list(features)).encode(),
+    }
+    return ToolRegistry(mock_redis)
+
+
+@pytest.mark.asyncio
+async def test_manifest_input_schema_is_used_verbatim() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"days": {"type": "array", "items": {"type": "string"}}},
+        "required": ["days"],
+    }
+    feature = {
+        "name": "f",
+        "tools": [
+            {
+                "name": "f.go",
+                "parameters": {"days": {"type": "list", "default": None, "required": True}},
+                "input_schema": schema,
+            }
+        ],
+    }
+    tools = await _registry_with(feature).get_tools()
+    assert tools[0].input_schema == schema
+
+
+@pytest.mark.asyncio
+async def test_old_sdk_manifest_keeps_todays_schema() -> None:
+    # An older SDK wrote "default": null for every parameter and no input_schema.
+    old = {
+        "name": "lighting",
+        "tools": [
+            {
+                "name": "lighting.dim_lights",
+                "description": "Dim the lights in a room.",
+                "parameters": {
+                    "room": {"type": "str", "description": "The room to dim.", "default": None},
+                    "level": {"type": "int", "description": "0-100.", "default": None},
+                    "fade": {"type": "bool", "default": None},
+                },
+            }
+        ],
+    }
+    tools = await _registry_with(old).get_tools()
+    assert tools[0].input_schema == {
+        "type": "object",
+        "properties": {
+            "room": {"type": "string", "description": "The room to dim."},
+            "level": {"type": "integer", "description": "0-100."},
+            "fade": {"type": "boolean"},
+        },
+        "required": [],
+    }
+    # Deliberate: System 2 used to offer `"description": ""` here, which tells a model nothing.
+    assert "description" not in tools[0].input_schema["properties"]["fade"]
+
+
+@pytest.mark.asyncio
+async def test_parameters_without_a_default_key_stay_required() -> None:
+    tools = await _registry_with(LIGHTING_FEATURE).get_tools()
+    assert tools[0].input_schema["required"] == ["room", "level"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_tool_is_skipped_and_the_rest_still_load(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    feature = {
+        "name": "f",
+        "tools": [
+            {"description": "no name"},
+            {"name": "f.bad_params", "parameters": {"p": "not-a-dict"}},
+            {"name": "f.bad_type", "parameters": {"p": {"type": 5}}},
+            {"name": "f.good", "parameters": {}},
+        ],
+    }
+    with caplog.at_level(logging.WARNING):
+        tools = await _registry_with(feature, LIGHTING_FEATURE).get_tools()
+    assert [t.name for t in tools] == [
+        "f.good",
+        "lighting.dim_lights",
+        "lighting.turn_off_lights",
+    ]
+    assert caplog.text.count("Skipping malformed tool") == 3
+
+
+@pytest.mark.parametrize(
+    ("spec", "required"),
+    [
+        # An explicit required wins over a default being present...
+        ({"type": "str", "default": "x", "required": True}, ["p"]),
+        # ...and over a default being absent.
+        ({"type": "str", "required": False}, []),
+    ],
+)
+def test_legacy_input_schema_honours_an_explicit_required(
+    spec: dict[str, Any], required: list[str]
+) -> None:
+    assert legacy_input_schema({"p": spec})["required"] == required
+
+
+_VALID_SCHEMA = {"type": "object", "properties": {}, "required": []}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_tool",
+    [
+        pytest.param({"name": "f.bad", "input_schema": "oops"}, id="string-schema"),
+        pytest.param({"name": "f.bad", "input_schema": {"foo": 1}}, id="non-object-schema"),
+        pytest.param(
+            {"name": "f.bad", "input_schema": {"type": "object", "properties": ["p"]}},
+            id="non-dict-properties",
+        ),
+        pytest.param(
+            {"name": "f.bad", "input_schema": {"type": "object", "properties": {"p": "x"}}},
+            id="non-dict-property",
+        ),
+        pytest.param(
+            {"name": "f.bad", "input_schema": {"type": "object", "required": "p"}},
+            id="non-list-required",
+        ),
+        pytest.param("oops", id="non-dict-tool"),
+        pytest.param({"name": None}, id="null-name"),
+        pytest.param({"name": ""}, id="empty-name"),
+        pytest.param({"name": "f.x", "description": 5}, id="non-string-description"),
+        pytest.param({"name": "f.x", "audience": "everyone"}, id="unknown-audience"),
+        pytest.param({"name": "f.x", "risk": 5}, id="non-string-risk"),
+    ],
+)
+async def test_malformed_tool_is_skipped_alone(
+    bad_tool: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    feature = {"name": "f", "tools": [bad_tool, {"name": "f.good", "parameters": {}}]}
+    with caplog.at_level(logging.WARNING, logger="core.reflex.tool_registry"):
+        tools = await _registry_with(feature).get_tools()
+    assert [t.name for t in tools] == ["f.good"]
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Skipping malformed tool")
+
+
+@pytest.mark.parametrize("field_name", ["feature_name", "feature_description", "target_service"])
+def test_tool_info_refuses_a_non_string_feature_or_service(field_name: str) -> None:
+    fields: dict[str, Any] = {
+        "name": "f.x",
+        "description": "",
+        "feature_name": "f",
+        "feature_description": "",
+        "target_service": "svc",
+    }
+    with pytest.raises(ValueError, match=field_name):
+        ToolInfo(**{**fields, field_name: 5})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "features",
+    [
+        pytest.param(5, id="int"),
+        pytest.param({"name": "f", "tools": []}, id="dict"),
+        pytest.param("oops", id="string"),
+    ],
+)
+async def test_manifest_whose_features_are_not_a_list_is_skipped(
+    features: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    mock_redis = AsyncMock()
+    mock_redis.hgetall.return_value = {
+        b"bad-service": json.dumps(
+            {"service_name": "bad-service", "service_endpoint": "x", "features": features}
+        ).encode(),
+        b"good-service": _make_manifest("good-service", [LIGHTING_FEATURE]).encode(),
+    }
+    with caplog.at_level(logging.WARNING, logger="core.reflex.tool_registry"):
+        tools = await ToolRegistry(mock_redis).get_tools()
+    assert [t.name for t in tools] == ["lighting.dim_lights", "lighting.turn_off_lights"]
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Skipping malformed manifest from service 'bad-service'")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_feature",
+    [
+        pytest.param("oops", id="non-dict-feature"),
+        pytest.param({"name": "f", "tools": "oops"}, id="non-list-tools"),
+    ],
+)
+async def test_malformed_feature_is_skipped_and_the_rest_still_load(
+    bad_feature: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    good = {"name": "g", "tools": [{"name": "g.good", "parameters": {}}]}
+    mock_redis = AsyncMock()
+    mock_redis.hgetall.return_value = {
+        b"svc": _make_manifest("svc", [bad_feature, good]).encode(),
+        b"other-service": _make_manifest("other-service", [LIGHTING_FEATURE]).encode(),
+    }
+    with caplog.at_level(logging.WARNING, logger="core.reflex.tool_registry"):
+        tools = await ToolRegistry(mock_redis).get_tools()
+    assert [t.name for t in tools] == [
+        "g.good",
+        "lighting.dim_lights",
+        "lighting.turn_off_lights",
+    ]
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].startswith("Skipping malformed feature")
+    assert "'svc'" in warnings[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shipped", [None, {}], ids=["null", "empty"])
+async def test_unset_input_schema_is_derived_from_parameters(shipped: Any) -> None:
+    feature = {
+        "name": "f",
+        "tools": [
+            {
+                "name": "f.go",
+                "parameters": {"room": {"type": "str"}},
+                "input_schema": shipped,
+            }
+        ],
+    }
+    tools = await _registry_with(feature).get_tools()
+    assert tools[0].input_schema == {
+        "type": "object",
+        "properties": {"room": {"type": "string"}},
+        "required": ["room"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_new_sdk_manifest_without_parameters_loads() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"target": {"type": "string"}, "brightness_pct": {"type": "integer"}},
+        "required": ["target"],
+    }
+    feature = {"name": "f", "tools": [{"name": "f.go", "input_schema": schema}]}
+    tools = await _registry_with(feature).get_tools()
+    assert tools[0].input_schema == schema
+    assert tools[0].parameter_names == ("target", "brightness_pct")
+
+
+@pytest.mark.asyncio
+async def test_a_shipped_schema_leaves_the_legacy_parameters_unread() -> None:
+    # Nothing reads `parameters` once a schema ships, so a malformed map cannot cost the tool.
+    feature = {
+        "name": "f",
+        "tools": [{"name": "f.go", "input_schema": _VALID_SCHEMA, "parameters": {"p": "x"}}],
+    }
+    tools = await _registry_with(feature).get_tools()
+    assert [t.name for t in tools] == ["f.go"]
+    assert tools[0].input_schema == _VALID_SCHEMA
+
+
+def test_tool_info_carries_no_parameters_map() -> None:
+    assert "parameters" not in {f.name for f in dataclasses.fields(ToolInfo)}
+
+
+def _tool_info(**overrides: Any) -> ToolInfo:
+    fields: dict[str, Any] = {
+        "name": "f.x",
+        "description": "",
+        "feature_name": "f",
+        "feature_description": "",
+        "target_service": "svc",
+    }
+    return ToolInfo(**{**fields, **overrides})
+
+
+def test_tool_info_defaults_to_a_schema_with_no_arguments() -> None:
+    tool = _tool_info()
+    assert tool.input_schema == {"type": "object", "properties": {}, "required": []}
+    assert tool.parameter_names == ()
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        pytest.param({}, id="empty"),
+        pytest.param({"type": "array"}, id="not-an-object"),
+        pytest.param({"type": "object", "properties": ["p"]}, id="non-dict-properties"),
+        pytest.param("oops", id="string"),
+    ],
+)
+def test_tool_info_refuses_a_schema_that_is_not_an_object_schema(schema: Any) -> None:
+    with pytest.raises(ValueError, match="input_schema"):
+        _tool_info(input_schema=schema)
+
+
+def test_parameter_names_keep_the_schema_order() -> None:
+    schema = {"type": "object", "properties": {"b": {}, "a": {}, "c": {}}, "required": []}
+    assert _tool_info(input_schema=schema).parameter_names == ("b", "a", "c")
+
+
+def test_parameter_names_of_a_schema_without_properties_are_empty() -> None:
+    assert _tool_info(input_schema={"type": "object"}).parameter_names == ()

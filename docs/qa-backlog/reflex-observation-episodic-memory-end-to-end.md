@@ -23,7 +23,7 @@
 
 ## Expected Result
 - Each reflex action produces exactly one episodic entry in the hot Redis vector store
-- The `summary` field follows the `[reflex:<origin>] <tool_name>(<params>) → <status>` format
+- The `summary` field follows the `[reflex:<origin>] <Www YYYY-MM-DD HH:MM> — <tool_name>(<params>) → <status>` format, the time being the triggering event's, in the user's zone
 - The `source` field is `"reflex"` on all entries
 - The `semantic_key` field is present and non-empty
 - No duplicate entries appear for a single state change event

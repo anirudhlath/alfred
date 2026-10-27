@@ -46,7 +46,7 @@
   Podman container via `host.containers.internal`), fold that check in here rather than
   filing a separate ticket — it's the same session's setup either way.
 - This ticket also serves as the concrete verification step referenced by
-  `docs/backlog/low/self-hoster-oci-compose-profile.md`'s "still open" items (Podman
+  [#132](https://github.com/anirudhlath/alfred/issues/132)'s "still open" items (Podman
   parity, rootless specifics) — fold any findings back into that ticket and
   `docs/containerization.md` §10 if Podman behaves differently than documented.
 - Delete this file once verified.

@@ -25,11 +25,18 @@ class IntegrationResult(BaseModel):
 
 
 class IntegrationCapability(BaseModel):
-    """Describes one action an integration can perform."""
+    """Describes one action an integration can perform.
+
+    ``side_effect`` says whether running it changes the world (creates or deletes
+    something). System 2 records such a call in the turn's side-effect ledger, so a retried
+    turn never runs it twice (#304). It defaults to True, so a capability nobody marked is
+    treated as a write; a pure read sets it False.
+    """
 
     name: str
     description: str
     params_schema: dict[str, Any]
+    side_effect: bool = True
 
 
 class CredentialField(BaseModel):
