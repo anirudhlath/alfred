@@ -1351,27 +1351,27 @@ export const broken = (type = "text/html; charset=utf-8", sent = "the first of i
  * steps of a chain lets the sleep fire first, and what is asserted after it
  * reads a state the chain had not reached.
  *
- * It is used two ways, and neither is a wait for something to happen. After a
- * `vi.waitFor` on the thing itself it shows that what must not have happened
- * has not. And as one side of a `Promise.race` that asks whether something
- * settled: the read wins if it settles, and this is the backstop if it never
- * does. A positive raced that way ("settled", "AbortError") can only lose to the
- * backstop by needing more steps than `n`, and that fails the test where it
- * stands. A negative can not fail that way, which is the trouble: if the
- * harness's chain grew past `n` they would all keep passing, for want of
- * anything that could have failed. So the count is pinned from the other side,
- * by the controls in sw-harness.test.ts ("the macrotasks a negative is given"),
- * each of which runs a scenario a negative holds back with nothing holding it
- * and asserts that it finishes within `macrotasks()`. A harness whose put, read,
- * clock or trickle has grown a step turns the control for that lever red, and
- * `sw.test.ts` has one each for `pending` and `until`. The control for
- * `holdRead` is the exception, and need not go red: that negative is anchored,
- * because it waits for `/after`, which is written after the held read began and
- * does not wait on it, so a chain that deepens makes the wait longer and the
- * negative is still read only once the unheld half is done. Its control pins
- * that the unheld read lands within `n`, and nothing more. The count is small
- * because on a machine that is badly starved a macrotask is slow, and what this
- * adds is `n` of them.
+ * It is used three ways. After a `vi.waitFor` on the thing itself it shows that
+ * what must not have happened has not. As one side of a `Promise.race` that
+ * asks whether something settled, the read wins if it settles, and this is the
+ * backstop if it never does. A positive raced that way ("settled", "AbortError")
+ * can only lose to the backstop by needing more steps than `n`, and that fails
+ * the test where it stands. A negative can not fail that way, which is the
+ * trouble: if the harness's chain grew past `n` they would all keep passing,
+ * for want of anything that could have failed. So the count is pinned from the
+ * other side, by the controls in sw-harness.test.ts ("the macrotasks a negative
+ * is given"), each of which runs a scenario a negative holds back with nothing
+ * holding it and asserts that it finishes within `macrotasks()`, either raced
+ * against it or, the third way, after it: a bounded wait before a positive. A
+ * harness whose put, read, clock or trickle has grown past `n` turns the
+ * control for that lever red, and `sw.test.ts` has one each for `pending` and
+ * `until`. The control for `holdRead` is the exception, and need not go red:
+ * that negative is anchored, because it waits for `/after`, which is written
+ * after the held read began and does not wait on it, so a chain that deepens
+ * makes the wait longer and the negative is still read only once the unheld
+ * half is done. Its control pins that the unheld read lands within `n`, and
+ * nothing more. The count is small because on a machine that is badly starved
+ * a macrotask is slow, and what this adds is `n` of them.
  */
 export const macrotasks = async (n = 10): Promise<void> => {
   for (let i = 0; i < n; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));

@@ -218,15 +218,15 @@ const ascending = (deadlines: readonly number[]): number[] => [...deadlines].sor
  * `"pending"` if `read` has neither resolved nor rejected once a few real
  * macrotasks have run — which, after a request has settled, is a read nothing
  * is still feeding and nothing has ended. Not a statement about how long
- * anything takes: the harness's clock is not the one this waits on, and neither
- * is the wall's. Macrotasks are counted, not timed (see `macrotasks`), so a
- * machine that is slow, or stalls part way, gets the same answer as one that
- * is not — a `"settled"` that takes a few steps is not lost to a 20 ms sleep.
- * A `"settled"` asserted through it is a positive raced against that count as
- * its backstop, and fails loudly if the read needs more steps than the count.
- * A `"pending"` is a negative, which could not: "settles the page's read of a
- * response that ends" below is the same read of a body that ends, and is what
- * fails first if the count stops being deep enough.
+ * anything takes: neither the harness's clock nor the wall's is waited on.
+ * Macrotasks are counted, not timed (see `macrotasks`), so a machine that is
+ * slow, or stalls part way, gets the same answer as one that is not. A
+ * `"settled"` asserted through it is a positive raced against that count, and
+ * fails loudly if the read needs more steps than the count. A `"pending"` is a
+ * negative, which could not. The navigation's has a twin below, "settles the
+ * page's read of a response that ends", the same read of a body that ends,
+ * which fails if the count stops being deep enough. The asset read's ("…when a
+ * new deploy's asset stalls") has no twin: nothing checks the count for it.
  */
 const pending = (read: Promise<unknown>): Promise<string> =>
   Promise.race([

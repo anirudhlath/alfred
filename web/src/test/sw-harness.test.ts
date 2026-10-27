@@ -11,9 +11,9 @@ import { broken, fetchRequest, html, js, loadWorker, macrotasks, ORIGIN, stalled
 /**
  * What `vi.waitFor` is given for a write or a clock the harness is about to
  * reach: polled on every macrotask, since the thing waited on moves on them,
- * and allowed as long as the test itself is (4 s of vitest's 5), so that this
- * budget is never what runs out first on a machine that is slow rather than
- * wrong. A failure still says what was expected and what was there.
+ * and allowed 4 s, just short of the test's own 5. On a starved machine it can
+ * run out first, and then its failure says what was expected and what was
+ * there, where vitest's own timeout says only that the test took too long.
  */
 const REACHED = { interval: 1, timeout: 4000 } as const;
 
@@ -1304,16 +1304,16 @@ describe("the fake network", () => {
   });
 });
 
-// `macrotasks()` is how every test above that asserts something has NOT happened
-// gives it the chance to: a count of real macrotasks, enough that the same thing
-// WITHOUT the hold, the stall or the abort would have happened. The count is
-// measured once, by hand, against the harness as it is, and a measurement nothing
-// checks goes stale in silence: let the harness's chain grow past it, and every
-// one of those tests keeps passing, for want of anything that could have
-// failed. These are what check it. Each is the scenario beside which it sits with
-// the defect taken out, given exactly the macrotasks that test gives, and made
-// to show the outcome that test says is kept back. When one fails, a step in the
-// harness got deeper: raise the default of `macrotasks`, and with it the others.
+// `macrotasks()` is how a test above gives something that must NOT happen the
+// chance to: a count of real macrotasks, enough that the same thing WITHOUT the
+// hold, the stall or the abort would have happened. Its default, 10, is a margin
+// over the deepest such chain, two when measured by hand, and a margin nothing
+// checks goes stale in silence: let the harness's chain grow past it, and those
+// negatives keep passing, for want of anything that could have failed. These
+// check it: each is one of those tests' scenarios with the defect taken out,
+// given the same macrotasks, and shows what that test says is kept back.
+// `first()`'s negative has none here: its control is the positive just above it.
+// When one fails, a harness chain got deeper: raise the default they all take.
 describe("the macrotasks a negative is given", () => {
   it("lands a put that nothing holds, and the one after it, as `holdPut` keeps the first out", async () => {
     const worker = loadWorker(TWO_PUTS);
