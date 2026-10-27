@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DeniedGate } from "@/gates/DeniedGate";
 import { ExpiredGate } from "@/gates/ExpiredGate";
@@ -18,11 +18,17 @@ import { useOnline } from "@/shell/useOnline";
 export function AuthGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const { lastTrueAt, reconnect } = useConnection();
+  // Whether the latest status read went out with no network, set by the read
+  // itself as it goes. See the re-ask below.
+  const sentOffline = useRef(false);
   const { data, isFetching, errorUpdateCount, refetch } = useQuery({
     queryKey: ["auth-status"],
     // react-query's AbortSignal goes into the read, so its cancel and the read's
     // own deadline stop the same request.
-    queryFn: ({ signal }) => fetchAuthStatus(signal),
+    queryFn: ({ signal }) => {
+      sentOffline.current = !navigator.onLine;
+      return fetchAuthStatus(signal);
+    },
   });
   const online = useOnline();
 
@@ -65,11 +71,20 @@ export function AuthGate({ children }: { children: ReactNode }) {
   // before react-query has started anything — and on that launch react-query
   // starts nothing at all. With nothing read, `refetch()` joins a read already
   // under way rather than cancelling it, so when react-query does ask as well,
-  // the two are one request.
+  // the two are one request. A read under way that went out with no network is
+  // not that: joined, it would fail at its deadline with the signal back, and
+  // the gate below would blame the house for it. It is cancelled — back to the
+  // state before it, so the count above still holds — and asked again.
   const reasking = unread && online && failedOffline === errorUpdateCount;
   useEffect(() => {
-    if (reasking) void refetch();
-  }, [reasking, refetch]);
+    if (!reasking) return;
+    const key = { queryKey: ["auth-status"] };
+    if (sentOffline.current && queryClient.isFetching(key) > 0) {
+      void queryClient.cancelQueries(key).then(() => refetch());
+    } else {
+      void refetch();
+    }
+  }, [reasking, refetch, queryClient]);
 
   // The phone is online, nothing has landed, and a read asked while it was
   // online has failed: the house did not answer. No such failure is the house

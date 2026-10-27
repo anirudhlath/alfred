@@ -647,6 +647,36 @@ describe("AuthGate with no network", () => {
     expect(statusReads()).toBe(2);
   });
 
+  // The same blame over a longer window: the read sent with no network is still
+  // in flight when the signal returns. With nothing read, `refetch()` joins a
+  // read under way rather than replacing it, so the gate waited that read out
+  // to its deadline, counted its failure as one with the signal back, and said
+  // the house was not answering a read it was never sent.
+  it("asks again when the signal returns over a read sent with none, rather than waiting it out", async () => {
+    const deadlines = holdDeadlines();
+    vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+    statusHeld = true;
+    const unanswered = watchFor(UNANSWERED);
+    const signIns = watchForSignIn();
+    renderGate(appClient());
+    await waitFor(() => expect(deadlines).toHaveLength(1));
+    expect(screen.getByRole("heading", { name: "No way to the house." })).toBeInTheDocument();
+
+    phoneGoes("online");
+    await tick();
+    // The offline read's own deadline, which the gate would have waited for.
+    act(() => deadlines[0].abort(new DOMException("signal timed out", "TimeoutError")));
+    await tick();
+
+    expect(unanswered()).toBe(0);
+    // Asked again with the signal back, without waiting.
+    expect(statusReads()).toBe(2);
+    act(() => answerHeld());
+    expect(await screen.findByText("the room")).toBeInTheDocument();
+    expect(statusReads()).toBe(2);
+    expect(signIns()).toBe(0);
+  });
+
   it("goes offline over a failed read and back again without a sign-in frame", async () => {
     // Online, but the house did not answer.
     statusUnreachable = true;

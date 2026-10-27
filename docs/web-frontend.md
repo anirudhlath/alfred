@@ -333,7 +333,9 @@ phase's reviews kept enforcing" below), one layer lower down:
   window's `online` and `offline` events — it never reads the flag — so a launch that
   begins offline is not paused: its read fails at once, and a retry while the phone has
   no connection could only fail the same way. When the `online` event fires, `AuthGate`
-  asks again itself and shows the field while it does. Seeding `onlineManager` from the
+  asks again itself and shows the field while it does; a read sent with no network that
+  is still in flight then is cancelled and asked again, not waited out to its deadline
+  and blamed on the house. Seeding `onlineManager` from the
   flag would make the flag gate every request in the app, so it is deliberately not done.
 - **`UnansweredGate`** is a phone with a network and no answer from the house: no route
   to it, no answer before the deadline, a proxy's 5xx or 4xx to the read, a captive
