@@ -322,6 +322,7 @@ class LlmSettings:
     system2_model: str
     librarian_model: str
     approval_model: str
+    reflex_model: str
     vllm_base_url: str
     openrouter_api_key: str
     system2_max_tokens: int
@@ -360,10 +361,14 @@ def resolve_llm_settings(env: Mapping[str, str]) -> LlmSettings:
         or DEFAULT_OPENAI_COMPAT_HOST
     )
     tokens_name = "SYSTEM2_MAX_TOKENS" if get("SYSTEM2_MAX_TOKENS") else "CLAUDE_MAX_TOKENS"
+    # Reflex has no System 2 default: it is a local model, and the model its server has
+    # always been told to serve is the one OPENAI_COMPAT_MODEL names.
+    served = get("OPENAI_COMPAT_MODEL")
     return LlmSettings(
         system2_model=system2,
         librarian_model=get("LIBRARIAN_MODEL") or system2,
         approval_model=get("APPROVAL_MODEL") or system2,
+        reflex_model=get("REFLEX_MODEL") or (f"vllm:{served}" if served else ""),
         vllm_base_url=normalize_vllm_base_url(base_url),
         openrouter_api_key=get("OPENROUTER_API_KEY") or get("CLAUDE_API_KEY"),
         system2_max_tokens=_positive_int(tokens_name, get(tokens_name), DEFAULT_SYSTEM2_MAX_TOKENS),
@@ -428,6 +433,8 @@ class AlfredConfig:
     system2_model: str = DEFAULT_SYSTEM2_MODEL
     librarian_model: str = DEFAULT_SYSTEM2_MODEL
     approval_model: str = DEFAULT_SYSTEM2_MODEL
+    # System 1 (Reflex): "" when neither REFLEX_MODEL nor OPENAI_COMPAT_MODEL is set.
+    reflex_model: str = ""
     vllm_base_url: str = ""
     openrouter_api_key: str = ""
     system2_max_tokens: int = DEFAULT_SYSTEM2_MAX_TOKENS
@@ -546,6 +553,7 @@ class AlfredConfig:
             system2_model=llm.system2_model,
             librarian_model=llm.librarian_model,
             approval_model=llm.approval_model,
+            reflex_model=llm.reflex_model,
             vllm_base_url=llm.vllm_base_url,
             openrouter_api_key=llm.openrouter_api_key,
             system2_max_tokens=llm.system2_max_tokens,

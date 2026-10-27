@@ -32,3 +32,14 @@ async def fetch_prose(
 def repo_prose(origin: Literal["state_change", "trigger_fired"]) -> ReflexProse:
     """The same prose from the repo defaults: no store, no network."""
     return ReflexProse(intro=repo_text(_intro_name(origin)), rules=repo_text(REFLEX_RULES))
+
+
+async def warm_prose(store: PromptStore) -> None:
+    """Fetch all three Reflex prompts into *store*'s cache.
+
+    The first decision after a start would otherwise wait on the store (up to its timeout)
+    inside Reflex's latency budget; once warm, ``fetch_prose`` is a cache hit.
+    """
+    await asyncio.gather(
+        *(store.get(name) for name in (REFLEX_STATE_CHANGE, REFLEX_TRIGGER, REFLEX_RULES))
+    )

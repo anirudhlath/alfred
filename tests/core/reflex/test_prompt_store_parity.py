@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -25,7 +26,11 @@ from core.reflex.prose import fetch_prose, repo_prose
 from core.reflex.tool_registry import ToolInfo
 from shared.prompts.names import PROMPTS, REFLEX_RULES, REFLEX_STATE_CHANGE, REFLEX_TRIGGER
 from shared.prompts.store import PromptStore
+from tests.core.reflex.fakes import reflex_agent
 from tests.shared.prompts.fakes import FakeLangfuse
+
+if TYPE_CHECKING:
+    from tests.llm_fakes import Script
 
 FIXTURES = Path(__file__).parent / "fixtures"
 NIGHT_UTC = datetime(2026, 10, 8, 3, 30, tzinfo=UTC)
@@ -132,17 +137,19 @@ async def test_a_store_with_no_langfuse_serves_the_repo_prose() -> None:
         assert await fetch_prose(PromptStore(), origin) == repo_prose(origin)  # type: ignore[arg-type]
 
 
-def _engine(prompts: PromptStore | None) -> ReflexEngine:
+def _engine(prompts: PromptStore | None) -> tuple[ReflexEngine, Script]:
     registry = AsyncMock()
     registry.get_tools = AsyncMock(return_value=TOOLS)
+    agent, script = reflex_agent('{"decision": "none"}', '{"decision": "none"}')
     engine = ReflexEngine(
         preferences_dir="/unused",
         tool_registry=registry,
+        agent=agent,
         clock=lambda: NIGHT_UTC,
         prompts=prompts,
     )
     engine._cached_preferences = ""
-    return engine
+    return engine, script
 
 
 @pytest.mark.asyncio
@@ -156,28 +163,24 @@ async def test_the_engine_prompts_with_the_stores_prose_on_both_paths() -> None:
             }
         )
     )
-    engine = _engine(store)
-    infer = AsyncMock(return_value={"response": '{"decision": "none"}'})
+    engine, script = _engine(store)
 
-    with patch("core.reflex.inference.infer", new=infer):
-        await engine.process_event(STATE_CHANGE)
-        await engine.process_trigger_fired(TRIGGER)
+    await engine.process_event(STATE_CHANGE)
+    await engine.process_trigger_fired(TRIGGER)
 
-    state_change_prompt, trigger_prompt = (call.args[0] for call in infer.await_args_list)
+    state_change_prompt, trigger_prompt = script.prompt(0), script.prompt(1)
     assert state_change_prompt.startswith("EDITED STATE CHANGE INTRO\n\nEDITED RULES\n\nTools:")
     assert trigger_prompt.startswith("EDITED TRIGGER INTRO\n\nEDITED RULES\n\nTools:")
 
 
 @pytest.mark.asyncio
 async def test_without_a_store_the_engine_prompts_with_the_repo_prose() -> None:
-    engine = _engine(None)
-    infer = AsyncMock(return_value={"response": '{"decision": "none"}'})
+    engine, script = _engine(None)
 
-    with patch("core.reflex.inference.infer", new=infer):
-        await engine.process_event(STATE_CHANGE)
-        await engine.process_trigger_fired(TRIGGER)
+    await engine.process_event(STATE_CHANGE)
+    await engine.process_trigger_fired(TRIGGER)
 
-    state_change_prompt, trigger_prompt = (call.args[0] for call in infer.await_args_list)
+    state_change_prompt, trigger_prompt = script.prompt(0), script.prompt(1)
     state_change_prose, trigger_prose = repo_prose("state_change"), repo_prose("trigger_fired")
     assert state_change_prompt.startswith(
         f"{state_change_prose.intro}\n\n{state_change_prose.rules}"

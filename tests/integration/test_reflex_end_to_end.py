@@ -1,18 +1,20 @@
 """Integration test: full event → reflex → action pipeline.
 
-Uses mocked Ollama and Redis to test the complete flow without external services.
+Uses a scripted model and a mocked registry to test the complete flow without external
+services.
 This is the eval-ability contract test — structured in, structured out.
 """
 
 import json
 import pathlib
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from bus.schemas.events import ActionRequest, StateChangedEvent
 from core.reflex.engine import ReflexEngine
 from core.reflex.tool_registry import ToolInfo
+from tests.core.reflex.fakes import reflex_agent
 
 
 def _make_mock_registry() -> AsyncMock:
@@ -63,33 +65,21 @@ def preferences_dir(tmp_path: pathlib.Path) -> str:
 async def test_full_reflex_pipeline(preferences_dir: str, tv_on_event: StateChangedEvent) -> None:
     """The canonical test: TV turns on → Reflex reads preferences → dims lights."""
 
-    ollama_response = {
-        "response": json.dumps(
-            {
-                "decision": "act",
-                "reason": "TV on, dim for viewing",
-                "tool_name": "lighting.dim_lights",
-                "target_service": "home-service",
-                "parameters": {"room": "living_room", "level": 20},
-            }
-        ),
-        "prompt_tokens": 200,
-        "completion_tokens": 25,
-        "total_tokens": 225,
-    }
+    reply = json.dumps(
+        {
+            "decision": "act",
+            "reason": "TV on, dim for viewing",
+            "tool_name": "lighting.dim_lights",
+            "target_service": "home-service",
+            "parameters": {"room": "living_room", "level": 20},
+        }
+    )
+    agent, _ = reflex_agent(reply)
+    engine = ReflexEngine(
+        preferences_dir=preferences_dir, tool_registry=_make_mock_registry(), agent=agent
+    )
 
-    mock_registry = _make_mock_registry()
-
-    with patch(
-        "core.reflex.ollama_client.infer",
-        new_callable=AsyncMock,
-        return_value=ollama_response,
-    ):
-        engine = ReflexEngine(
-            preferences_dir=preferences_dir,
-            tool_registry=mock_registry,
-        )
-        proposal = await engine.process_event(tv_on_event)
+    proposal = await engine.process_event(tv_on_event)
 
     # Structured output verification (eval contract)
     assert proposal.decision == "act"
@@ -113,25 +103,12 @@ async def test_reflex_no_action_for_irrelevant_event(preferences_dir: str) -> No
         new_state="22.5",
     )
 
-    ollama_response = {
-        "response": json.dumps({"action": "none"}),
-        "prompt_tokens": 180,
-        "completion_tokens": 8,
-        "total_tokens": 188,
-    }
+    agent, _ = reflex_agent(json.dumps({"action": "none"}))
+    engine = ReflexEngine(
+        preferences_dir=preferences_dir, tool_registry=_make_mock_registry(), agent=agent
+    )
 
-    mock_registry = _make_mock_registry()
-
-    with patch(
-        "core.reflex.ollama_client.infer",
-        new_callable=AsyncMock,
-        return_value=ollama_response,
-    ):
-        engine = ReflexEngine(
-            preferences_dir=preferences_dir,
-            tool_registry=mock_registry,
-        )
-        proposal = await engine.process_event(temp_event)
+    proposal = await engine.process_event(temp_event)
 
     assert proposal.decision == "none"
     assert proposal.action is None

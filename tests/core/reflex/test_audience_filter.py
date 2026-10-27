@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING, get_args
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo, ToolRegistry
 from sdk.alfred_sdk.feature import ToolAudience
+from tests.core.reflex.fakes import reflex_agent
 
 if TYPE_CHECKING:
     from bus.schemas.events import StateChangedEvent
@@ -74,23 +75,14 @@ async def test_reflex_prompt_contains_only_reflex_audience_tools(
     redis = AsyncMock()
     redis.hgetall = AsyncMock(return_value={b"home-service": _MANIFEST.encode()})
 
-    captured: dict[str, str] = {}
+    agent, script = reflex_agent(json.dumps({"action": "none"}))
+    engine = ReflexEngine(preferences_dir="/fake", tool_registry=ToolRegistry(redis), agent=agent)
+    engine._cached_preferences = "- no preferences"
+    await engine.process_event(tv_on_event)
 
-    async def _capture(prompt: str) -> dict[str, object]:
-        captured["prompt"] = prompt
-        return {"response": json.dumps({"action": "none"})}
-
-    # Patch the backend dispatcher, not a concrete client: the engine calls
-    # inference.infer(), which fans out to ollama/openai with a backend-specific
-    # signature. Patching here keeps this test about prompt contents only.
-    with patch("core.reflex.inference.infer", new=AsyncMock(side_effect=_capture)):
-        engine = ReflexEngine(preferences_dir="/fake", tool_registry=ToolRegistry(redis))
-        engine._cached_preferences = "- no preferences"
-        await engine.process_event(tv_on_event)
-
-    assert "home.turn_on_lights" in captured["prompt"]
-    assert "home.unlock_door" not in captured["prompt"]
-    assert "home.legacy_tool" not in captured["prompt"]
+    assert "home.turn_on_lights" in script.prompt()
+    assert "home.unlock_door" not in script.prompt()
+    assert "home.legacy_tool" not in script.prompt()
 
 
 def test_toolinfo_defaults() -> None:
