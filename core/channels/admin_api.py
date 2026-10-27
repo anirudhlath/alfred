@@ -37,7 +37,6 @@ from core.reflex.attention import (
     attention_remove,
     attention_seen_list,
 )
-from core.reflex.inference import REFLEX_BACKENDS
 from core.triggers.models import TRIGGER_ENGINE_SOURCE
 from shared.config import AlfredConfig
 from shared.redis_streams import revrange
@@ -58,8 +57,6 @@ from shared.streams import (
 from shared.usertime import get_user_timezone
 
 if TYPE_CHECKING:
-    import httpx
-
     from shared.types import AioRedis
 
 
@@ -202,7 +199,6 @@ def _base_overview(*, idle_minutes: int) -> dict[str, Any]:
         "dnd": {"active": False},
         "counts": {"sessions": 0, "devices": 0, "deferred": 0, "triggers": 0},
         "streams": {},
-        "inference": {"ollama": False, "lmstudio": False},
         "reflex": {"model": None, "last_ms": None, "p50_ms": None},
         "librarian": {"last_run_at": None, "reviewed": None, "next_run_at": None},
         "session": {"idle_minutes": idle_minutes},
@@ -327,22 +323,6 @@ def _redis(request: Request) -> AioRedis:
     return r
 
 
-async def _check_http(request: Request, url: str) -> bool:
-    """Probe a local inference server via the lifespan-owned httpx client.
-
-    No lazy creation: when the client is absent (tests don't run the lifespan),
-    report False deterministically — never open real connections from a test.
-    """
-    client: httpx.AsyncClient | None = getattr(request.app.state, "http", None)
-    if client is None:
-        return False
-    try:
-        resp = await client.get(url)
-        return bool(resp.status_code < 500)
-    except Exception:
-        return False
-
-
 def create_admin_router() -> APIRouter:
     router = APIRouter(
         prefix="/api/admin",
@@ -377,25 +357,11 @@ def create_admin_router() -> APIRouter:
             "triggers": int(await r.hlen(TRIGGERS_KEY)),
         }
         out["streams"] = await stream_summaries(r)
-        out["inference"] = {
-            "ollama": await _check_http(request, cfg.ollama_host.rstrip("/") + "/api/tags"),
-            "lmstudio": await _check_http(request, cfg.lmstudio_host.rstrip("/") + "/v1/models"),
-        }
         latencies = await _reflex_latencies(r)
-        # Normalised like the dispatcher does (core/reflex/inference.py), so
-        # REFLEX_BACKEND=OpenAI names the model the engine will actually use — and
-        # judged against the dispatcher's own accepted set, imported rather than
-        # retyped: a backend it refuses runs no model, so this reports null instead
-        # of quietly naming OLLAMA_MODEL for, say, REFLEX_BACKEND=vllm.
-        backend = cfg.reflex_backend.strip().lower()
-        if backend not in REFLEX_BACKENDS:
-            reflex_model = None
-        else:
-            reflex_model = (
-                cfg.openai_compat_model if backend == "openai" else cfg.ollama_model
-            ) or None
         out["reflex"] = {
-            "model": reflex_model,
+            # What the engine resolves at start (stripped, defaulted from
+            # OPENAI_COMPAT_MODEL); "" means it found none and exited, so report null.
+            "model": cfg.reflex_model or None,
             "last_ms": latencies[0] if latencies else None,
             "p50_ms": round(statistics.median(latencies), 1) if latencies else None,
         }

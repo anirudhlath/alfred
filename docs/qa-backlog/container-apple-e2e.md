@@ -1,4 +1,4 @@
-# Apple `container` Runtime: Full Lifecycle + WebAuthn + Host Ollama Chat
+# Apple `container` Runtime: Full Lifecycle + WebAuthn + Host Model-Server Chat
 
 **Feature:** Containerization (`alfredctl`) — Apple `container` runtime
 **Priority:** critical
@@ -11,7 +11,8 @@
   `docs/containerization.md` §13 if not, for the version-skew fix).
 - `alfred-home-service` cloned as a sibling directory (`../home-service` relative to this
   repo) — required by `alfredctl build`'s staged context.
-- A local Ollama install with a model pulled (e.g. `ollama pull gpt-oss:20b`), OR an
+- A local OpenAI-compatible server (LM Studio or vLLM) serving a model (`SYSTEM2_MODEL=vllm:<name>`
+  and `REFLEX_MODEL=vllm:<name>`, with `VLLM_BASE_URL` or `LMSTUDIO_HOST` pointing at it), OR an
   `OPENROUTER_API_KEY`/`CLAUDE_API_KEY` in `.env` for System 2.
 - A browser that supports WebAuthn/passkeys (Chrome 108+, Safari 16+, Firefox 119+) and a
   platform authenticator (Touch ID) on this Mac.
@@ -36,10 +37,10 @@
 5. Send a chat message that requires the local reflex/System 1 path (e.g. a request that
    would trigger a smart-home style tool call) if a home-service is registered, OR simply
    confirm a conversational round-trip via System 2 completes.
-6. If testing the reflex path specifically: confirm reflex reaches host Ollama through
-   the injected gateway (`alfredctl` rewrites `OLLAMA_HOST` in `.env` to the resolved
-   vmnet gateway address) — check `alfredctl logs --runtime container` for a successful
-   `POST /api/chat` to Ollama, not a connection-refused/timeout.
+6. If testing the reflex path specifically: confirm reflex reaches the host model server
+   through the injected gateway (`alfredctl` rewrites `VLLM_BASE_URL` / `LMSTUDIO_HOST` in `.env` to the
+   resolved vmnet gateway address) — check `alfredctl logs --runtime container` for a successful
+   `POST /v1/chat/completions`, not a connection-refused/timeout.
 7. `uv run alfredctl smoke --runtime container --hf-cache ~/.cache/huggingface` — confirm
    all 6 checks (health, redis, redisearch, mqtt, spa, data-dir) PASS.
 8. `uv run alfredctl down --runtime container` — confirm the container is removed
@@ -52,8 +53,8 @@
 - WebAuthn registration succeeds through the vmnet subnet without a manual
   `ALFRED_TRUSTED_NETWORKS` edit — proves the auto-injection in `alfredctl/launch.py`
   works for real, not just in unit tests.
-- Chat works end-to-end; if Ollama-backed, the gateway rewrite actually reaches host
-  Ollama (not a hardcoded `localhost` that would fail inside the container network
+- Chat works end-to-end; if backed by a host model server, the gateway rewrite actually reaches it
+  (not a hardcoded `localhost` that would fail inside the container network
   namespace).
 - `alfredctl smoke` reports PASS on all checks.
 - `down` fully tears down — no orphaned container/image left running.

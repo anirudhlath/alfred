@@ -4,8 +4,10 @@ This directory contains Alfred's brain:
 
 ## Reflex (`reflex/`) — System 1 SLM Engine
 
-Fast event → decision loop via a local SLM (vLLM through `REFLEX_BACKEND=openai` in production). Shadow mode (#285): decisions are recorded, nothing executes.
+Fast event → decision loop via a local SLM on an OpenAI-compatible server (vLLM, LM Studio), named by `REFLEX_MODEL`. Shadow mode (#285): decisions are recorded, nothing executes.
 
+- `agent.py` — `build_reflex_agent(model)` and `decide(agent, prompt, tools)`: the one Pydantic AI agent Reflex decides through (no instructions; the prompt is the single user message, the reply goes through `parse_decision`). `__main__.py` builds it from `REFLEX_MODEL` via `resolve_model` and exits non-zero when none resolves
+- `prose.py` — fetches Reflex's three prompts (`reflex-state-change`, `reflex-trigger`, `reflex-rules`) from the prompt store; `warm_prose` fills the cache at start
 - `engine.py` — `ReflexEngine`: gathers preferences, reflex-audience tools, live state and timezone; returns a `ReflexProposal` (act/ask/none/invalid) for StateChanged and TriggerFired
 - `prompt.py` — pure prompt builder: rules + tools, Preferences, Now, House by `attributes.area`, What changed / Trigger fired; `HOUSE_DOMAINS`
 - `decision.py` — `parse_decision()`: model reply → `ReflexProposal`, tool validated against Reflex's tools; anything else is `invalid` with the raw text

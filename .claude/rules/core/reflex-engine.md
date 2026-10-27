@@ -19,5 +19,5 @@ The Reflex Engine (System 1) is the fast-path SLM that decides about events.
 - Target latency: sub-500ms event → decision
 - All inference calls MUST use @track_latency and @track_tokens decorators
 - Never call the cloud LLM (System 2) from the reflex path
-- Backend via `REFLEX_BACKEND` (`openai` = vLLM in production, `ollama` default); model via `OPENAI_COMPAT_MODEL` / `OLLAMA_MODEL`
+- Decides through the Pydantic AI agent in `core/reflex/agent.py` (`build_reflex_agent` / `decide`), built from `REFLEX_MODEL` (blank = `vllm:` + `OPENAI_COMPAT_MODEL`) via `resolve_model`; the process exits at start when no model resolves. Reflex needs an OpenAI-compatible server — there is no other backend
 - Starts with no tools — discovers them dynamically via TTL-based cache refresh (5 min)

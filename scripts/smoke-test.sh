@@ -16,6 +16,10 @@ MQTT_HOST="${MQTT_HOST:-localhost}"
 MQTT_PORT="${MQTT_PORT:-1883}"
 REDIS_HOST="${REDIS_HOST:-localhost}"
 REDIS_PORT="${REDIS_PORT:-6379}"
+# Reflex's OpenAI-compatible server (vLLM, LM Studio): VLLM_BASE_URL, else the legacy host.
+LLM_BASE="${VLLM_BASE_URL:-${OPENAI_COMPAT_HOST:-http://localhost:8000}}"
+LLM_BASE="${LLM_BASE%/}"
+LLM_BASE="${LLM_BASE%/v1}"
 TIMEOUT=30
 
 # Check prerequisites
@@ -40,8 +44,8 @@ echo "  ✓ Reflex Runner (consumer group active)"
 curl -sf http://localhost:8000/health >/dev/null 2>&1 || { echo "ERROR: home-service not reachable at localhost:8000"; exit 1; }
 echo "  ✓ home-service"
 
-curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 || { echo "ERROR: Ollama not reachable at localhost:11434"; exit 1; }
-echo "  ✓ Ollama"
+curl -sf "$LLM_BASE/v1/models" >/dev/null 2>&1 || { echo "ERROR: Reflex's model server not reachable at $LLM_BASE"; exit 1; }
+echo "  ✓ Model server"
 
 echo ""
 
@@ -85,5 +89,5 @@ echo ""
 echo "Pending messages (unprocessed by reflex-engine):"
 redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" XPENDING alfred:home:state_changed reflex-engine 2>/dev/null || echo "  (no pending info)"
 echo ""
-echo "Check Reflex Runner terminal for errors (Ollama connectivity, parse failures, etc.)"
+echo "Check Reflex Runner terminal for errors (model server connectivity, parse failures, etc.)"
 exit 1

@@ -60,20 +60,6 @@ class InMemoryKeyring(keyring.backend.KeyringBackend):
 
 
 @pytest.fixture(autouse=True)
-def _default_reflex_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin System 1 dispatch to the backend the tests mock.
-
-    ``core.reflex.inference`` resolves ``REFLEX_BACKEND`` per call, and the reflex
-    tests patch ``core.reflex.ollama_client.infer``. Importing ``shared.config`` loads
-    the developer's .env into os.environ before any fixture can run. A developer
-    running ``REFLEX_BACKEND=openai`` would otherwise send those tests down the
-    unmocked openai path and out to a live endpoint. Pinning here is import-order
-    independent.
-    """
-    monkeypatch.setenv("REFLEX_BACKEND", "ollama")
-
-
-@pytest.fixture(autouse=True)
 def _mock_keyring() -> None:
     """Install fresh in-memory keyring backend before each test."""
     keyring.set_keyring(InMemoryKeyring())

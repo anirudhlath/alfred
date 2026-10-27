@@ -1,36 +1,33 @@
 # The LLM layer
 
-Alfred calls a language model in three roles. Two of them, System 2 and the Librarian, run
-as [Pydantic AI](https://ai.pydantic.dev) agents; System 1 (Reflex) still posts raw
-OpenAI-compatible requests until PR 8 of the adoption
-([#317](https://github.com/anirudhlath/alfred/issues/317)). This page covers how a role finds
-its model, how System 2 offers and runs tools, what the Librarian asks for, how spend and
-traces are recorded, and how the eval harness tells the roles apart.
+Alfred calls a language model in four roles: System 1 (Reflex), System 2, the Librarian and
+the approval classifier. Each runs as a [Pydantic AI](https://ai.pydantic.dev) agent. This
+page covers how a role finds its model, how System 2 offers and runs tools, what the Librarian
+asks for, how spend and traces are recorded, and how the eval harness tells the roles apart.
 
 ## Roles
 
 | Role | Code | Model setting | Agent name(s) | `X-Alfred-Role` |
 |---|---|---|---|---|
-| System 1 (Reflex) | `core/reflex/openai_client.py` | `OPENAI_COMPAT_HOST` + `OPENAI_COMPAT_MODEL` | none (raw HTTP) | `system1` |
+| System 1 (Reflex) | `core/reflex/agent.py` | `REFLEX_MODEL` | `reflex` | `system1` |
 | System 2 (Conscious) | `core/conscious/agent.py`, `engine.py` | `SYSTEM2_MODEL` | `system2` | `system2` |
 | Librarian | `core/librarian/agents.py` | `LIBRARIAN_MODEL` | `librarian-analyse`, `librarian-extract`, `librarian-resolve`, `librarian-compress`, `librarian-patterns` | `librarian` |
 | Approval classifier | `core/conscious/approval_classifier.py` | `APPROVAL_MODEL` | `approval-classifier` | `approval` |
 
 The header name and values live in `shared/llm_roles.py`, which has no dependencies so the
 Reflex process can import it without loading Pydantic AI. Every chat request Alfred sends
-to an OpenAI-compatible server carries the header; embedding requests and the Ollama Reflex
-backend send none.
+to an OpenAI-compatible server carries the header; embedding requests send none.
 
 ## Settings and model resolution
 
 ```mermaid
 flowchart LR
     Env[".env / environment"] --> R["resolve_llm_settings()<br/>shared/config.py"]
-    R -->|legacy CLAUDE_MODEL translated,<br/>one warning| C["AlfredConfig<br/>system2_model, librarian_model,<br/>approval_model, vllm_base_url,<br/>openrouter_api_key"]
+    R -->|legacy CLAUDE_MODEL translated,<br/>one warning| C["AlfredConfig<br/>system2_model, librarian_model,<br/>approval_model, reflex_model,<br/>vllm_base_url, openrouter_api_key"]
     C --> A["apply_model_env()<br/>exports VLLM_BASE_URL,<br/>OPENROUTER_API_KEY"]
     A --> M["resolve_model(setting, value)<br/>shared/agents.py"]
-    M -->|Model| Agents["System 2 / Librarian /<br/>approval classifier agents"]
-    M -->|None, one ERROR| Fallback["not-configured reply /<br/>Librarian fallbacks"]
+    M -->|Model| Agents["Reflex / System 2 / Librarian /<br/>approval classifier agents"]
+    M -->|None, one ERROR| Fallback["Reflex exits /<br/>not-configured reply /<br/>Librarian fallbacks"]
 ```
 
 A model is a Pydantic AI model string; there is no model factory.
@@ -40,6 +37,7 @@ A model is a Pydantic AI model string; there is no model factory.
 | `SYSTEM2_MODEL` | the translated `CLAUDE_MODEL`, else `openrouter:anthropic/claude-sonnet-4` | `openrouter:<vendor>/<model>` or `vllm:<served-name>` |
 | `LIBRARIAN_MODEL` | `SYSTEM2_MODEL` | the same forms |
 | `APPROVAL_MODEL` | `SYSTEM2_MODEL` | the same forms; reads the owner's reply to a pending confirmation (see [Approvals](#approvals)) |
+| `REFLEX_MODEL` | `vllm:` + `OPENAI_COMPAT_MODEL`, when that is set | the same forms; the model Reflex decides with (see [System 1](#system-1-reflex)) |
 | `VLLM_BASE_URL` | the first set of `OPENAI_BASE_URL` (legacy only, see below), `OPENAI_COMPAT_HOST`, `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended | where `vllm:` models are served |
 | `OPENROUTER_API_KEY` | `CLAUDE_API_KEY` | the key `openrouter:` models use |
 | `SYSTEM2_MAX_TOKENS` | `CLAUDE_MAX_TOKENS`, else 2048 | System 2's per-request output cap |
@@ -59,6 +57,8 @@ when a string is resolved, and the resolved values include fallbacks the provide
 nothing of. A missing setting or key is one ERROR line at startup naming the variable, and
 the role runs without a model:
 
+- Reflex exits at start, non-zero: with no model every event would fail and only fill the
+  pending list.
 - System 2 answers *"I'm afraid my connection to the thinking engine is not configured,
   sir."*
 - The Librarian keeps its deterministic fallbacks: no analysis, concatenated compression
@@ -69,6 +69,23 @@ the role runs without a model:
 The production System 2 model is set in the deploy `.env` only; the repo never names it.
 `VLLM_BASE_URL` and `LANGFUSE_HOST` are in `GATEWAY_REWRITE_KEYS`, so a `localhost` value
 is rewritten to the container gateway like the other host-pointing variables.
+
+## System 1 (Reflex)
+
+Reflex decides through one agent, `reflex`, built once per process by `build_reflex_agent`
+(`core/reflex/agent.py`) over the model `REFLEX_MODEL` names. `core/reflex/__main__.py`
+resolves it with `apply_model_env` and `resolve_model`, and exits non-zero when nothing
+resolves: set `REFLEX_MODEL`, or `OPENAI_COMPAT_MODEL` for `vllm:<that name>`. Reflex needs
+an OpenAI-compatible server (vLLM, LM Studio) or OpenRouter; no other backend ships.
+
+The agent has no instructions. The prompt `core/reflex/prompt.py` builds, rules and all, is the
+single user message, and the reply text goes through `parse_decision`, so a reply that is not
+a decision is an `invalid` proposal that keeps the raw text, never a second ask (`retries=0`:
+Reflex has one chance inside its latency budget). Every request carries temperature 0, a 150-token
+cap, a 30 s timeout, a JSON-object response format and the `system1` role header. A transport
+or provider failure propagates, so the stream entry stays pending and the reclaim pass replays
+it. Reflex's prose comes from the prompt store (see [Prompts](#prompts)). It calls no tool and
+no other role: nothing in the decision path waits on System 2.
 
 ## System 2
 
@@ -335,8 +352,8 @@ call fails, each caller keeps its deterministic fallback.
 
 ## Prompts
 
-The prose of System 2's instructions, of the Librarian's five agents and of the approval
-classifier is served by the
+The prose of System 2's instructions, of the Librarian's five agents, of the approval
+classifier and of Reflex is served by the
 prompt store (`shared/prompts/`). In production it lives in a self-hosted Langfuse, where
 it can be edited and versioned without a deploy; without Langfuse, Alfred serves the repo
 defaults in `shared/prompts/defaults/<name>.md`, which are versioned in git. Langfuse is
@@ -600,7 +617,7 @@ one-toolset agent.
 | 5 | deferred tool approvals replace the chat confirmation tool; late replies become follow-ups (done, see [Approvals](#approvals) and [`notifications.md`](notifications.md#follow-ups-late-answers-and-door-resumes)) |
 | 6 | retries, the turn ledger and spend on the harness's `SpendLimits` (done, see [Retries](#retries) and [Spend](#spend)) |
 | 7 | the judge uses Inspect's own OpenAI provider; `evals/harness/vllm_model.py` is gone (done, see [`evals.md`](evals.md#the-model)) |
-| 8 | Reflex becomes an agent; Ollama is dropped |
+| 8 | Reflex becomes an agent on an OpenAI-compatible server, with no backend switch (done, see [System 1](#system-1-reflex)) |
 
 ## Key files
 

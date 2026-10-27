@@ -4,7 +4,7 @@ alfredctl output gets pasted into issues, chat and CI logs, so nothing it echoes
 carry the operator's credentials. Two shapes reach the terminal:
 
 - URLs with ``user:password@`` userinfo — ``EMBEDDING_HOST``, ``HA_HOST`` and
-  ``OLLAMA_HOST`` can all carry basic auth, and ``doctor`` quotes them in its checks.
+  ``VLLM_BASE_URL`` can all carry basic auth, and ``doctor`` quotes them in its checks.
 - The runtime command ``main._run`` echoes before running it, which for ``up`` carries
   the whole merged env as ``-e KEY=value``: every ``.env`` secret, ``HF_TOKEN`` and the
   secrets passphrase.

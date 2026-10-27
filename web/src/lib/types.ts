@@ -25,7 +25,6 @@ export interface Overview {
   dnd: { active: boolean; until?: string | null; reason?: string | null; source?: string };
   counts: { sessions: number; devices: number; deferred: number; triggers: number };
   streams: Record<string, StreamSummary>;
-  inference: { ollama: boolean; lmstudio: boolean };
   reflex?: { model: string | null; last_ms: number | null; p50_ms: number | null };
   librarian?: { last_run_at: string | null; reviewed: number | null; next_run_at: string | null };
   /** The chat session's idle timeout (`SESSION_TIMEOUT_MINUTES`), so the client never guesses. */

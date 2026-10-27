@@ -591,7 +591,7 @@ Handles `SIGTERM` and `SIGINT` gracefully:
 The Trigger Engine should start after the MQTT-Redis Bridge and Reflex Runner:
 
 ```
-1. Infrastructure (Redis, Mosquitto, Ollama)
+1. Infrastructure (Redis, Mosquitto, the model server)
 2. Microservices (home-service)
 3. MQTT-Redis Bridge (python -m bus)
 4. Reflex Runner (python -m core.reflex)

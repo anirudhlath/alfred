@@ -317,10 +317,10 @@ The loop exits cleanly on `SIGTERM` or `SIGINT` via an `asyncio.Event`.
 The ACK strategy is explicit and intentional:
 
 1. **Success path:** After `process_stream_entry()` returns without raising, the entry is acknowledged via `XACK`. The message is removed from the consumer's pending entries list.
-2. **Retriable failure:** If `process_stream_entry()` raises an exception (e.g., Ollama is down, `httpx.ConnectError`), the entry is NOT acknowledged. Redis will redeliver it on the next `XREADGROUP` cycle.
+2. **Retriable failure:** If `process_stream_entry()` raises an exception (e.g., the model server is down, `httpx.ConnectError`), the entry is NOT acknowledged. Redis will redeliver it on the next `XREADGROUP` cycle.
 3. **Non-retriable failure:** Malformed events (JSON parse errors, missing fields) return `False` from `process_stream_entry()` without raising. These are still ACKed to prevent infinite redelivery of garbage data.
 
-This design means transient infrastructure failures (Ollama restart, network blip) are automatically retried, while permanently bad messages are discarded with a log.
+This design means transient infrastructure failures (model server restart, network blip) are automatically retried, while permanently bad messages are discarded with a log.
 
 ### Output Streams
 

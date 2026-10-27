@@ -5,8 +5,8 @@ with nothing else running. ``openai`` talks to any OpenAI-compatible ``/v1/embed
 server (vLLM ``--runner pooling``) at ``EMBEDDING_HOST``, which collapses one resident
 model per service down to one shared server.
 
-The memory counterpart of :mod:`core.reflex.inference`. Every service builds its
-provider here rather than naming a concrete class, so the backend is one env var.
+Every service builds its provider here rather than naming a concrete class, so the
+backend is one env var.
 """
 
 from __future__ import annotations

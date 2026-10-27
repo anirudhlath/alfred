@@ -1,4 +1,4 @@
-"""REFLEX_BACKEND=openai resolves its host through a fallback chain, not raw getenv."""
+"""Reflex's legacy OpenAI-compatible host resolves through a fallback chain, not raw getenv."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ from shared.config import AlfredConfig
 def test_blank_openai_compat_host_falls_back_to_lmstudio(monkeypatch: pytest.MonkeyPatch) -> None:
     """`.env.example` ships the key blank, and "" is not absent.
 
-    Without the guard the reflex client builds ``"" + "/v1/chat/completions"`` and httpx
-    raises UnsupportedProtocol on a schemeless URL — the same failure
-    ``normalize_embedding_host`` exists to prevent on the memory side.
+    Without the guard the server's address is a schemeless "" and httpx raises
+    UnsupportedProtocol — the same failure ``normalize_embedding_host`` exists to prevent
+    on the memory side.
     """
     monkeypatch.setenv("OPENAI_COMPAT_HOST", "")
     monkeypatch.setenv("LMSTUDIO_HOST", "http://lmstudio:1234")

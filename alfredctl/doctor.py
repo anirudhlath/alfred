@@ -4,7 +4,8 @@
 checklist, whether each subsystem is configured before you ever start the stack:
 
 - System 2 (Conscious) — the cloud LLM API key
-- System 1 (Reflex)    — the local inference backend (Ollama or OpenAI-compatible)
+- System 1 (Reflex)    — the model it decides with (REFLEX_MODEL), and with --online
+                          whether its OpenAI-compatible server serves it
 - Home Assistant        — the long-lived token
 - Memory embeddings     — the backend, model and index width; gated models need
                           HF_TOKEN in-process, and with a remote server the width
@@ -174,7 +175,7 @@ _CONSCIOUS = "conscious (System 2)"
 _NO_APPROVAL_MODEL = "approval by reply is off (the Door still approves)"
 
 
-def _check_model(setting: str, model: str, llm: LlmSettings) -> tuple[str, str]:
+def _check_model(setting: str, model: str, llm: LlmSettings) -> tuple[Status, str]:
     """(status, detail) for one role's model string."""
     from shared.config import vllm_family_known
 
@@ -230,37 +231,82 @@ def _check_conscious(env: dict[str, str], online: bool) -> DoctorCheck:
     return DoctorCheck(_CONSCIOUS, "pass", detail)
 
 
+_REFLEX = "reflex (System 1)"
+
+
+def _leftover_reflex_settings(env: dict[str, str]) -> list[str]:
+    """Names of the retired Reflex settings still set; the values are never quoted."""
+    names = ["REFLEX_BACKEND"] if "REFLEX_BACKEND" in env else []
+    return names + sorted(name for name in env if name.startswith("OLLAMA_"))
+
+
+def _probe_served_models(
+    base_url: str, client: httpx.Client | None = None
+) -> tuple[set[str] | None, str]:
+    """List the models an OpenAI-compatible server serves; ``(None, why)`` when it cannot.
+
+    ``GET {base_url}/models``, where *base_url* already ends in ``/v1``. No names means no
+    answer, never "serves nothing": a connection error, an error status and a body that is
+    not a model list (a proxy, a login page) all leave the question open.
+    """
+    import httpx
+
+    url = _host_side(f"{base_url.rstrip('/')}/models")
+    try:
+        if client is not None:
+            resp = client.get(url)
+        else:
+            resp = httpx.get(url, timeout=_PROBE_TIMEOUT_SECONDS)
+    except Exception as exc:
+        return None, f"unreachable ({type(exc).__name__})"
+    if resp.status_code >= 400:
+        return None, f"HTTP {resp.status_code}{_probe_body_excerpt(resp)}"
+    try:
+        return {str(entry["id"]) for entry in resp.json()["data"]}, f"HTTP {resp.status_code}"
+    except Exception:
+        return None, f"HTTP {resp.status_code}, but not a model list"
+
+
 def _check_reflex(env: dict[str, str], online: bool) -> DoctorCheck:
-    backend = env.get("REFLEX_BACKEND", "ollama").strip().lower()
-    if backend == "openai":
-        host = env.get("OPENAI_COMPAT_HOST", "").strip()
-        model = env.get("OPENAI_COMPAT_MODEL", "").strip()
-        if not host or not model:
-            return DoctorCheck(
-                "reflex (System 1)",
-                "fail",
-                "REFLEX_BACKEND=openai needs OPENAI_COMPAT_HOST and OPENAI_COMPAT_MODEL",
-            )
-        if online:
-            ok, detail = _probe(f"{host.rstrip('/')}/v1/models")
-            status: Status = "pass" if ok else "warn"
-            return DoctorCheck(
-                "reflex (System 1)", status, f"openai backend {redact_userinfo(host)} ({detail})"
-            )
-        return DoctorCheck(
-            "reflex (System 1)", "pass", f"openai backend {redact_userinfo(host)}, model={model}"
+    from shared.config import resolve_llm_settings
+
+    leftovers = _leftover_reflex_settings(env)
+    note = (
+        f"still set but no longer read: {', '.join(leftovers)} (Reflex follows REFLEX_MODEL alone)"
+        if leftovers
+        else ""
+    )
+
+    def verdict(status: Status, detail: str) -> DoctorCheck:
+        if note:
+            status = "fail" if status == "fail" else "warn"
+            detail = f"{detail}; {note}"
+        return DoctorCheck(_REFLEX, status, detail)
+
+    try:
+        llm = resolve_llm_settings(env)
+    except RuntimeError as exc:
+        return verdict("fail", str(exc))
+    if not llm.reflex_model:
+        return verdict(
+            "fail",
+            "REFLEX_MODEL is not set and OPENAI_COMPAT_MODEL is empty, so Reflex exits at "
+            "start (want REFLEX_MODEL=vllm:<served-name>)",
         )
-    host = env.get("OLLAMA_HOST", "http://localhost:11434").strip()
-    if online:
-        ok, detail = _probe(f"{host.rstrip('/')}/api/tags")
-        if not ok:
-            return DoctorCheck(
-                "reflex (System 1)",
-                "warn",
-                f"Ollama at {redact_userinfo(host)} unreachable: {detail}",
-            )
-        return DoctorCheck("reflex (System 1)", "pass", f"Ollama reachable ({detail})")
-    return DoctorCheck("reflex (System 1)", "pass", f"ollama backend {redact_userinfo(host)}")
+    status, detail = _check_model("REFLEX_MODEL", llm.reflex_model, llm)
+    provider, _, served_name = llm.reflex_model.partition(":")
+    # Only a vllm: model is served by the local server; OpenRouter's key is Conscious's probe.
+    if not online or status == "fail" or provider != "vllm":
+        return verdict(status, detail)
+    served, probe = _probe_served_models(llm.vllm_base_url)
+    if served is None:
+        return verdict("warn", f"{detail}; model list unavailable: {probe}")
+    if served_name not in served:
+        listed = ", ".join(sorted(served)) or "none"
+        return verdict(
+            "fail", f"{detail}; the server serves no {served_name!r} (it lists: {listed})"
+        )
+    return verdict(status, f"{detail}; served ({probe})")
 
 
 def _check_home_assistant(env: dict[str, str], online: bool) -> DoctorCheck:

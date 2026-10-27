@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # Load .env from project root (walk up from this file to find it).
 #
 # Skipped under pytest: the suite must not inherit the developer's real config.
-# A populated .env (REFLEX_BACKEND=openai + OPENAI_COMPAT_HOST, say) routes mocked
+# A populated .env (REFLEX_MODEL + VLLM_BASE_URL, say) routes mocked
 # code paths at live endpoints, so tests that pass in CI — which has no .env —
 # fail locally with connection errors. Keeping the load out of test runs makes a
 # local `pytest` mean the same thing as a CI one.
@@ -414,13 +414,11 @@ class AlfredConfig:
     redis_port: int = 6379
     mqtt_host: str = "localhost"
     mqtt_port: int = 1883
-    ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "llama3:8b"
     lmstudio_host: str = "http://localhost:1234"
 
-    # Reflex (System 1) inference backend: ollama (native /api/chat) | openai
-    # (any OpenAI-compatible /v1/chat/completions server — vLLM, LM Studio)
-    reflex_backend: str = "ollama"
+    # Reflex (System 1) runs on an OpenAI-compatible server (vLLM, LM Studio), named by
+    # REFLEX_MODEL below. These two are the legacy spellings of its address and model:
+    # the host is only the VLLM_BASE_URL fallback, the model only REFLEX_MODEL's default.
     openai_compat_host: str = DEFAULT_OPENAI_COMPAT_HOST
     openai_compat_model: str = ""
     ha_host: str = "http://homeassistant.local:8123"
@@ -528,8 +526,8 @@ class AlfredConfig:
         )
         # Same blank-means-default rule on the reflex side: `.env.example` ships
         # OPENAI_COMPAT_HOST empty, and "" would satisfy os.getenv, defeat the
-        # LMSTUDIO_HOST fallback this chain documents, and leave the reflex client
-        # building a schemeless "" + "/v1/chat/completions" (httpx UnsupportedProtocol).
+        # LMSTUDIO_HOST fallback this chain documents, and leave a schemeless "" as the
+        # server's address (httpx UnsupportedProtocol).
         lmstudio_host = os.getenv("LMSTUDIO_HOST", "").strip() or DEFAULT_OPENAI_COMPAT_HOST
         openai_compat_host = os.getenv("OPENAI_COMPAT_HOST", "").strip() or lmstudio_host
         return cls(
@@ -537,10 +535,7 @@ class AlfredConfig:
             redis_port=int(os.getenv("REDIS_PORT", "6379")),
             mqtt_host=os.getenv("MQTT_HOST", "localhost"),
             mqtt_port=int(os.getenv("MQTT_PORT", "1883")),
-            ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "llama3:8b"),
             lmstudio_host=lmstudio_host,
-            reflex_backend=os.getenv("REFLEX_BACKEND", "ollama"),
             # Falls back to LMSTUDIO_HOST — LM Studio is the same protocol
             openai_compat_host=openai_compat_host,
             openai_compat_model=os.getenv("OPENAI_COMPAT_MODEL", ""),

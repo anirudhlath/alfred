@@ -5,7 +5,7 @@
 #   uv run alfredctl build --tag alfred:latest
 #   docker compose up -d
 #
-# Host-service hosts (OLLAMA_HOST, OPENAI_COMPAT_HOST, HA_HOST, …) may use `localhost`:
+# Host-service hosts (LMSTUDIO_HOST, OPENAI_COMPAT_HOST, HA_HOST, …) may use `localhost`:
 # the container rewrites it to the host gateway automatically. The secrets passphrase is
 # generated and persisted in the data volume on first boot — no manual step required
 # (override with ALFRED_SECRETS_PASSPHRASE in .env to pin your own).

@@ -42,7 +42,7 @@
 
 ## Notes
 
-- If host-gateway resolution needs verifying too (Ollama reachable from inside the
+- If host-gateway resolution needs verifying too (the host model server reachable from inside the
   Podman container via `host.containers.internal`), fold that check in here rather than
   filing a separate ticket — it's the same session's setup either way.
 - This ticket also serves as the concrete verification step referenced by

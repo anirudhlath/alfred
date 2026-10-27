@@ -24,7 +24,6 @@ export const overview: Overview = {
     user_requests: { length: 412, last_id: "1759477368000-0", last_ts: NOW, rate_5m: 0.2 },
     events: { length: 9120, last_id: "1759477368000-1", last_ts: NOW, rate_5m: 1.9 },
   },
-  inference: { ollama: true, lmstudio: false },
   reflex: { model: "reflex-3b", last_ms: 380, p50_ms: 410 },
   librarian: { last_run_at: iso(-17_000), reviewed: 42, next_run_at: iso(69_000) },
   session: { idle_minutes: 30 },

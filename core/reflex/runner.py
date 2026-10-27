@@ -200,7 +200,7 @@ async def process_stream_entry(
     """Process a single Redis Stream entry. Returns True if an action was taken — never,
     in shadow mode (#285); ``agent`` and ``result_stream`` wait for #286.
 
-    Raises on retriable errors (e.g., Ollama down) so the caller can choose not
+    Raises on retriable errors (e.g., the model server down) so the caller can choose not
     to ACK the message. Returns False — and is ACKed by the caller — for
     malformed events, availability blips (``core/reflex/availability.py``),
     attention-gated events, and events the engine chose not to act on. That

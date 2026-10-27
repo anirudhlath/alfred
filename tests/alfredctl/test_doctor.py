@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path  # noqa: TC003
 
 import pytest
@@ -32,7 +33,7 @@ def test_missing_env_fails(tmp_path: Path) -> None:
 def test_missing_conscious_key_fails(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("CLAUDE_API_KEY", raising=False)
-    env = _write_env(tmp_path, "REFLEX_BACKEND=ollama\n")
+    env = _write_env(tmp_path, "REFLEX_MODEL=vllm:gemma-x\n")
     checks = doctor.run_checks(env, online=False)
     assert _status(checks, "conscious (System 2)") == "fail"
 
@@ -49,13 +50,185 @@ def test_valid_key_passes_offline(tmp_path: Path) -> None:
     assert _status(checks, "conscious (System 2)") == "pass"
 
 
-def test_openai_backend_requires_host_and_model(tmp_path: Path) -> None:
+_REFLEX = "reflex (System 1)"
+_REFLEX_BASE = "OPENROUTER_API_KEY=sk-or-v1-abc\n"
+
+
+def test_reflex_without_a_model_fails(tmp_path: Path, _clean_llm_env: None) -> None:
+    """Reflex exits at start when nothing names its model, so doctor says so first."""
+    env = _write_env(tmp_path, _REFLEX_BASE + "REFLEX_MODEL=\nOPENAI_COMPAT_MODEL=\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, _REFLEX) == "fail"
+    detail = _detail(checks, _REFLEX)
+    assert "REFLEX_MODEL" in detail and "OPENAI_COMPAT_MODEL" in detail
+
+
+def test_reflex_model_defaults_from_the_served_model_name(
+    tmp_path: Path, _clean_llm_env: None
+) -> None:
     env = _write_env(
         tmp_path,
-        "OPENROUTER_API_KEY=sk-or-v1-abc\nREFLEX_BACKEND=openai\nOPENAI_COMPAT_HOST=\n",
+        _REFLEX_BASE + "OPENAI_COMPAT_MODEL=gemma-x\nVLLM_BASE_URL=http://vllm.example:8000\n",
     )
     checks = doctor.run_checks(env, online=False)
-    assert _status(checks, "reflex (System 1)") == "fail"
+    assert _status(checks, _REFLEX) == "pass"
+    assert "REFLEX_MODEL=vllm:gemma-x at http://vllm.example:8000/v1" in _detail(checks, _REFLEX)
+
+
+def test_an_explicit_reflex_model_outranks_the_served_model_name(
+    tmp_path: Path, _clean_llm_env: None
+) -> None:
+    env = _write_env(
+        tmp_path, _REFLEX_BASE + "REFLEX_MODEL=vllm:qwen-small\nOPENAI_COMPAT_MODEL=gemma-x\n"
+    )
+    detail = _detail(doctor.run_checks(env, online=False), _REFLEX)
+    assert "REFLEX_MODEL=vllm:qwen-small" in detail and "gemma-x" not in detail
+
+
+def test_a_reflex_model_that_is_not_a_model_string_fails(
+    tmp_path: Path, _clean_llm_env: None
+) -> None:
+    env = _write_env(tmp_path, _REFLEX_BASE + "REFLEX_MODEL=gemma-x\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, _REFLEX) == "fail"
+    assert "REFLEX_MODEL=gemma-x is not a model string" in _detail(checks, _REFLEX)
+
+
+def test_doctor_warns_about_leftover_ollama_settings(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(
+        tmp_path,
+        _REFLEX_BASE
+        + "OPENAI_COMPAT_MODEL=gemma-x\n"
+        + "REFLEX_BACKEND=ollama\nOLLAMA_HOST=http://localhost:11434\nOLLAMA_MODEL=small\n",
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, _REFLEX) == "warn"
+    detail = _detail(checks, _REFLEX)
+    for name in ("REFLEX_BACKEND", "OLLAMA_HOST", "OLLAMA_MODEL"):
+        assert name in detail
+    assert "no longer read" in detail
+    # The model is still reported, so the warning does not hide the verdict on it.
+    assert "REFLEX_MODEL=vllm:gemma-x" in detail
+
+
+def test_no_leftover_warning_without_leftovers(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(tmp_path, _REFLEX_BASE + "OPENAI_COMPAT_MODEL=gemma-x\n")
+    assert "no longer read" not in _detail(doctor.run_checks(env, online=False), _REFLEX)
+
+
+def test_a_failing_reflex_model_still_names_the_leftovers(
+    tmp_path: Path, _clean_llm_env: None
+) -> None:
+    env = _write_env(tmp_path, _REFLEX_BASE + "REFLEX_BACKEND=openai\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, _REFLEX) == "fail"
+    assert "REFLEX_BACKEND" in _detail(checks, _REFLEX)
+
+
+def _served(*names: str) -> object:
+    return lambda *a, **k: (set(names), "HTTP 200")
+
+
+def test_online_reflex_model_the_server_lists_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _clean_llm_env: None
+) -> None:
+    monkeypatch.setattr(doctor, "_probe_served_models", _served("gemma-x", "other"))
+    env = _write_env(tmp_path, _REFLEX_BASE + "OPENAI_COMPAT_MODEL=gemma-x\n")
+    checks = doctor.run_checks(env, online=True)
+    assert _status(checks, _REFLEX) == "pass"
+    assert "served" in _detail(checks, _REFLEX)
+
+
+def test_online_reflex_model_the_server_does_not_list_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _clean_llm_env: None
+) -> None:
+    monkeypatch.setattr(doctor, "_probe_served_models", _served("qwen-small"))
+    env = _write_env(tmp_path, _REFLEX_BASE + "OPENAI_COMPAT_MODEL=gemma-x\n")
+    checks = doctor.run_checks(env, online=True)
+    assert _status(checks, _REFLEX) == "fail"
+    detail = _detail(checks, _REFLEX)
+    assert "gemma-x" in detail and "qwen-small" in detail
+
+
+def test_online_reflex_probe_that_cannot_connect_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _clean_llm_env: None
+) -> None:
+    monkeypatch.setattr(
+        doctor, "_probe_served_models", lambda *a, **k: (None, "unreachable (ConnectError)")
+    )
+    env = _write_env(tmp_path, _REFLEX_BASE + "OPENAI_COMPAT_MODEL=gemma-x\n")
+    checks = doctor.run_checks(env, online=True)
+    assert _status(checks, _REFLEX) == "warn"
+    assert "unreachable" in _detail(checks, _REFLEX)
+
+
+def test_offline_reflex_check_never_probes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _clean_llm_env: None
+) -> None:
+    def _boom(*args: object, **kwargs: object) -> tuple[set[str] | None, str]:
+        raise AssertionError("--offline must not touch the network")
+
+    monkeypatch.setattr(doctor, "_probe_served_models", _boom)
+    env = _write_env(tmp_path, _REFLEX_BASE + "OPENAI_COMPAT_MODEL=gemma-x\n")
+    assert _status(doctor.run_checks(env, online=False), _REFLEX) == "pass"
+
+
+def test_an_openrouter_reflex_model_is_not_probed_against_the_local_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _clean_llm_env: None
+) -> None:
+    def _boom(*args: object, **kwargs: object) -> tuple[set[str] | None, str]:
+        raise AssertionError("only a vllm: model is listed by the local server")
+
+    monkeypatch.setattr(doctor, "_probe_served_models", _boom)
+    env = _write_env(tmp_path, _REFLEX_BASE + "REFLEX_MODEL=openrouter:vendor/small\n")
+    assert _status(doctor.run_checks(env, online=True), _REFLEX) == "pass"
+
+
+def test_probe_lists_the_served_models() -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "http://vllm.example:8000/v1/models"
+        return httpx.Response(200, json={"data": [{"id": "gemma-x"}, {"id": "qwen-small"}]})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        names, detail = doctor._probe_served_models("http://vllm.example:8000/v1", client=client)
+    assert names == {"gemma-x", "qwen-small"}
+    assert "200" in detail
+
+
+@pytest.mark.parametrize(
+    ("response", "marker"),
+    [
+        ((503, {"error": "loading"}), "503"),
+        ((200, {"unexpected": True}), "not a model list"),
+        ((404, {"detail": "Not Found"}), "404"),
+    ],
+)
+def test_probe_that_gets_no_model_list_returns_no_names(
+    response: tuple[int, object], marker: str
+) -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(response[0], json=response[1])
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        names, detail = doctor._probe_served_models("http://vllm.example:8000/v1", client=client)
+    assert names is None
+    assert marker in detail
+
+
+def test_probe_survives_a_connection_error() -> None:
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        names, detail = doctor._probe_served_models("http://vllm.example:8000/v1", client=client)
+    assert names is None
+    assert "unreachable" in detail and "ConnectError" in detail
 
 
 def test_missing_ha_token_warns(tmp_path: Path) -> None:
@@ -402,10 +575,18 @@ def test_schemeless_host_credentials_are_not_echoed(tmp_path: Path) -> None:
     assert "hunter2" not in detail
 
 
-def test_reflex_host_credentials_are_not_echoed(tmp_path: Path) -> None:
-    env = _write_env(tmp_path, "OPENROUTER_API_KEY=sk-or-v1-abc\nOLLAMA_HOST=http://a:hunter2@ol\n")
-    detail = _detail(doctor.run_checks(env, online=False), "reflex (System 1)")
+def test_reflex_host_credentials_are_not_echoed(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(
+        tmp_path,
+        _REFLEX_BASE
+        + "OPENAI_COMPAT_MODEL=gemma-x\n"
+        + "VLLM_BASE_URL=http://a:hunter2@vllm.example:8000\n"
+        # A leftover is named, never quoted: its value may carry the same credentials.
+        + "OLLAMA_HOST=http://a:hunter2@ol\n",
+    )
+    detail = _detail(doctor.run_checks(env, online=False), _REFLEX)
     assert "hunter2" not in detail
+    assert "OLLAMA_HOST" in detail
 
 
 def test_probe_detail_redacts_credentials() -> None:
@@ -441,8 +622,14 @@ def _clean_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "CLAUDE_API_KEY",
         "SYSTEM2_MAX_TOKENS",
         "SYSTEM2_TIMEOUT_S",
+        "REFLEX_MODEL",
+        "REFLEX_BACKEND",
+        "OPENAI_COMPAT_MODEL",
+        "LMSTUDIO_HOST",
     ):
         monkeypatch.delenv(name, raising=False)
+    for name in [n for n in os.environ if n.startswith("OLLAMA_")]:
+        monkeypatch.delenv(name)
 
 
 def test_vllm_model_with_a_known_family_passes(tmp_path: Path, _clean_llm_env: None) -> None:

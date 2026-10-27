@@ -7,7 +7,7 @@
 ## Prerequisites
 - Alfred unified runner started (`python -m runner`)
 - Redis Stack running and accessible
-- Ollama running with a model loaded (for Reflex Engine to fire actions)
+- Model server running with the `REFLEX_MODEL` model served (for Reflex Engine to propose actions)
 - Home Assistant MQTT bridge active with at least one entity that triggers a reflex rule
 - At least one trigger rule configured in the trigger registry
 
@@ -31,6 +31,6 @@
 
 ## Notes
 - The Memory Ingestor consumer group is `memory-ingestor` on stream `alfred:reflex:observations` — confirm with `XINFO GROUPS alfred:reflex:observations`
-- If Ollama is down, the Reflex Engine will not fire and no observation will be published; this is expected behaviour
+- If the model server is down, the Reflex Engine will not decide and no observation will be published; this is expected behaviour
 - The significance scorer runs an async embedding operation — verify the entry has `significance.overall > 0.0` and not just the placeholder `0.0`
 - Edge case: trigger a state change when Memory Ingestor is not running, then start it — entries should be replayed from the stream (consumer group offset=0)

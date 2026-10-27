@@ -114,9 +114,7 @@ def container_env(cfg: StackConfig, *, proxy_port: int, fake_ha_port: int) -> di
     ``--prompt-label``, the Langfuse settings the CLI read."""
     proxy = in_container_url(proxy_port)
     env = {
-        "REFLEX_BACKEND": "openai",
-        "OPENAI_COMPAT_HOST": proxy,
-        "OPENAI_COMPAT_MODEL": cfg.model,
+        "REFLEX_MODEL": f"vllm:{cfg.model}",
         "SYSTEM2_MODEL": f"vllm:{cfg.model}",
         "LIBRARIAN_MODEL": f"vllm:{cfg.model}",
         "VLLM_BASE_URL": f"{proxy}/v1",

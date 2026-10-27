@@ -27,7 +27,7 @@ Only one value is strictly required to get a reasoning assistant:
 |---------|--------------|---------------|
 | `OPENROUTER_API_KEY` | System 2 (reasoning, conversation) | [openrouter.ai/keys](https://openrouter.ai/keys) |
 | `HA_TOKEN` | Home Assistant control | HA → your profile → Security → **Long-lived access tokens** → Create |
-| local inference | System 1 (fast reflex path) | [Ollama](https://ollama.com) (`ollama pull gpt-oss:20b`) or any OpenAI-compatible server (vLLM/LM Studio) |
+| local inference | System 1 (fast reflex path) | An OpenAI-compatible server (vLLM/LM Studio) serving a small model; name it with `REFLEX_MODEL` (blank = `vllm:` + `OPENAI_COMPAT_MODEL`). Reflex does not start without one |
 
 Everything else in `.env.example` under **OPTIONAL** has a working default. In particular:
 
@@ -37,7 +37,7 @@ Everything else in `.env.example` under **OPTIONAL** has a working default. In p
 - **Secrets are self-managing** — the keyring passphrase is generated and persisted in the
   data volume on first boot. Set `ALFRED_SECRETS_PASSPHRASE` only to pin your own. Either
   way, **back up the data dir** — losing it loses your stored integration credentials.
-- **Host services just work with `localhost`** — `OLLAMA_HOST`, `OPENAI_COMPAT_HOST`,
+- **Host services just work with `localhost`** — `LMSTUDIO_HOST`, `OPENAI_COMPAT_HOST`,
   `HA_HOST`, etc. may point at `localhost`; the container rewrites it to the host gateway
   automatically (both `alfredctl up` and plain `docker compose`).
 
@@ -74,15 +74,16 @@ trickle of `exhausted` means the model provider is unhealthy.
 
 ### Reasoning models
 
-System 2 and the Librarian take a Pydantic AI model string, `openrouter:<vendor>/<model>` or
-`vllm:<served-name>`. The full rules are in [`docs/llm.md`](llm.md), "Settings and model
-resolution".
+Reflex, System 2 and the Librarian take a Pydantic AI model string,
+`openrouter:<vendor>/<model>` or `vllm:<served-name>`. The full rules are in
+[`docs/llm.md`](llm.md), "Settings and model resolution".
 
 | Setting | Default |
 |---------|---------|
 | `SYSTEM2_MODEL` | the translated `CLAUDE_MODEL`, else `DEFAULT_SYSTEM2_MODEL` in `shared/config.py` |
 | `LIBRARIAN_MODEL` | `SYSTEM2_MODEL` |
 | `APPROVAL_MODEL` | `SYSTEM2_MODEL` (reads a reply to a pending confirmation as yes, no or neither) |
+| `REFLEX_MODEL` | `vllm:` + `OPENAI_COMPAT_MODEL`, when that is set. Reflex exits at start when neither is |
 | `VLLM_BASE_URL` | where `vllm:` models are served: the first set of `OPENAI_BASE_URL` (legacy `openai/` `CLAUDE_MODEL` only), `OPENAI_COMPAT_HOST`, `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended, `localhost` rewritten like the other host variables |
 
 > **Upgrading a deploy that still sets `CLAUDE_MODEL`:** it keeps working. Each process
@@ -95,10 +96,11 @@ resolution".
 
 ### Prompts from Langfuse (optional)
 
-**Langfuse is optional.** Without it, Alfred serves System 2's and the Librarian's prompts
-from the repo defaults in `shared/prompts/defaults/`, which are versioned in git and ship in
-the image. You lose live editing without a deploy, version history, labels (a `production`
-and a candidate version side by side) and the prompt-linked traces. Nothing else changes,
+**Langfuse is optional.** Without it, Alfred serves Reflex's, System 2's, the Librarian's
+and the approval classifier's prompts from the repo defaults in `shared/prompts/defaults/`,
+which are versioned in git and ship in the image. You lose live editing without a deploy,
+version history, labels (a `production` and a candidate version side by side) and the
+prompt-linked traces. Nothing else changes,
 so a self-hoster can ignore this section. An optional compose profile that runs Langfuse
 alongside Alfred is tracked in [#365](https://github.com/anirudhlath/alfred/issues/365).
 How the prompts are served, and the edit workflow, are in [docs/llm.md](llm.md#prompts).
@@ -162,6 +164,10 @@ uv run alfredctl doctor --offline  # shape checks only, no network
 
 It reports a pass/warn/fail row per subsystem (System 2, System 1, Home Assistant, memory
 embeddings, the home-service sibling). `up` also prints any non-pass rows before building.
+The System 1 row checks that `REFLEX_MODEL` (or `OPENAI_COMPAT_MODEL`) names a model; online it
+also asks the `vllm:` server to list its models and fails when the Reflex model is not among
+them (a server it cannot reach is a warning). It warns, by name, about retired Reflex-backend
+variables still set in `.env`: they are no longer read.
 
 ## Two ways to run
 
@@ -462,7 +468,7 @@ CD-only tree — holds the operator-managed state that no workflow writes:
 
 | Path | What |
 |---|---|
-| `.env` | `OPENROUTER_API_KEY`, `HA_TOKEN`, `OLLAMA_HOST`, … (0600) |
+| `.env` | `OPENROUTER_API_KEY`, `HA_TOKEN`, `VLLM_BASE_URL`, … (0600) |
 | `docker-compose.yml` | Overwritten from the checkout on every deploy (step 6 above) |
 | `satellites.yaml` | Pi inventory: `name`, `host`, `port`, `area` |
 | `id_ed25519_satellites` + `.pub` | SSH key trusted by every Pi (0600) |

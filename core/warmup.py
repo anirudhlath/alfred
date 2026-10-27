@@ -1,7 +1,7 @@
 """Background startup warmup — eagerly initialize lazy-loaded components.
 
-Services spawn a warmup task at startup so models (Whisper, Piper, embeddings,
-Ollama) load while the service is already serving; the first real request then
+Services spawn a warmup task at startup so models (Whisper, Piper, embeddings)
+load while the service is already serving; the first real request then
 skips the 10-60s lazy-load hit. Lazy-init paths stay in place as the safety
 net, so a failed or unfinished warmup never breaks a request.
 """
