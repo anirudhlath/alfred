@@ -288,6 +288,8 @@ describe("DoorProvider", () => {
     );
 
     await waitFor(() => expect(calls).toContain("GET /api/actions/a91f3c2e"));
+    // The 404 has to land before "nothing opened" means anything; see `settle`.
+    await settle();
     expect(phases()).toBe("");
   });
 
