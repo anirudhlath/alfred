@@ -54,8 +54,8 @@ if TYPE_CHECKING:
 
 # What a replayed call that raised (the server down, a timeout) is counted as.
 ERROR: Final = "error"
-# A server that fails this many calls in a row is down: stop rather than ask it a few hundred
-# more times, each waiting out its timeout.
+# After this many failed calls in a row, stop rather than make a few hundred more, each of which
+# may wait out its timeout.
 MAX_CONSECUTIVE_ERRORS: Final = 5
 DECISIONS: Final[tuple[str, ...]] = get_args(ReflexDecision)
 _COLUMNS: Final = (*DECISIONS, ERROR)
@@ -78,9 +78,10 @@ async def _decide_one(
     agent: Agent[list[ToolInfo], ReflexProposal], record: DecisionRecord
 ) -> Outcome:
     recorded = record.proposal.decision
-    started = time.perf_counter()
     try:
-        proposal = await decide(agent, record.prompt, parse_tools(record.prompt))
+        tools = parse_tools(record.prompt)
+        started = time.perf_counter()  # after the parse, so the latency is the model call's
+        proposal = await decide(agent, record.prompt, tools)
     except Exception as exc:  # a transport or provider failure: counted, not fatal
         return Outcome(record.time, record.origin, recorded, ERROR, None, type(exc).__name__)
     latency_ms = (time.perf_counter() - started) * 1000
@@ -369,7 +370,9 @@ async def execute(args: Args) -> None:
 
     print(summarize(outcomes, total=len(records)))
     if len(outcomes) < len(records):
-        _fail(f"stopped after {MAX_CONSECUTIVE_ERRORS} failed calls in a row; is the model up?", 1)
+        last = Counter(o.error for o in outcomes[-MAX_CONSECUTIVE_ERRORS:])
+        names = ", ".join(f"{name} x{n}" for name, n in last.items())
+        _fail(f"stopped after {MAX_CONSECUTIVE_ERRORS} consecutive errors: {names}", 1)
 
 
 def main(argv: Sequence[str] | None = None) -> None:

@@ -12,6 +12,7 @@ import json
 import os
 import stat
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import fakeredis
@@ -237,6 +238,43 @@ async def test_a_success_resets_the_run_of_failures() -> None:
     records = [_state_change(i, "none") for i in range(2 * limit)]
 
     assert len(await replay.replay(records, agent)) == 2 * limit
+
+
+async def test_latency_is_the_model_call_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = [100.0]
+    monkeypatch.setattr(replay, "time", SimpleNamespace(perf_counter=lambda: clock[0]))
+    real_parse = replay.parse_tools
+
+    def slow_parse(prompt: str) -> list[ToolInfo]:
+        clock[0] += 5.0  # reading the tools back out of the prompt is not the model's time
+        return real_parse(prompt)
+
+    monkeypatch.setattr(replay, "parse_tools", slow_parse)
+    agent, _ = reflex_agent(NONE)
+
+    [outcome] = await replay.replay([_state_change(0, "none")], agent)
+
+    assert outcome.latency_ms == 0
+
+
+async def test_a_run_stopped_by_errors_names_them_and_guesses_no_cause(
+    use_script: Callable[..., Script], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    limit = replay.MAX_CONSECUTIVE_ERRORS
+    use_script(*[RuntimeError("Living Room Lamp down")] * (limit + 2))
+    records = _jsonl(
+        tmp_path / "records.jsonl", [_state_change(i, "none") for i in range(limit + 2)]
+    )
+
+    with pytest.raises(SystemExit) as stopped:
+        await replay.execute(parse_args(["run", "--records", str(records)]))
+
+    assert stopped.value.code == 1
+    err = capsys.readouterr().err
+    assert f"{limit} consecutive errors" in err
+    assert "RuntimeError" in err
+    assert "model up" not in err  # a 400 or a bad prompt fails too: it guesses no cause
+    assert "Living Room Lamp" not in err  # the class name only, never the message
 
 
 def test_latency_percentiles_are_nearest_rank() -> None:

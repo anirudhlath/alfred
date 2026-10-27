@@ -65,8 +65,10 @@ python -m core.reflex.replay run --records decisions.jsonl [--limit N] [--model 
 - **`--out FILE`** writes one JSONL line per record (its time, origin, recorded decision,
   replayed decision, latency in ms). It holds the owner's house, so it is created readable only
   by its owner (mode 0600) and stays off the repo.
-- **A server that is down.** Calls that raise are counted in the `error` column; five in a row
-  stop the run.
+- **Errors.** Calls that raise are counted in the `error` column, by exception class. Five in a
+  row stop the run (exit status 1), naming those classes; the cause is not guessed.
+- **Latency is the model call's.** The timer starts after the tools are read back from the
+  prompt.
 
 A model server is not deterministic at temperature 0: compare counts across a few hundred
 records, never single answers.
