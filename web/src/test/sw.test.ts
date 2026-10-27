@@ -224,9 +224,9 @@ const ascending = (deadlines: readonly number[]): number[] => [...deadlines].sor
  * `"settled"` asserted through it is a positive raced against that count, and
  * fails loudly if the read needs more steps than the count. A `"pending"` is a
  * negative, which could not. The navigation's has a twin below, "settles the
- * page's read of a response that ends", the same read of a body that ends,
- * which fails if the count stops being deep enough. The asset read's ("…when a
- * new deploy's asset stalls") has no twin: nothing checks the count for it.
+ * page's read of a response that ends", which fails if the count stops being
+ * deep enough. The asset read's, in "serves an asset whose body stalls %s without
+ * holding the page for the write", has none: nothing checks the count for it.
  */
 const pending = (read: Promise<unknown>): Promise<string> =>
   Promise.race([
