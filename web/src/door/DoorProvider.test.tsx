@@ -268,7 +268,10 @@ describe("DoorProvider", () => {
       }),
     );
 
-    await waitFor(() => expect(calls.some((call) => call.includes("/api/actions/a"))).toBe(false));
+    // Settled first: a wait for nothing to be sent passes on its first look,
+    // before anything could have been.
+    await settle();
+    expect(calls.filter((call) => call !== "GET /api/actions/pending")).toEqual([]);
     expect(phases()).toBe("");
   });
 
