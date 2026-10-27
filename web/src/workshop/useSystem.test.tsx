@@ -750,7 +750,7 @@ describe("useSystem", () => {
     await waitFor(() => expect(result.current.integrations.rows["weather"]?.state).toBe("queued"));
     expect(result.current.integrations.saves["weather"]?.savedAt).toBeGreaterThan(0);
     expect(result.current.integrations.saves["weather"]?.saving).toBe(true);
-    // The probe is one of this bench's own reads, and the only one in flight.
+    // The probe is one of this bench's own reads.
     expect(result.current.loading).toBe(true);
 
     unhold("GET", statusPath("weather"));
@@ -766,6 +766,44 @@ describe("useSystem", () => {
     expect(result.current.integrations.saves["weather"]?.error).toBeNull();
     // `configured` moved, and the form's placeholders are drawn from it.
     await waitFor(() => expect(countOf("GET", INTEGRATIONS)).toBe(2));
+  });
+
+  // The row reads `configured` from the listing and health from the probe, and
+  // a first save moves both. Settled on the probe alone, it went `saved ·
+  // testing`, then `nothing stored · Alfred answers without this source` for
+  // the listing's round trip — over credentials the server had just taken —
+  // and only then `stored encrypted at rest · last check ok`.
+  it("does not call a first save unset while the listing behind it is still coming", async () => {
+    answer("GET", INTEGRATIONS, {
+      status: 200,
+      body: [{ ...WEATHER, configured: { api_key: false } }, HOME],
+    });
+    const { result } = await openBench();
+    expect(result.current.integrations.rows["weather"]?.state).toBe("unset");
+    answer("GET", INTEGRATIONS, { status: 200, body: [WEATHER, HOME] });
+    hold("GET", statusPath("weather"));
+    hold("GET", INTEGRATIONS);
+
+    act(() => result.current.integrations.save("weather", { api_key: "abc" }));
+    await waitFor(() => expect(result.current.integrations.rows["weather"]?.state).toBe("queued"));
+
+    // The probe answers and the listing does not. Everything the answer sets
+    // going runs inside this one act, so it is drawn before the next line.
+    const probe = route("GET", statusPath("weather"));
+    await waitFor(() => expect(parked.get(probe)).toHaveLength(1));
+    await act(async () => {
+      parked.get(probe)?.shift()?.(routes.get(probe) ?? OK);
+      for (let turn = 0; turn < 10; turn++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    });
+    expect(result.current.integrations.rows["weather"]?.state).toBe("queued");
+
+    unhold("GET", INTEGRATIONS);
+    await releaseNext("GET", INTEGRATIONS);
+
+    await waitFor(() => expect(result.current.integrations.rows["weather"]?.state).toBe("ok"));
+    expect(result.current.integrations.saves["weather"]?.saving).toBe(false);
   });
 
   // A save entry is a fact about the attempt in flight, not a pile of every

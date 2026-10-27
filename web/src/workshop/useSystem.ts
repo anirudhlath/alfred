@@ -688,6 +688,12 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
           }));
           // Saved is not working. The round trip the row promises is this probe,
           // and only its answer turns `saved · testing` into `ok` or `failed`.
+          // The listing goes with it: `configured` moved, the row reads it to
+          // tell `nothing stored` from a stored source, and the form's
+          // placeholders are drawn from it. The row stays `saved · testing`
+          // until both have landed — settled on the probe alone, a first save
+          // read `nothing stored` for the listing's round trip, over the
+          // credentials the server had just taken.
           //
           // `invalidateQueries`, not `refetchQueries`: while the bench is open
           // the two do the same thing — an active query refetches either way,
@@ -697,14 +703,15 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
           // back; a refetch would drop it on the floor and the row would show
           // the answer from before the credentials changed, inside the 30 s
           // window, with nothing on its way to correct it.
-          await queryClient.invalidateQueries({ queryKey: statusKey(name) });
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: statusKey(name) }),
+            queryClient.invalidateQueries({ queryKey: INTEGRATIONS_KEY }),
+          ]);
           if (!fresh()) return;
           setSaves((current) => ({
             ...current,
             [name]: { ...current[name], saving: false },
           }));
-          // `configured` moved, and the form's placeholders are drawn from it.
-          void queryClient.invalidateQueries({ queryKey: INTEGRATIONS_KEY });
         },
         (error: unknown) => {
           if (!settle()) return;
