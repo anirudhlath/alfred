@@ -113,7 +113,7 @@ web/
       ErrorBoundary.tsx      # The Workshop's; a bench that throws costs the layer
       ThemeProvider.tsx      # useTheme(); writes data-theme and the theme-color meta
       ThemeToggle.tsx        # 44x44 half-filled circle
-      ConnectionProvider.tsx # Socket singletons, useConnection(), markTrue()
+      ConnectionProvider.tsx # Socket singletons; useConnection, useLastTrue, markTrue
       presence.ts            # usePresence, useModalFocus, riseStyle, prefersReducedMotion
       Layer.tsx              # Portal + rise in/out + focus trap + inert + level
                              # (workshop z-10 · layer z-30 · gate z-40)
@@ -426,9 +426,12 @@ Everything on screen is one timeline.
   "Good morning, sir."), then holding, then busy, then DND, then the first-day greeting.
 - **Status line and offline note** — the vitals, and `last true HH:MM` whenever the
   socket is not online. The stamp moves on every chat frame, every socket open and every
-  overview read as it lands in the cache (`ConnectionProvider`), in the same commit as
-  that overview — never on the reply to a read already cancelled and asked again. The note's `role="status"` region stays mounted and empty while
-  online: VoiceOver can miss a live region inserted with its text already in it.
+  overview read as it lands in the cache (`ConnectionProvider`) — never on the reply to
+  a read already cancelled and asked again. `Room` reads it at render time, beside the
+  overview (`useLastTrue`, not the context), and an overview read's stamp is written in
+  the same step as the overview itself, so no frame can draw one without the other. The
+  note's `role="status"` region stays mounted and empty while online: VoiceOver can miss
+  a live region inserted with its text already in it.
 - **Timeline** — `useRoomHistory` reads four stream pages once
   (`user_requests`, `user_responses`, `reflex_observations` with an `action`, and
   `notifications` without a `pending_action_id`) and `toTimelineItems` merges them by
@@ -1029,7 +1032,7 @@ graph TD
         subgraph ConnectionProvider
             ChatSock[ChatSocket<br/>/ws]
             TelSock[TelemetrySocket<br/>/ws/telemetry]
-            Conn[useConnection<br/>online · chatStatus · lastTrueAt]
+            Conn[useConnection · useLastTrue<br/>online · chatStatus · lastTrueAt]
         end
 
         AuthGate[AuthGate<br/>offline · unanswered · setup · sign-in · expired · denied]

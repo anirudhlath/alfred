@@ -1,10 +1,15 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  defaultScheduler,
+  notifyManager,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
-import { useLayoutEffect, type ReactNode } from "react";
+import { useLayoutEffect, useReducer, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SESSION_IDLE_MS } from "@/lib/history";
 import type { Overview } from "@/lib/types";
-import { ConnectionProvider, useConnection } from "@/shell/ConnectionProvider";
+import { ConnectionProvider, useLastTrue } from "@/shell/ConnectionProvider";
 import { overviewFixture } from "@/test/fixtures";
 import { sessionIdleMs, useOverview } from "./useOverview";
 
@@ -40,6 +45,8 @@ let overviewHeld = false;
 const parked: Array<(reads: number) => void> = [];
 /** Every frame the probe committed, as the Room would draw it. See `Probe`. */
 const frames: string[] = [];
+/** Draws the probe again, for a reason of its own: a chat frame, a tap. */
+let redraw: () => void = () => {};
 
 /** The overview the house sends, told apart by its session count. */
 const overviewOf = (reads: number): Overview => ({
@@ -67,10 +74,14 @@ function renderOverview(enabled = true) {
  */
 function Probe() {
   const { data } = useOverview();
-  const { lastTrueAt } = useConnection();
+  const lastTrueAt = useLastTrue();
+  const [, bump] = useReducer((n: number) => n + 1, 0);
   const read = data ? data.counts.sessions : "none";
   const frame = `${read} @ ${lastTrueAt ? lastTrueAt.getTime() : "none"}`;
-  useLayoutEffect(() => void frames.push(frame));
+  useLayoutEffect(() => {
+    frames.push(frame);
+    redraw = bump;
+  });
   return <span data-testid="frame">{frame}</span>;
 }
 
@@ -88,6 +99,21 @@ function renderRoom() {
 
 /** Give react-query's batched notifications (a `setTimeout(0)`) their turn. */
 const tick = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+
+/**
+ * react-query's notify, in the test's hands: what it would run a turn later
+ * waits in `held` until `release`. The cache is written as a read lands either
+ * way; only the telling is held.
+ */
+function holdNotify() {
+  const held: Array<() => void> = [];
+  notifyManager.setScheduler((fn) => void held.push(fn));
+  const release = () => {
+    notifyManager.setScheduler(defaultScheduler);
+    for (const fn of held.splice(0)) fn();
+  };
+  return { held, release };
+}
 
 describe("useOverview", () => {
   beforeEach(() => {
@@ -112,6 +138,7 @@ describe("useOverview", () => {
     );
   });
   afterEach(() => {
+    notifyManager.setScheduler(defaultScheduler);
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
@@ -154,6 +181,34 @@ describe("useOverview", () => {
     expect(await screen.findByText("3 @ 3000")).toBeInTheDocument();
     // And no frame in between drew a stamp beside an overview it did not come with.
     expect([...new Set(frames)]).toEqual(["none @ none", "1 @ 1000", "3 @ 3000"]);
+  });
+
+  // react-query writes a read into the cache as it lands and tells its
+  // subscribers a turn later, in its notify. A frame drawn in between for a
+  // reason of its own reads the new overview from the cache, and drew it beside
+  // the stamp from before it: the overview ahead of its own "last true".
+  it("draws a read's stamp with its overview in a frame drawn before react-query's notify", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    overviewHeld = true;
+    const { client } = renderRoom();
+    await waitFor(() => expect(parked).toHaveLength(1));
+    const notify = holdNotify();
+
+    vi.setSystemTime(1_000);
+    await act(async () => answer(1));
+    await waitFor(() =>
+      expect(client.getQueryData<Overview>(["overview"])?.counts.sessions).toBe(1),
+    );
+    // In the cache, and not yet told: nothing has drawn the read.
+    expect(notify.held.length).toBeGreaterThan(0);
+    expect(screen.getByTestId("frame")).toHaveTextContent("none @ none");
+
+    act(() => redraw());
+    expect(screen.getByTestId("frame")).toHaveTextContent("1 @ 1000");
+
+    act(() => notify.release());
+    expect(screen.getByTestId("frame")).toHaveTextContent("1 @ 1000");
+    expect([...new Set(frames)]).toEqual(["none @ none", "1 @ 1000"]);
   });
 
   it("does not take a write to the key for the house answering", async () => {

@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authEvents } from "@/lib/auth-events";
 import type { SocketStatus } from "@/lib/ws";
-import { ConnectionProvider, useConnection } from "./ConnectionProvider";
+import { ConnectionProvider, useConnection, useLastTrue } from "./ConnectionProvider";
 
 interface FakeSocket {
   onstatus: (status: SocketStatus) => void;
@@ -60,7 +60,8 @@ vi.mock("@/lib/telemetry-socket", () => {
 });
 
 function Probe() {
-  const { online, lastTrueAt, chatStatus, reconnect } = useConnection();
+  const { online, chatStatus, reconnect } = useConnection();
+  const lastTrueAt = useLastTrue();
   return (
     <div>
       <span data-testid="online">{String(online)}</span>

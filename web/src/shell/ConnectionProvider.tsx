@@ -34,7 +34,11 @@ function reconnect(): void {
 }
 
 let lastTrue: Date | null = null;
-const lastTrueListeners = new Set<(at: Date) => void>();
+const lastTrueListeners = new Set<() => void>();
+
+function tellTrue(): void {
+  for (const fn of [...lastTrueListeners]) fn();
+}
 
 /**
  * Record that the house answered just now. Called from here on every chat frame
@@ -44,15 +48,29 @@ const lastTrueListeners = new Set<(at: Date) => void>();
 // eslint-disable-next-line react-refresh/only-export-components
 export function markTrue(at: Date = new Date()): void {
   lastTrue = at;
-  for (const fn of [...lastTrueListeners]) fn(at);
+  tellTrue();
 }
 
-function subscribeTrue(fn: (at: Date) => void): () => void {
+function subscribeTrue(fn: () => void): () => void {
   lastTrueListeners.add(fn);
   return () => void lastTrueListeners.delete(fn);
 }
 
 const readLastTrue = (): Date | null => lastTrue;
+
+/**
+ * When the house last answered: "last true". Read in the component that draws
+ * it, at render time, rather than handed down through the context: a component
+ * that draws the overview beside it reads both in the same render, from values
+ * written in the same step (see the overview's stamp below), so no frame can
+ * draw one without the other. Through the context it was the provider's last
+ * render, and a frame its reader drew for a reason of its own showed a newer
+ * overview beside an older stamp.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useLastTrue(): Date | null {
+  return useSyncExternalStore(subscribeTrue, readLastTrue);
+}
 
 let chatOnline = false;
 const onlineListeners = new Set<() => void>();
@@ -109,7 +127,6 @@ export interface ConnectionValue {
   chatStatus: SocketStatus;
   telemetryStatus: SocketStatus;
   online: boolean;
-  lastTrueAt: Date | null;
   /** The moment a queued send can succeed. See `subscribeOnline` above. */
   subscribeOnline: (fn: () => void) => () => void;
   /** Reopen whatever is closed. The gates call it after a sign-in. See `reconnect` above. */
@@ -122,12 +139,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [chatStatus, setChatStatus] = useState<SocketStatus>("connecting");
   const [telemetryStatus, setTelemetryStatus] = useState<SocketStatus>("connecting");
-  // Read through `useSyncExternalStore`, as `useQuery` reads the cache, so a
-  // change renders at the same priority as the overview's own: a stamp set in
-  // react-query's notify (below) commits with the overview it came with by
-  // contract. State set from outside React renders at a lower priority, and
-  // only the way React batches the two would have kept them together.
-  const lastTrueAt = useSyncExternalStore(subscribeTrue, readLastTrue);
 
   useEffect(() => {
     chat.onstatus = (status) => {
@@ -160,16 +171,19 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     // foreground is cancelled and asked again (`onVisible` below), and its
     // reply still arrives. Stamped then, it moved "last true" with the previous
     // overview still drawn under it until the read asked again had landed. The
-    // stamp goes into react-query's notify, beside the observers', so it draws
-    // in the same commit as the overview. A `setQueryData` write is not an
-    // answer from the house.
+    // cache tells this listener in the same synchronous step that writes the
+    // overview, before any render can run, so the stamp is written here and
+    // then: a render from then on reads the new overview and the new stamp
+    // together (`useLastTrue`). Only the telling waits for react-query's notify,
+    // beside the observers', so the two redraw once, together. A `setQueryData`
+    // write is not an answer from the house.
     let watching = true;
     const stopOverview = queryClient.getQueryCache().subscribe((event) => {
       if (event.type !== "updated" || event.query.queryKey[0] !== "overview") return;
       if (event.action.type !== "success" || event.action.manual) return;
-      const at = new Date(event.query.state.dataUpdatedAt);
+      lastTrue = new Date(event.query.state.dataUpdatedAt);
       notifyManager.schedule(() => {
-        if (watching) markTrue(at);
+        if (watching) tellTrue();
       });
     });
 
@@ -231,11 +245,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       // The telemetry socket can be down while the butler still answers; only the
       // chat socket decides whether the app calls itself online.
       online: chatStatus === "online",
-      lastTrueAt,
       subscribeOnline,
       reconnect,
     }),
-    [chatStatus, telemetryStatus, lastTrueAt],
+    [chatStatus, telemetryStatus],
   );
 
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>;

@@ -24,14 +24,15 @@ import { useRoom } from "@/room/useRoom";
 import { useRoomHistory } from "@/room/useRoomHistory";
 import { HeldBackSheet } from "@/sheets/HeldBackSheet";
 import { WhySheet } from "@/sheets/WhySheet";
-import { useConnection } from "@/shell/ConnectionProvider";
+import { useConnection, useLastTrue } from "@/shell/ConnectionProvider";
 import { ThemeToggle } from "@/shell/ThemeToggle";
 import { UpdateNote } from "@/shell/UpdateNote";
 import { useUpdateReady } from "@/shell/useUpdateReady";
 import { Workshop } from "@/workshop/Workshop";
 
 export function Room() {
-  const { online, chatStatus, lastTrueAt, chat } = useConnection();
+  const { online, chatStatus, chat } = useConnection();
+  const lastTrueAt = useLastTrue();
   const { data: overview } = useOverview();
   const idleMs = sessionIdleMs(overview);
   const { data: history } = useRoomHistory();

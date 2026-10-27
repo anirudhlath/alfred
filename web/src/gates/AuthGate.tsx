@@ -11,13 +11,14 @@ import { fetchAuthStatus } from "@/lib/auth";
 import { authEvents } from "@/lib/auth-events";
 import { onVisible } from "@/lib/lifecycle";
 import type { AuthStatus } from "@/lib/types";
-import { useConnection } from "@/shell/ConnectionProvider";
+import { useConnection, useLastTrue } from "@/shell/ConnectionProvider";
 import { Layer } from "@/shell/Layer";
 import { useOnline } from "@/shell/useOnline";
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
-  const { lastTrueAt, reconnect } = useConnection();
+  const { reconnect } = useConnection();
+  const lastTrueAt = useLastTrue();
   // Whether the latest status read went out with no network, set by the read
   // itself as it goes. See the re-ask below.
   const sentOffline = useRef(false);
