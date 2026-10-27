@@ -1,5 +1,13 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import { notifyManager, useQueryClient } from "@tanstack/react-query";
 import { authEvents } from "@/lib/auth-events";
 import { ChatSocket } from "@/lib/chat-socket";
 import { onVisible } from "@/lib/lifecycle";
@@ -30,8 +38,8 @@ const lastTrueListeners = new Set<(at: Date) => void>();
 
 /**
  * Record that the house answered just now. Called from here on every chat frame
- * and every socket open, and from `useOverview` on every successful poll — the
- * two independent proofs that anything on screen is current.
+ * and every socket open, and on every overview read as it lands — the two
+ * independent proofs that anything on screen is current.
  */
 // eslint-disable-next-line react-refresh/only-export-components
 export function markTrue(at: Date = new Date()): void {
@@ -43,6 +51,8 @@ function subscribeTrue(fn: (at: Date) => void): () => void {
   lastTrueListeners.add(fn);
   return () => void lastTrueListeners.delete(fn);
 }
+
+const readLastTrue = (): Date | null => lastTrue;
 
 let chatOnline = false;
 const onlineListeners = new Set<() => void>();
@@ -69,11 +79,12 @@ function subscribeOnline(fn: () => void): () => void {
  * moved without this client hearing about it.
  *
  * Spelled out rather than imported from the hooks that own these keys: this
- * module is imported *by* `useOverview` (for `markTrue`), so importing back
- * would close a cycle and leave this list reading a temporal-dead-zone
- * `undefined` on whichever evaluation order the bundler picked. Every entry is
- * a prefix rather than a whole key, so a key that later gains a segment is
- * still covered by the one above it.
+ * module is imported *by* some of them (`DoorProvider`, for `useConnection`),
+ * so importing back would close a cycle and leave this list reading a
+ * temporal-dead-zone `undefined` on whichever evaluation order the bundler
+ * picked. The overview's key, which the stamp below watches, is spelled out
+ * the same way. Every entry is a prefix rather than a whole key, so a key that
+ * later gains a segment is still covered by the one above it.
  */
 const REHYDRATE_KEYS = [
   ["overview"],
@@ -111,7 +122,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [chatStatus, setChatStatus] = useState<SocketStatus>("connecting");
   const [telemetryStatus, setTelemetryStatus] = useState<SocketStatus>("connecting");
-  const [lastTrueAt, setLastTrueAt] = useState<Date | null>(lastTrue);
+  // Read through `useSyncExternalStore`, as `useQuery` reads the cache, so a
+  // change renders at the same priority as the overview's own: a stamp set in
+  // react-query's notify (below) commits with the overview it came with by
+  // contract. State set from outside React renders at a lower priority, and
+  // only the way React batches the two would have kept them together.
+  const lastTrueAt = useSyncExternalStore(subscribeTrue, readLastTrue);
 
   useEffect(() => {
     chat.onstatus = (status) => {
@@ -138,7 +154,24 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       lastWarned.set(trouble, now);
       console.warn(`telemetry: ${trouble}`);
     });
-    const stopTrue = subscribeTrue(setLastTrueAt);
+
+    // An overview read is the house answering when it lands in the cache, not
+    // when its reply arrives: a poll under way when the phone returns to the
+    // foreground is cancelled and asked again (`onVisible` below), and its
+    // reply still arrives. Stamped then, it moved "last true" with the previous
+    // overview still drawn under it until the read asked again had landed. The
+    // stamp goes into react-query's notify, beside the observers', so it draws
+    // in the same commit as the overview. A `setQueryData` write is not an
+    // answer from the house.
+    let watching = true;
+    const stopOverview = queryClient.getQueryCache().subscribe((event) => {
+      if (event.type !== "updated" || event.query.queryKey[0] !== "overview") return;
+      if (event.action.type !== "success" || event.action.manual) return;
+      const at = new Date(event.query.state.dataUpdatedAt);
+      notifyManager.schedule(() => {
+        if (watching) markTrue(at);
+      });
+    });
 
     reconnect();
 
@@ -165,7 +198,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       telemetry.onstatus = () => {};
       stopListening();
       stopWarning();
-      stopTrue();
+      watching = false;
+      stopOverview();
       stopVisible();
       window.removeEventListener("online", reconnect);
       chat.close();

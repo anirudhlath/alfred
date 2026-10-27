@@ -425,7 +425,9 @@ Everything on screen is one timeline.
   offline and reconnecting outrank everything (an unreachable house must not say
   "Good morning, sir."), then holding, then busy, then DND, then the first-day greeting.
 - **Status line and offline note** — the vitals, and `last true HH:MM` whenever the
-  socket is not online. The note's `role="status"` region stays mounted and empty while
+  socket is not online. The stamp moves on every chat frame, every socket open and every
+  overview read as it lands in the cache (`ConnectionProvider`), in the same commit as
+  that overview — never on the reply to a read already cancelled and asked again. The note's `role="status"` region stays mounted and empty while
   online: VoiceOver can miss a live region inserted with its text already in it.
 - **Timeline** — `useRoomHistory` reads four stream pages once
   (`user_requests`, `user_responses`, `reflex_observations` with an `action`, and
