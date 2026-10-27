@@ -17,6 +17,61 @@ import { broken, fetchRequest, html, js, loadWorker, macrotasks, ORIGIN, stalled
  */
 const REACHED = { interval: 1, timeout: 4000 } as const;
 
+// The workers below are each written once, because a test that holds
+// something back and the control that lets it through (see "the macrotasks a
+// negative is given", at the end) have to be the same scenario, or the control
+// says nothing about the test.
+
+/** Puts `/x` and then `/y`: `holdPut("/x")` holds the first, and the control lets both through. */
+const TWO_PUTS = `
+  self.addEventListener("install", (event) => {
+    event.waitUntil((async () => {
+      const cache = await self.caches.open("alfred-shell-v1");
+      await cache.put("/x", new Response("x"));
+      await cache.put("/y", new Response("y"));
+    })());
+  });
+`;
+
+/**
+ * Reads `/x` back twice. The first read's body feeds `/status` and `/held` (its
+ * clone's read is the one `holdRead("/x")` holds), the second feeds `/after`, which
+ * does not wait on the first.
+ */
+const READ_AND_WRITE = `
+  self.addEventListener("install", (event) => {
+    event.waitUntil((async () => {
+      const cache = await self.caches.open("alfred-shell-v1");
+      await cache.put("/x", new Response("x"));
+      const held = await cache.match("/x");
+      await cache.put("/status", new Response(String(held.status)));
+      const reading = held.clone().text().then((text) => cache.put("/held", new Response(text)));
+      await cache.put("/after", new Response(await (await cache.match("/x")).text()));
+      await reading;
+    })());
+  });
+`;
+
+/** Fetches `/x` at install and puts it, which reads the body to the end. */
+const reader = `
+  self.addEventListener("install", (event) => {
+    event.waitUntil((async () => {
+      const cache = await self.caches.open("c");
+      await cache.put("/x", await self.fetch("/x"));
+    })());
+  });
+`;
+
+/** Fetches `/x.js` and puts it, which reads its body to the end. */
+const FETCH_AND_PUT = `
+  self.addEventListener("install", (event) => {
+    event.waitUntil((async () => {
+      const cache = await self.caches.open("alfred-shell-v1");
+      await cache.put("/x.js", await self.fetch("/x.js"));
+    })());
+  });
+`;
+
 describe("the fake scope's event semantics", () => {
   it("runs every listener registered for a type, not only the last", async () => {
     const worker = loadWorker(`
@@ -221,19 +276,13 @@ describe("the fake CacheStorage", () => {
     // A slow disk: the one wait in a write that nothing in a worker bounds, and
     // how a test stops an install part way through its writes. Everything the
     // install does after that put waits with it, as it would on a phone.
-    const worker = loadWorker(`
-      self.addEventListener("install", (event) => {
-        event.waitUntil((async () => {
-          const cache = await self.caches.open("alfred-shell-v1");
-          await cache.put("/x", new Response("x"));
-          await cache.put("/y", new Response("y"));
-        })());
-      });
-    `);
+    const worker = loadWorker(TWO_PUTS);
     const release = worker.holdPut("/x");
     const installing = worker.install();
     // `puts` is recorded at the call, so it is the thing to wait on: the put has
-    // been asked for, and what follows is what the hold has to stop.
+    // been asked for, and what follows is what the hold has to stop. The count
+    // after it is checked from the other side: with nothing holding the put, the
+    // same count lands it ("the macrotasks a negative is given").
     await vi.waitFor(() => expect(worker.puts).toEqual(["/x"]), REACHED);
     await macrotasks();
     expect(worker.puts).toEqual(["/x"]);
@@ -327,25 +376,13 @@ describe("the fake CacheStorage", () => {
     // entry in hand, and reading it — a clone's read included — waits. Once:
     // the next match of the same key reads as any other, which is how a test
     // holds one reader's copy of an entry while another reader goes on.
-    const worker = loadWorker(`
-      self.addEventListener("install", (event) => {
-        event.waitUntil((async () => {
-          const cache = await self.caches.open("alfred-shell-v1");
-          await cache.put("/x", new Response("x"));
-          const held = await cache.match("/x");
-          await cache.put("/status", new Response(String(held.status)));
-          const reading = held.clone().text().then((text) => cache.put("/held", new Response(text)));
-          await cache.put("/after", new Response(await (await cache.match("/x")).text()));
-          await reading;
-        })());
-      });
-    `);
+    const worker = loadWorker(READ_AND_WRITE);
     const release = worker.holdRead("/x");
     const installing = worker.install();
     // `/after` is written after the held read was started and does not wait on
     // it, so once it is in the unheld chain is done. `/held` is what the hold
     // keeps out, and the macrotasks are every chance a read that was not held
-    // would have needed to land it.
+    // would have needed to land it (and a test below lands it in them).
     await vi.waitFor(() => expect(worker.keys("alfred-shell-v1")).toContain("/after"), REACHED);
     await macrotasks();
     expect(worker.keys("alfred-shell-v1")).toEqual(["/after", "/status", "/x"]);
@@ -452,26 +489,20 @@ describe("the fake CacheStorage", () => {
     // on the event failed it, at 300 s. A fake that stored the object unread
     // made that put look instant, and four puts in sw.js took a network body
     // with no deadline.
-    const worker = loadWorker(`
-      self.addEventListener("install", (event) => {
-        event.waitUntil((async () => {
-          const cache = await self.caches.open("alfred-shell-v1");
-          await cache.put("/x.js", await self.fetch("/x.js"));
-        })());
-      });
-    `);
+    const worker = loadWorker(FETCH_AND_PUT);
     worker.respond("/x.js", stalled("text/javascript"));
     // Not `resolves`/`rejects`: the assertion is that it does neither. The put
     // is waited on, and then the install is given every macrotask a put that
-    // finished would have needed.
-    const outcome = await Promise.race([
-      worker.install().then(() => "settled"),
-      (async () => {
-        await vi.waitFor(() => expect(worker.puts).toEqual(["/x.js"]), REACHED);
-        await macrotasks();
-        return "pending";
-      })(),
-    ]);
+    // finished would have needed. The install is a promise of its own from the
+    // start, and nothing but the race and the wait is left running: a defect that
+    // lets it settle ends here as one failed assertion, with no wait still going
+    // to reject after the test has ended.
+    const installing = worker.install().then(
+      () => "settled",
+      (error: Error) => error.name,
+    );
+    await vi.waitFor(() => expect(worker.puts).toEqual(["/x.js"]), REACHED);
+    const outcome = await Promise.race([installing, macrotasks().then(() => "pending")]);
     expect(outcome).toBe("pending");
     expect(worker.puts).toEqual(["/x.js"]);
     expect(worker.keys("alfred-shell-v1")).toEqual([]);
@@ -1100,16 +1131,6 @@ describe("the fake clock", () => {
 });
 
 describe("the fake network", () => {
-  /** Fetches `/x` at install and puts it, which reads the body to the end. */
-  const reader = `
-    self.addEventListener("install", (event) => {
-      event.waitUntil((async () => {
-        const cache = await self.caches.open("c");
-        await cache.put("/x", await self.fetch("/x"));
-      })());
-    });
-  `;
-
   it("trickles a body a piece at a time on the clock, from the moment it is fetched", async () => {
     // Fetched ten seconds after it was made, and nothing sent before that:
     // three pieces 4 s apart and then the end put the finished read at 22 s.
@@ -1135,14 +1156,13 @@ describe("the fake network", () => {
     worker.respond("/x", worker.trickle("text/plain", ["a", "b"], { every: 4000, stall: true }));
     // Both pieces are waited on, on the clock that sends them, and then the
     // install is given every macrotask a trickle that ended would have needed.
-    const outcome = await Promise.race([
-      worker.install().then(() => "settled"),
-      (async () => {
-        await vi.waitFor(() => expect(worker.now).toBe(8000), REACHED);
-        await macrotasks();
-        return "pending";
-      })(),
-    ]);
+    // The install is a promise of its own from the start, as in the put above.
+    const installing = worker.install().then(
+      () => "settled",
+      (error: Error) => error.name,
+    );
+    await vi.waitFor(() => expect(worker.now).toBe(8000), REACHED);
+    const outcome = await Promise.race([installing, macrotasks().then(() => "pending")]);
     expect(outcome).toBe("pending");
     expect(worker.now).toBe(8000);
   });
@@ -1281,5 +1301,93 @@ describe("the fake network", () => {
     // …and the worker's, whose read ending is what lets the event finish.
     await expect(ending(settled)).resolves.toBe("resolved");
     expect([...worker.store.keys()]).toEqual(["copy: AbortError"]);
+  });
+});
+
+// `macrotasks()` is how every test above that asserts something has NOT happened
+// gives it the chance to: a count of real macrotasks, enough that the same thing
+// WITHOUT the hold, the stall or the abort would have happened. The count is
+// measured once, by hand, against the harness as it is, and a measurement nothing
+// checks goes stale in silence: let the harness's chain grow past it, and every
+// one of those tests keeps passing, for want of anything that could have
+// failed. These are what check it. Each is the scenario beside which it sits with
+// the defect taken out, given exactly the macrotasks that test gives, and made
+// to show the outcome that test says is kept back. When one fails, a step in the
+// harness got deeper: raise the default of `macrotasks`, and with it the others.
+describe("the macrotasks a negative is given", () => {
+  it("lands a put that nothing holds, and the one after it, as `holdPut` keeps the first out", async () => {
+    const worker = loadWorker(TWO_PUTS);
+    const installing = worker.install();
+    await vi.waitFor(() => expect(worker.puts).toContain("/x"), REACHED);
+    await macrotasks();
+    expect(worker.keys("alfred-shell-v1")).toEqual(["/x", "/y"]);
+    await installing;
+  });
+
+  it("lands the read that nothing holds, as `holdRead` keeps /held out", async () => {
+    const worker = loadWorker(READ_AND_WRITE);
+    const installing = worker.install();
+    await vi.waitFor(() => expect(worker.keys("alfred-shell-v1")).toContain("/after"), REACHED);
+    await macrotasks();
+    expect(worker.keys("alfred-shell-v1")).toEqual(["/after", "/held", "/status", "/x"]);
+    await installing;
+  });
+
+  it("finishes the put of a body that ends, as a stalled one never does", async () => {
+    const worker = loadWorker(FETCH_AND_PUT);
+    worker.respond("/x.js", js("x"));
+    const installing = worker.install().then(
+      () => "settled",
+      (error: Error) => error.name,
+    );
+    await vi.waitFor(() => expect(worker.puts).toEqual(["/x.js"]), REACHED);
+    const outcome = await Promise.race([installing, macrotasks().then(() => "pending")]);
+    expect(outcome).toBe("settled");
+    expect(worker.keys("alfred-shell-v1")).toEqual(["/x.js"]);
+  });
+
+  it("ends the read of a body that ends, as a stalled one never does", async () => {
+    const worker = loadWorker(`
+      self.addEventListener("fetch", (event) => { event.respondWith(self.fetch(event.request)); });
+    `);
+    worker.respond("/", html("<!doctype html>"));
+    const response = await worker.request({ path: "/", mode: "navigate" });
+    const reader = response!.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("<!doctype html>");
+    const outcome = await Promise.race([
+      reader.read().then(() => "settled"),
+      macrotasks().then(() => "pending"),
+    ]);
+    expect(outcome).toBe("settled");
+  });
+
+  it("ends a trickle that does not stall, on the last piece, as a stalled one does not", async () => {
+    const worker = loadWorker(reader);
+    worker.respond("/x", worker.trickle("text/plain", ["a", "b"], { every: 4000 }));
+    const installing = worker.install().then(
+      () => "settled",
+      (error: Error) => error.name,
+    );
+    await vi.waitFor(() => expect(worker.now).toBe(8000), REACHED);
+    const outcome = await Promise.race([installing, macrotasks().then(() => "pending")]);
+    expect(outcome).toBe("settled");
+  });
+
+  it("answers a late route the worker did not abort, as an aborted one never is", async () => {
+    // The same two moments as the abort's test: the install over at ten seconds,
+    // the answer due at twelve. Nothing aborts the request, so the clock goes on
+    // to it, in the macrotasks that test gives it to do so.
+    const worker = loadWorker(`
+      self.addEventListener("install", (event) => {
+        self.fetch("/x").catch(() => {});
+        event.waitUntil(new Promise((resolve) => self.setTimeout(resolve, 10000)));
+      });
+    `);
+    worker.respond("/x", js("x"));
+    worker.late("/x", 12000);
+    await worker.install();
+    expect(worker.now).toBe(10000);
+    await macrotasks();
+    expect(worker.now).toBe(12000);
   });
 });

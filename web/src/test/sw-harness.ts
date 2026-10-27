@@ -1351,12 +1351,20 @@ export const broken = (type = "text/html; charset=utf-8", sent = "the first of i
  * steps of a chain lets the sleep fire first, and what is asserted after it
  * reads a state the chain had not reached.
  *
- * Not for a positive. What has to happen is waited on itself, `vi.waitFor`
- * on the thing, and this comes after it, to show that what must not has not.
- * Ten is more than twice the deepest chain any lever here holds back: a write
- * that was not held lands four macrotasks after the install begins. It stays
- * small because on a machine that is badly starved a macrotask is slow, and
- * what this adds is `n` of them.
+ * It is used two ways, and neither is a wait for something to happen. After a
+ * `vi.waitFor` on the thing itself it shows that what must not have happened
+ * has not. And as one side of a `Promise.race` that asks whether something
+ * settled: the read wins if it settles, and this is the backstop if it never
+ * does. A positive raced that way ("settled", "AbortError") can only lose to the
+ * backstop by needing more steps than `n`, and that fails the test where it
+ * stands. A negative can not fail that way, which is the trouble: if the
+ * harness's chain grew past `n` they would all keep passing, for want of
+ * anything that could have failed. So the count is pinned from the other side,
+ * by the controls in sw-harness.test.ts ("the macrotasks a negative is given"),
+ * each of which runs a scenario a negative holds back with nothing holding it
+ * and asserts that it finishes within `macrotasks()`. They go red first. The
+ * count is small because on a machine that is badly starved a macrotask is
+ * slow, and what this adds is `n` of them.
  */
 export const macrotasks = async (n = 10): Promise<void> => {
   for (let i = 0; i < n; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
