@@ -242,7 +242,7 @@ async def process_stream_entry(
     best-effort, so a failed write never blocks the ACK.
     Act, ask and invalid proposals are recorded too, undebounced and best-effort.
 
-    An event is decided once: after the gate, an event already marked decided
+    A redelivery is not decided again: after the gate, an event already marked decided
     (``already_decided``) is skipped, and the event is marked once its decision is counted and
     published. A delivery that raised before then leaves it unmarked, so a redelivery decides.
     """

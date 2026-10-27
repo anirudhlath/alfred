@@ -21,7 +21,7 @@ is measured before the next starts.
 
 Nothing a proposal names is executed until the design says so: shadow mode stays.
 
-## Each event is decided once
+## A redelivered event is not decided again
 
 A redelivered event is not inferred again. The runner (`core/reflex/runner.py`) checks
 `alfred:reflex:decided:{event_id}` after the attention gate and before the engine; a hit logs at
