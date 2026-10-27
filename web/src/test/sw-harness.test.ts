@@ -52,8 +52,8 @@ const READ_AND_WRITE = `
   });
 `;
 
-/** Fetches `/x` at install and puts it, which reads the body to the end. */
-const reader = `
+/** Fetches `/x` at install and puts it in cache `c`, which reads the body to the end. */
+const FETCH_X_AND_PUT = `
   self.addEventListener("install", (event) => {
     event.waitUntil((async () => {
       const cache = await self.caches.open("c");
@@ -1152,7 +1152,7 @@ describe("the fake network", () => {
   });
 
   it("stops a trickle after its last piece when told to stall", async () => {
-    const worker = loadWorker(reader);
+    const worker = loadWorker(FETCH_X_AND_PUT);
     worker.respond("/x", worker.trickle("text/plain", ["a", "b"], { every: 4000, stall: true }));
     // Both pieces are waited on, on the clock that sends them, and then the
     // install is given every macrotask a trickle that ended would have needed.
@@ -1170,7 +1170,7 @@ describe("the fake network", () => {
   it("answers a late route on the clock, as late as it was told", async () => {
     // The answer a deadline stopped waiting for, arriving anyway: the headers
     // twelve seconds after the request, and the body as the route sends it.
-    const worker = loadWorker(reader);
+    const worker = loadWorker(FETCH_X_AND_PUT);
     worker.respond("/x", js("x"));
     worker.late("/x", 12000);
     await worker.install();
@@ -1362,7 +1362,7 @@ describe("the macrotasks a negative is given", () => {
   });
 
   it("ends a trickle that does not stall, on the last piece, as a stalled one does not", async () => {
-    const worker = loadWorker(reader);
+    const worker = loadWorker(FETCH_X_AND_PUT);
     worker.respond("/x", worker.trickle("text/plain", ["a", "b"], { every: 4000 }));
     const installing = worker.install().then(
       () => "settled",

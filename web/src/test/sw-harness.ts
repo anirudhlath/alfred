@@ -1362,9 +1362,16 @@ export const broken = (type = "text/html; charset=utf-8", sent = "the first of i
  * anything that could have failed. So the count is pinned from the other side,
  * by the controls in sw-harness.test.ts ("the macrotasks a negative is given"),
  * each of which runs a scenario a negative holds back with nothing holding it
- * and asserts that it finishes within `macrotasks()`. They go red first. The
- * count is small because on a machine that is badly starved a macrotask is
- * slow, and what this adds is `n` of them.
+ * and asserts that it finishes within `macrotasks()`. A harness whose put, read,
+ * clock or trickle has grown a step turns the control for that lever red, and
+ * `sw.test.ts` has one each for `pending` and `until`. The control for
+ * `holdRead` is the exception, and need not go red: that negative is anchored,
+ * because it waits for `/after`, which is written after the held read began and
+ * does not wait on it, so a chain that deepens makes the wait longer and the
+ * negative is still read only once the unheld half is done. Its control pins
+ * that the unheld read lands within `n`, and nothing more. The count is small
+ * because on a machine that is badly starved a macrotask is slow, and what this
+ * adds is `n` of them.
  */
 export const macrotasks = async (n = 10): Promise<void> => {
   for (let i = 0; i < n; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
