@@ -21,13 +21,14 @@ starts the container, and prints the reachable URL (default `http://localhost:80
 
 ## What you must configure
 
-Only one value is strictly required to get a reasoning assistant:
+Only one value is strictly required to get a reasoning assistant; Reflex (System 1) stays
+off until a local model is configured:
 
 | Setting | Required for | How to get it |
 |---------|--------------|---------------|
 | `OPENROUTER_API_KEY` | System 2 (reasoning, conversation) | [openrouter.ai/keys](https://openrouter.ai/keys) |
 | `HA_TOKEN` | Home Assistant control | HA → your profile → Security → **Long-lived access tokens** → Create |
-| local inference | System 1 (fast reflex path) | An OpenAI-compatible server (vLLM/LM Studio) serving a small model; name it with `REFLEX_MODEL` (blank = `vllm:` + `OPENAI_COMPAT_MODEL`). Reflex does not start without one |
+| local inference | System 1 (fast reflex path) | An OpenAI-compatible server (vLLM/LM Studio) serving a small model; name it with `REFLEX_MODEL` (blank = `vllm:` + `OPENAI_COMPAT_MODEL`). Reflex stays off without one |
 
 Everything else in `.env.example` under **OPTIONAL** has a working default. In particular:
 
@@ -83,7 +84,7 @@ Reflex, System 2 and the Librarian take a Pydantic AI model string,
 | `SYSTEM2_MODEL` | the translated `CLAUDE_MODEL`, else `DEFAULT_SYSTEM2_MODEL` in `shared/config.py` |
 | `LIBRARIAN_MODEL` | `SYSTEM2_MODEL` |
 | `APPROVAL_MODEL` | `SYSTEM2_MODEL` (reads a reply to a pending confirmation as yes, no or neither) |
-| `REFLEX_MODEL` | `vllm:` + `OPENAI_COMPAT_MODEL`, when that is set. Reflex exits at start when neither is |
+| `REFLEX_MODEL` | `vllm:` + `OPENAI_COMPAT_MODEL`, when that is set. Reflex stays off when neither is |
 | `VLLM_BASE_URL` | where `vllm:` models are served: the first set of `OPENAI_BASE_URL` (legacy `openai/` `CLAUDE_MODEL` only), `OPENAI_COMPAT_HOST`, `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended, `localhost` rewritten like the other host variables |
 
 > **Upgrading a deploy that still sets `CLAUDE_MODEL`:** it keeps working. Each process

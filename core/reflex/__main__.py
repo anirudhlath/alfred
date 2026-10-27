@@ -79,21 +79,19 @@ EVENTS_GROUP = "reflex-trigger-fired"
 EVENTS_CONSUMER = "worker-1"
 
 
-def build_agent(config: AlfredConfig) -> Agent[list[ToolInfo], ReflexProposal]:
-    """The Reflex agent over ``REFLEX_MODEL``; exits non-zero when that names no model.
+def build_agent(config: AlfredConfig) -> Agent[list[ToolInfo], ReflexProposal] | None:
+    """The Reflex agent over ``REFLEX_MODEL``, or None, with one ERROR, when that names none.
 
-    Reflex cannot decide without one, and a process that starts and then fails every
-    event only fills the pending list. Call after ``init_tracing``, which the agent's
-    instrumentation reads.
+    Call after ``init_tracing``, which the agent's instrumentation reads.
     """
     apply_model_env(config)
     model = resolve_model("REFLEX_MODEL", config.reflex_model)
     if model is None:
         logger.error(
-            "Reflex cannot start without a model: set REFLEX_MODEL, or OPENAI_COMPAT_MODEL "
-            "for vllm:<that name> (the cause is logged above)"
+            "Reflex is off: it has no model (the cause is logged above). To turn it on, set "
+            "REFLEX_MODEL, or OPENAI_COMPAT_MODEL for the vllm:<that name> default, and restart"
         )
-        raise SystemExit(1)
+        return None
     return build_reflex_agent(model)
 
 
@@ -105,6 +103,34 @@ def warmup_steps(prompts: PromptStore) -> dict[str, Callable[[], Awaitable[objec
 def _handle_signal() -> None:
     logger.info("Shutdown signal received")
     _shutdown.set()
+
+
+def _install_signal_handlers() -> None:
+    """SIGTERM and SIGINT set ``_shutdown``: how the supervisor and a terminal stop Reflex."""
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _handle_signal)
+
+
+async def stay_off() -> None:
+    """Reflex without a model: alive and idle until the shutdown signal, then return.
+
+    It creates no consumer group, reads no stream, warms no prompt and calls no model. It
+    must not exit: the supervisor stops every service when one exits cleanly, and when one
+    has crashed more than ``max_restarts`` times, so an exit would take the stack down.
+    """
+    _install_signal_handlers()
+    await _shutdown.wait()
+    logger.info("Reflex was off; shutting down")
+
+
+async def serve(config: AlfredConfig) -> None:
+    """The service: decide events with ``REFLEX_MODEL``, or stay off when it names no model."""
+    agent = build_agent(config)
+    if agent is None:
+        await stay_off()
+        return
+    await run(config, agent)
 
 
 async def _handle_trigger_fired(
@@ -264,9 +290,7 @@ async def flush_telemetry_periodically(config: AlfredConfig, interval: float = 3
 
 async def run(config: AlfredConfig, agent: Agent[list[ToolInfo], ReflexProposal]) -> None:
     """Main Reflex Runner event loop."""
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, _handle_signal)
+    _install_signal_handlers()
 
     r: AioRedis = create_redis(config.redis_url)
 
@@ -375,7 +399,7 @@ def main() -> None:
         service_name="reflex",
         endpoint=config.otel_endpoint if config.signoz_enabled else None,
     )
-    asyncio.run(run(config, build_agent(config)))
+    asyncio.run(serve(config))
 
 
 if __name__ == "__main__":

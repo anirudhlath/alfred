@@ -268,7 +268,7 @@ def test_overview_reflex_model_is_normalised_like_the_engine_reads_it(monkeypatc
 
 
 def test_overview_reflex_model_is_null_when_unconfigured(monkeypatch: Any) -> None:
-    """Neither setting names a model, so the engine exits at start — report null, not ""."""
+    """Neither setting names a model, so Reflex stays off — report null, not ""."""
     monkeypatch.setenv("REFLEX_MODEL", "")
     monkeypatch.setenv("OPENAI_COMPAT_MODEL", "")
     client = make_admin_client(_overview_redis())

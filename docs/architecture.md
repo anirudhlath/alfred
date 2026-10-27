@@ -959,8 +959,8 @@ All configuration flows through the `AlfredConfig` dataclass, which reads from e
 | `REDIS_PORT` | `6379` | Redis server port |
 | `MQTT_HOST` | `localhost` | MQTT broker hostname |
 | `MQTT_PORT` | `1883` | MQTT broker port |
-| `REFLEX_MODEL` | `vllm:` + `OPENAI_COMPAT_MODEL` | System 1 model (Pydantic AI string); Reflex exits at start when none resolves |
-| `VLLM_BASE_URL` | `OPENAI_COMPAT_HOST`, else `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended | OpenAI-compatible server for `vllm:` models |
+| `REFLEX_MODEL` | `vllm:` + `OPENAI_COMPAT_MODEL` | System 1 model (Pydantic AI string); Reflex stays off when none resolves |
+| `VLLM_BASE_URL` | `OPENAI_BASE_URL` when `SYSTEM2_MODEL` is blank and the legacy `CLAUDE_MODEL` is an `openai/` string, else `OPENAI_COMPAT_HOST`, else `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended | OpenAI-compatible server for `vllm:` models |
 | `HA_HOST` | `http://homeassistant.local:8123` | Home Assistant URL |
 | `HA_TOKEN` | (empty) | Home Assistant long-lived access token |
 | `RESEARCH_VAULT_PATH` | `./research` | Path to the Obsidian research vault |

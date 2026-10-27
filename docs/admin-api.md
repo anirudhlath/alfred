@@ -104,7 +104,7 @@ Returns a single JSON object with:
 - `counts.deferred` — `LLEN alfred:notifications:deferred`
 - `counts.triggers` — `HLEN alfred:triggers`
 - `streams` — same payload as `GET /api/admin/streams`
-- `reflex.model` — the model the Reflex Engine decides with: the `REFLEX_MODEL` value (stripped), else `vllm:` + `OPENAI_COMPAT_MODEL`, the same rule the engine applies at start. `null` when neither is set — Reflex exits at start then. The overview makes no inference-server probe
+- `reflex.model` — the model the Reflex Engine decides with: the `REFLEX_MODEL` value (stripped), else `vllm:` + `OPENAI_COMPAT_MODEL`, the same rule the engine applies at start. `null` when neither is set — Reflex stays off then. The overview makes no inference-server probe
 - `reflex.last_ms` — decision latency of the newest `reflex_observations` entry, in ms, rounded to 0.1 ms
 - `reflex.p50_ms` — median of those latencies over the newest 20 observations, in ms, rounded to 0.1 ms
 - `librarian.last_run_at` — ISO timestamp of the Librarian's last pass, or `null` before its first run

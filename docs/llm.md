@@ -27,7 +27,7 @@ flowchart LR
     C --> A["apply_model_env()<br/>exports VLLM_BASE_URL,<br/>OPENROUTER_API_KEY"]
     A --> M["resolve_model(setting, value)<br/>shared/agents.py"]
     M -->|Model| Agents["Reflex / System 2 / Librarian /<br/>approval classifier agents"]
-    M -->|None, one ERROR| Fallback["Reflex exits /<br/>not-configured reply /<br/>Librarian fallbacks"]
+    M -->|None, one ERROR| Fallback["Reflex stays off /<br/>not-configured reply /<br/>Librarian fallbacks"]
 ```
 
 A model is a Pydantic AI model string; there is no model factory.
@@ -57,8 +57,10 @@ when a string is resolved, and the resolved values include fallbacks the provide
 nothing of. A missing setting or key is one ERROR line at startup naming the variable, and
 the role runs without a model:
 
-- Reflex exits at start, non-zero: with no model every event would fail and only fill the
-  pending list.
+- Reflex stays off. A second ERROR says so and how to turn it on: set `REFLEX_MODEL`, or
+  `OPENAI_COMPAT_MODEL` for the `vllm:` default, and restart. Off, it creates no consumer
+  group, reads no stream and calls no model, and it stays up until shutdown: under the
+  supervisor a service that exits, cleanly or after its restarts, stops the whole stack.
 - System 2 answers *"I'm afraid my connection to the thinking engine is not configured,
   sir."*
 - The Librarian keeps its deterministic fallbacks: no analysis, concatenated compression
@@ -74,7 +76,7 @@ is rewritten to the container gateway like the other host-pointing variables.
 
 Reflex decides through one agent, `reflex`, built once per process by `build_reflex_agent`
 (`core/reflex/agent.py`) over the model `REFLEX_MODEL` names. `core/reflex/__main__.py`
-resolves it with `apply_model_env` and `resolve_model`, and exits non-zero when nothing
+resolves it with `apply_model_env` and `resolve_model`, and stays off when nothing
 resolves: set `REFLEX_MODEL`, or `OPENAI_COMPAT_MODEL` for `vllm:<that name>`. Reflex needs
 an OpenAI-compatible server (vLLM, LM Studio) or OpenRouter; no other backend ships.
 

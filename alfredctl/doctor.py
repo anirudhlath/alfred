@@ -290,8 +290,8 @@ def _check_reflex(env: dict[str, str], online: bool) -> DoctorCheck:
     if not llm.reflex_model:
         return verdict(
             "fail",
-            "REFLEX_MODEL is not set and OPENAI_COMPAT_MODEL is empty, so Reflex exits at "
-            "start (want REFLEX_MODEL=vllm:<served-name>)",
+            "REFLEX_MODEL is not set and OPENAI_COMPAT_MODEL is empty, so Reflex stays off "
+            "(want REFLEX_MODEL=vllm:<served-name>)",
         )
     status, detail = _check_model("REFLEX_MODEL", llm.reflex_model, llm)
     provider, _, served_name = llm.reflex_model.partition(":")

@@ -128,7 +128,7 @@ it's missing, starts the container, and prints the reachable URL (default
 ### What you configure
 
 Only one value is strictly required for a reasoning assistant; everything else has a
-working default.
+working default, and Reflex (System 1) stays off until a local model is configured.
 
 - **`OPENROUTER_API_KEY`** — System 2 (reasoning/conversation). Get one at
   [openrouter.ai/keys](https://openrouter.ai/keys). (`CLAUDE_API_KEY` also works.)
@@ -261,7 +261,7 @@ annotated source of truth, split into a short **REQUIRED** section and defaulted
 | `OPENROUTER_API_KEY` | — | System 2 cloud LLM key (required for reasoning) |
 | `SYSTEM2_MODEL` | `openrouter:anthropic/claude-sonnet-4` | System 2 model (Pydantic AI string: `openrouter:<vendor>/<model>` or `vllm:<served-name>`; see `docs/llm.md`) |
 | `VLLM_BASE_URL` | first set of `OPENAI_BASE_URL` (legacy `openai/` `CLAUDE_MODEL` only), `OPENAI_COMPAT_HOST`, `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended | Where `vllm:` models are served |
-| `REFLEX_MODEL` | `vllm:` + `OPENAI_COMPAT_MODEL` | System 1 model (Pydantic AI string: `vllm:<served-name>` or `openrouter:<vendor>/<model>`); Reflex does not start without one |
+| `REFLEX_MODEL` | `vllm:` + `OPENAI_COMPAT_MODEL` | System 1 model (Pydantic AI string: `vllm:<served-name>` or `openrouter:<vendor>/<model>`); Reflex stays off without one |
 | `HA_HOST` | `http://localhost:8123` | Home Assistant base URL |
 | `HA_TOKEN` | — | HA long-lived token (required for home control) |
 | `EMBEDDING_BACKEND` | `sentence_transformers` | Memory embedding backend: `sentence_transformers` \| `openai` |

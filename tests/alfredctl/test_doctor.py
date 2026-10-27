@@ -55,12 +55,14 @@ _REFLEX_BASE = "OPENROUTER_API_KEY=sk-or-v1-abc\n"
 
 
 def test_reflex_without_a_model_fails(tmp_path: Path, _clean_llm_env: None) -> None:
-    """Reflex exits at start when nothing names its model, so doctor says so first."""
+    """Reflex stays off when nothing names its model, so doctor fails it: the deploy's guard."""
     env = _write_env(tmp_path, _REFLEX_BASE + "REFLEX_MODEL=\nOPENAI_COMPAT_MODEL=\n")
     checks = doctor.run_checks(env, online=False)
     assert _status(checks, _REFLEX) == "fail"
     detail = _detail(checks, _REFLEX)
     assert "REFLEX_MODEL" in detail and "OPENAI_COMPAT_MODEL" in detail
+    assert "stays off" in detail
+    assert "exits" not in detail
 
 
 def test_reflex_model_defaults_from_the_served_model_name(
