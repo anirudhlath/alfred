@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deferredFixture } from "@/test/fixtures";
@@ -33,6 +33,26 @@ function stubFetch(): void {
       return new Response("{}", { status: 404 });
     }),
   );
+}
+
+/** The drain's POST, answered only when the test calls `answer`. */
+function holdDrain(): { answer?: () => void } {
+  const pending: { answer?: () => void } = {};
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, method: init?.method ?? "GET" });
+      if (url === "/api/admin/notifications/deferred")
+        return new Response(JSON.stringify(deferredFixture), { status: 200 });
+      if (url === "/api/admin/notifications/drain") {
+        await new Promise<void>((resolve) => (pending.answer = resolve));
+        return new Response('{"status":"queued"}', { status: 200 });
+      }
+      return new Response("{}", { status: 404 });
+    }),
+  );
+  return pending;
 }
 
 function renderSheet(open = true) {
@@ -88,13 +108,100 @@ describe("HeldBackSheet", () => {
 
     await user.click(drain);
 
-    // Disabled, so it cannot be double-queued; announced, so a screen reader
-    // hears the outcome — the label alone does not change on a failure.
-    expect(await screen.findByRole("button", { name: "Queued" })).toBeDisabled();
+    // Held — busy while the POST was out, `Queued` now — so it cannot be
+    // double-queued; announced, so a screen reader hears the outcome — the
+    // label alone does not change on a failure.
+    expect(await screen.findByRole("button", { name: "Queued" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     expect(screen.getByRole("status")).toHaveTextContent(
       /^Accepted at \d{2}:\d{2}\. Queue will empty on the next refresh if delivery succeeded\.$/,
     );
     expect(calls.some((call) => call.method === "POST" && call.url.endsWith("/drain"))).toBe(true);
+  });
+
+  it("holds Queued by token, without taking it out of reach", async () => {
+    // `aria-disabled` and a press that does nothing, never `disabled`: the press
+    // that queues the drain is the one that turns the button into `Queued`, and
+    // a native `disabled` throws focus to <body> from under it.
+    const user = userEvent.setup();
+    renderSheet();
+    const drain = await screen.findByRole("button", { name: "Drain queue now" });
+    expect(drain).toHaveStyle({ color: "var(--fg)" });
+
+    await user.click(drain);
+    const queued = await screen.findByRole("button", { name: "Queued" });
+
+    expect(queued).toBe(drain);
+    expect(queued).not.toBeDisabled();
+    expect(queued).toHaveFocus();
+    expect(queued).toHaveStyle({ color: "var(--fg2)" });
+    expect(queued.className).not.toMatch(/opacity/);
+
+    await user.click(queued);
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+  });
+
+  it("holds the drain from the press, not from the answer: a second press in flight sends nothing", async () => {
+    // `Queued` comes with the answer. Until then the button is busy, and held
+    // the same way, so a second press cannot queue a second drain.
+    const pending = holdDrain();
+    const user = userEvent.setup();
+    renderSheet();
+    const drain = await screen.findByRole("button", { name: "Drain queue now" });
+
+    await user.click(drain);
+
+    expect(drain).toHaveAttribute("aria-disabled", "true");
+    expect(drain).toHaveAttribute("aria-busy", "true");
+    expect(drain).not.toBeDisabled();
+    expect(drain).toHaveStyle({ color: "var(--fg2)" });
+    expect(drain).toHaveFocus();
+
+    await user.click(drain);
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+
+    await act(async () => pending.answer?.());
+
+    const queued = screen.getByRole("button", { name: "Queued" });
+    expect(queued).toHaveAttribute("aria-disabled", "true");
+    expect(queued).not.toHaveAttribute("aria-busy");
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+  });
+
+  it("keeps a drain still in flight held across a close and a reopen", async () => {
+    // The visit reset clears `Queued` and the error, not the drain: its POST is
+    // out, and a press on the next visit must not send a second one.
+    const pending = holdDrain();
+    const user = userEvent.setup();
+    const { setOpen } = renderSheet();
+    await user.click(await screen.findByRole("button", { name: "Drain queue now" }));
+
+    setOpen(false);
+    // Closed for real: the leave runs out and the sheet's content goes, while
+    // `HeldBackSheet` itself stays mounted, and its state with it.
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Drain queue now" })).toBeNull(),
+    );
+    setOpen(true);
+    const drain = await screen.findByRole("button", { name: "Drain queue now" });
+
+    expect(drain).toHaveAttribute("aria-disabled", "true");
+    expect(drain).toHaveAttribute("aria-busy", "true");
+    expect(drain).toHaveStyle({ color: "var(--fg2)" });
+    await user.click(drain);
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+
+    await act(async () => pending.answer?.());
+
+    // Answered during this visit, so this visit says so.
+    expect(screen.getByRole("button", { name: "Queued" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(/^Accepted at \d{2}:\d{2}\./);
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
   });
 
   it("offers the drain again on the next visit", async () => {
@@ -105,10 +212,12 @@ describe("HeldBackSheet", () => {
 
     setOpen(false);
     // The reset is on the opening edge: the 380 ms leave must not flash the idle button back.
-    expect(screen.getByRole("button", { name: "Queued" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Queued" })).toHaveAttribute("aria-disabled", "true");
     setOpen(true);
 
-    expect(await screen.findByRole("button", { name: "Drain queue now" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Drain queue now" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
     expect(screen.queryByText(/^Accepted at/)).toBeNull();
   });
 
@@ -143,7 +252,9 @@ describe("HeldBackSheet", () => {
     await user.click(await screen.findByRole("button", { name: "Drain queue now" }));
 
     expect(await screen.findByText("redis is down")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Drain queue now" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Drain queue now" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
 
     // And the retry does not keep the old failure under its own success.
     drainStatus = 200;

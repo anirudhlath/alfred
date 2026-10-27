@@ -15,6 +15,7 @@ import {
   authSession,
   credential,
   integration,
+  NETWORK_GATE_DETAIL_SIGNED_IN,
   overviewFixture,
 } from "@/test/fixtures";
 import { OVERVIEW_POLL_MS } from "@/room/useOverview";
@@ -499,11 +500,14 @@ describe("useSystem", () => {
     hold("GET", OVERVIEW);
 
     act(() => result.current.quiet.set(true, "2026-09-16T22:00:00Z"));
-    await waitFor(() => expect((parked.get(route("GET", OVERVIEW)) ?? []).length).toBe(1));
 
     // The write has answered and the confirmation has not: busy tracks the write
-    // alone, and the switch has not moved.
-    expect(result.current.quiet.setting).toBe(false);
+    // alone, and the switch has not moved. One wait for both halves — the read
+    // is sent before React draws the busy flag going down.
+    await waitFor(() => {
+      expect((parked.get(route("GET", OVERVIEW)) ?? []).length).toBe(1);
+      expect(result.current.quiet.setting).toBe(false);
+    });
     expect(result.current.quiet.active).toBe(false);
 
     unhold("GET", OVERVIEW);
@@ -657,9 +661,10 @@ describe("useSystem", () => {
     act(() => result.current.sessions.end("sess-phone"));
 
     // The gate rises — `api`'s job, not this hook's — and the bench stays up
-    // holding the last true thing it was told.
-    await waitFor(() => expect(expired).toHaveBeenCalled());
-    expect(result.current.sessions.error).toBe("Not authenticated");
+    // holding the last true thing it was told. `api` announces the 401 before
+    // it throws, so the error is what to wait for.
+    await waitFor(() => expect(result.current.sessions.error).toBe("Not authenticated"));
+    expect(expired).toHaveBeenCalled();
     expect(result.current.credentials.list).toHaveLength(1);
     // A 401 is an answer, not a failure to reach the house.
     expect(countOf("GET", SESSIONS)).toBe(2);
@@ -749,7 +754,7 @@ describe("useSystem", () => {
     await waitFor(() => expect(result.current.integrations.rows["weather"]?.state).toBe("queued"));
     expect(result.current.integrations.saves["weather"]?.savedAt).toBeGreaterThan(0);
     expect(result.current.integrations.saves["weather"]?.saving).toBe(true);
-    // The probe is one of this bench's own reads, and the only one in flight.
+    // The probe is one of this bench's own reads.
     expect(result.current.loading).toBe(true);
 
     unhold("GET", statusPath("weather"));
@@ -765,6 +770,51 @@ describe("useSystem", () => {
     expect(result.current.integrations.saves["weather"]?.error).toBeNull();
     // `configured` moved, and the form's placeholders are drawn from it.
     await waitFor(() => expect(countOf("GET", INTEGRATIONS)).toBe(2));
+  });
+
+  // The row reads `configured` from the listing and health from the probe, and
+  // a first save moves both. Settled on the probe alone, it went `saved ·
+  // testing`, then `nothing stored · Alfred answers without this source` for
+  // the listing's round trip — over credentials the server had just taken —
+  // and only then `stored encrypted at rest · last check ok`.
+  it("does not call a first save unset while the listing behind it is still coming", async () => {
+    answer("GET", INTEGRATIONS, {
+      status: 200,
+      body: [{ ...WEATHER, configured: { api_key: false } }, HOME],
+    });
+    const client = makeClient();
+    const { result } = await openBench(client);
+    expect(result.current.integrations.rows["weather"]?.state).toBe("unset");
+    answer("GET", INTEGRATIONS, { status: 200, body: [WEATHER, HOME] });
+    hold("GET", statusPath("weather"));
+    hold("GET", INTEGRATIONS);
+
+    act(() => result.current.integrations.save("weather", { api_key: "abc" }));
+    await waitFor(() => expect(result.current.integrations.rows["weather"]?.state).toBe("queued"));
+
+    // The probe answers and the listing does not. Everything the answer sets
+    // going runs inside this one act, so it is drawn before the next line.
+    const probe = route("GET", statusPath("weather"));
+    await waitFor(() => expect(parked.get(probe)).toHaveLength(1));
+    const probed = () => client.getQueryState(["system", "integration-status", "weather"]);
+    const answers = probed()?.dataUpdateCount ?? 0;
+    await act(async () => {
+      parked.get(probe)?.shift()?.(routes.get(probe) ?? OK);
+      for (let turn = 0; turn < 10; turn++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    });
+    // This probe's answer has landed — counted, because the bench's opening
+    // probe left the query a success already — so `queued` below is the row
+    // reading it beside a listing still to come, not a row yet to hear it.
+    expect(probed()?.dataUpdateCount).toBe(answers + 1);
+    expect(result.current.integrations.rows["weather"]?.state).toBe("queued");
+
+    unhold("GET", INTEGRATIONS);
+    await releaseNext("GET", INTEGRATIONS);
+
+    await waitFor(() => expect(result.current.integrations.rows["weather"]?.state).toBe("ok"));
+    expect(result.current.integrations.saves["weather"]?.saving).toBe(false);
   });
 
   // A save entry is a fact about the attempt in flight, not a pile of every
@@ -872,7 +922,7 @@ describe("useSystem", () => {
     const denied = listen("denied");
     answer("PUT", credentialsPath("weather"), {
       status: 403,
-      body: { detail: "Network 203.0.113.9 is not trusted" },
+      body: { detail: NETWORK_GATE_DETAIL_SIGNED_IN },
     });
     const { result } = await openBench();
 
@@ -880,7 +930,7 @@ describe("useSystem", () => {
 
     await waitFor(() =>
       expect(result.current.integrations.saves["weather"]?.error).toBe(
-        "Network 203.0.113.9 is not trusted",
+        NETWORK_GATE_DETAIL_SIGNED_IN,
       ),
     );
     expect(result.current.integrations.saves["weather"]?.gated).toBe(true);
@@ -918,7 +968,7 @@ describe("useSystem", () => {
 
     await releaseNext("PUT", credentialsPath("weather"), {
       status: 403,
-      body: { detail: "Network 203.0.113.9 is not trusted" },
+      body: { detail: NETWORK_GATE_DETAIL_SIGNED_IN },
     });
     await releaseNext("PUT", credentialsPath("weather"));
 
@@ -944,10 +994,9 @@ describe("useSystem", () => {
 
     act(() => result.current.integrations.save("home service/1", { url: "x" }));
 
-    await waitFor(() =>
-      expect(countOf("PUT", credentialsPath("home%20service%2F1"))).toBe(1),
-    );
-    expect(countOf("GET", statusPath("home%20service%2F1"))).toBe(2);
+    // The probe goes out only once the PUT has answered: wait for it, not the PUT.
+    await waitFor(() => expect(countOf("GET", statusPath("home%20service%2F1"))).toBe(2));
+    expect(countOf("PUT", credentialsPath("home%20service%2F1"))).toBe(1);
   });
 
   it("puts the one domain an allow or an ask touches", async () => {
@@ -1436,9 +1485,11 @@ describe("useSystem", () => {
     const { result } = await openBench();
     const landed = result.current.readAt;
 
-    // The server takes the connection and never answers. There is no timeout
-    // anywhere in this tree, so nothing fails, nothing pauses, and the last
-    // answer sits in the cache looking exactly like a fresh one.
+    // The server takes the connection and never answers. `api()` sets no
+    // timeout and the worker never sees `/api/` (of the reads, only the auth
+    // status has a deadline, `STATUS_DEADLINE_MS`), so nothing fails, nothing
+    // pauses, and the last answer sits in the cache looking exactly like a
+    // fresh one.
     hold("GET", OVERVIEW);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(STALE_AFTER_MS + 1_000);
@@ -1783,10 +1834,13 @@ describe("SystemBench over useSystem", () => {
       await vi.advanceTimersByTimeAsync(31_000);
     });
     act(() => focusManager.setFocused(true));
-    await waitFor(() => expect(countOf("GET", INTEGRATIONS)).toBeGreaterThan(1));
-    await settle();
 
-    expect(screen.getByLabelText("Read errors")).toHaveTextContent("registry gone");
+    // The complaint, not the request: the read fails twice — a 500 is retried —
+    // before the section can say so.
+    await waitFor(() =>
+      expect(screen.getByLabelText("Read errors")).toHaveTextContent("registry gone"),
+    );
+    expect(countOf("GET", INTEGRATIONS)).toBe(3);
     expect(screen.getByText("Connected services")).toBeInTheDocument();
     expect(screen.queryByText("home assistant · not read yet")).toBeNull();
   });

@@ -160,6 +160,23 @@ def test_missing_assets_are_not_pinned(tmp_path: Path) -> None:
     assert resp.headers["cache-control"] == _NO_CACHE
 
 
+def test_html_under_assets_is_never_pinned(tmp_path: Path) -> None:
+    """A dist with no assets/ mounts nothing at /assets, so the fallback answers a
+    hashed URL with index.html: 200, text/html. Stamped immutable, that would pin the
+    app's HTML for a year under a script's name, in the HTTP cache the service worker
+    reads hashed files through — it falls to the HTML tier instead."""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>alfred</html>")
+    app = FastAPI()
+    mount_spa(app, dist)
+    app.add_middleware(SpaCacheMiddleware)
+    resp = TestClient(app).get("/assets/index-Bx3kYp9z.js")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    assert resp.headers["cache-control"] == _NO_STORE
+
+
 def test_entry_point_is_never_cached(tmp_path: Path) -> None:
     client = _cached_app(tmp_path)
     for path in ("/", "/index.html", "/activity"):
@@ -168,7 +185,9 @@ def test_entry_point_is_never_cached(tmp_path: Path) -> None:
 
 def test_unhashed_public_files_revalidate(tmp_path: Path) -> None:
     """Vite copies web/public/ through unhashed, so those cannot be immutable — but
-    no-store would re-download them every load; no-cache lets a 304 skip the bytes."""
+    no-store would re-download them every load; no-cache at least revalidates.
+    mount_spa's FileResponse answers that revalidation 200, not 304
+    (SpaCacheMiddleware's docstring in spa.py says why)."""
     assert _cached_app(tmp_path).get("/manifest.json").headers["cache-control"] == _NO_CACHE
 
 

@@ -156,8 +156,8 @@ function WorkshopPanel({ onClose, onWhy, onHeld }: WorkshopPanelProps) {
   const rate = rateText(overview.data);
 
   // §5.2: live is not last-known. Not-live outranks paused; paused outranks the
-  // rate. The stamp is the feed's own, `activity.liveAt` — not the connection's
-  // `lastTrueAt`, which a chat frame and the 30 s overview poll both set. Those
+  // rate. The stamp is the feed's own, `activity.liveAt` — not `useLastTrue()`,
+  // the house's, which a chat frame and the 30 s overview poll both set. Those
   // say the *house* is reachable; this sentence is about the telemetry pump.
   // With REST healthy and the pump dead the two disagree, and the header would
   // contradict the bench's own banner sixty pixels below it.

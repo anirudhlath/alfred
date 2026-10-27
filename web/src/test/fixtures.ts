@@ -621,3 +621,24 @@ export const integration = (overrides: Partial<Integration> = {}): Integration =
   configured: { url: true, token: true },
   ...overrides,
 });
+
+/**
+ * The caller's address in both network-gate fixtures below. One constant,
+ * because the house names one address, `client_host`, in the refusal and again
+ * in the guidance. A documentation address (RFC 5737): a private address would
+ * be one the house trusts by default.
+ */
+const UNTRUSTED_ADDRESS = "203.0.113.7";
+
+/**
+ * The `detail` of the house's network-gate 403 (`require_trusted_network`,
+ * core/channels/web_server.py) to a caller with no session, as setup's passkey
+ * registration gets it.
+ */
+export const NETWORK_GATE_DETAIL = `Access restricted to trusted networks: ${UNTRUSTED_ADDRESS} is not trusted.`;
+
+/**
+ * The same refusal to a caller with a session — a credential write from the
+ * System bench, say — which the house follows with a sentence of guidance.
+ */
+export const NETWORK_GATE_DETAIL_SIGNED_IN = `${NETWORK_GATE_DETAIL} Add its subnet to ALFRED_TRUSTED_NETWORKS (e.g. '${UNTRUSTED_ADDRESS}/24'), or reach Alfred via localhost or Tailscale.`;

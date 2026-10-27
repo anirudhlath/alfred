@@ -14,6 +14,7 @@ rows:
   - {id: 4.1.pwa-room, section: "4.1", prd: "Web app — a phone-first PWA", not_llm: "phone UI, gates and the Door", tests: [web/src/room, web/src/door, web/src/gates]}
   - {id: 4.1.workshop-activity, section: "4.1", prd: "Web app — the Workshop: the Activity bench", not_llm: "telemetry UI", tests: [web/src/workshop/ActivityBench.test.tsx, web/src/sheets/WhySheet.test.tsx]}
   - {id: 4.1.workshop-benches, section: "4.1", prd: "Web app — the Workshop's other three benches", not_llm: "management UI", tests: [web/src/workshop/MemoryBench.test.tsx, web/src/workshop/TriggersBench.test.tsx, web/src/workshop/SystemBench.test.tsx]}
+  - {id: 4.1.pwa-install, section: "4.1", prd: "Web app — installs and opens with no network", not_llm: "install, service worker and launch gates", tests: [web/src/test/sw.test.ts, web/src/test/sw-kill.test.ts, web/src/test/manifest.test.ts, web/src/test/icons.test.ts, web/src/lib/sw.test.ts, web/src/shell/UpdateNote.test.tsx, web/src/gates/OfflineGate.test.tsx, web/src/gates/UnansweredGate.test.tsx, tests/core/channels/test_spa.py]}
   - {id: 4.1.ios-app, section: "4.1", prd: "Native iOS app", not_llm: "separate client", elsewhere: "alfred-ios repo"}
   - {id: 4.1.signal, section: "4.1", prd: "Signal messaging", suites: [conversation]}
   - {id: 4.1.voice-browser, section: "4.1", prd: "Voice in the browser/app", pending_suites: [voice]}

@@ -21,6 +21,17 @@ export function errorText(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong.";
 }
 
+/**
+ * Whether a request failed because its deadline ran out (`AbortSignal.timeout`).
+ * By name, not `instanceof DOMException`: the reason is a DOMException from the
+ * realm that made the signal, which need not be the page's.
+ */
+export function timedOut(error: unknown): boolean {
+  return (
+    typeof error === "object" && error !== null && "name" in error && error.name === "TimeoutError"
+  );
+}
+
 async function readDetail(resp: Response): Promise<string> {
   const text = await resp.text();
   try {
@@ -46,6 +57,26 @@ async function readDetail(resp: Response): Promise<string> {
 const isPasskeyAttempt = (path: string): boolean =>
   path.startsWith("/api/auth/login/") || path.startsWith("/api/auth/register/");
 
+/** The house's answer to "who is this?" — read by `fetchAuthStatus` (./auth.ts). */
+export const AUTH_STATUS_PATH = "/api/auth/status";
+
+/**
+ * The status read is the one request neither gate event can be the house's
+ * answer to. Its route (`auth_status`, core/identity/auth_routes.py, on a router
+ * with no dependencies) has no network gate, so it sends no 403, and it answers
+ * a signed-out session with a 200, so it sends no 401. Either status came from
+ * something in front of the house — a proxy, a WAF, a Cloudflare challenge —
+ * and "not from here" or "your session lapsed" would be a claim nobody made.
+ * Unannounced, it is a failed read like any other: `AuthGate`, the only
+ * listener, shows the unanswered gate while nothing has been read, and keeps
+ * the last answer once something has. A session that really lapses still says
+ * so: the status answers `authenticated: false`, every other read's 401 is
+ * announced, and so is a socket's 4001 close (`ConnectionProvider`). If the
+ * route ever gains a network gate, or sends a 401 of its own, that status
+ * becomes the house's answer: revisit this then.
+ */
+const isStatusRead = (path: string): boolean => path === AUTH_STATUS_PATH;
+
 /**
  * `api`, with the response's headers beside the body — for a route that says
  * something in a header its body cannot (`fetchIntegrationListing`). One
@@ -64,8 +95,11 @@ export async function apiWithHeaders<T>(
     const detail = await readDetail(resp);
     // Announce, never navigate: the gate rises over whatever is on screen, so the
     // last-known state stays visible behind it (spec §5.2, "live is not last-known").
-    if (resp.status === 401 && !isPasskeyAttempt(path)) authEvents.emit("expired");
-    if (resp.status === 403) authEvents.emit("denied");
+    // Never for the status read, whose route sends neither status itself.
+    if (!isStatusRead(path)) {
+      if (resp.status === 401 && !isPasskeyAttempt(path)) authEvents.emit("expired");
+      if (resp.status === 403) authEvents.emit("denied");
+    }
     throw new ApiError(resp.status, detail || resp.statusText);
   }
 

@@ -208,6 +208,7 @@ graph TB
         AdminRouter["Admin API<br/>/api/admin/*"]
         TelemetryWS["Telemetry WS<br/>/ws/telemetry"]
         WebPWA["Web PWA<br/>web/"]
+        WebSW["Service Worker<br/>web/public/sw.js<br/>app shell only"]
         VoicePipeline["Voice Pipeline"]
         WhisperSTT[WhisperSTT]
         TTS["TTS Backend<br/>Kokoro (default) / Piper"]
@@ -323,6 +324,8 @@ graph TB
     WebChannel -->|XADD requests| Redis
     WebChannel -->|XREAD responses| Redis
     WebChannel <-->|WebSocket| WebPWA
+    WebPWA -->|"navigations + /assets/*"| WebSW
+    WebSW -->|"network-first shell, cache-first assets<br/>never /api/*, /health or /ws*"| WebChannel
     VoicePipeline --> WhisperSTT
     VoicePipeline --> TTS
     WebChannel --> VoicePipeline
@@ -753,11 +756,18 @@ and configuration reference.
 
 **Web PWA** (`web/`):
 
-Mission Control SPA built with Vite 8 / React 19 / TypeScript / Tailwind v4 / TanStack
-Query / react-router v7. Provides chat, live telemetry rail, memory inspection, trigger
-management, health monitoring, integration settings, and a ⌘K command palette. Built to
-`web/dist/` and served by `core/channels/spa.mount_spa()` (static assets + index.html
-SPA fallback). See `docs/web-frontend.md` for the full architecture reference.
+The phone-first client that replaced the Mission Control SPA, built with Vite 8 / React 19
+/ TypeScript / Tailwind v4 / TanStack Query / react-router v7. One screen (the Room: the
+conversation, hold-to-talk voice, notifications), one interrupt (the Door: a critical
+action confirmed against its fuse), the passkey gates, and the Workshop's four benches
+(Activity, Memory, Triggers, System) over the admin API and the telemetry socket. A
+hand-written service worker (`web/public/sw.js`) keeps the app shell on the phone so the
+app opens with no network; it never passes `/api/*`, `/health` or the sockets to
+`respondWith()`, so nothing the house says is ever cached, and `web/public/sw.kill.js` is
+its remote kill switch. Built to `web/dist/` and served by
+`core/channels/spa.mount_spa()` (static assets + index.html SPA fallback) under
+`SpaCacheMiddleware`'s cache tiers. See `docs/web-frontend.md` for the full architecture
+reference, including "The service worker".
 
 ### 3.11 Domain Routing (Tiered Autonomy Enforcement)
 

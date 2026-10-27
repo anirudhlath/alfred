@@ -19,4 +19,48 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    // The service workers in public/. Not TypeScript — they are shipped verbatim
+    // by Vite's public/ copy, are loaded as classic (non-module) workers, and
+    // are evaluated in tests with `new Function("self", ...SEALED, source)`,
+    // which refuses import/export. `sourceType: 'script'` is what keeps all
+    // three honest.
+    files: ['public/*.js'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      globals: globals.serviceworker,
+      ecmaVersion: 2023,
+      sourceType: 'script',
+    },
+    rules: {
+      // Rule 3 of sw.js's header: these ten globals go through `self.`,
+      // because that object is the entire world src/test/sw-harness.ts can
+      // replace. The language's own globals, and URL and Response, are reached
+      // bare and run for real in the tests; none of them reaches outside the
+      // worker. `no-undef` cannot enforce it — `globals.serviceworker` makes
+      // every one of these *defined*, so a single bare `caches.open(…)` would
+      // lint clean and quietly escape the fake scope. This is the only thing
+      // that says so.
+      'no-restricted-globals': [
+        'error',
+        // Kept in step with SEALED in src/test/sw-harness.ts, which shadows the
+        // same names at run time.
+        ...[
+          'AbortController',
+          'addEventListener',
+          'caches',
+          'clearTimeout',
+          'clients',
+          'fetch',
+          'location',
+          'registration',
+          'setTimeout',
+          'skipWaiting',
+        ].map((name) => ({
+          name,
+          message: `Reach it through self.${name} — the tests replace the worker's scope through \`self\`.`,
+        })),
+      ],
+    },
+  },
 ])

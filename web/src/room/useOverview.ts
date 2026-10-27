@@ -2,16 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { SESSION_IDLE_MS } from "@/lib/history";
 import type { Overview } from "@/lib/types";
-import { markTrue } from "@/shell/ConnectionProvider";
 
 /**
  * The overview's cache key, named here because this is the query that defines
- * it. Deliberately *not* exported for `REHYDRATE_KEYS` to import: this module
- * imports `markTrue` from `ConnectionProvider`, so the import would close a
- * cycle whose evaluation order decides whether `REHYDRATE_KEYS` reads the key
- * or a temporal-dead-zone `undefined`. `ConnectionProvider` spells the prefix
- * out instead, and says so where it does. Every re-read of this query in the
- * app goes through the `refetch` this hook returns, which needs no key at all.
+ * it. Not exported: `ConnectionProvider` spells the prefix out, for its
+ * `REHYDRATE_KEYS` and for the stamp it takes from this query, and says why
+ * where it does. Every re-read of this query in the app goes through the
+ * `refetch` this hook returns, which needs no key at all.
  */
 const OVERVIEW_KEY = ["overview"] as const;
 
@@ -26,8 +23,10 @@ export const OVERVIEW_POLL_MS = 30_000;
 
 /**
  * The Room's vitals. Polled rather than pushed: the overview aggregates Redis
- * reads that no stream announces. A successful read is also proof the house is
- * reachable, so it stamps last-true.
+ * reads that no stream announces. A read that lands is also proof the house is
+ * reachable, so `ConnectionProvider` stamps last-true from it as it lands in
+ * the cache — not here, as the reply arrives, which a read already cancelled
+ * and asked again still does.
  *
  * `enabled` is for the callers that want what this key already holds without
  * asking for it again: a disabled observer never fetches and still re-renders
@@ -40,11 +39,7 @@ export function useOverview(enabled = true) {
   return useQuery<Overview>({
     queryKey: OVERVIEW_KEY,
     enabled,
-    queryFn: async () => {
-      const overview = await api<Overview>("/api/admin/overview");
-      markTrue();
-      return overview;
-    },
+    queryFn: () => api<Overview>("/api/admin/overview"),
     refetchInterval: OVERVIEW_POLL_MS,
     // Two observers on this key do not double the polls, but `staleTime` is not
     // what stops them: `refetchInterval` does not consult staleness. What

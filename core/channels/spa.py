@@ -60,14 +60,18 @@ class SpaCacheMiddleware(BaseHTTPMiddleware):
     Three tiers, and ``/api/*`` is the only thing left untouched — ``/health`` and a
     plain HTTP GET to ``/ws`` are stamped too:
 
-    * ``/assets/*`` that did not error — Vite content-hashes these filenames, so the
-      bytes behind a URL never change and they are immutable for a year. A 304 keeps
-      that; a 4xx/5xx does not, because pinning a 404 for a year leaves no URL to bust.
-    * ``text/html`` — the entry point and every SPA-fallback route (``/``,
-      ``/index.html``, ``/actions/{id}``). Not stored at all, so a deploy is picked up on
-      the next load.
-    * everything else — unhashed ``web/public/`` files such as ``/favicon.svg`` and
-      ``/manifest.json``. Revalidated on every load, which today costs the full body:
+    * ``/assets/*`` that did not error and is not HTML — Vite content-hashes these
+      filenames, so the bytes behind a URL never change and they are immutable for a
+      year. A 304 keeps that; a 4xx/5xx does not, because pinning a 404 for a year leaves
+      no URL to bust. Nor does HTML: a dist with no ``assets/`` mounts nothing at
+      ``/assets``, so :func:`mount_spa`'s fallback answers a hashed URL with
+      ``index.html``, and pinned, that is the app's HTML under a script's name for a
+      year — in the HTTP cache the service worker reads hashed files through.
+    * ``text/html`` — the entry point, every SPA-fallback route (``/``,
+      ``/index.html``, ``/actions/{id}``), and that fallback under ``/assets/``. Not
+      stored at all, so a deploy is picked up on the next load.
+    * everything else — unhashed ``web/public/`` files such as ``/apple-touch-icon.png``
+      and ``/manifest.json``. Revalidated on every load, which today costs the full body:
       :func:`mount_spa`'s fallback serves these through a bare ``FileResponse``, which
       ignores ``If-None-Match``/``If-Modified-Since`` (only ``StaticFiles.get_response``
       honours conditional requests), so revalidation answers 200, not 304. The header is
@@ -80,9 +84,10 @@ class SpaCacheMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if path.startswith("/api/"):
             return response
-        if path.startswith("/assets/") and response.status_code < 400:
+        html = response.headers.get("content-type", "").startswith("text/html")
+        if path.startswith("/assets/") and response.status_code < 400 and not html:
             response.headers["Cache-Control"] = _IMMUTABLE
-        elif response.headers.get("content-type", "").startswith("text/html"):
+        elif html:
             response.headers["Cache-Control"] = _NO_STORE
         else:
             response.headers["Cache-Control"] = _NO_CACHE

@@ -1,5 +1,13 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import { notifyManager, useQueryClient } from "@tanstack/react-query";
 import { authEvents } from "@/lib/auth-events";
 import { ChatSocket } from "@/lib/chat-socket";
 import { onVisible } from "@/lib/lifecycle";
@@ -14,8 +22,9 @@ const telemetry = new TelemetrySocket();
 
 /**
  * Make sure both sockets are live. `connect()` reopens a closed socket, replaces
- * one that has gone quiet and leaves a healthy one alone, so this is safe on
- * every return to the foreground — and necessary after every sign-in: the server
+ * one that has gone quiet, leaves a healthy one alone and cancels a retry still
+ * waiting out its backoff, so this is safe on every return to the foreground and
+ * whenever the signal comes back — and necessary after every sign-in: the server
  * closes both sockets with 4001 while there is no session, and a 4001 is never
  * retried.
  */
@@ -25,22 +34,42 @@ function reconnect(): void {
 }
 
 let lastTrue: Date | null = null;
-const lastTrueListeners = new Set<(at: Date) => void>();
+const lastTrueListeners = new Set<() => void>();
+
+function tellTrue(): void {
+  for (const fn of [...lastTrueListeners]) fn();
+}
 
 /**
  * Record that the house answered just now. Called from here on every chat frame
- * and every socket open, and from `useOverview` on every successful poll — the
- * two independent proofs that anything on screen is current.
+ * and every socket open, and on every overview read as it lands — the two
+ * independent proofs that anything on screen is current.
  */
 // eslint-disable-next-line react-refresh/only-export-components
 export function markTrue(at: Date = new Date()): void {
   lastTrue = at;
-  for (const fn of [...lastTrueListeners]) fn(at);
+  tellTrue();
 }
 
-function subscribeTrue(fn: (at: Date) => void): () => void {
+function subscribeTrue(fn: () => void): () => void {
   lastTrueListeners.add(fn);
   return () => void lastTrueListeners.delete(fn);
+}
+
+const readLastTrue = (): Date | null => lastTrue;
+
+/**
+ * When the house last answered: "last true". Read in the component that draws
+ * it, at render time, rather than handed down through the context: a component
+ * that draws the overview beside it reads both in the same render, from values
+ * written in the same step (see the overview's stamp below), so no frame can
+ * draw one without the other. Through the context it was the provider's last
+ * render, and a frame its reader drew for a reason of its own showed a newer
+ * overview beside an older stamp.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useLastTrue(): Date | null {
+  return useSyncExternalStore(subscribeTrue, readLastTrue);
 }
 
 let chatOnline = false;
@@ -68,11 +97,12 @@ function subscribeOnline(fn: () => void): () => void {
  * moved without this client hearing about it.
  *
  * Spelled out rather than imported from the hooks that own these keys: this
- * module is imported *by* `useOverview` (for `markTrue`), so importing back
- * would close a cycle and leave this list reading a temporal-dead-zone
- * `undefined` on whichever evaluation order the bundler picked. Every entry is
- * a prefix rather than a whole key, so a key that later gains a segment is
- * still covered by the one above it.
+ * module is imported *by* some of them (`DoorProvider`, for `useConnection`),
+ * so importing back would close a cycle and leave this list reading a
+ * temporal-dead-zone `undefined` on whichever evaluation order the bundler
+ * picked. The overview's key, which the stamp below watches, is spelled out
+ * the same way. Every entry is a prefix rather than a whole key, so a key that
+ * later gains a segment is still covered by the one above it.
  */
 const REHYDRATE_KEYS = [
   ["overview"],
@@ -97,7 +127,6 @@ export interface ConnectionValue {
   chatStatus: SocketStatus;
   telemetryStatus: SocketStatus;
   online: boolean;
-  lastTrueAt: Date | null;
   /** The moment a queued send can succeed. See `subscribeOnline` above. */
   subscribeOnline: (fn: () => void) => () => void;
   /** Reopen whatever is closed. The gates call it after a sign-in. See `reconnect` above. */
@@ -110,7 +139,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [chatStatus, setChatStatus] = useState<SocketStatus>("connecting");
   const [telemetryStatus, setTelemetryStatus] = useState<SocketStatus>("connecting");
-  const [lastTrueAt, setLastTrueAt] = useState<Date | null>(lastTrue);
 
   useEffect(() => {
     chat.onstatus = (status) => {
@@ -137,7 +165,27 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       lastWarned.set(trouble, now);
       console.warn(`telemetry: ${trouble}`);
     });
-    const stopTrue = subscribeTrue(setLastTrueAt);
+
+    // An overview read is the house answering when it lands in the cache, not
+    // when its reply arrives: a poll under way when the phone returns to the
+    // foreground is cancelled and asked again (`onVisible` below), and its
+    // reply still arrives. Stamped then, it moved "last true" with the previous
+    // overview still drawn under it until the read asked again had landed. The
+    // cache tells this listener in the same synchronous step that writes the
+    // overview, before any render can run, so the stamp is written here and
+    // then: a render from then on reads the new overview and the new stamp
+    // together (`useLastTrue`). Only the telling waits for react-query's notify,
+    // beside the observers', so the two redraw once, together. A `setQueryData`
+    // write is not an answer from the house.
+    let watching = true;
+    const stopOverview = queryClient.getQueryCache().subscribe((event) => {
+      if (event.type !== "updated" || event.query.queryKey[0] !== "overview") return;
+      if (event.action.type !== "success" || event.action.manual) return;
+      lastTrue = new Date(event.query.state.dataUpdatedAt);
+      notifyManager.schedule(() => {
+        if (watching) tellTrue();
+      });
+    });
 
     reconnect();
 
@@ -145,6 +193,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       reconnect();
       for (const queryKey of REHYDRATE_KEYS) void queryClient.invalidateQueries({ queryKey });
     });
+
+    // The signal is back: try now, not at the end of the backoff wait. Every try
+    // made without a signal failed and doubled that wait, toward its eight-second
+    // cap (ws.ts), and on a launch with no network the offline gate clears on
+    // this same event — so the Room could open saying `No connection to the
+    // house …` and holding every send for up to eight seconds after the house
+    // had answered. `connect()` cancels the retry it replaces, so this starts no
+    // second retry chain.
+    window.addEventListener("online", reconnect);
 
     return () => {
       // The singletons outlive this mount; leave nothing of it on them. The
@@ -155,8 +212,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       telemetry.onstatus = () => {};
       stopListening();
       stopWarning();
-      stopTrue();
+      watching = false;
+      stopOverview();
       stopVisible();
+      window.removeEventListener("online", reconnect);
       chat.close();
       telemetry.close();
       chatOnline = false;
@@ -186,11 +245,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       // The telemetry socket can be down while the butler still answers; only the
       // chat socket decides whether the app calls itself online.
       online: chatStatus === "online",
-      lastTrueAt,
       subscribeOnline,
       reconnect,
     }),
-    [chatStatus, telemetryStatus, lastTrueAt],
+    [chatStatus, telemetryStatus],
   );
 
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>;

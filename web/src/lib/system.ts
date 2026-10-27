@@ -819,10 +819,12 @@ export async function saveCredentials(
 export const SAVE_TIMEOUT_MS = 20_000;
 
 /**
- * The one refusal with no server behind it. Nothing in this tree sets a fetch
- * timeout, so a socket the house accepts and never answers would otherwise
- * leave the row reading `Testing…`, refusing every press, for the life of the
- * Workshop. It says what it does not know: the `PUT` may have landed.
+ * The one refusal with no server behind it. `api()` sets no timeout and the
+ * worker never sees `/api/`; the auth-status read's deadline
+ * (`STATUS_DEADLINE_MS`) is that read's alone. So a socket the house accepts
+ * and never answers would otherwise leave the row reading `Testing…`, refusing
+ * every press, for the life of the Workshop. It says what it does not know:
+ * the `PUT` may have landed.
  */
 export const SAVE_TIMED_OUT = `No answer in ${SAVE_TIMEOUT_MS / 1000} s · whether it was stored is unknown · try again.`;
 

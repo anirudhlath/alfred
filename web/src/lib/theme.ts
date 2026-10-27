@@ -9,8 +9,21 @@ export function resolveInitialTheme(now: Date, stored: string | null): Theme {
   return hour >= 7 && hour < 19 ? "light" : "dark";
 }
 
-/** `--bg` per theme, as index.css declares it. Safari's chrome reads it from the meta. */
+/**
+ * `--bg` per theme, as index.css declares it. Safari's chrome reads it from the
+ * meta, and the two manifests carry the same pair as `theme_color` and
+ * `background_color`. Not exported: `src/test/manifest.test.ts` pins both the
+ * files and this record's effect on the meta to `--bg` itself, through
+ * `contrast.ts`'s tokens, so the stylesheet stays the one source and a retune
+ * fails rather than drifts.
+ */
 const THEME_COLOR: Record<Theme, string> = { dark: "#25221F", light: "#F6F3EE" };
+
+/** The manifest per theme. See `applyTheme` for why there are two. */
+const MANIFEST: Record<Theme, string> = {
+  dark: "/manifest.json",
+  light: "/manifest-light.json",
+};
 
 /** The one place the theme becomes visible: the attribute the palette hangs off. */
 export function applyTheme(theme: Theme): void {
@@ -18,6 +31,18 @@ export function applyTheme(theme: Theme): void {
   // The theme is ours, not the OS's — a phone in system light mode runs dark here
   // at 21:00 — so the meta cannot carry a `prefers-color-scheme` pair; it follows.
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", THEME_COLOR[theme]);
+  // A manifest is a static file and the theme is the hour's, so there are two
+  // of them and the link points at whichever is true now. Read this narrowly: a
+  // manifest is consumed at *install* time, so on iOS the most this can do is
+  // align one install with the theme in force at that moment — and it may do
+  // nothing at all: WebKit fetches at most one manifest per document load, and
+  // this runs after parsing (main.tsx is a deferred module), with no observer to
+  // re-read the href. Chromium re-reads it at its update check, which is where
+  // the value is, and where the cost is too: that check fingerprints these two
+  // colours, so crossing 07:00 or 19:00 can schedule a silent WebAPK reinstall.
+  // Unverified on a device either way — docs/superpowers/qa/ holds the
+  // checklist that would settle it.
+  document.querySelector('link[rel="manifest"]')?.setAttribute("href", MANIFEST[theme]);
 }
 
 /**

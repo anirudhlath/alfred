@@ -285,6 +285,68 @@ describe("ReconnectingSocket", () => {
     expect(FakeWebSocket.instances).toHaveLength(2);
     sock.close();
   });
+
+  it("does not let a retry armed before a reconnect reopen a socket the server then refused", () => {
+    // A phone left overnight: the dropped socket's 1006 arrives before the
+    // foreground and arms a retry; the foreground's own reconnect opens a new
+    // socket; the session lapsed meanwhile, so the house closes it 4001. The
+    // retry from before is stale, and a 4001 is never retried — firing it would
+    // reopen the socket, be refused again and announce the lapse twice.
+    const statuses: string[] = [];
+    const sock = new ReconnectingSocket("/ws/test");
+    sock.onstatus = (s) => statuses.push(s);
+    sock.connect();
+    FakeWebSocket.instances[0].open();
+    FakeWebSocket.instances[0].emitClose(1006);
+
+    sock.connect();
+    FakeWebSocket.instances[1].open();
+    FakeWebSocket.instances[1].emitClose(4001);
+    vi.advanceTimersByTime(60_000);
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(statuses.filter((s) => s === "unauthorized")).toHaveLength(1);
+    expect(statuses.at(-1)).toBe("unauthorized");
+    sock.close();
+  });
+
+  it("runs one retry chain, not two, when asked to connect during a backoff wait", async () => {
+    // The house is down, so every try fails the moment it is made.
+    class DownWebSocket extends FakeWebSocket {
+      constructor(url: string) {
+        super(url);
+        queueMicrotask(() => this.emitClose(1006));
+      }
+    }
+    vi.stubGlobal("WebSocket", DownWebSocket);
+
+    /** Tries in a minute against the down house, with or without one foreground connect(). */
+    async function triesInAMinute(foregroundAtMs: number | null): Promise<number> {
+      FakeWebSocket.instances = [];
+      const sock = new ReconnectingSocket("/ws/test", { pingIntervalMs: 0 });
+      sock.connect();
+      await vi.advanceTimersByTimeAsync(0);
+      if (foregroundAtMs !== null) {
+        await vi.advanceTimersByTimeAsync(foregroundAtMs);
+        // A return to the foreground inside the first backoff wait.
+        sock.connect();
+        await vi.advanceTimersByTimeAsync(0);
+        // The wait that was pending is gone: one retry is armed, not two.
+        expect(vi.getTimerCount()).toBe(1);
+      }
+      await vi.advanceTimersByTimeAsync(60_000 - (foregroundAtMs ?? 0));
+      const tries = FakeWebSocket.instances.length;
+      sock.close();
+      return tries;
+    }
+
+    const alone = await triesInAMinute(null);
+    const withForeground = await triesInAMinute(100);
+
+    // 500 ms doubling to an 8 s cap is 11 tries in a minute. Two chains made 19.
+    expect(alone).toBe(11);
+    expect(withForeground).toBe(alone);
+  });
 });
 
 describe("TelemetrySocket", () => {
