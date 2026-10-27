@@ -664,12 +664,13 @@ describe("AuthGate with no network", () => {
 
     phoneGoes("online");
     await tick();
-    // The offline read's own deadline, which the gate would have waited for.
+    // Asked again with the signal back, before the offline read's deadline.
+    expect(statusReads()).toBe(2);
+    // That deadline, which the gate would have waited for.
     act(() => deadlines[0].abort(new DOMException("signal timed out", "TimeoutError")));
     await tick();
 
     expect(unanswered()).toBe(0);
-    // Asked again with the signal back, without waiting.
     expect(statusReads()).toBe(2);
     act(() => answerHeld());
     expect(await screen.findByText("the room")).toBeInTheDocument();
