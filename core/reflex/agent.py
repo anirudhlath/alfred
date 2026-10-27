@@ -44,7 +44,9 @@ REQUEST_TIMEOUT_S: Final = 30.0
 TOKENS_MODEL_LABEL: Final = "openai-compat"
 
 
-def _parse(ctx: RunContext[list[ToolInfo]], text: str) -> ReflexProposal:
+async def _parse(ctx: RunContext[list[ToolInfo]], text: str) -> ReflexProposal:
+    # Async so it runs on the event loop: Pydantic AI runs a sync output function in a
+    # worker thread, a hop on every decision for a parse that never blocks.
     return parse_decision(text, ctx.deps)
 
 
@@ -59,7 +61,7 @@ def build_reflex_agent(model: Model) -> Agent[list[ToolInfo], ReflexProposal]:
         model,
         name=AGENT_NAME,
         deps_type=list[ToolInfo],
-        output_type=TextOutput(_parse),
+        output_type=TextOutput[ReflexProposal](_parse),
         retries=0,
         model_settings=ModelSettings(
             temperature=0.0,

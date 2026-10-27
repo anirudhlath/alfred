@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from typing import TYPE_CHECKING, Any
 
 import httpx2
@@ -13,6 +14,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.vllm import VLLMProvider
 
 import shared.llm_http as llm_http
+from core.reflex import agent as agent_module
 from core.reflex.agent import build_reflex_agent, decide
 from core.reflex.tool_registry import ToolInfo
 from sdk.alfred_sdk.telemetry import get_telemetry_buffer
@@ -58,6 +60,26 @@ async def test_the_reply_text_is_parsed() -> None:
     assert proposal.action is not None
     assert proposal.action.source == "reflex-engine"
     assert proposal.action.tool_name == "home.light_turn_on"
+
+
+async def test_the_reply_is_parsed_on_the_event_loop_not_a_worker_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sync output function would run in a worker thread: a hop on every decision."""
+    parsed_on: list[int] = []
+    real = agent_module.parse_decision
+
+    def spy(text: str, tools: list[ToolInfo]) -> Any:
+        parsed_on.append(threading.get_ident())
+        return real(text, tools)
+
+    monkeypatch.setattr(agent_module, "parse_decision", spy)
+    agent, _ = reflex_agent(ASK)
+
+    proposal = await decide(agent, PROMPT, TOOLS)
+
+    assert proposal.decision == "ask"
+    assert parsed_on == [threading.get_ident()]
 
 
 async def test_the_parse_is_checked_against_the_tools_of_this_call() -> None:
