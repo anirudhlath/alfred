@@ -17,6 +17,7 @@ import {
   html,
   js,
   loadWorker,
+  macrotasks,
   ORIGIN,
   stalled,
   type Harness,
@@ -217,7 +218,10 @@ const ascending = (deadlines: readonly number[]): number[] => [...deadlines].sor
  * `"pending"` if `read` has neither resolved nor rejected once a few real
  * macrotasks have run — which, after a request has settled, is a read nothing
  * is still feeding and nothing has ended. Not a statement about how long
- * anything takes: the harness's clock is not the one this waits on.
+ * anything takes: the harness's clock is not the one this waits on, and neither
+ * is the wall's. Macrotasks are counted, not timed (see `macrotasks`), so a
+ * machine that is slow, or stalls part way, gets the same answer as one that
+ * is not — a `"settled"` that takes a few steps is not lost to a 20 ms sleep.
  */
 const pending = (read: Promise<unknown>): Promise<string> =>
   Promise.race([
@@ -225,7 +229,7 @@ const pending = (read: Promise<unknown>): Promise<string> =>
       () => "settled",
       () => "rejected",
     ),
-    new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 20)),
+    macrotasks().then(() => "pending"),
   ]);
 
 /**
@@ -233,7 +237,11 @@ const pending = (read: Promise<unknown>): Promise<string> =>
  * got there has finished what it set off. For work nothing awaits — a timer
  * due on the harness's clock, an install part way through its writes — that a
  * test can see only the consequences of. Gives up after a hundred, and the
- * assertion after it is what fails.
+ * assertion after it is what fails. The hundred are macrotasks, not time, so
+ * load cannot make this give up earlier: every one lets each step waiting take
+ * one, however slowly they run (`macrotasks` says why). The waits below need
+ * one to three; the last, which waits for a deletion that must NOT come, is
+ * meant to use all hundred.
  */
 const until = async (done: () => boolean): Promise<void> => {
   for (let i = 0; i < 100 && !done(); i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
