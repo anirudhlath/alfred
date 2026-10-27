@@ -500,11 +500,14 @@ describe("useSystem", () => {
     hold("GET", OVERVIEW);
 
     act(() => result.current.quiet.set(true, "2026-09-16T22:00:00Z"));
-    await waitFor(() => expect((parked.get(route("GET", OVERVIEW)) ?? []).length).toBe(1));
 
     // The write has answered and the confirmation has not: busy tracks the write
-    // alone, and the switch has not moved.
-    expect(result.current.quiet.setting).toBe(false);
+    // alone, and the switch has not moved. One wait for both halves — the read
+    // is sent before React draws the busy flag going down.
+    await waitFor(() => {
+      expect((parked.get(route("GET", OVERVIEW)) ?? []).length).toBe(1);
+      expect(result.current.quiet.setting).toBe(false);
+    });
     expect(result.current.quiet.active).toBe(false);
 
     unhold("GET", OVERVIEW);
@@ -658,9 +661,10 @@ describe("useSystem", () => {
     act(() => result.current.sessions.end("sess-phone"));
 
     // The gate rises — `api`'s job, not this hook's — and the bench stays up
-    // holding the last true thing it was told.
-    await waitFor(() => expect(expired).toHaveBeenCalled());
-    expect(result.current.sessions.error).toBe("Not authenticated");
+    // holding the last true thing it was told. `api` announces the 401 before
+    // it throws, so the error is what to wait for.
+    await waitFor(() => expect(result.current.sessions.error).toBe("Not authenticated"));
+    expect(expired).toHaveBeenCalled();
     expect(result.current.credentials.list).toHaveLength(1);
     // A 401 is an answer, not a failure to reach the house.
     expect(countOf("GET", SESSIONS)).toBe(2);
@@ -983,10 +987,9 @@ describe("useSystem", () => {
 
     act(() => result.current.integrations.save("home service/1", { url: "x" }));
 
-    await waitFor(() =>
-      expect(countOf("PUT", credentialsPath("home%20service%2F1"))).toBe(1),
-    );
-    expect(countOf("GET", statusPath("home%20service%2F1"))).toBe(2);
+    // The probe goes out only once the PUT has answered: wait for it, not the PUT.
+    await waitFor(() => expect(countOf("GET", statusPath("home%20service%2F1"))).toBe(2));
+    expect(countOf("PUT", credentialsPath("home%20service%2F1"))).toBe(1);
   });
 
   it("puts the one domain an allow or an ask touches", async () => {
@@ -1824,10 +1827,13 @@ describe("SystemBench over useSystem", () => {
       await vi.advanceTimersByTimeAsync(31_000);
     });
     act(() => focusManager.setFocused(true));
-    await waitFor(() => expect(countOf("GET", INTEGRATIONS)).toBeGreaterThan(1));
-    await settle();
 
-    expect(screen.getByLabelText("Read errors")).toHaveTextContent("registry gone");
+    // The complaint, not the request: the read fails twice — a 500 is retried —
+    // before the section can say so.
+    await waitFor(() =>
+      expect(screen.getByLabelText("Read errors")).toHaveTextContent("registry gone"),
+    );
+    expect(countOf("GET", INTEGRATIONS)).toBe(3);
     expect(screen.getByText("Connected services")).toBeInTheDocument();
     expect(screen.queryByText("home assistant · not read yet")).toBeNull();
   });
