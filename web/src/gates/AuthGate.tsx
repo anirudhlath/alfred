@@ -76,6 +76,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
   // not that: joined, it would fail at its deadline with the signal back, and
   // the gate below would blame the house for it. It is cancelled — back to the
   // state before it, so the count above still holds — and asked again.
+  // The cancel runs in the passive effect of the render that hears `online`, a
+  // useSyncExternalStore update, which React commits at SyncLane and whose
+  // passive effects it flushes synchronously: no failure can land between
+  // hearing `online` and the cancel. If a React upgrade defers that flush, an
+  // offline read failing inside the deferred frame shows the unanswered gate
+  // until the re-ask lands.
   const reasking = unread && online && failedOffline === errorUpdateCount;
   useEffect(() => {
     if (!reasking) return;
