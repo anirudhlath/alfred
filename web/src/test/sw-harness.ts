@@ -1338,3 +1338,26 @@ export const broken = (type = "text/html; charset=utf-8", sent = "the first of i
     { status: 200, headers: { "content-type": type } },
   );
 };
+
+/**
+ * `n` real macrotasks, one `setTimeout(0)` each, and nothing else: how a test
+ * gives something that must NOT happen every chance to. A negative has no event
+ * to wait on, so it is given a number of macrotasks and not a number of
+ * milliseconds. Every step this harness takes is itself a `setTimeout(0)` — a
+ * cache write, a delete, a tick of its clock — on the same timer list, which
+ * runs its timers in the order they were armed, so each macrotask here lets
+ * every step that is waiting take one, however slowly the machine runs them.
+ * A fixed `setTimeout(resolve, 20)` is not that: a stall of 20 ms between two
+ * steps of a chain lets the sleep fire first, and what is asserted after it
+ * reads a state the chain had not reached.
+ *
+ * Not for a positive. What has to happen is waited on itself, `vi.waitFor`
+ * on the thing, and this comes after it, to show that what must not has not.
+ * Ten is more than twice the deepest chain any lever here holds back: a write
+ * that was not held lands four macrotasks after the install begins. It stays
+ * small because on a machine that is badly starved a macrotask is slow, and
+ * what this adds is `n` of them.
+ */
+export const macrotasks = async (n = 10): Promise<void> => {
+  for (let i = 0; i < n; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+};

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { broken, fetchRequest, html, js, loadWorker, ORIGIN, stalled } from "./sw-harness";
+import { describe, expect, it, vi } from "vitest";
+import { broken, fetchRequest, html, js, loadWorker, macrotasks, ORIGIN, stalled } from "./sw-harness";
 
 // The harness is the only thing standing between "this worker's tests pass" and
 // "this worker works", and eight tasks' tests are written against it. Where it
@@ -7,6 +7,15 @@ import { broken, fetchRequest, html, js, loadWorker, ORIGIN, stalled } from "./s
 // coverage — it can pass a worker that cannot install on any phone. These are
 // the places that has to be true, pinned here so the next edit cannot quietly
 // undo one.
+
+/**
+ * What `vi.waitFor` is given for a write or a clock the harness is about to
+ * reach: polled on every macrotask, since the thing waited on moves on them,
+ * and allowed as long as the test itself is (4 s of vitest's 5), so that this
+ * budget is never what runs out first on a machine that is slow rather than
+ * wrong. A failure still says what was expected and what was there.
+ */
+const REACHED = { interval: 1, timeout: 4000 } as const;
 
 describe("the fake scope's event semantics", () => {
   it("runs every listener registered for a type, not only the last", async () => {
@@ -223,7 +232,10 @@ describe("the fake CacheStorage", () => {
     `);
     const release = worker.holdPut("/x");
     const installing = worker.install();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // `puts` is recorded at the call, so it is the thing to wait on: the put has
+    // been asked for, and what follows is what the hold has to stop.
+    await vi.waitFor(() => expect(worker.puts).toEqual(["/x"]), REACHED);
+    await macrotasks();
     expect(worker.puts).toEqual(["/x"]);
     expect(worker.keys("alfred-shell-v1")).toEqual([]);
     release();
@@ -330,7 +342,12 @@ describe("the fake CacheStorage", () => {
     `);
     const release = worker.holdRead("/x");
     const installing = worker.install();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // `/after` is written after the held read was started and does not wait on
+    // it, so once it is in the unheld chain is done. `/held` is what the hold
+    // keeps out, and the macrotasks are every chance a read that was not held
+    // would have needed to land it.
+    await vi.waitFor(() => expect(worker.keys("alfred-shell-v1")).toContain("/after"), REACHED);
+    await macrotasks();
     expect(worker.keys("alfred-shell-v1")).toEqual(["/after", "/status", "/x"]);
     release();
     await installing;
@@ -444,10 +461,16 @@ describe("the fake CacheStorage", () => {
       });
     `);
     worker.respond("/x.js", stalled("text/javascript"));
-    // Not `resolves`/`rejects`: the assertion is that it does neither.
+    // Not `resolves`/`rejects`: the assertion is that it does neither. The put
+    // is waited on, and then the install is given every macrotask a put that
+    // finished would have needed.
     const outcome = await Promise.race([
       worker.install().then(() => "settled"),
-      new Promise((resolve) => setTimeout(() => resolve("pending"), 20)),
+      (async () => {
+        await vi.waitFor(() => expect(worker.puts).toEqual(["/x.js"]), REACHED);
+        await macrotasks();
+        return "pending";
+      })(),
     ]);
     expect(outcome).toBe("pending");
     expect(worker.puts).toEqual(["/x.js"]);
@@ -626,6 +649,9 @@ describe("the fake registration", () => {
     await worker.message("go");
     expect(worker.unregisterCalls).toBe(1);
     expect(worker.unregistered).toBe(false);
+    // One macrotask, and no more is needed: this timer is armed after the one
+    // `unregister()` armed, on the same list, and that list runs its timers in
+    // the order they were armed — so it fires second, whatever the load.
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(worker.unregistered).toBe(true);
   });
@@ -1003,7 +1029,7 @@ describe("the seams the harness depends on", () => {
     // Not `resolves`/`rejects`: the assertion is that it does neither.
     const outcome = await Promise.race([
       reader.read().then(() => "settled"),
-      new Promise((resolve) => setTimeout(() => resolve("pending"), 20)),
+      macrotasks().then(() => "pending"),
     ]);
     expect(outcome).toBe("pending");
   });
@@ -1014,7 +1040,7 @@ describe("the seams the harness depends on", () => {
     const first = (response: Response) =>
       Promise.race([
         response.body!.getReader().read().then(({ value }) => new TextDecoder().decode(value)),
-        new Promise((resolve) => setTimeout(() => resolve("pending"), 20)),
+        macrotasks().then(() => "pending"),
       ]);
     await expect(first(stalled())).resolves.not.toBe("pending");
     await expect(first(stalled(undefined, ""))).resolves.toBe("pending");
@@ -1107,9 +1133,15 @@ describe("the fake network", () => {
   it("stops a trickle after its last piece when told to stall", async () => {
     const worker = loadWorker(reader);
     worker.respond("/x", worker.trickle("text/plain", ["a", "b"], { every: 4000, stall: true }));
+    // Both pieces are waited on, on the clock that sends them, and then the
+    // install is given every macrotask a trickle that ended would have needed.
     const outcome = await Promise.race([
       worker.install().then(() => "settled"),
-      new Promise((resolve) => setTimeout(() => resolve("pending"), 20)),
+      (async () => {
+        await vi.waitFor(() => expect(worker.now).toBe(8000), REACHED);
+        await macrotasks();
+        return "pending";
+      })(),
     ]);
     expect(outcome).toBe("pending");
     expect(worker.now).toBe(8000);
@@ -1153,8 +1185,9 @@ describe("the fake network", () => {
     await worker.install();
     expect(worker.now).toBe(10000);
     expect([...worker.store.keys()]).toEqual(["AbortError"]);
-    // The answer due at twelve seconds went with the request.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The answer due at twelve seconds went with the request: nothing is left to
+    // wait on, so the clock is given the macrotasks it would have used to get there.
+    await macrotasks();
     expect(worker.now).toBe(10000);
   });
 
@@ -1239,7 +1272,7 @@ describe("the fake network", () => {
           () => "resolved",
           (error: Error) => error.name,
         ),
-        new Promise((resolve) => setTimeout(() => resolve("pending"), 20)),
+        macrotasks().then(() => "pending"),
       ]);
     worker.respond("/x", stalled());
     const { responded, settled } = worker.dispatch({ path: "/x" });
