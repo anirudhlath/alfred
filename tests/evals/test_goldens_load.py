@@ -97,12 +97,11 @@ ATTRIBUTION_GOLDENS = {
 }
 
 
-def test_the_attribution_goldens_load_pending_and_watch_system1() -> None:
-    # Pending until the evals' home-service forwards a context (the home-service half of
-    # who-did-it); then they flip to shipped.
+def test_the_attribution_goldens_load_shipped_and_watch_system1() -> None:
+    # Shipped once the evals' home-service forwarded a context (alfred-home-service#39).
     for golden_id, (by, words) in ATTRIBUTION_GOLDENS.items():
         s = _goldens()[golden_id]
-        assert s.status == "pending" and s.prd == ["4.4.who-did-it"] and s.tags == ["attribution"]
+        assert s.status == "shipped" and s.prd == ["4.4.who-did-it"] and s.tags == ["attribution"]
         [step] = s.steps
         assert isinstance(step, HaEventStep) and step.ha_event.by == by
         [check] = s.expect

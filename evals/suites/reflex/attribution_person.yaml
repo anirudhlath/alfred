@@ -1,6 +1,6 @@
 id: reflex.attribution.person
 prd: [4.4.who-did-it]
-status: pending  # the evals' home-service forwards no change context yet
+status: shipped
 tags: [attribution]
 steps:
   - ha_event: {entity_id: light.bedroom_lamp, state: "on", by: person.alex}
