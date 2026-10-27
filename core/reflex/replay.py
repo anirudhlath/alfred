@@ -6,14 +6,16 @@
 Each record's exact prompt goes to the model, one record at a time, through the same agent
 and parser Reflex decides with (``core.reflex.agent``), with the tools the prompt showed
 (``parse_tools``). Records come from the live decision log (``--since``, ``--until``) or from
-a JSONL file with one ``DecisionRecord.model_dump_json()`` per line (``--records``).
+a JSONL file with one ``DecisionRecord.model_dump_json()`` per line (``--records``). An event
+recorded more than once (same ``event_id``) is replayed once, from its first record.
 
 The replay only reads. It writes nothing to Redis, publishes nothing and starts no tracing, so
 nothing it asks reaches an observation, a counter or a span. What it prints is counts only: the
-recorded-by-replayed table, agreement, the invalid rate and model latency p50 and p95. The
-prompts name the house and its people, so neither they nor the reasons, entity ids or names in
-them are ever printed. ``--out`` writes one line per record (its time and origin, the recorded
-and replayed decision, the latency), in a file only its owner can read; keep it out of the repo.
+duplicates it dropped, the recorded-by-replayed table, agreement, the invalid rate and model
+latency p50 and p95. The prompts name the house and its people, so neither they nor the
+reasons, entity ids or names in them are ever printed. ``--out`` writes one line per record (its
+time and origin, the recorded and replayed decision, the latency), in a file only its owner can
+read; keep it out of the repo.
 
 A model server is not deterministic at temperature 0, so compare counts, never single records.
 """
@@ -299,6 +301,27 @@ async def _load(args: Args, config: AlfredConfig) -> list[DecisionRecord]:
         await redis.aclose()
 
 
+def drop_duplicate_events(
+    records: Sequence[DecisionRecord],
+) -> tuple[list[DecisionRecord], int]:
+    """*records* keeping each event's first record only, and how many records were dropped.
+
+    A crash after a decision is recorded but before its event is marked decided records the
+    event again on redelivery, and a log written before the marker existed holds every
+    redelivery. Records are matched on ``event["event_id"]``; one without an id is kept.
+    """
+    seen: set[str] = set()
+    kept: list[DecisionRecord] = []
+    for record in records:
+        event_id = record.event.get("event_id")
+        if isinstance(event_id, str) and event_id:
+            if event_id in seen:
+                continue
+            seen.add(event_id)
+        kept.append(record)
+    return kept, len(records) - len(kept)
+
+
 def _open_private(path: Path) -> TextIO:
     """*path*, emptied and readable only by its owner, whether or not it existed."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -324,6 +347,10 @@ async def execute(args: Args) -> None:
     agent = build_agent(config, args.model)
     # Oldest first, so --limit keeps the oldest whatever order a file was written in.
     records = sorted(await _load(args, config), key=lambda record: record.time)
+    # Before the limit, so --limit N replays N events. A count only: an id is never printed.
+    records, dropped = drop_duplicate_events(records)
+    if dropped:
+        print(f"Dropped {dropped} duplicate {'record' if dropped == 1 else 'records'}.")
     if args.limit is not None:
         records = records[: args.limit]
     if not records:

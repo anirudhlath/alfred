@@ -190,11 +190,12 @@ changes a decision and never blocks an ACK.
   `since <= time < until`, `until` defaulting to now). That is how
   `python -m core.reflex.replay run --since ...` reads it; see
   [reflex-anticipation.md](reflex-anticipation.md#replay).
-- The `decided:` marker is why an event is inferred once, so the log holds one record per event.
-  The runner checks it after the attention gate and before the engine, and a hit is ACKed
-  without asking the model again; it is set only after the decision has been counted and
-  published, so a crash before that decides the event again, and a failed inference leaves no
-  marker. A `TriggerFired` uses its own `event_id`.
+- The `decided:` marker makes a second decision about one event unlikely, so the log holds
+  about one record per event. The runner checks it after the attention gate and before the
+  engine, and a hit is ACKed without asking the model again; it is set only after the decision
+  has been counted and published, so a crash before that decides the event again and records
+  it twice, and a failed inference leaves no marker. A `TriggerFired` uses its own `event_id`.
+  The replay drops the duplicates, keeping each `event_id`'s first record.
 
 ### Joining a call to its changes
 

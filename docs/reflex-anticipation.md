@@ -23,13 +23,15 @@ Nothing a proposal names is executed until the design says so: shadow mode stays
 
 ## Each event is decided once
 
-An event is inferred at most once. The runner (`core/reflex/runner.py`) checks
+A redelivered event is not inferred again. The runner (`core/reflex/runner.py`) checks
 `alfred:reflex:decided:{event_id}` after the attention gate and before the engine; a hit logs at
 INFO and the entry is ACKed without asking the model again. The marker is set (`SET NX EX`, the
 `REPLAY_MARKER_TTL_SECONDS` window) only after the decision is counted and published, so a crash
 before that point decides the event again, and an inference that failed or raised leaves no
-marker. A `TriggerFired` uses its own `event_id`. This is what keeps a redelivered entry from
-being inferred, counted and recorded twice, which would skew every count the replay prints.
+marker. A `TriggerFired` uses its own `event_id`. This makes it unlikely that a redelivered
+entry is inferred, counted and recorded twice; a crash between the decision and the marker can
+still record an event twice, so the replay drops duplicates (below), which would otherwise
+skew every count it prints.
 
 ## Replay
 
@@ -46,7 +48,11 @@ python -m core.reflex.replay run --records decisions.jsonl [--limit N] [--model 
   (`DecisionLog.read(since=, until=)`; `--until` goes only with `--since` and is exclusive).
   `--records FILE` reads JSONL, one `DecisionRecord.model_dump_json()` per line. Anything else is
   a usage error (exit status 2).
-- **Oldest first.** `--limit N` replays the N oldest records.
+- **Each event once.** Records that share an event's `event_id` (a crash before the marker, or
+  a log written before the marker existed) are replayed once, from the oldest; the replay
+  prints how many it dropped, never an id. A record whose event has no `event_id` is kept.
+- **Oldest first.** `--limit N` replays the N oldest records, counted after duplicates are
+  dropped.
 - **The prompt as recorded.** Each record's exact prompt is sent, with the tools that prompt
   listed (read back from it by `parse_tools`), so a record is judged on what the model saw then.
 - **Model.** `--model` (for example `vllm:<served name>`) or, by default, `REFLEX_MODEL`.

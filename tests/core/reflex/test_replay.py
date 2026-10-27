@@ -370,6 +370,61 @@ async def test_a_line_that_is_not_a_record_names_its_number_and_nothing_else(
     assert script.call_count == 0
 
 
+def _again(record: DecisionRecord, *, seconds: int = 1) -> DecisionRecord:
+    """The same event recorded a second time, a little later: a crash before its marker."""
+    return record.model_copy(update={"time": record.time + timedelta(seconds=seconds)})
+
+
+def _without_event_id(record: DecisionRecord) -> DecisionRecord:
+    event = {k: v for k, v in record.event.items() if k != "event_id"}
+    return record.model_copy(update={"event": event})
+
+
+async def test_an_event_recorded_twice_is_replayed_once(
+    use_script: Callable[..., Script], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = use_script(NONE, NONE)
+    first, other = _state_change(0, "none"), _trigger(2, "none")
+    records = _jsonl(tmp_path / "records.jsonl", [first, _again(first), other])
+
+    await replay.execute(parse_args(["run", "--records", str(records)]))
+
+    shown = capsys.readouterr()
+    assert script.call_count == 2
+    assert [script.prompt(i) for i in range(2)] == [first.prompt, other.prompt]
+    assert "Dropped 1 duplicate record" in shown.out
+    assert "Replayed 2 of 2 records" in shown.out
+    assert first.event["event_id"] not in shown.out + shown.err  # a count, never an id
+    for private in PRIVATE:
+        assert private not in shown.out + shown.err
+
+
+async def test_duplicates_are_dropped_before_the_limit(
+    use_script: Callable[..., Script], tmp_path: Path
+) -> None:
+    script = use_script(NONE, NONE)
+    first, second = _state_change(0, "none"), _trigger(2, "none")  # a prompt of its own
+    records = _jsonl(tmp_path / "records.jsonl", [first, _again(first), second])
+
+    await replay.execute(parse_args(["run", "--records", str(records), "--limit", "2"]))
+
+    assert script.call_count == 2
+    assert script.prompt(1) == second.prompt
+
+
+async def test_records_without_an_event_id_are_all_kept(
+    use_script: Callable[..., Script], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = use_script(NONE, NONE)
+    first = _without_event_id(_state_change(0, "none"))
+    records = _jsonl(tmp_path / "records.jsonl", [first, _again(first)])
+
+    await replay.execute(parse_args(["run", "--records", str(records)]))
+
+    assert script.call_count == 2
+    assert "duplicate" not in capsys.readouterr().out
+
+
 # --- the live log -------------------------------------------------------------------------
 
 
