@@ -580,7 +580,9 @@ describe("SetupGate — from one step to the next by keyboard", () => {
     await user.keyboard("{Enter}");
     const registered = await screen.findByRole("heading", { name: "Registered." });
 
-    expect(registered).toHaveFocus();
+    // Focus moves in the gate's effect, after the heading is in the document:
+    // a wait of its own, not a read straight after finding it.
+    await waitFor(() => expect(registered).toHaveFocus());
     expect(registered).toHaveAccessibleDescription("Stored encrypted at rest on your hardware.");
 
     await user.type(await screen.findByLabelText("Access Token"), "llat-abc123");
@@ -588,7 +590,7 @@ describe("SetupGate — from one step to the next by keyboard", () => {
     await user.keyboard("{Enter}");
     const reflex = await screen.findByRole("heading", { name: "What may the reflex touch?" });
 
-    expect(reflex).toHaveFocus();
+    await waitFor(() => expect(reflex).toHaveFocus());
     expect(reflex).toHaveAccessibleDescription(sentence);
   });
 });
