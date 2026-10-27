@@ -30,6 +30,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [expired, setExpired] = useState(false);
   const [denied, setDenied] = useState(false);
   const [failedOffline, setFailedOffline] = useState<number | null>(null);
+  const [wasOnline, setWasOnline] = useState(online);
 
   useEffect(() => authEvents.on("expired", () => setExpired(true)), []);
   useEffect(() => authEvents.on("denied", () => setDenied(true)), []);
@@ -42,6 +43,16 @@ export function AuthGate({ children }: { children: ReactNode }) {
   // How many times the read had failed while the offline gate was up: failures
   // it has already answered for. Set during render, like the setup latch below.
   if (showOffline && failedOffline !== errorUpdateCount) setFailedOffline(errorUpdateCount);
+  // And again on the render that hears the signal come back, which counts every
+  // failure landed by then as an offline one. The latch above sees only the
+  // failures React drew under the offline gate, and react-query records a
+  // failure a tick before React draws it: an `online` event inside that tick
+  // left one uncounted, and the house was blamed for a read sent with no
+  // network, and not asked again until the reader made it.
+  if (online !== wasOnline) {
+    setWasOnline(online);
+    if (online && unread) setFailedOffline(errorUpdateCount);
+  }
 
   // The signal is back and no read since has failed. Until one has, the read's
   // last error is the offline one, and the gate below would blame the house for

@@ -613,6 +613,40 @@ describe("AuthGate with no network", () => {
     expect(signIns()).toBe(0);
   });
 
+  // react-query records a failure a tick before React draws it, and the
+  // `online` event can arrive inside that tick. Counted only while the offline
+  // gate was drawn, that failure was missed: the render that heard the event
+  // read it as a failure with the signal back, said the house was not
+  // answering — about a read sent with no network — and did not ask again.
+  it("counts a failure the signal came back over, before it was drawn, as an offline one", async () => {
+    const deadlines = holdDeadlines();
+    vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+    statusHeld = true;
+    const unanswered = watchFor(UNANSWERED);
+    const { client } = renderGate(appClient());
+    await waitFor(() => expect(deadlines).toHaveLength(1));
+    expect(screen.getByRole("heading", { name: "No way to the house." })).toBeInTheDocument();
+    statusHeld = false;
+
+    // One act, so React draws nothing in between: the read gives up and the
+    // cache has the failure, then the event arrives.
+    await act(async () => {
+      deadlines[0].abort(new DOMException("signal timed out", "TimeoutError"));
+      for (let turn = 0; turn < 100; turn++) {
+        if (client.getQueryState(["auth-status"])?.status === "error") break;
+        await Promise.resolve();
+      }
+      expect(client.getQueryState(["auth-status"])?.status).toBe("error");
+      vi.spyOn(navigator, "onLine", "get").mockReturnValue(true);
+      window.dispatchEvent(new Event("online"));
+    });
+
+    expect(unanswered()).toBe(0);
+    expect(await screen.findByText("the room")).toBeInTheDocument();
+    // Asked again with the signal back, which the house is owed before it is blamed.
+    expect(statusReads()).toBe(2);
+  });
+
   it("goes offline over a failed read and back again without a sign-in frame", async () => {
     // Online, but the house did not answer.
     statusUnreachable = true;
