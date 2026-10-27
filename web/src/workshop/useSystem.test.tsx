@@ -782,7 +782,8 @@ describe("useSystem", () => {
       status: 200,
       body: [{ ...WEATHER, configured: { api_key: false } }, HOME],
     });
-    const { result } = await openBench();
+    const client = makeClient();
+    const { result } = await openBench(client);
     expect(result.current.integrations.rows["weather"]?.state).toBe("unset");
     answer("GET", INTEGRATIONS, { status: 200, body: [WEATHER, HOME] });
     hold("GET", statusPath("weather"));
@@ -795,12 +796,18 @@ describe("useSystem", () => {
     // going runs inside this one act, so it is drawn before the next line.
     const probe = route("GET", statusPath("weather"));
     await waitFor(() => expect(parked.get(probe)).toHaveLength(1));
+    const probed = () => client.getQueryState(["system", "integration-status", "weather"]);
+    const answers = probed()?.dataUpdateCount ?? 0;
     await act(async () => {
       parked.get(probe)?.shift()?.(routes.get(probe) ?? OK);
       for (let turn = 0; turn < 10; turn++) {
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
     });
+    // This probe's answer has landed — counted, because the bench's opening
+    // probe left the query a success already — so `queued` below is the row
+    // reading it beside a listing still to come, not a row yet to hear it.
+    expect(probed()?.dataUpdateCount).toBe(answers + 1);
     expect(result.current.integrations.rows["weather"]?.state).toBe("queued");
 
     unhold("GET", INTEGRATIONS);
