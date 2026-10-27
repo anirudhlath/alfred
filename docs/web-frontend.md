@@ -339,7 +339,7 @@ phase's reviews kept enforcing" below), one layer lower down:
   to it, no answer before the deadline, a proxy's 5xx or 4xx to the read, a captive
   portal's page, or the house failing to read its own store. Not a house stopped behind
   the proxy: the proxy's 502 answers the navigation first, so the app never boots to ask
-  (`docs/backlog/low/pwa-phase4-followups.md` §8). `fetchAuthStatus` (`lib/auth.ts`) gives
+  ([#406](https://github.com/anirudhlath/alfred/issues/406) §8). `fetchAuthStatus` (`lib/auth.ts`) gives
   the read a deadline of `STATUS_DEADLINE_MS`, 10 s — the service worker's navigation
   deadline — and rejects a 200 that is not the status payload, and `QUERY_DEFAULTS`
   never retries a read that ran out of time. The route answers 200 with both booleans
@@ -379,7 +379,7 @@ on any other request but a passkey attempt, or either socket closing with 4001, 
 `ExpiredGate` over the Room. Likewise `DeniedGate` rises for every 403 but the status
 read's: a network-gated route's refusal is the house's own, over these gates as over the
 Room. It also rises for a proxy's 403 on any other route, which it should not
-(`docs/backlog/low/pwa-phase4-followups.md`, §13). If the status route ever gains a
+([#406](https://github.com/anirudhlath/alfred/issues/406) §13). If the status route ever gains a
 network gate, or sends a 401 of its own, that status becomes the house's answer, and
 `api()`'s exemption (`isStatusRead`, `lib/api.ts`) has to be revisited.
 
@@ -723,7 +723,7 @@ each is named under its own rule rather than left for the next reviewer to find.
   `0.5`), a tombstone (`Tombstone.tsx:13`, `.8`), an unsent bubble (`YouBubble.tsx:15`,
   `.6`) and `All streams` (next rule, `.4`). The last three are the handoff's own values,
   so dimming them by token is a deviation the owner signs off; all four are filed in
-  `docs/backlog/low/pwa-phase4-followups.md` §15.
+  [#406](https://github.com/anirudhlath/alfred/issues/406) §15.
 - **`aria-disabled` plus a no-op handler, never `disabled`.** A control that disables
   itself under the finger that just pressed it throws focus to `<body>` mid-action, and
   where the control is described by the note the press produced — a switch and its
@@ -1319,7 +1319,7 @@ Three things about `activate` and its collection are not obvious from the code:
   on every activate. Nor is a cache safe inside `alfred-shell-<VERSION>`: a collection
   keeps only what the record or the cached shell names, its stylesheet's fonts included
   (next), and one runs after most online navigations. What that asks of phase 5 is
-  `docs/backlog/low/pwa-phase4-followups.md` §1.
+  [#406](https://github.com/anirudhlath/alfred/issues/406) §1.
 - **A record it cannot trust means keep everything.** A record that is absent, is not a
   list, or will not read is treated the same way, because deleting on a record you cannot
   read is guessing, and what it guesses with is the only offline copy of the app. The
@@ -1496,7 +1496,7 @@ only way in, short of closing every page the old worker controls. The note sits 
 Room's header only (`Room.tsx:123-124`, under `OfflineNote`), and every check downloads all
 of `sw.js` — 71 119 bytes at `0972685` — because `mount_spa` never answers a revalidation
 with a 304 and the check has no minimum interval. Both are filed
-(`docs/backlog/low/pwa-phase4-followups.md` §2 and §3).
+([#406](https://github.com/anirudhlath/alfred/issues/406) §2 and §3).
 
 ### The kill switch
 
@@ -1554,7 +1554,7 @@ each of that page's returns to the foreground logs one `InvalidStateError` as
 `service worker update check failed` — one per open page, for as long as the page lives,
 and after the revert too, until it is relaunched. Nothing is visible on screen. Those
 pages take the restored worker only at their next launch (filed:
-`docs/backlog/low/pwa-phase4-followups.md` §12).
+[#406](https://github.com/anirudhlath/alfred/issues/406) §12).
 
 **The last resort**, for a phone that is bricked and has no network to take the switch
 over: delete the home-screen icon and add it again. Nothing the house holds is lost — the
@@ -1593,7 +1593,7 @@ does to the same cache meanwhile.
 | `src/test/manifest.test.ts`, `src/test/icons.test.ts`, `src/test/index-html.test.ts` | The manifest pair, the icon pixels, the links and metas |
 
 Two things are not tested here. Nothing checks that the built `dist/sw.js` exists and is
-served as JavaScript (`docs/backlog/low/pwa-phase4-followups.md` §10). And none of it is
+served as JavaScript ([#406](https://github.com/anirudhlath/alfred/issues/406) §10). And none of it is
 WebKit: what Safari does with any of it is the phase-4 device checklist's
 (`docs/superpowers/qa/2026-09-16-pwa-phase4-ios-checklist.md`).
 
@@ -1616,7 +1616,7 @@ Read that narrowly, because it is not known to fix anything on a phone:
   manifest iOS reads may always be the dark one `index.html` ships. And iOS takes its
   launch screen from `apple-touch-startup-image`, which this app does not ship (plan
   decision 11), not from the manifest at all. Nobody has yet looked at what it shows
-  instead (`docs/backlog/low/pwa-phase4-followups.md` §6).
+  instead ([#406](https://github.com/anirudhlath/alfred/issues/406) §6).
 - **Chromium observes the link, and that is where the value and the cost both are.**
   Chrome's WebAPK update check fingerprints both colours, so crossing 07:00 or 19:00
   presents a manifest that disagrees with the installed app, which may schedule a silent
@@ -1665,7 +1665,7 @@ regenerated from a different drawing fails rather than ships.
   four (`Alfred.dc.html:669`, `:670`, `:751` and `:385-397`). What phase 4 hands phase 5
   is an app the rail's gesture installs correctly, and a worker to add `push` and
   `notificationclick` handlers to, with a condition on any cache of phase 5's own
-  (`docs/backlog/low/pwa-phase4-followups.md` §1).
+  ([#406](https://github.com/anirudhlath/alfred/issues/406) §1).
 - **Anything iOS does with the manifests or the launch screen** is unmeasured: the
   phase-4 device checklist is the only thing that settles it, and it is unrun.
 - **Trigger editing, service restart and log download** — the three things the old SPA
@@ -1682,4 +1682,4 @@ regenerated from a different drawing fails rather than ships.
 Open follow-ups: [#256](https://github.com/anirudhlath/alfred/issues/256),
 [#257](https://github.com/anirudhlath/alfred/issues/257),
 [#258](https://github.com/anirudhlath/alfred/issues/258) and
-`docs/backlog/low/pwa-phase4-followups.md`.
+[#406](https://github.com/anirudhlath/alfred/issues/406).

@@ -149,7 +149,7 @@ Phase 4: the app installs and opens with no network.
   with nothing behind them would be controls that pretend. Phase 5 owes all four (the
   handoff's copy for them is final), plus VAPID, the push adapter, the registration, and
   the worker's `push` and `notificationclick` handlers, with a condition on any cache of
-  its own. Filed, condition and all, as `docs/backlog/low/pwa-phase4-followups.md` §1.
+  its own. Filed, condition and all, as [#406](https://github.com/anirudhlath/alfred/issues/406) §1.
 - **Four things the old SPA could do and this client cannot**, which is the whole of the
   remaining parity gap (spec §8's gate is *full capability parity with the old SPA*).
   Three of them have no endpoint to call: **creating, editing or deleting a trigger**
@@ -301,7 +301,7 @@ offline, any other runtime entry is re-fetchable online, and the alternative is 
 with no ceiling. Online is the catch: a build that splits out a lazy chunk would have it
 collected at the next online navigation, since neither the record nor the shell's HTML
 names one, and then fail to load it offline. There is none today, and a build that adds
-one must add it to the keep-set first (`docs/backlog/low/pwa-phase4-followups.md` §16).
+one must add it to the keep-set first ([#406](https://github.com/anirudhlath/alfred/issues/406) §16).
 
 The keep-set is that record **union what the shell now in the cache names, union the fonts
 that shell's stylesheet names**, and neither addition is optional. A navigation's refresh

@@ -72,7 +72,7 @@ inset in standalone mode) still hold, and nothing here re-measures them.
 
 Nothing here can fail. Why the manifests may have no part in what iOS shows is
 `docs/web-frontend.md`, "The manifest pair"; this section is the measurement
-`docs/backlog/low/pwa-phase4-followups.md` §6 is waiting for.
+[#406](https://github.com/anirudhlath/alfred/issues/406) §6 is waiting for.
 
 - [ ] Install during daylight with the light theme active, kill the app, open it from the
       tile, and **record what you see** before the app paints: the colour of the screen,
@@ -129,7 +129,7 @@ itself; a proxy's 4xx or 5xx to the read is mapped there and pinned in
 - [ ] **The house stopped, behind the reverse proxy.** Stop the house, kill the app, and
       open it. Record what appears. The predicted result is the proxy's own error page,
       because the network answered and the app never boots, so the unanswered gate cannot
-      rise (`docs/backlog/low/pwa-phase4-followups.md` §8). Leave the house stopped for
+      rise ([#406](https://github.com/anirudhlath/alfred/issues/406) §8). Leave the house stopped for
       the next section
 
 ## The API is never served from cache
@@ -189,7 +189,7 @@ it on a phone yet.
       Room shows `A newer Alfred is waiting. Nothing is lost; I pick up where we left off.`
       and `Reload`
 - [ ] Open the Workshop: the note is not there, because it lives in the Room's header
-      (`docs/backlog/low/pwa-phase4-followups.md` §3). Back in the Room it is still there
+      ([#406](https://github.com/anirudhlath/alfred/issues/406) §3). Back in the Room it is still there
 - [ ] Type a few words in the composer and do not send them. Tap `Reload`. The page
       reloads **once** and does not loop, the note is gone, and the words are still in the
       field
