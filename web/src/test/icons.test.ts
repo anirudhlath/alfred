@@ -251,8 +251,14 @@ describe("icon.svg", () => {
   const source = readFileSync(join(PUBLIC_DIR, "icon.svg"), "utf8");
   // Comments are prose and must not be searched as if they were markup: the
   // file explains why the mark is not a `<text>` element, and a grep for that
-  // string finds the explanation.
-  const markup = source.replace(/<!--[\s\S]*?-->/g, "");
+  // string finds the explanation. The replace runs until nothing changes, so no
+  // comment can be left behind spliced together from the pieces of others.
+  let markup = source;
+  let previous: string;
+  do {
+    previous = markup;
+    markup = markup.replace(/<!--[\s\S]*?-->/g, "");
+  } while (markup !== previous);
 
   /** A tag's attributes, so an assertion does not depend on the order they are written in. */
   const attributes = (tag: string): Record<string, string> =>
