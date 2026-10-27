@@ -244,7 +244,7 @@ async def process_stream_entry(
 
     An event is decided once: after the gate, an event already marked decided
     (``already_decided``) is skipped, and the event is marked once its decision is counted and
-    published. A delivery that raised before then leaves it unmarked, so the replay decides.
+    published. A delivery that raised before then leaves it unmarked, so a redelivery decides.
     """
     raw_event = entry_data.get("event") or entry_data.get(b"event")
     if raw_event is None:

@@ -145,9 +145,10 @@ async def _handle_trigger_fired(
     Returning normally means "ACK this entry". That covers entries that are not
     ours (no ``event`` field, another event type on the shared stream) and
     entries that can never parse — retrying cannot fix a malformed payload, and
-    left pending it would be reclaimed for eternity. Only a failure while
-    *acting* on a valid TriggerFired propagates, leaving the entry pending for
-    the reclaim pass in ``_consume_trigger_fired``.
+    left pending it would be reclaimed for eternity. Two failures propagate,
+    leaving the entry pending for the reclaim pass in ``_consume_trigger_fired``:
+    the decided-check's Redis error (Redis cannot say whether the event was
+    decided) and a failure while *acting* on a valid TriggerFired.
 
     In shadow mode (#285) ``agent`` is unused: Reflex's decision is recorded, never executed.
     A trigger event is handled once: once its decision is counted and published it is marked

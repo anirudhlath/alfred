@@ -416,9 +416,11 @@ class AlfredConfig:
     mqtt_port: int = 1883
     lmstudio_host: str = "http://localhost:1234"
 
-    # Reflex (System 1) runs on an OpenAI-compatible server (vLLM, LM Studio), named by
-    # REFLEX_MODEL below. These two are the legacy spellings of its address and model:
-    # the host is only the VLLM_BASE_URL fallback, the model only REFLEX_MODEL's default.
+    # lmstudio_host above and these two are the legacy spellings of Reflex's server and
+    # model. No service reads them (tests/shared/test_reflex_config.py pins how they resolve):
+    # Reflex's server and model are vllm_base_url and reflex_model below, which
+    # resolve_llm_settings reads from the environment, LMSTUDIO_HOST, OPENAI_COMPAT_HOST and
+    # OPENAI_COMPAT_MODEL included.
     openai_compat_host: str = DEFAULT_OPENAI_COMPAT_HOST
     openai_compat_model: str = ""
     ha_host: str = "http://homeassistant.local:8123"
@@ -524,10 +526,9 @@ class AlfredConfig:
         embedding_timeout_seconds = positive_seconds_env(
             "EMBEDDING_TIMEOUT_SECONDS", DEFAULT_EMBEDDING_TIMEOUT_SECONDS
         )
-        # Same blank-means-default rule on the reflex side: `.env.example` ships
-        # OPENAI_COMPAT_HOST empty, and "" would satisfy os.getenv, defeat the
-        # LMSTUDIO_HOST fallback this chain documents, and leave a schemeless "" as the
-        # server's address (httpx UnsupportedProtocol).
+        # The legacy Reflex fields keep resolve_llm_settings's blank-means-default rule:
+        # `.env.example` ships OPENAI_COMPAT_HOST empty, and "" would satisfy os.getenv and
+        # defeat the LMSTUDIO_HOST fallback.
         lmstudio_host = os.getenv("LMSTUDIO_HOST", "").strip() or DEFAULT_OPENAI_COMPAT_HOST
         openai_compat_host = os.getenv("OPENAI_COMPAT_HOST", "").strip() or lmstudio_host
         return cls(

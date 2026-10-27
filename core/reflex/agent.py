@@ -101,9 +101,17 @@ async def decide(
     """The proposal *agent* makes for *prompt*; *tools* are the ones the prompt showed.
 
     A transport or provider failure propagates, so the runner leaves the entry pending and
-    the reclaim pass replays it. A reply with nothing in it (an empty message, or all of
-    the token cap spent before any text) is an ``invalid`` proposal like any other reply
-    that is not a decision.
+    the reclaim pass replays it. Before it propagates, the retrying transport
+    (``shared/llm_http.py``) may try the request up to 3 times, retrying only within 30 s of
+    the first try, each try bounded by ``REQUEST_TIMEOUT_S``. Reflex decides one event at a
+    time, so a server outage serialises its loop behind those tries: accepted while Reflex
+    runs in shadow.
+
+    ``UnexpectedModelBehavior`` is an ``invalid`` proposal, ACKed like any other, with the
+    exception's message in ``problem``. That covers a reply with nothing in it (an empty
+    message, or all of the token cap spent before any text), a malformed body from the
+    server and a content-filter stop. Narrow it when Reflex acts: a malformed body is worth
+    a retry then.
     """
     try:
         outcome = await infer(agent, prompt, tools)
