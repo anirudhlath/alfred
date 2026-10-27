@@ -766,8 +766,11 @@ each is named under its own rule rather than left for the next reviewer to find.
   `REGISTRY_DOWN_NOTE` over the adapters it does have, and the health grid's home card
   says `home assistant · registry unavailable` where it would otherwise have claimed
   `not registered` about a service the server never looked for.
-- **Never let a client-set mark outlive its evidence.** A `Pending` lives exactly
-  `REREAD_MS` (60 s), after which the list itself is the evidence; `useSystem` prunes
+- **Never let a client-set mark outlive its evidence.** A `Pending` stands for
+  `REREAD_MS` (60 s) and then until the read that window asks for lands, after which the
+  list itself is the evidence. It comes down in the render that draws that read and not
+  when the read is sent: dropped at the window, it left the row on the state the tap
+  meant to change, with nothing under it, for a round trip. `useSystem` prunes
   its `ended` and `saves` marks against the records still in the last read, so a mark
   cannot keep answering for a session or an integration the house has forgotten; a
   health dot goes out with the rest of the grid once the reads stop landing, even though

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { notifyManager, useQuery, useQueryClient, type QueryState } from "@tanstack/react-query";
 import { ApiError, errorText } from "@/lib/api";
 import {
   fetchTriggers,
@@ -11,12 +11,13 @@ import {
 } from "@/lib/triggers";
 
 /**
- * How long a row's note lives, and how long after a request the list is read
- * again. `POST …/enabled` answers `{"status":"queued","effective_within_seconds":60}`:
- * the route publishes to the actions stream and the triggers process applies
- * the change inside its own 60 s cache window. Nothing tells this client when
- * that happened — so the row waits out the window with a note on it, and then
- * the list is read again.
+ * How long after a request the list is read again, and how long a row's note
+ * stands before that read can take it down. `POST …/enabled` answers
+ * `{"status":"queued","effective_within_seconds":60}`: the route publishes to
+ * the actions stream and the triggers process applies the change inside its
+ * own 60 s cache window. Nothing tells this client when that happened — so the
+ * row waits out the window with a note on it, and then the list is read again
+ * and the note comes down with the rows that read brings back.
  *
  * A *refused* request queued nothing and the list cannot have changed for it,
  * and it takes the same window all the same: the failure note is a client claim
@@ -32,6 +33,17 @@ export const REREAD_MS = 60_000;
  */
 const STALE_MS = 30_000;
 
+const TRIGGERS_KEY = ["triggers"] as const;
+
+/**
+ * Every read of the list that has landed, answered or refused. A closed
+ * window's note waits for this number to move. A refusal counts: the bench then
+ * says the list could not be read, which is the server speaking for the row too,
+ * and a note held up until some later success would stand on nothing.
+ */
+const landedReads = (state: QueryState | undefined): number =>
+  (state?.dataUpdateCount ?? 0) + (state?.errorUpdateCount ?? 0);
+
 /** What the chips filter by: a kind, or every kind at once. */
 export type KindFilter = "all" | TriggerKind;
 
@@ -40,8 +52,12 @@ export type PendingKind = "enabling" | "disabling" | "firing";
 
 /**
  * A request this client has sent and cannot yet see the effect of. One per row,
- * living exactly `REREAD_MS` — a client claim must not outlive the evidence for
- * it (spec §5.2), and after the window the list itself is the evidence.
+ * standing for `REREAD_MS` and then until the read that window asks for has
+ * landed — a client claim must not outlive the evidence for it (spec §5.2), and
+ * after the window the list itself is the evidence. Not a moment less, either:
+ * the note leaves in the render that draws that read, because a note dropped
+ * when the read was *asked for* left the row, for a round trip, showing the
+ * state the tap meant to change with nothing under it to say so.
  */
 export interface Pending {
   kind: PendingKind;
@@ -61,6 +77,21 @@ export interface Pending {
   status?: number;
 }
 
+/**
+ * A note as the hook holds it. `closed` is set when its window closes, to
+ * `landedReads` at that moment: the note comes down in the first render whose
+ * count differs — any read landing since, or a cache cleared under it.
+ */
+interface Note extends Pending {
+  closed?: number;
+}
+
+/** The notes whose windows have not closed, or whose closing read has not landed. */
+const standing = (notes: Record<string, Note>, landed: number): Record<string, Note> =>
+  Object.fromEntries(
+    Object.entries(notes).filter(([, note]) => note.closed === undefined || note.closed === landed),
+  );
+
 export interface Triggers {
   kind: KindFilter;
   setKind: (kind: KindFilter) => void;
@@ -71,7 +102,10 @@ export interface Triggers {
   /** The one expanded row's `trigger_id`. */
   open: string | null;
   toggleOpen: (id: string) => void;
-  /** Rows with a request in flight or inside its window, by `trigger_id`. */
+  /**
+   * Rows with a request in flight, inside its window, or waiting on the read
+   * that window asked for, by `trigger_id`.
+   */
   pending: Record<string, Pending>;
   /** Queue the opposite of what the row is showing. The row does not move. */
   toggle: (trigger: Trigger) => void;
@@ -119,18 +153,38 @@ export function useTriggers(enabled: boolean): Triggers {
   const queryClient = useQueryClient();
   const [kind, setKind] = useState<KindFilter>("all");
   const [open, setOpen] = useState<string | null>(null);
-  const [pending, setPending] = useState<Record<string, Pending>>({});
+  const [pending, setPending] = useState<Record<string, Note>>({});
   const [fired, setFired] = useState<Record<string, number>>({});
 
   // No `refetchInterval`: a trigger list changes when a person or the LLM
   // changes it, never on its own, and the one moment this client has reason to
   // doubt it is the window it opened itself.
   const query = useQuery({
-    queryKey: ["triggers"],
+    queryKey: TRIGGERS_KEY,
     queryFn: fetchTriggers,
     enabled,
     staleTime: STALE_MS,
   });
+
+  // Read the way `useIsFetching` reads the cache. `useQuery` builds its result
+  // from the live query state at render, and so does this snapshot, so the
+  // render that draws a re-read's rows is the render that sees its count move.
+  const subscribe = useCallback(
+    (onChange: () => void) =>
+      queryClient.getQueryCache().subscribe(notifyManager.batchCalls(onChange)),
+    [queryClient],
+  );
+  const landed = useSyncExternalStore(subscribe, () =>
+    landedReads(queryClient.getQueryState(TRIGGERS_KEY)),
+  );
+
+  // A closed window's note comes down in the render that draws the read it was
+  // waiting for. Adjusted during render rather than filtered on the way out, so
+  // a dropped note is gone from state too and a later count can never bring it
+  // back.
+  if (Object.values(pending).some((note) => note.closed !== undefined && note.closed !== landed)) {
+    setPending((current) => standing(current, landed));
+  }
 
   // One window per row. A `ref` rather than state because nothing renders from
   // it: what the reader sees is `pending`, and a timer handle changing must not
@@ -175,20 +229,20 @@ export function useTriggers(enabled: boolean): Triggers {
           // Hygiene, not behaviour: clearing a handle that has already fired is
           // a no-op, and this only keeps the map to the rows still counting.
           running.delete(id);
-          // The row is waiting on nothing now: an answer still in flight has
-          // been outlived by its own note and must not reopen one.
+          // The row is waiting on no answer now: one still in flight has been
+          // outlived by its window and must not rewrite the note.
           waiting.current.delete(id);
-          // The note is always this window's — the same call set one and opened
-          // the other — so there is nothing to check before dropping it.
-          setPending((current) => {
-            const next = { ...current };
-            delete next[id];
-            return next;
-          });
+          // The note stays up until the read below lands, and is marked with
+          // the count it is waiting to see move. The note is always this
+          // window's — the same call set one and opened the other — so there is
+          // nothing to check before marking it.
+          const mark = landedReads(queryClient.getQueryState(TRIGGERS_KEY));
+          setPending((current) => ({ ...current, [id]: { ...current[id], closed: mark } }));
           // Whatever the note said, the server now speaks for the row. A
           // disabled bench is invalidated without being run, so this costs a
-          // read only if someone is looking.
-          void queryClient.invalidateQueries({ queryKey: ["triggers"] });
+          // read only if someone is looking — and the note waits for the read
+          // the bench runs on the way back in.
+          void queryClient.invalidateQueries({ queryKey: TRIGGERS_KEY });
         }, REREAD_MS),
       );
     },
