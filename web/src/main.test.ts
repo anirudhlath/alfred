@@ -1,5 +1,5 @@
 import { StrictMode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   createRoot,
@@ -10,10 +10,8 @@ const {
   render,
 } = vi.hoisted(() => {
   const render = vi.fn();
-  // Pending until a test settles it. main.tsx runs once per module load, so
-  // whichever test imports it first is the one that runs it; the test that
-  // wants a failed registration rejects this itself rather than hoping it is
-  // the test that ran main.
+  // Pending until a test settles it: the test that wants a failed registration
+  // rejects the promise its own run of main was handed.
   let rejectInstall: (error: unknown) => void = () => {};
   return {
     createRoot: vi.fn(() => ({ render })),
@@ -43,6 +41,13 @@ vi.mock("@/lib/sw", async (importOriginal) => ({
   installServiceWorker,
 }));
 vi.mock("react-dom/client", () => ({ createRoot }));
+
+// main.tsx runs once per module load, and vitest clears every mock's calls
+// before each test (`clearMocks`, on by default since vitest 5). So each test
+// loads it afresh, and sees only the calls of the run it caused.
+beforeEach(() => {
+  vi.resetModules();
+});
 
 describe("main", () => {
   it("installs the viewport and audio hooks, then renders the App under StrictMode", async () => {
