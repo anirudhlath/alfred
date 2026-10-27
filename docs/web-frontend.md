@@ -410,7 +410,9 @@ because `--surface` is only 1.13:1 off `--bg` in dark and 1.08:1 in light;
 unavailable, or waiting on its request, which adds `aria-busy` — is `--fg2` on the page.
 The handoff draws no unavailable or busy state for a gate's buttons, so this style is
 invented, and the plan's deviation 13 puts it to the owner. When setup advances a step,
-the focus moves to the new step's title.
+the focus moves to the new step's title, in a layout effect, so it is there in the first
+frame the step paints; and the title is described by the step's foot
+(`aria-describedby`) whenever the foot has text, so the move reads both.
 
 ---
 
@@ -659,7 +661,7 @@ answer, which is how Memory's scratchpad card reads the Librarian's schedule
 **The episodic adapter.** `GET /api/admin/memory/episodic` answers in three shapes for
 what the design draws as one row, and `toEpisodicRow` in `lib/memory.ts` is the one
 place that knows it. Nothing above that file branches on a *shape* again — `MemoryBench`
-reads `row.store` twice, for the muted cold line and the store dot (`MemoryBench.tsx:118`),
+reads `row.store` once (`MemoryBench.tsx:126`), for the muted cold line and the store dot,
 and never to decide what a row says:
 
 | | browse · hot (Redis hash) | browse · cold (SQLite row) | search (`EpisodicResult`) |
@@ -702,7 +704,7 @@ and answers with the new state — DND set/clear, ending a session, and `Save & 
 which is a `PUT` followed by a separate status probe, hence the two words in its note
 (`saved · testing`). Even those move on the *re-read* rather than on the tap: the visible
 beat between the two is the point. Accent is never success: it marks a decision waiting
-on the world, and as text it is always `--accent-text` (`TriggerRow.tsx:271-273`) — raw
+on the world, and as text it is always `--accent-text` (`TriggerRow.tsx:258-262`) — raw
 `--accent` is a fill. Green is the mirror image: `--green` fills exactly one thing in the
 client, the Door's `Applied` dot (`DoorLayer.tsx:43`), and every green *word* and *dot* on
 the Workshop is `--green-text`. There is no red.
@@ -745,7 +747,8 @@ each is named under its own rule rather than left for the next reviewer to find.
   (`ActivityBench.tsx:245-251`), phase-2 code phase 3 did not reopen, filed rather than
   fixed ([#258](https://github.com/anirudhlath/alfred/issues/258) §21). And the composer's
   `Hold to talk` is a real `disabled` while the house is unreachable
-  (`HoldToTalk.tsx:117`), phase-1 code.
+  (`HoldToTalk.tsx:117`), phase-1 code, filed rather than fixed
+  ([#406](https://github.com/anirudhlath/alfred/issues/406) §17).
 - **Never say the house is empty before the server has answered.** An empty list has
   three possible meanings and they are different news: the read was refused
   (`Routines could not be read.`), the read has not landed
@@ -763,8 +766,8 @@ each is named under its own rule rather than left for the next reviewer to find.
   signal — the only way a bench meets one, since nothing past the gates is reachable before
   the house has answered. A launch that begins offline fires no such event and pauses
   nothing, and that case is the gates' ("The gates" above). All three benches carry the
-  same `read` flag for it (`useMemory.ts:256-261`, `useSystem.ts:937-963`,
-  `useTriggers.ts:305`), and a bench that has not read says **nothing** rather than
+  same `read` flag for it (`useMemory.ts:270-275`, `useSystem.ts:944-970`,
+  `useTriggers.ts:359`), and a bench that has not read says **nothing** rather than
   guessing which of the three it is.
   Connected services has a fourth: a read that half answered. `GET /api/integrations`
   lists the adapters even when the server cannot read the tool registry, and marks that
@@ -1317,7 +1320,7 @@ docs route, or changing either of `mount_spa`'s lists, fails it.
 | Event | What it does |
 |---|---|
 | `install` | Fetches `/index.html` past the HTTP cache (`cache: "reload"`) — the one fetch in the worker that asks past it, since `/index.html` is the one URL a deploy rewrites under the same name — and refuses it unless it is a 200 `text/html` that names at least one `/assets/` URL. Fetches each asset it names, the entry chunk and the stylesheet, through the HTTP cache: a hashed URL's bytes cannot change, and `SpaCacheMiddleware` marks an `/assets/` answer `immutable` only below 400 and never when it is `text/html`, so a missing file — a `no-cache` 404, or the app's own page where no `/assets` mount exists — is nothing the HTTP cache can pin. Any failure fails the install. Reads the stylesheet for its `.woff2` URLs and fetches those the same way, skipping a font that fails rather than failing the install. Writes the assets, then the fonts, then the shell, then the record of what it cached at `/__shell-manifest` — the record last, because it is the install's claim to have finished. Measured in Chromium, a first install makes one fetch past the HTTP cache, 1 728 bytes, where asking past it for everything made 11 and 628 111, and it no longer downloads again the entry chunk and stylesheet the page has just loaded. **Never calls `skipWaiting()`.** |
-| `activate` | Deletes every other cache on the origin. Then collects its own: deletes every entry that neither the record nor the shell now in the cache names, itself or through its stylesheet, and then calls `clients.claim()`. A navigation's refresh runs the same collection once it has published a shell. |
+| `activate` | Deletes every other cache on the origin. Then collects its own: deletes every entry that none of the record, the shell now in the cache and the shell this worker last served from it names, itself or through its stylesheet, and then calls `clients.claim()`. A navigation's refresh runs the same collection once it has published a shell. |
 | `fetch` | `isRefused` first. A navigation is network-first, and an `/assets/` URL is cache-first. Everything else (the manifests, the icons) is left to the network untouched. |
 | `message` | `{ type: "SKIP_WAITING" }` calls `skipWaiting()`. Nothing else is acted on. |
 
@@ -1327,9 +1330,9 @@ Three things about `activate` and its collection are not obvious from the code:
   cache that any code on this hostname owns. So the purge assumes the origin is Alfred's
   alone, since a second app or worker scope behind the same hostname would lose its caches
   on every activate. Nor is a cache safe inside `alfred-shell-<VERSION>`: a collection
-  keeps only what the record or the cached shell names, its stylesheet's fonts included
-  (next), and one runs after most online navigations. What that asks of phase 5 is
-  [#406](https://github.com/anirudhlath/alfred/issues/406) §1.
+  keeps only what the record or a shell it keeps names, that shell's stylesheet's fonts
+  included (next), and one runs after most online navigations. What that asks of phase 5
+  is [#406](https://github.com/anirudhlath/alfred/issues/406) §1.
 - **A record it cannot trust means keep everything.** A record that is absent, is not a
   list, or will not read is treated the same way, because deleting on a record you cannot
   read is guessing, and what it guesses with is the only offline copy of the app. The
@@ -1339,29 +1342,30 @@ Three things about `activate` and its collection are not obvious from the code:
   a font's hash publishes a stylesheet naming fonts only the page fetches. The collection
   reads each stylesheet the shell names back out of the cache with install's own
   extraction: one that will not read means keep everything, as a shell that will not read
-  does, and one that is not in the cache names nothing. Each delete is caught on its own,
-  so one storage failure costs neither the deletes behind it nor the claim.
+  does, cached or last served, and one that is not in the cache names nothing. Each delete
+  is caught on its own, so one storage failure costs neither the deletes behind it nor the
+  claim.
 - **A collection runs after every refresh too, and leaves two deploys, or three.** An
   ordinary deploy changes no byte of `sw.js`, so it installs and activates nothing; with
   activate the only collection, the cache grew by an entry chunk and a stylesheet on every
   deploy (measured in Chromium: 14, 16, 18 and 20 keys over four). `refresh()` therefore
   runs `collect()` once it has published a shell. Refreshes run one at a time, a failed
   one not stopping the queue, though one that never settles — a cache write or read that
-  never resolves — holds it until the browser stops the worker. Each collection leaves
-  the record's deploy and the cached shell's, one when they agree: 14 keys after each of
-  the same four deploys. It also keeps what the shell this worker last served from the
-  cache names, because a launch served one deploy's cached shell while a refresh
-  publishes the next would otherwise lose that shell's chunk in the moment before the
-  page asks for it. That is a third deploy at most, and only while the worker runs: it
-  remembers one such shell, and none once it is stopped and started again. A refresh
-  collects nothing while a worker is installing, since that install's files are named by
-  nothing until its record lands; the install writes its deploy beside what is there, so
-  on an ordinary update, whose refresh publishes the deploy being installed, the deploy
-  that refresh replaced stays for a while too — three deploys, where nothing was served
-  from the cache — and so does each further deploy a refresh publishes before the install
-  ends. The next collection takes the extra. The race with an install is narrowed, not
-  closed: the refresh looks at the registration first, and every collection snapshots the
-  cache's keys before it reads the record.
+  never resolves — holds it until the browser stops the worker. Each collection leaves the
+  record's deploy and the cached shell's, one when they agree: 14 keys after each of the
+  same four deploys. It also keeps what the shell this worker last served from the cache
+  names, with its stylesheet's fonts, because a launch served one deploy's cached shell
+  while a refresh publishes the next would otherwise lose that shell's chunk in the moment
+  before the page asks for it. That is a third deploy at most, and only while the worker
+  runs: it remembers one such shell, and none once it is stopped and started again. A
+  refresh collects nothing while a worker is installing, since that install's files are
+  named by nothing until its record lands; the install writes its deploy beside what is
+  there, so on an ordinary update, whose refresh publishes the deploy being installed, the
+  deploy that refresh replaced stays for a while too — three deploys, where nothing was
+  served from the cache — and so does each further deploy a refresh publishes before the
+  install ends. The next collection takes the extra. The race with an install is narrowed,
+  not closed: the refresh looks at the registration first, and every collection snapshots
+  the cache's keys before it reads the record.
 
 ```mermaid
 flowchart TD
@@ -1426,10 +1430,10 @@ storage is full serves what a browser with no worker would.
 `alfred-shell-<VERSION>`. Bump it when the **policy** changes in a way the old cache must
 not survive, and not on a deploy: asset URLs are content-hashed, and each collection,
 after every refresh that publishes a shell and at activate (the record plus what the
-cached shell names, its stylesheet's fonts included), is what clears an old build out of
-the current cache. The tests read `VERSION` from `sw.js` rather than restating it. The kill
-switch's tests name `alfred-shell-v1` literally, because the switch deletes every cache,
-whatever its name.
+cached shell and the last shell served from the cache name, their stylesheets' fonts
+included), is what clears an old build out of the current cache. The tests read `VERSION`
+from `sw.js` rather than restating it. The kill switch's tests name `alfred-shell-v1`
+literally, because the switch deletes every cache, whatever its name.
 
 A bump is a byte change to `sw.js`, and so is any edit at all, a comment included. Every
 one of them installs a new worker on every phone at its next update check (next).
@@ -1442,8 +1446,9 @@ Two different things arrive, and only one of them is an "update" to the worker:
   byte for byte the same. No worker installs, nothing waits, and no note appears. An open
   app takes the deploy at its next navigation, because navigations are network-first, and
   that navigation's refresh updates the offline copy in the background, assets first and
-  shell last, and then collects what neither the record nor the new shell names (above).
-  A refresh that fails part way leaves the old shell whole.
+  shell last, and then collects what none of the record, the new shell and the last shell
+  served from the cache names (above). A refresh that fails part way leaves the old shell
+  whole.
 - **A changed `sw.js`** installs a new worker at the next update check. The browser runs
   one at every navigation, and `lib/sw.ts` runs one on every return to the foreground
   (`registration.update()` from `onVisible`), because an installed PWA is brought back
@@ -1503,8 +1508,8 @@ after the app is handed to React:
 A reload does not take a waiting worker: the old page stays until the new one's response
 arrives, so the two overlap and the old worker never runs out of pages. The tap is the
 only way in, short of closing every page the old worker controls. The note sits in the
-Room's header only (`Room.tsx:123-124`, under `OfflineNote`), and every check downloads all
-of `sw.js` — 71 119 bytes at `0972685` — because `mount_spa` never answers a revalidation
+Room's header only (`Room.tsx:124-125`, under `OfflineNote`), and every check downloads all
+of `sw.js` — 75 479 bytes at `1d166e3` — because `mount_spa` never answers a revalidation
 with a 304 and the check has no minimum interval. Both are filed
 ([#406](https://github.com/anirudhlath/alfred/issues/406) §2 and §3).
 
@@ -1532,16 +1537,18 @@ from would never stop. The file's header has the measurements.
    byte, and only then, every test that reads the worker's bytes stands down: the two
    files that do, `src/test/sw.test.ts` and `src/test/sw-server-routes.test.ts`, each run
    one passing test that says the switch is fired (a warning on the run in GitHub
-   Actions). CI keeps that true before anyone needs it: every run of the web job also
-   runs the whole suite on a fired copy of the tree, `sw.kill.js` copied over `sw.js`, so
-   a test that would fail the firing commit fails the pull request that adds it. Beside
-   it, a test that runs in either tree (`sw.test.ts:80`) fails if any file under `src/`
-   loads `public/sw.js` without its own `const FIRED =` and `.skipIf(FIRED)`. That one
-   checks per file, not per block; a block in one of those files that stops standing down
-   is the fired run's to catch. `src/lib/auth.test.ts` no longer reads `sw.js`:
-   its check that the worker's `TIMEOUT_MS` equals the page's `STATUS_DEADLINE_MS` is in
-   `sw.test.ts`'s `navigations` block (`sw.test.ts:2260`). Measured on a fired tree at
-   `0972685`: 0 failed, 1 752 passed and 263 skipped, and the two warnings.
+   Actions). CI keeps that true before anyone needs it: every run of the web job also runs
+   the whole suite on a fired copy of the tree, `sw.kill.js` copied over `sw.js`, so a
+   test that would fail the firing commit fails the pull request that adds it. Beside it,
+   a test that runs in either tree (`sw.test.ts:81`) fails if any file under `src/` loads
+   `public/sw.js` without its own `const FIRED =` and `.skipIf(FIRED)`. That one checks
+   per file, not per block; a block in one of those files that stops standing down is the
+   fired run's to catch. `src/lib/auth.test.ts` no longer reads `sw.js`: its check that
+   the worker's `TIMEOUT_MS` equals the page's `STATUS_DEADLINE_MS` is in `sw.test.ts`'s
+   `navigations` block (`sw.test.ts:2294`). Measured on a fired tree at `1d166e3`: 0
+   failed, 1 840 passed and 269 skipped, and the two warnings. The warnings come from the
+   job's ordinary test step; the fired copy runs with `--reporter=default`, so on a tree
+   that is not fired it posts none, and a run carrying the two is a fired tree.
 3. Merge it; merging deploys it. Every installed copy takes it at its next update check —
    a navigation, or a return to the foreground.
 4. Afterwards, **revert the firing commit** (a pull request of its own), and ship the fix.
@@ -1575,12 +1582,15 @@ have to sign in again.
 
 `src/test/sw-harness.ts` builds a fake `ServiceWorkerGlobalScope` and evaluates the shipped
 bytes of `public/sw.js` and `public/sw.kill.js` in it with
-`new Function("self", ...SEALED, source)`. The worker reaches every global through
-`self.`, which is the fake scope. The bare globals a worker must not use are passed as
-parameters too, each sealed behind a `Proxy` that throws, so a bare `caches` or `fetch`
-fails the test instead of reaching jsdom or Node. The convention is enforced in source as
-well: `no-restricted-globals` in `web/eslint.config.js` rejects a bare global at lint
-time, which `globals.serviceworker` would otherwise allow.
+`new Function("self", ...SEALED, source)`. Ten globals are reached only through `self.`,
+which is the fake scope: `fetch`, `caches`, `clients`, `registration`, `location`,
+`setTimeout`, `clearTimeout`, `AbortController`, `addEventListener` and `skipWaiting`.
+Those ten, `SEALED`, are passed as parameters too, each sealed behind a `Proxy` that
+throws, so a bare `caches` or `fetch` fails the test instead of reaching jsdom or Node.
+The language's own globals, and `URL` and `Response`, are reached bare: none of them
+reaches outside the worker, and the tests run the real ones. The rule is enforced in
+source as well: `no-restricted-globals` in `web/eslint.config.js` rejects a bare use of
+any of the ten at lint time, which `globals.serviceworker` would otherwise allow.
 
 Two facts about the environment shape the harness. Requests are plain objects, because
 undici's `Request` refuses `mode: "navigate"`. And `Response` is Node's global, since jsdom
@@ -1591,13 +1601,15 @@ never answers. `late(pathname, ms)` answers, or fails, `ms` after it is asked: t
 a worker has stopped waiting for, and what the worker does when the answer turns up after
 all. `holdPut(key)` holds a `Cache.put` after its body is read and before it lands, which
 is how a test stops an install part way through its writes and watches what a refresh
-does to the same cache meanwhile.
+does to the same cache meanwhile. `holdRead(key)` holds the body of the next match for a
+key, and `refuseRead(key)` fails it as it is read — each once, so one reader's copy of an
+entry can be held or failed while another reader of the same key goes on.
 
 | File | Covers |
 |---|---|
 | `src/test/sw.test.ts` | The worker, event by event |
 | `src/test/sw-kill.test.ts` | The kill switch, in the same fake scope |
-| `src/test/sw-harness.test.ts` | The fake scope itself: `ExtendableEvent`, `Cache.put`, `Clients.matchAll`, which worker controls each open page, the clock, and the late answers and held puts (`late`, `holdPut`) |
+| `src/test/sw-harness.test.ts` | The fake scope itself: `ExtendableEvent`, `Cache.put`, `Clients.matchAll`, which worker controls each open page, the clock, and the late answers, held puts and held or failed reads (`late`, `holdPut`, `holdRead`, `refuseRead`) |
 | `src/test/sw-server-routes.test.ts` | `NEVER` and `NEVER_UNDER` against the routes `create_app` and `mount_spa` declare |
 | `src/lib/sw.test.ts` | The page's half, against a fake `navigator.serviceWorker` |
 | `src/test/manifest.test.ts`, `src/test/icons.test.ts`, `src/test/index-html.test.ts` | The manifest pair, the icon pixels, the links and metas |
