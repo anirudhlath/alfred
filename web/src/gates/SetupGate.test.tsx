@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { UserEvent } from "@testing-library/user-event";
@@ -451,9 +451,15 @@ describe("SetupGate — step 2, the attention set", () => {
     const user = userEvent.setup();
     stubApi({ ...HAPPY, "/api/admin/attention": { body: { domains: [] } } });
     const spy = vi.fn();
+    const committed = vi.fn();
     // What AuthGate does: an inline closure, so `onDone` is new on every render.
     function Parent() {
       const [renders, setRenders] = useState(0);
+      // A parent's effects run after its children's in the same commit, so by
+      // the time this hears a render, SetupGate's effects have run on its onDone.
+      useEffect(() => {
+        committed(renders);
+      }, [renders]);
       return (
         <SetupGate
           onDone={() => {
@@ -473,8 +479,10 @@ describe("SetupGate — step 2, the attention set", () => {
     await screen.findByLabelText("Access Token");
     await user.click(screen.getByRole("button", { name: "Do this later" }));
 
-    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The skip's onDone renders the parent again, which hands SetupGate a new
+    // one. Once that render's effects have run, a skip that fires again on a
+    // new onDone has had its chance, and must not have taken it.
+    await waitFor(() => expect(committed).toHaveBeenCalledWith(1));
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
