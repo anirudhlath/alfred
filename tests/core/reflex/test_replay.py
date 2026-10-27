@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING
 
 import fakeredis
 import pytest
-from core.reflex.replay import ERROR, Outcome, parse_args, summarize
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from bus.schemas.events import (
@@ -30,6 +29,7 @@ from core.reflex import replay
 from core.reflex.decision_log import DecisionRecord
 from core.reflex.prompt import build_state_change_prompt, build_trigger_prompt
 from core.reflex.prose import repo_prose
+from core.reflex.replay import ERROR, Outcome, parse_args, summarize
 from core.reflex.tool_registry import ToolInfo
 from shared.config import AlfredConfig
 from shared.streams import REFLEX_DECISION_LOG_STREAM
