@@ -714,8 +714,10 @@ the Workshop is `--green-text`. There is no red.
 Five findings came back often enough across the review rounds to be house style now.
 The first two govern **anything a reader must read to trust the screen** — a state word, a
 value, a label, a control — and not decoration that already carries a text equivalent.
-Two of the five have live counterexamples in the tree, all of them older than the rules;
-each is named under its own rule rather than left for the next reviewer to find.
+Two of the five have live counterexamples in the tree, all of them older than the rules
+but the Door's `Don't`, which master's deferred approvals added after them
+([#391](https://github.com/anirudhlath/alfred/pull/391)); each is named under its own rule
+rather than left for the next reviewer to find.
 
 - **Dim by token, never by `opacity`.** A spent one-shot, an offline health grid and an
   ended session all recede by swapping to `--fg2`/`--muted`, not by an alpha. A
@@ -727,11 +729,12 @@ each is named under its own rule rather than left for the next reviewer to find.
   drew — but the label is what a screen reader gets, and a low-vision sighted reader gets
   the bars. At `0.7` over `--accent` they composited to 1.67:1 on `--bg` in light. They
   dim by token now (`--muted`, with `--accent-text` for the newest), and both pairs are
-  measured in `src/test/contrast.test.ts` like every other one. Four dims older than the
-  rule are left, and none is measured: the Door's offline track (`SlideToConfirm.tsx:149`,
-  `0.5`), a tombstone (`Tombstone.tsx:13`, `.8`), an unsent bubble (`YouBubble.tsx:15`,
-  `.6`) and `All streams` (next rule, `.4`). The last three are the handoff's own values,
-  so dimming them by token is a deviation the owner signs off; all four are filed in
+  measured in `src/test/contrast.test.ts` like every other one. Five dims are left, and
+  none is measured: the Door's offline track (`SlideToConfirm.tsx:149`, `0.5`) and its
+  offline `Don't` (`DoorLayer.tsx:207`, `0.5`, next rule), a tombstone
+  (`Tombstone.tsx:13`, `.8`), an unsent bubble (`YouBubble.tsx:15`, `.6`) and
+  `All streams` (next rule, `.4`). The last three are the handoff's own values, so
+  dimming them by token is a deviation the owner signs off; all five are filed in
   [#406](https://github.com/anirudhlath/alfred/issues/406) §15.
 - **`aria-disabled` plus a no-op handler, never `disabled`.** A control that disables
   itself under the finger that just pressed it throws focus to `<body>` mid-action, and
@@ -742,12 +745,14 @@ each is named under its own rule rather than left for the next reviewer to find.
   the drain held while its request is in flight and once it reads `Queued`: a held one is
   `aria-disabled`, keeps the focus of the finger or key that pressed it, and dims by token
   ("The gates" has the style), and a gate's button held on its request adds `aria-busy`.
-  Two controls predate the rule and still break it. Activity's `All streams`
-  button breaks both rules at once — a real `disabled` carrying `opacity: 0.4`
-  (`ActivityBench.tsx:245-251`), phase-2 code phase 3 did not reopen, filed rather than
-  fixed ([#258](https://github.com/anirudhlath/alfred/issues/258) §21). And the composer's
+  Three controls still break it. Activity's `All streams` button breaks both rules at
+  once — a real `disabled` carrying `opacity: 0.4` (`ActivityBench.tsx:245-251`),
+  phase-2 code phase 3 did not reopen, filed rather than fixed
+  ([#258](https://github.com/anirudhlath/alfred/issues/258) §21). The composer's
   `Hold to talk` is a real `disabled` while the house is unreachable
-  (`HoldToTalk.tsx:117`), phase-1 code, filed rather than fixed
+  (`HoldToTalk.tsx:117`), phase-1 code. So is the Door's `Don't`, which carries
+  `opacity: 0.5` as well (`DoorLayer.tsx:202-210`) and came with master's deferred
+  approvals. Both are filed rather than fixed
   ([#406](https://github.com/anirudhlath/alfred/issues/406) §17).
 - **Never say the house is empty before the server has answered.** An empty list has
   three possible meanings and they are different news: the read was refused
