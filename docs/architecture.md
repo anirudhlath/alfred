@@ -902,6 +902,7 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:attribution:causes:<UTC date>` | Hash | One counter per cause (`person`, `alfred`, `automation`, `outside`, `unknown`) for that UTC day's state changes that passed the availability bridge (TTL 30 days) |
 | `alfred:attribution:counted:{entry_id}` | String | Marks a `alfred:home:state_changed` entry as counted, so a redelivered entry is counted once (`SET NX`, TTL 600s, `REPLAY_MARKER_TTL_SECONDS`) |
 | `alfred:reflex:decision_log` | Stream | One record per decision that reached the model — event, cause, exact prompt, proposal — for slice 2's replay set; kept up to 30 days or `MAXLEN ~ 10000`, whichever comes first (`core/reflex/decision_log.py`) |
+| `alfred:reflex:decided:{event_id}` | String | Marks an event Reflex has decided, so a redelivered one is not inferred again (`SET NX EX`, TTL 600s, `REPLAY_MARKER_TTL_SECONDS`; set after the decision is counted and published) |
 | `alfred:observer:seen:{entity_id}` | String | Per-entity passive-observation debounce (`SET NX EX`, TTL `OBSERVATION_DEBOUNCE_SECONDS`, default 300); present means "already recorded this entity recently, skip" |
 | `alfred:memory:ingest:attempts` | Hash | Stream-entry ID → delivery count for the Memory Ingestor; at 5 the entry is ACK-dropped so a deterministically-failing entry cannot starve the PEL (TTL 3600s, crash-safety net only) |
 | `alfred:identity:voiceprint` | Hash | Voiceprint embeddings for identity |

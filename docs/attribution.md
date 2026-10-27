@@ -173,6 +173,7 @@ changes a decision and never blocks an ACK.
 | `alfred:attribution:causes:<UTC date>` | Hash | One counter per cause (`person`, `alfred`, `automation`, `outside`) plus `unknown`, for every change that day that passes the availability bridge | 30 days (TTL) |
 | `alfred:attribution:counted:{entry_id}` | String | A marker that a `alfred:home:state_changed` entry has been counted | twice the replay window (`REPLAY_MARKER_TTL_SECONDS`, 10 minutes) |
 | `alfred:reflex:decision_log` | Stream | One `DecisionRecord` per decision that reached the model: the event, its cause, the exact prompt and the proposal | up to 30 days or 10,000 entries, whichever comes first |
+| `alfred:reflex:decided:{event_id}` | String | A marker that Reflex has decided an event, so a redelivered one is not inferred again (`SET NX EX`) | twice the replay window (`REPLAY_MARKER_TTL_SECONDS`, 10 minutes) |
 
 - A change from a switch, an app or a device (`outside`) is counted but not kept in the changes
   stream: there is nobody to attribute it to.
@@ -184,9 +185,16 @@ changes a decision and never blocks an ACK.
 - Age is enforced with `XTRIM MINID` on each append (`shared/redis_streams.append_capped`), in
   the same pipeline as the `XADD`, because approximate `MAXLEN` trimming never ages out a small
   stream.
-- The decision log is what slice 2's replay set and model comparison are built from. A
-  redelivered state change can be inferred again and recorded twice, so slice 2 dedupes on the
-  event's `event_id`.
+- The decision log is what slice 2's replay set and model comparison are built from. Read it by
+  time with `DecisionLog.read(since=, until=)` (timezone-aware bounds; a record is kept when
+  `since <= time < until`, `until` defaulting to now). That is how
+  `python -m core.reflex.replay run --since ...` reads it; see
+  [reflex-anticipation.md](reflex-anticipation.md#replay).
+- The `decided:` marker is why an event is inferred once, so the log holds one record per event.
+  The runner checks it after the attention gate and before the engine, and a hit is ACKed
+  without asking the model again; it is set only after the decision has been counted and
+  published, so a crash before that decides the event again, and a failed inference leaves no
+  marker. A `TriggerFired` uses its own `event_id`.
 
 ### Joining a call to its changes
 
@@ -255,7 +263,8 @@ and the report says `no context id (older home-service)` for it.
 | `core/attribution/cause.py` | `cause_of()`, `cause_words()`, `ATTRIBUTED` |
 | `core/attribution/log.py` | `AlfredCall`, `AttributedChange`, `record_call()`, `record_change()`, `causes_key()` |
 | `core/attribution/report.py` | The report: `build_report()`, `PARTS` |
-| `core/reflex/decision_log.py` | `DecisionLog` |
+| `core/reflex/decision_log.py` | `DecisionLog` (`record()`, `read(since=, until=)`) |
+| `core/reflex/replay.py` | `python -m core.reflex.replay`, which decides recorded prompts again and prints counts |
 | `core/routing/domain_router.py` | calls `record_call()` after an executed action |
 | `core/reflex/runner.py` | calls `record_change()` after the availability bridge, before the attention gate |
 | `shared/streams.py` | the stream and key names, caps and `ATTRIBUTION_MAX_AGE` |

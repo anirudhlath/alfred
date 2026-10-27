@@ -16,13 +16,13 @@ from zoneinfo import ZoneInfo
 
 from core.attribution.cause import cause_words
 from core.reflex.context_reader import LIVE_STATE_UNAVAILABLE
+from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from datetime import datetime
 
     from bus.schemas.events import StateChangedEvent, TriggerFired
-    from core.reflex.tool_registry import ToolInfo
     from sdk.alfred_sdk.context import ContextSnapshot
 
 # Domains the House section lists. A rendering choice, not a tool list: Reflex acts only
@@ -54,6 +54,13 @@ NO_OLD_STATE = "(none)"
 _ARROW = " → "
 _DETAIL_SEP = " · "
 _HEAD = re.compile(r"(?P<name>.+) \((?P<area>[^()]+)\)")
+# The tools section: "Tools:", then one "- name(parameters) [service]: description" line each.
+_TOOLS_HEADING = "\n\nTools:\n"
+_PREFERENCES_HEADING = "\n\n## Preferences\n"
+_TOOL_LINE = re.compile(
+    r"- (?P<name>[^\s(]+)\((?P<parameters>[^)]*)\) \[(?P<service>[^\]]*)\]"
+    r"(?:: (?P<description>.*))?"
+)
 
 
 @dataclass(frozen=True)
@@ -329,6 +336,47 @@ def render_tools(tools: Sequence[ToolInfo]) -> str:
         line = f"- {tool.name}({', '.join(tool.parameter_names)}) [{tool.target_service}]"
         lines.append(f"{line}: {tool.description}" if tool.description else line)
     return "\n".join(lines)
+
+
+def parse_tools(prompt: str) -> list[ToolInfo]:
+    """The tools a Reflex prompt showed, read back from the lines ``render_tools`` wrote.
+
+    Each comes back with its name, parameter names, target service and description, and as
+    a Reflex tool: the prompt does not say anything else about it. That is all
+    ``parse_decision`` needs to check a reply, so a recorded prompt can be decided again
+    without asking the registry what it offered then. A prompt that showed no tools, or is
+    not a Reflex prompt, gives an empty list. A description that runs over several lines
+    reads back only as far as its first.
+
+    The section sits right before ``## Preferences``, so the last ``Tools:`` heading ahead
+    of that one is the section's, whatever the rules before it say.
+    """
+    head = prompt.partition(_PREFERENCES_HEADING)[0]
+    _, found, section = f"\n\n{head}".rpartition(_TOOLS_HEADING)
+    if not found:
+        return []
+    tools: list[ToolInfo] = []
+    for line in section.splitlines():
+        m = _TOOL_LINE.fullmatch(line)
+        if m is None:
+            continue
+        names = m["parameters"].split(", ") if m["parameters"] else []
+        tools.append(
+            ToolInfo(
+                name=m["name"],
+                description=m["description"] or "",
+                feature_name="",
+                feature_description="",
+                target_service=m["service"],
+                audience=REFLEX_AUDIENCE,
+                input_schema={
+                    "type": "object",
+                    "properties": {name: {} for name in names},
+                    "required": [],
+                },
+            )
+        )
+    return tools
 
 
 def _assemble(

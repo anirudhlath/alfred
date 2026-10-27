@@ -9,6 +9,7 @@ from core.reflex.prompt import (
     LiveEntity,
     build_state_change_prompt,
     build_trigger_prompt,
+    parse_tools,
     render_tools,
 )
 from core.reflex.prose import repo_prose
@@ -113,6 +114,46 @@ def test_tools_are_compact_sorted_and_free_of_entity_lists() -> None:
 
 def test_no_tools_says_so() -> None:
     assert render_tools([]) == "No tools available."
+
+
+def test_parse_tools_reads_render_tools() -> None:
+    bare = ToolInfo(
+        name="home.cover_close",
+        description="",
+        feature_name="home",
+        feature_description="",
+        target_service="other-service",
+        audience="reflex",
+    )
+    tools = [*TOOLS, bare]
+
+    for prompt in (
+        render_tools(tools),
+        _prompt(tools=tools),
+        build_trigger_prompt(
+            event=TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time"),
+            preferences="Tools:\n- a.b(c) [d]: a preference that looks like a tool",
+            tools=tools,
+            entities=None,
+            now=NIGHT_UTC,
+            tz_name="UTC",
+            prose=repo_prose("trigger_fired"),
+        ),
+    ):
+        read = parse_tools(prompt)
+
+        assert [(t.name, t.parameter_names, t.target_service) for t in read] == [
+            ("home.cover_close", (), "other-service"),
+            ("home.light_turn_on", ("target", "brightness_pct"), "home-service"),
+            ("home.switch_turn_off", ("target",), "home-service"),
+        ]
+        assert render_tools(read) == render_tools(tools)
+
+
+def test_parse_tools_reads_no_tools_from_a_prompt_without_any() -> None:
+    assert parse_tools(render_tools([])) == []
+    assert parse_tools(_prompt(tools=[])) == []
+    assert parse_tools("Decide about the change.") == []
 
 
 def test_blank_preferences_say_none_recorded() -> None:

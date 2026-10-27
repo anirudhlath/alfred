@@ -18,7 +18,13 @@ import redis.asyncio as aioredis
 from bus.schemas.events import ReflexObservation, StateChangedEvent
 from core.attribution.log import record_change
 from core.reflex.availability import bridge_availability
-from shared.streams import OBSERVED_ENTITY_PREFIX, REFLEX_DECISIONS_PREFIX, decode_stream_value
+from shared.redis_streams import REPLAY_MARKER_TTL_SECONDS
+from shared.streams import (
+    OBSERVED_ENTITY_PREFIX,
+    REFLEX_DECIDED_PREFIX,
+    REFLEX_DECISIONS_PREFIX,
+    decode_stream_value,
+)
 from shared.types import AioRedis as AioRedis  # noqa: TC001  # re-export for backward compat
 
 if TYPE_CHECKING:
@@ -110,6 +116,34 @@ async def count_decision(redis: AioRedis, decision: str, *, now: datetime | None
         await redis.expire(key, DECISION_COUNT_TTL_SECONDS)
     except Exception as e:
         logger.warning("Decision count failed (%s): %s", decision, e)
+
+
+def decided_key(event_id: str) -> str:
+    """The marker that Reflex has decided one event."""
+    return f"{REFLEX_DECIDED_PREFIX}{event_id}"
+
+
+async def already_decided(redis: AioRedis, event_id: str) -> bool:
+    """Whether Reflex has already decided *event_id* and counted and published the decision.
+
+    A redelivery of an entry (the reclaim pass replays one left un-ACKed) must not ask the
+    model about the same event again. Raises when Redis cannot answer: the entry then stays
+    pending and is replayed, where guessing "not decided" could decide it twice.
+    """
+    return await redis.exists(decided_key(event_id)) == 1
+
+
+async def mark_decided(redis: AioRedis, event_id: str) -> None:
+    """Mark *event_id* decided for twice the replay window (``SET NX EX``).
+
+    Call it once the decision is counted and published, so a crash before then decides the
+    event again. Best-effort: under Redis's maxmemory ``SET`` is refused while ``XACK`` still
+    works, and failing the entry would only decide it a second time. A refusal is logged.
+    """
+    try:
+        await redis.set(decided_key(event_id), 1, nx=True, ex=REPLAY_MARKER_TTL_SECONDS)
+    except Exception as e:
+        logger.warning("Decided marker not saved for %s: %s", event_id, e)
 
 
 async def publish_proposal(
@@ -207,6 +241,10 @@ async def process_stream_entry(
     last branch is not a no-op: it records a debounced passive observation,
     best-effort, so a failed write never blocks the ACK.
     Act, ask and invalid proposals are recorded too, undebounced and best-effort.
+
+    An event is decided once: after the gate, an event already marked decided
+    (``already_decided``) is skipped, and the event is marked once its decision is counted and
+    published. A delivery that raised before then leaves it unmarked, so the replay decides.
     """
     raw_event = entry_data.get("event") or entry_data.get(b"event")
     if raw_event is None:
@@ -243,11 +281,26 @@ async def process_stream_entry(
         )
         return False
 
+    # A redelivered entry (an un-ACKed one the reclaim pass replays, or a crash between the
+    # decision and the ACK) is not decided again: the model is asked once per event.
+    if await already_decided(redis, event.event_id):
+        logger.info("Event %s already decided — not asking the model again", event.event_id)
+        return False
+
     # engine.process_event() calls the model. If it is down this raises
     # (httpx.ConnectError, etc.) and the caller does NOT ACK — Redis redelivers.
     proposal = await engine.process_event(event)
     await count_decision(redis, proposal.decision)
+    await _record_outcome(redis, observation_stream, event, proposal)
+    # Counted and published, so a redelivery stops here; a crash before this line decides again.
+    await mark_decided(redis, event.event_id)
+    return False
 
+
+async def _record_outcome(
+    redis: AioRedis, observation_stream: str, event: StateChangedEvent, proposal: ReflexProposal
+) -> None:
+    """Record what Reflex decided about a state change. Best-effort: nothing here raises."""
     if proposal.decision == "none":
         # Record it rather than dropping it. Without this Alfred remembers
         # only what it did, never what it saw, and pattern detection has
@@ -263,7 +316,7 @@ async def process_stream_entry(
             await observe_passively(redis, observation_stream, event)
         except Exception as e:
             logger.warning("Passive observation failed for %s: %s", event.entity_id, e)
-        return False
+        return
 
     # Shadow mode (#285): record what Reflex would do and execute nothing. Not
     # debounced — act/ask/invalid are rare and are the evidence this slice collects.
@@ -274,7 +327,6 @@ async def process_stream_entry(
         await publish_proposal(redis, observation_stream, "state_change", event, proposal)
     except Exception as e:
         logger.warning("Proposal observation failed for %s: %s", event.entity_id, e)
-        return False
+        return
     tool = proposal.action.tool_name if proposal.action is not None else "-"
     logger.info("Shadow %s for %s: %s", proposal.decision, event.entity_id, tool)
-    return False

@@ -27,8 +27,10 @@ from core.reflex.decision_log import DecisionLog
 from core.reflex.engine import ReflexEngine, build_notification_body
 from core.reflex.prose import warm_prose
 from core.reflex.runner import (
+    already_decided,
     count_decision,
     ensure_consumer_group,
+    mark_decided,
     process_stream_entry,
     publish_proposal,
 )
@@ -122,6 +124,8 @@ async def _handle_trigger_fired(
     the reclaim pass in ``_consume_trigger_fired``.
 
     In shadow mode (#285) ``agent`` is unused: Reflex's decision is recorded, never executed.
+    A trigger event is handled once: once its decision is counted and published it is marked
+    decided, and a redelivery of its entry (same ``event_id``) does nothing.
     """
     raw_event = entry_data.get("event") or entry_data.get(b"event")
     if raw_event is None:
@@ -134,6 +138,17 @@ async def _handle_trigger_fired(
         trigger_event = TriggerFired.model_validate(parsed)
     except Exception as e:
         logger.error("Unparseable trigger_fired event — dropping: %s", e)
+        return
+
+    # A redelivered entry (an un-ACKed one the reclaim pass replays, or a crash between the
+    # decision and the ACK) was handled whole: its notification went out before the decision
+    # that marked it, so neither is repeated.
+    if await already_decided(redis, trigger_event.event_id):
+        logger.info(
+            "Trigger '%s' (event %s) already decided — not handling it again",
+            trigger_event.trigger_name,
+            trigger_event.event_id,
+        )
         return
 
     # Path A: Immediate notification (DND-aware via dispatcher)
@@ -153,22 +168,23 @@ async def _handle_trigger_fired(
         logger.error("SLM reasoning failed for trigger '%s': %s", trigger_event.trigger_name, e)
         return
     await count_decision(redis, proposal.decision)
-    if proposal.decision == "none":
-        return
-    if proposal.decision == "invalid":
-        logger.warning(
-            "Invalid Reflex output for trigger '%s': %s",
-            trigger_event.trigger_name,
-            proposal.problem,
-        )
-    try:
-        await publish_proposal(
-            redis, REFLEX_OBSERVATIONS_STREAM, "trigger_fired", trigger_event, proposal
-        )
-    except Exception as e:
-        logger.warning(
-            "Proposal observation failed for trigger '%s': %s", trigger_event.trigger_name, e
-        )
+    if proposal.decision != "none":
+        if proposal.decision == "invalid":
+            logger.warning(
+                "Invalid Reflex output for trigger '%s': %s",
+                trigger_event.trigger_name,
+                proposal.problem,
+            )
+        try:
+            await publish_proposal(
+                redis, REFLEX_OBSERVATIONS_STREAM, "trigger_fired", trigger_event, proposal
+            )
+        except Exception as e:
+            logger.warning(
+                "Proposal observation failed for trigger '%s': %s", trigger_event.trigger_name, e
+            )
+    # Counted and published, so a redelivery stops at the top; a crash before this decides again.
+    await mark_decided(redis, trigger_event.event_id)
 
 
 async def _consume_trigger_fired(

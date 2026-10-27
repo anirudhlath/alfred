@@ -62,6 +62,7 @@ class FakeRedis:
         self._shutdown = shutdown
         self._max_reads = max_reads
         self.pending: dict[bytes, dict[bytes, bytes]] = {}
+        self.markers: dict[str, Any] = {}  # the keys Reflex marks a decided event with
         self.acked: list[bytes] = []
         self.reads = 0
         self.claims = 0
@@ -87,6 +88,17 @@ class FakeRedis:
         entry_id, data = self._new.pop(0)
         self.pending[entry_id] = data
         return [(EVENTS_STREAM.encode(), [(entry_id, data)])]
+
+    async def exists(self, key: str) -> int:
+        return int(key in self.markers)
+
+    async def set(
+        self, key: str, value: Any, nx: bool = False, ex: int | None = None
+    ) -> bool | None:
+        if nx and key in self.markers:
+            return None
+        self.markers[key] = value
+        return True
 
     async def xack(self, _stream: str, _group: str, entry_id: bytes) -> int:
         self.pending.pop(entry_id, None)

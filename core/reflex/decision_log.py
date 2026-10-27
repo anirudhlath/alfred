@@ -40,6 +40,11 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _ms(moment: datetime) -> int:
+    """The unix milliseconds a stream id leads with."""
+    return int(moment.timestamp() * 1000)
+
+
 class DecisionRecord(BaseModel):
     """One decision: the event Reflex was asked about, its cause, the prompt and the proposal."""
 
@@ -87,14 +92,29 @@ class DecisionLog:
         except Exception as e:
             logger.warning("Reflex decision log failed ({}): {}", origin, e)
 
-    async def read(self, *, since: datetime) -> list[DecisionRecord]:
-        """Every kept decision made at or after *since*, oldest first.
+    async def read(self, *, since: datetime, until: datetime | None = None) -> list[DecisionRecord]:
+        """Every kept decision made at or after *since* and before *until*, oldest first.
 
-        Filters on each record's own ``time``. An entry that cannot be parsed is skipped with
-        a warning, so one bad row cannot break the reader.
+        Both bounds are timezone-aware. Redis is asked only for the entries whose ids fall in
+        the window (an id leads with its unix-ms), but a record's time and its id differ by
+        the XADD's latency, so each record is also filtered on its own ``time``. An entry that
+        cannot be parsed is skipped with a warning, so one bad row cannot break the reader.
+
+        Raises:
+            ValueError: *since* or *until* is naive.
         """
+        for name, bound in (("since", since), ("until", until)):
+            if bound is not None and bound.tzinfo is None:
+                raise ValueError(f"{name} must be timezone-aware, got the naive {bound!r}")
+        # A bare id is completed by Redis: `<ms>-0` as a start, `<ms>-<max>` as an end.
+        entries = await forward_range(
+            self._redis,
+            REFLEX_DECISION_LOG_STREAM,
+            min_id=str(_ms(since)),
+            max_id="+" if until is None else str(_ms(until)),
+        )
         records: list[DecisionRecord] = []
-        for entry_id, fields in await forward_range(self._redis, REFLEX_DECISION_LOG_STREAM):
+        for entry_id, fields in entries:
             raw = fields.get(_FIELD.encode()) or fields.get(_FIELD)
             try:
                 if raw is None:
@@ -104,6 +124,6 @@ class DecisionLog:
                 entry = decode_stream_value(entry_id)
                 logger.warning("Skipping unreadable decision log entry {}: {}", entry, e)
                 continue
-            if record.time >= since:
+            if record.time >= since and (until is None or record.time < until):
                 records.append(record)
         return records

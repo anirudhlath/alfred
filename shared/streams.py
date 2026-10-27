@@ -28,6 +28,10 @@ HOME_ACTION_RESULTS_STREAM = "alfred:home:action_results"
 REFLEX_OBSERVATIONS_STREAM = "alfred:reflex:observations"
 # Daily Reflex decision counts (#285): one hash per UTC day, one field per decision.
 REFLEX_DECISIONS_PREFIX = "alfred:reflex:decisions:"
+# + event_id -> "1" (short TTL): Reflex has decided that event and counted and published the
+# decision, so a redelivery of its entry (an un-ACKed entry the reclaim pass replays) does not
+# ask the model again. Set after the decision, so a crash before it decides again.
+REFLEX_DECIDED_PREFIX = "alfred:reflex:decided:"
 
 # Who caused each home state change. Private logs, each kept ATTRIBUTION_MAX_AGE: an append
 # (shared.redis_streams.append_capped) trims everything older, and the MAXLEN caps bound a
