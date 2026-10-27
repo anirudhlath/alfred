@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { Gate } from "./Gate";
 
@@ -72,6 +72,27 @@ describe("Gate", () => {
     expect(title).toHaveFocus();
     // Focusable from script only: not a stop in the Tab order.
     expect(title).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("has focus on its title in the first frame it paints", () => {
+    // A gate committed outside a press — setup's next step, after the passkey
+    // or the write — can be painted before React runs passive effects, so focus
+    // moved in one leaves a frame with it on <body>. A child's passive effect
+    // runs after that paint could, and before its parent's: what it sees is
+    // what that frame had.
+    let seen: Element | null = null;
+    function Witness() {
+      useEffect(() => {
+        seen = document.activeElement;
+      }, []);
+      return null;
+    }
+    render(
+      <Gate kicker="k" title="Registered." focusTitle>
+        <Witness />
+      </Gate>,
+    );
+    expect(seen).toBe(screen.getByRole("heading", { name: "Registered." }));
   });
 
   it("has the title it focuses described by its foot, so the move reads both", () => {

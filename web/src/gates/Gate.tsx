@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useId, useLayoutEffect, useRef, type ReactNode } from "react";
 import { GateField } from "@/gates/GateField";
 
 /*
@@ -97,7 +97,11 @@ export function Gate({
   foot,
 }: GateProps) {
   const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => {
+  // A layout effect, so focus is on the title before the gate is painted. A
+  // gate committed outside a press — setup's next step, after the passkey or
+  // the write — can be painted before passive effects run, and focus moved in
+  // one leaves a frame with it on <body>.
+  useLayoutEffect(() => {
     if (focusTitle) heading.current?.focus();
   }, [focusTitle]);
   const base = useId();
