@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # Load .env from project root (walk up from this file to find it).
 #
 # Skipped under pytest: the suite must not inherit the developer's real config.
-# A populated .env (REFLEX_BACKEND=openai + OPENAI_COMPAT_HOST, say) routes mocked
+# A populated .env (REFLEX_MODEL + VLLM_BASE_URL, say) routes mocked
 # code paths at live endpoints, so tests that pass in CI — which has no .env —
 # fail locally with connection errors. Keeping the load out of test runs makes a
 # local `pytest` mean the same thing as a CI one.
@@ -322,6 +322,7 @@ class LlmSettings:
     system2_model: str
     librarian_model: str
     approval_model: str
+    reflex_model: str
     vllm_base_url: str
     openrouter_api_key: str
     system2_max_tokens: int
@@ -360,10 +361,14 @@ def resolve_llm_settings(env: Mapping[str, str]) -> LlmSettings:
         or DEFAULT_OPENAI_COMPAT_HOST
     )
     tokens_name = "SYSTEM2_MAX_TOKENS" if get("SYSTEM2_MAX_TOKENS") else "CLAUDE_MAX_TOKENS"
+    # Reflex has no System 2 default: it is a local model, and the model its server has
+    # always been told to serve is the one OPENAI_COMPAT_MODEL names.
+    served = get("OPENAI_COMPAT_MODEL")
     return LlmSettings(
         system2_model=system2,
         librarian_model=get("LIBRARIAN_MODEL") or system2,
         approval_model=get("APPROVAL_MODEL") or system2,
+        reflex_model=get("REFLEX_MODEL") or (f"vllm:{served}" if served else ""),
         vllm_base_url=normalize_vllm_base_url(base_url),
         openrouter_api_key=get("OPENROUTER_API_KEY") or get("CLAUDE_API_KEY"),
         system2_max_tokens=_positive_int(tokens_name, get(tokens_name), DEFAULT_SYSTEM2_MAX_TOKENS),
@@ -409,13 +414,13 @@ class AlfredConfig:
     redis_port: int = 6379
     mqtt_host: str = "localhost"
     mqtt_port: int = 1883
-    ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "llama3:8b"
     lmstudio_host: str = "http://localhost:1234"
 
-    # Reflex (System 1) inference backend: ollama (native /api/chat) | openai
-    # (any OpenAI-compatible /v1/chat/completions server — vLLM, LM Studio)
-    reflex_backend: str = "ollama"
+    # lmstudio_host above and these two are the legacy spellings of Reflex's server and
+    # model. No service reads them (tests/shared/test_reflex_config.py pins how they resolve):
+    # Reflex's server and model are vllm_base_url and reflex_model below, which
+    # resolve_llm_settings reads from the environment, LMSTUDIO_HOST, OPENAI_COMPAT_HOST and
+    # OPENAI_COMPAT_MODEL included.
     openai_compat_host: str = DEFAULT_OPENAI_COMPAT_HOST
     openai_compat_model: str = ""
     ha_host: str = "http://homeassistant.local:8123"
@@ -428,6 +433,8 @@ class AlfredConfig:
     system2_model: str = DEFAULT_SYSTEM2_MODEL
     librarian_model: str = DEFAULT_SYSTEM2_MODEL
     approval_model: str = DEFAULT_SYSTEM2_MODEL
+    # System 1 (Reflex): "" when neither REFLEX_MODEL nor OPENAI_COMPAT_MODEL is set.
+    reflex_model: str = ""
     vllm_base_url: str = ""
     openrouter_api_key: str = ""
     system2_max_tokens: int = DEFAULT_SYSTEM2_MAX_TOKENS
@@ -519,10 +526,9 @@ class AlfredConfig:
         embedding_timeout_seconds = positive_seconds_env(
             "EMBEDDING_TIMEOUT_SECONDS", DEFAULT_EMBEDDING_TIMEOUT_SECONDS
         )
-        # Same blank-means-default rule on the reflex side: `.env.example` ships
-        # OPENAI_COMPAT_HOST empty, and "" would satisfy os.getenv, defeat the
-        # LMSTUDIO_HOST fallback this chain documents, and leave the reflex client
-        # building a schemeless "" + "/v1/chat/completions" (httpx UnsupportedProtocol).
+        # The legacy Reflex fields keep resolve_llm_settings's blank-means-default rule:
+        # `.env.example` ships OPENAI_COMPAT_HOST empty, and "" would satisfy os.getenv and
+        # defeat the LMSTUDIO_HOST fallback.
         lmstudio_host = os.getenv("LMSTUDIO_HOST", "").strip() or DEFAULT_OPENAI_COMPAT_HOST
         openai_compat_host = os.getenv("OPENAI_COMPAT_HOST", "").strip() or lmstudio_host
         return cls(
@@ -530,10 +536,7 @@ class AlfredConfig:
             redis_port=int(os.getenv("REDIS_PORT", "6379")),
             mqtt_host=os.getenv("MQTT_HOST", "localhost"),
             mqtt_port=int(os.getenv("MQTT_PORT", "1883")),
-            ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "llama3:8b"),
             lmstudio_host=lmstudio_host,
-            reflex_backend=os.getenv("REFLEX_BACKEND", "ollama"),
             # Falls back to LMSTUDIO_HOST — LM Studio is the same protocol
             openai_compat_host=openai_compat_host,
             openai_compat_model=os.getenv("OPENAI_COMPAT_MODEL", ""),
@@ -546,6 +549,7 @@ class AlfredConfig:
             system2_model=llm.system2_model,
             librarian_model=llm.librarian_model,
             approval_model=llm.approval_model,
+            reflex_model=llm.reflex_model,
             vllm_base_url=llm.vllm_base_url,
             openrouter_api_key=llm.openrouter_api_key,
             system2_max_tokens=llm.system2_max_tokens,

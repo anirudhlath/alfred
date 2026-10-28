@@ -26,7 +26,7 @@ from shared.otel import init_tracing
 logger = logging.getLogger(__name__)
 
 # Which env vars get rewritten lives in shared/gateway.py, one copy for both launch
-# paths, so `docker compose up` with OLLAMA_HOST=localhost "just works" and means the
+# paths, so `docker compose up` with LMSTUDIO_HOST=localhost "just works" and means the
 # same thing as `alfredctl up`.
 # Docker adds host.docker.internal via extra_hosts; Podman uses host.containers.internal.
 _GATEWAY_HOSTS = ("host.docker.internal", "host.containers.internal")

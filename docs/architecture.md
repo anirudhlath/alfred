@@ -6,7 +6,7 @@ Alfred is an ambient, voice-first multi-agent system for smart environments. It 
 
 The system uses a **dual-process cognitive model**:
 
-- **System 1 (Reflex Engine)** -- a local Small Language Model (Ollama, default `gpt-oss:20b`) handles the fast path. Every state-change event passes through the SLM, which decides in sub-500ms whether an action is needed and, if so, which tool to call.
+- **System 1 (Reflex Engine)** -- a local Small Language Model on an OpenAI-compatible server (vLLM or LM Studio, named by `REFLEX_MODEL`) handles the fast path. Every state-change event passes through the SLM, which decides in sub-500ms whether an action is needed and, if so, which tool to call.
 - **System 2 (Conscious Engine)** -- a cloud LLM (Claude) handles complex reasoning, multi-step planning, and ambiguous user requests. Receives `UserRequest` events, assembles context from integrations and memory, runs one Pydantic AI agent per request, with every tool in one catalog ([docs/llm.md](llm.md)), and returns `AlfredResponse` events.
 
 The system is governed by four non-negotiable architectural pillars:
@@ -31,7 +31,7 @@ state is externalized to two volumes; the container itself is disposable.
 flowchart TB
     subgraph HOST["Host (macOS dev / CachyOS prod)"]
         Browser["Browser / iOS app"]
-        Ollama["Ollama (optional, external)"]
+        LLM["Model server: vLLM / LM Studio (external)"]
         Embed["Embedding server (optional, external)"]
         OR["OpenRouter (external)"]
         subgraph C["alfred container — one fat OCI image"]
@@ -49,7 +49,7 @@ flowchart TB
         end
     end
     Browser -->|"only :8081 exposed"| core
-    core -.->|OLLAMA_HOST / OPENROUTER_API_KEY| Ollama
+    core -.->|"VLLM_BASE_URL / OPENROUTER_API_KEY"| LLM
     core -.->|"EMBEDDING_HOST (only when EMBEDDING_BACKEND=openai)"| Embed
     core -.-> OR
     C -.->|"volume: /data (persistent mode)"| DataVol[("data volume")]
@@ -75,7 +75,7 @@ sequenceDiagram
     participant Redis as Redis Streams
     participant Runner as Reflex Runner
     participant Engine as Reflex Engine
-    participant Ollama as Ollama SLM
+    participant LLM as Model server (vLLM)
     participant Agent as HomeAgent
     participant Svc as home-service
     participant HA2 as Home Assistant
@@ -92,8 +92,8 @@ sequenceDiagram
     Note over Runner: unavailable/unknown → no information: dropped here,<br/>or bridged to one last → new change
     Runner->>Engine: process_event(StateChangedEvent)
     Engine->>Engine: Load preferences + build tool prompt
-    Engine->>Ollama: POST /api/chat (prompt + event + tools)
-    Ollama-->>Engine: JSON decision
+    Engine->>LLM: POST /v1/chat/completions (prompt with event + tools)
+    LLM-->>Engine: JSON decision
     Engine-->>Runner: ActionRequest or None
     alt Action needed
         Runner->>Agent: execute_action(ActionRequest)
@@ -119,7 +119,7 @@ sequenceDiagram
 
 - `unavailable`, `unknown` and a missing old state carry no information. Before the attention gate, `bridge_availability()` (`core/reflex/availability.py`) drops any transition into `unavailable`/`unknown`, and compares an entity coming back — from either, or as `None → state` when HA re-adds it after a restart — with its last real state in `alfred:reflex:last_known_state`: the same state is a blip and is dropped, a different one goes on as a single `last → new` change (`off → unavailable → on` is `off → on`). Running ahead of the gate means a blip costs no inference and does not start the gate's 5 s cooldown, which would swallow a real change right behind it. A return with no known state (first sight, or a fresh hash) is dropped. A failed lookup drops the return; a failed write only logs. Replays are safe, keyed on the stream entry ID, which Redis assigns in arrival order and keeps across redelivery: each return's decision is kept for ten minutes under `alfred:reflex:returned:{entry_id}` and reused by any replay, and the known state only moves forward in entry order, so a late replay cannot roll it back. A replay still retries the known-state write, in case its first delivery lost it.
 - Each change is attributed before the attention gate: `record_change()` (`core/attribution/log.py`) reads the event's `context` into one of four causes (`person`, `alfred`, `automation`, `outside`; `unknown` when an older home-service sent none), counts it in `alfred:attribution:causes:<UTC date>` once per stream entry, and logs a person's, Alfred's or an automation's change to `alfred:attribution:changes`. The cause then rides into Reflex's `## What changed` line (`by Alex`), the memory summary and the shadow report, and `DomainRouter` logs each executed call with its `context_id`; `python -m core.attribution.report --days 7` joins the two. Best-effort like every attribution write. See [attribution.md](attribution.md).
-- If Ollama is down, `process_event` raises an exception. The Runner does NOT ACK the message; its reclaim pass (`reclaim_replayable`, every few cycles) replays it, as long as it is under five minutes old.
+- If the model server is down, `process_event` raises an exception. The Runner does NOT ACK the message; its reclaim pass (`reclaim_replayable`, every few cycles) replays it, as long as it is under five minutes old.
 - Reflex runs in **shadow mode** ([#285](https://github.com/anirudhlath/alfred/issues/285)): `engine.process_event()` returns a `ReflexProposal` and the runner executes nothing. Every decision increments `alfred:reflex:decisions:<UTC date>` (one hash per day, one field per decision, 30-day TTL). An **act**, **ask** or **invalid** proposal is published as a `ReflexObservation` with `proposal` set and `action`/`result` empty, bypassing the debounce below. Both writes are best-effort: a failure is logged and the entry is still ACKed. `python -m core.reflex.shadow_report --days 7` prints them for review.
 - On **none**, the event is still not forgotten. `observe_passively()` (`core/reflex/runner.py`) publishes a `ReflexObservation` with `action=None` to `alfred:reflex:observations`, debounced per entity by a `SET NX EX` on `alfred:observer:seen:{entity_id}` (`OBSERVATION_DEBOUNCE_SECONDS`, default 300). The write is best-effort and wrapped in its own `try` — a failure is logged and the message is still ACKed, because a passive observation is bookkeeping for an event the engine has already finished handling, and propagating would feed every no-action event back into a fresh SLM inference on the next reclaim pass. See 3.7.1 and [the design spec](superpowers/specs/2026-09-03-passive-observation-design.md).
 - The SLM response is validated by `parse_decision()` (`core/reflex/decision.py`): `tool_name` must be one of Reflex's registered tools, or the proposal is **invalid**. The model never picks the service: `target_service` comes from the tool's registry entry, and one in the reply is ignored.
@@ -156,7 +156,7 @@ graph TB
 
     subgraph Infrastructure
         Redis[(Redis<br/>Streams + Hashes)]
-        Ollama[Ollama SLM]
+        LLM[Model server: vLLM / LM Studio]
     end
 
     subgraph "Domain Agents"
@@ -260,7 +260,7 @@ graph TB
     Engine --> CtxReader
     Engine --> Registry
     Engine --> MemReader
-    Engine -->|POST /api/chat| Ollama
+    Engine -->|POST /v1/chat/completions| LLM
     CtxReader -->|HKEYS registry + HGETALL alfred:live_state:*| Redis
     Registry -->|HGETALL alfred:tool_registry| Redis
     MemReader -->|read| Prefs
@@ -367,7 +367,7 @@ The bridge subscribes to MQTT topics `home/#` and `media/#` by default and liste
 
 ### 3.2 Reflex Engine (System 1 SLM Inference)
 
-**Files:** `core/reflex/engine.py`, `core/reflex/prompt.py`, `core/reflex/decision.py`, `core/reflex/inference.py` (backends `openai_client.py`, `ollama_client.py`)
+**Files:** `core/reflex/engine.py`, `core/reflex/prompt.py`, `core/reflex/decision.py`, `core/reflex/agent.py`
 
 The `ReflexEngine` class is the System 1 fast path. It has no effect on the house, and keeps only a private decision log (`alfred:reflex:decision_log`) -- it takes a `StateChangedEvent` (or a `TriggerFired`) and returns a `ReflexProposal`: **act**, **ask**, **none** or **invalid** ([#285](https://github.com/anirudhlath/alfred/issues/285), [design](superpowers/specs/2026-10-07-reflex-context-design.md)).
 
@@ -377,13 +377,13 @@ The `ReflexEngine` class is the System 1 fast path. It has no effect on the hous
 2. Fetches the `audience == "reflex"` tools from `ToolRegistry` (5-minute cache, invalidatable via `reload_tools()`).
 3. Reads live state fresh through `ContextReader.get_snapshot()`, and the user's timezone through `ContextReader.get_user_timezone()`.
 4. Builds the prompt with `core/reflex/prompt.py`, ordered from stable to volatile so vLLM's prefix cache covers as much as it can: rules and compact tools, `## Preferences`, `## Now` (local time, time of day, sun, people), `## House` (the actionable domains, one line per room by `attributes.area` — see [live-state.md](live-state.md#well-known-attributes)), then `## What changed` in one line or `## Trigger fired`. About 1,000 tokens.
-5. Sends it through `core/reflex/inference.py` (`REFLEX_BACKEND`: `openai` for vLLM in production, `ollama` by default) with `temperature=0`, JSON output and, on the OpenAI-compatible backend, `max_tokens=150`.
+5. Sends it through the Pydantic AI agent in `core/reflex/agent.py` (`decide`), built from `REFLEX_MODEL` via `resolve_model`, with `temperature=0`, JSON output and `max_tokens=150` (see [llm.md](llm.md#system-1-reflex)).
 6. `parse_decision()` turns the reply into a `ReflexProposal`, validating the tool against Reflex's own tool list. Anything else becomes **invalid**, keeping the raw text.
 7. Writes one record to the decision log (`alfred:reflex:decision_log`): the event, who caused it, the exact prompt and the proposal. Best-effort and private; a refused write logs a warning and never changes the proposal. See [attribution.md](attribution.md).
 
 **Shadow mode (slice 1 of #285 → #286 → #287):** nothing a proposal names is executed. The runner counts every decision and records act, ask and invalid proposals; see section 2.
 
-The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer (the measured latency includes the sub-millisecond decision-log write), and `@track_tokens` on each backend's `infer` records token usage.
+The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer (the measured latency includes the sub-millisecond decision-log write), and `@track_tokens` on the agent's `infer` records token usage.
 
 #### 3.2.1 AttentionSet (Tiered Autonomy — Reflex Gating)
 
@@ -611,8 +611,7 @@ stamp, since the row prints the entry's time itself. Full rationale and the seve
 
 `EmbeddingProvider` (`core/memory/embedding_provider.py`) has two implementations, selected
 per process by `EMBEDDING_BACKEND` through `build_embedding_provider()`
-(`core/memory/embedding_backend.py`) — the memory counterpart of the `REFLEX_BACKEND` seam in
-`core/reflex/inference.py`:
+(`core/memory/embedding_backend.py`) — a backend seam chosen by one environment variable:
 
 | Backend | Class | Where the model lives |
 |---|---|---|
@@ -795,7 +794,7 @@ and sequence diagram: [docs/autonomy.md](autonomy.md).
 **SDK decorators** (in `sdk/alfred_sdk/telemetry.py`):
 
 - `@track_latency(category="reflex")` -- records function execution time in milliseconds.
-- `@track_tokens(model="ollama")` -- records prompt/completion/total token counts and inference duration.
+- `@track_tokens(model="openai-compat")` -- records prompt/completion/total token counts and inference duration.
 - `@track_event(bus="redis")` -- records event bus publish latency.
 
 All decorators write to an in-memory buffer (`_telemetry_buffer`). The buffer is flushed periodically by the telemetry collector.
@@ -913,6 +912,7 @@ All events extend `BaseEvent`, which provides `event_id` (UUID), `event_type`, `
 | `alfred:attribution:causes:<UTC date>` | Hash | One counter per cause (`person`, `alfred`, `automation`, `outside`, `unknown`) for that UTC day's state changes that passed the availability bridge (TTL 30 days) |
 | `alfred:attribution:counted:{entry_id}` | String | Marks a `alfred:home:state_changed` entry as counted, so a redelivered entry is counted once (`SET NX`, TTL 600s, `REPLAY_MARKER_TTL_SECONDS`) |
 | `alfred:reflex:decision_log` | Stream | One record per decision that reached the model — event, cause, exact prompt, proposal — for slice 2's replay set; kept up to 30 days or `MAXLEN ~ 10000`, whichever comes first (`core/reflex/decision_log.py`) |
+| `alfred:reflex:decided:{event_id}` | String | Marks an event Reflex has decided, so a redelivered one is not inferred again (`SET NX EX`, TTL 600s, `REPLAY_MARKER_TTL_SECONDS`; set after the decision is counted and published) |
 | `alfred:observer:seen:{entity_id}` | String | Per-entity passive-observation debounce (`SET NX EX`, TTL `OBSERVATION_DEBOUNCE_SECONDS`, default 300); present means "already recorded this entity recently, skip" |
 | `alfred:memory:ingest:attempts` | Hash | Stream-entry ID → delivery count for the Memory Ingestor; at 5 the entry is ACK-dropped so a deterministically-failing entry cannot starve the PEL (TTL 3600s, crash-safety net only) |
 | `alfred:identity:voiceprint` | Hash | Voiceprint embeddings for identity |
@@ -969,8 +969,8 @@ All configuration flows through the `AlfredConfig` dataclass, which reads from e
 | `REDIS_PORT` | `6379` | Redis server port |
 | `MQTT_HOST` | `localhost` | MQTT broker hostname |
 | `MQTT_PORT` | `1883` | MQTT broker port |
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama API base URL |
-| `OLLAMA_MODEL` | `gpt-oss:20b` | SLM model name for inference |
+| `REFLEX_MODEL` | `vllm:` + `OPENAI_COMPAT_MODEL` | System 1 model (Pydantic AI string); Reflex stays off when none resolves |
+| `VLLM_BASE_URL` | `OPENAI_BASE_URL` when `SYSTEM2_MODEL` is blank and the legacy `CLAUDE_MODEL` is an `openai/` string, else `OPENAI_COMPAT_HOST`, else `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended | OpenAI-compatible server for `vllm:` models |
 | `HA_HOST` | `http://homeassistant.local:8123` | Home Assistant URL |
 | `HA_TOKEN` | (empty) | Home Assistant long-lived access token |
 | `RESEARCH_VAULT_PATH` | `./research` | Path to the Obsidian research vault |
@@ -988,7 +988,7 @@ Microservices using `alfred-sdk` have their own config via environment variables
 - Python 3.13+
 - Redis server running on localhost:6379
 - Mosquitto (MQTT broker) running on localhost:1883
-- Ollama running with a model pulled (e.g., `ollama pull gpt-oss:20b`)
+- An OpenAI-compatible model server (vLLM or LM Studio) serving the Reflex model
 - At least one microservice registered (e.g., `home-service`)
 
 On macOS (dev), use Homebrew services for Redis and Mosquitto (Apple `container` CLI does not support `-p` port forwarding).
@@ -1004,7 +1004,7 @@ uv pip install -e ".[dev]"
 
 Services must start in this order:
 
-1. **Infrastructure:** Redis, Mosquitto, Ollama
+1. **Infrastructure:** Redis, Mosquitto, the model server (vLLM or LM Studio)
 2. **Microservices:** `home-service` (registers tools into `alfred:tool_registry`)
 3. **All Alfred services:** `uv run python -m runner` (starts bridge, reflex, triggers, conscious, channels with correct ordering and auto-restart)
 

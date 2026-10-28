@@ -9,11 +9,11 @@
 - The CachyOS deployment box (RTX 4090, 64GB RAM, 5800X3D) with Docker + Docker Compose
   installed.
 - `alfred` and `alfred-home-service` both cloned as sibling directories on that box.
-- Ollama running on the CachyOS host with a model pulled (this is the box the 4090 lives
-  on — the reflex sub-500ms target assumes local Ollama, not a cloud endpoint).
+- An OpenAI-compatible model server (vLLM) running on the CachyOS host with the Reflex model served (this is the box the 4090 lives
+  on — the reflex sub-500ms target assumes a local server, not a cloud endpoint).
 - A filled-in `.env` (copied from `.env.example`): at minimum
   `OPENROUTER_API_KEY`/`CLAUDE_API_KEY` for System 2, `HA_TOKEN`/`HA_HOST` if a real
-  Home Assistant is in play, and `OLLAMA_HOST` pointed at the host gateway (see Test
+  Home Assistant is in play, and `VLLM_BASE_URL` pointed at the host gateway (see Test
   Steps — compose does not rewrite this automatically).
 - `container-build.yml` CI already builds arm64 + amd64 on GitHub-hosted runners — this
   ticket is specifically about building **on the actual target box** and running the
@@ -25,7 +25,7 @@
    x86_64 image builds successfully on real deployment hardware (not just GitHub's
    `ubuntu-latest` amd64 runner — different kernel/Docker version, real disk I/O).
 2. `cp .env.example .env` and fill in real values, including setting
-   `OLLAMA_HOST=http://host.docker.internal:11434` explicitly (compose does **not**
+   `VLLM_BASE_URL=http://host.docker.internal:8000` explicitly (compose does **not**
    rewrite `localhost`/`127.0.0.1` the way `alfredctl up` does — see
    `docs/containerization.md` §9).
 3. `ALFRED_SECRETS_PASSPHRASE=$(openssl rand -base64 32) docker compose up -d` — confirm
@@ -33,10 +33,10 @@
    (bridge, reflex, triggers, conscious, channels, memory-ingestor, home-service, redis,
    mosquitto) starting without crash-looping.
 4. `curl http://localhost:8081/health` — confirm 200.
-5. Confirm the reflex path reaches the host's real Ollama (not a container-internal
+5. Confirm the reflex path reaches the host's real model server (not a container-internal
    one) — trigger a state-change event (e.g. via a real HA integration if configured, or
    a manual `redis-cli XADD` into `alfred:home:state_changed` if not) and check
-   `docker compose logs` for a successful round-trip to Ollama on the host.
+   `docker compose logs` for a successful round-trip to the model server on the host.
 6. Confirm `ALFRED_TRUSTED_NETWORKS` needs to be set manually for WebAuthn registration
    (and the other credential writes) through this path — the admin API needs only a
    session and is unaffected (compose does not auto-inject the Docker bridge subnet the way
@@ -54,7 +54,7 @@
 
 - Image builds cleanly on the real x86_64 production box.
 - All supervised services start and stay up under `docker compose`.
-- `/health` returns 200; the reflex path reaches the host's real GPU-backed Ollama.
+- `/health` returns 200; the reflex path reaches the host's real GPU-backed model server.
 - Named-volume state (`alfred_data`, `alfred_models`) survives `down`/`up` without `-v`.
 - Service survives a Docker/host restart via `restart: unless-stopped`.
 
@@ -63,7 +63,7 @@
 - This is the one deployment path with genuinely no automated coverage at all (CI builds
   the image but never runs `docker compose up`) and the one that actually matters for
   the live household — treat failures here as release-blocking, not backlog.
-- If Ollama reachability fails, double-check `host.docker.internal:host-gateway` in
+- If model-server reachability fails, double-check `host.docker.internal:host-gateway` in
   `extra_hosts` actually resolves on this specific Docker version/CachyOS kernel — this
   is the "needs `--add-host` on Linux Docker Engine" case noted in
   `docs/containerization.md` §9/§10, unlike Docker Desktop which provides it natively.

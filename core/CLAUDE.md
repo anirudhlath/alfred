@@ -4,15 +4,18 @@ This directory contains Alfred's brain:
 
 ## Reflex (`reflex/`) — System 1 SLM Engine
 
-Fast event → decision loop via a local SLM (vLLM through `REFLEX_BACKEND=openai` in production). Shadow mode (#285): decisions are recorded, nothing executes.
+Fast event → decision loop via a local SLM on an OpenAI-compatible server (vLLM, LM Studio), named by `REFLEX_MODEL`. Shadow mode (#285): decisions are recorded, nothing executes.
 
+- `agent.py` — `build_reflex_agent(model)` and `decide(agent, prompt, tools)`: the one Pydantic AI agent Reflex decides through (no instructions; the prompt is the single user message, the reply goes through `parse_decision`). `__main__.py` builds it from `REFLEX_MODEL` via `resolve_model` and stays off, alive until shutdown, when none resolves
+- `prose.py` — fetches Reflex's three prompts (`reflex-state-change`, `reflex-trigger`, `reflex-rules`) from the prompt store; `warm_prose` fills the cache at start
 - `engine.py` — `ReflexEngine`: gathers preferences, reflex-audience tools, live state and timezone; returns a `ReflexProposal` (act/ask/none/invalid) for StateChanged and TriggerFired
 - `prompt.py` — pure prompt builder: rules + tools, Preferences, Now, House by `attributes.area`, What changed / Trigger fired; `HOUSE_DOMAINS`
 - `decision.py` — `parse_decision()`: model reply → `ReflexProposal`, tool validated against Reflex's tools; anything else is `invalid` with the raw text
 - `tool_registry.py` — Reads tool manifests from Redis `alfred:tool_registry`. `ToolInfo.input_schema` is each tool's one argument description: the schema the manifest ships, or, for an old SDK's manifest, one derived at parse time from its legacy `parameters` by `legacy_input_schema()` (the only reader of that map). Reflex renders `ToolInfo.parameter_names`
 - `context_reader.py` — `ContextReader`: reads live state fresh on every call through the SDK's `read_live_state()` (no cache) and renders it for the prompts; says `Live home state unavailable.` when no service has any; `get_snapshot()` and `get_user_timezone()` feed Reflex's prompt
-- `runner.py` — Event loop orchestration + `ensure_consumer_group()`, `observe_passively()`, `publish_observation()`, `publish_proposal()`, `count_decision()` (shadow mode, #285)
-- `decision_log.py` — `DecisionLog`: `record()` keeps every decision that reached the model (event, cause, prompt, proposal) on `alfred:reflex:decision_log` for up to 30 days or 10,000 entries, whichever comes first, best-effort; `read(since=)` returns them for slice 2's replay set
+- `runner.py` — Event loop orchestration + `ensure_consumer_group()`, `observe_passively()`, `publish_observation()`, `publish_proposal()`, `count_decision()` (shadow mode, #285); `already_decided()` / `mark_decided()` make a second decision about one event unlikely (`alfred:reflex:decided:{event_id}`, set only after the decision is counted and published, so a crash before that decides the event again and records it twice; the replay drops the duplicates)
+- `decision_log.py` — `DecisionLog`: `record()` keeps every decision that reached the model (event, cause, prompt, proposal) on `alfred:reflex:decision_log` for up to 30 days or 10,000 entries, whichever comes first, best-effort; `read(since=, until=)` returns them for slice 2's replay set
+- `replay.py` — `python -m core.reflex.replay run (--since ISO [--until ISO] | --records FILE) [--limit N] [--model M] [--out FILE]`: decides recorded prompts again through the Reflex agent and prints counts only (recorded x replayed, agreement, invalid rate, latency p50/p95); read-only, no tracing
 - `shadow_report.py` — `python -m core.reflex.shadow_report --days N`: Markdown of daily decision counts and every act/ask/invalid proposal, for #285's shadow review
 - `availability.py` — `bridge_availability()`: drops transitions into `unavailable`/`unknown` and bridges a return from them (or from no state) to one `last → new` change, or drops it as a blip (hash `alfred:reflex:last_known_state`, one field per entity, ordered by stream entry ID; decisions under `alfred:reflex:returned:{entry_id}`); runs before the attention gate, replay-safe
 - `__main__.py` — Two consumer loops: (1) `HOME_STATE_STREAM` for StateChanged, (2) `EVENTS_STREAM` for TriggerFired (group `reflex-trigger-fired`)

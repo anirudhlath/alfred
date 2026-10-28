@@ -2,7 +2,8 @@
 
 One event in, a ReflexProposal out (#285): act, ask, none or invalid. Reads
 preferences, Reflex's tools and live state, builds the prompt with
-``core.reflex.prompt`` and parses the reply with ``core.reflex.decision``.
+``core.reflex.prompt`` and decides through the Reflex agent (``core.reflex.agent``), which
+parses the reply with ``core.reflex.decision``.
 
 Design for eval-ability: structured (event, preferences, live state) in → structured
 proposal out. No effect on the house — in shadow mode nothing a proposal names is executed —
@@ -14,12 +15,12 @@ from __future__ import annotations
 import logging
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from core.memory.reader import MemoryReader
-from core.reflex import inference
-from core.reflex.decision import parse_decision
+from core.reflex.agent import decide
 from core.reflex.prompt import build_state_change_prompt, build_trigger_prompt, index_snapshot
+from core.reflex.prose import fetch_prose, repo_prose
 from core.reflex.tool_registry import REFLEX_AUDIENCE
 from sdk.alfred_sdk.telemetry import track_latency
 from shared.traced import traced
@@ -27,11 +28,14 @@ from shared.traced import traced
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
+    from pydantic_ai import Agent
+
     from bus.schemas.events import ReflexProposal, StateChangedEvent, TriggerFired
     from core.reflex.context_reader import ContextReader
     from core.reflex.decision_log import DecisionLog
-    from core.reflex.prompt import LiveEntity
+    from core.reflex.prompt import LiveEntity, ReflexProse
     from core.reflex.tool_registry import ToolInfo, ToolRegistry
+    from shared.prompts.store import PromptStore
 
 logger = logging.getLogger(__name__)
 
@@ -64,15 +68,19 @@ class ReflexEngine:
         context_reader: ContextReader | None = None,
         memory_reader: MemoryReader | None = None,
         *,
+        agent: Agent[list[ToolInfo], ReflexProposal],
         clock: Callable[[], datetime] = _utc_now,
         decision_log: DecisionLog | None = None,
+        prompts: PromptStore | None = None,
     ) -> None:
         self.preferences_dir = preferences_dir
         self._registry = tool_registry
         self._context_reader = context_reader
         self._memory_reader = memory_reader
+        self._agent = agent
         self._clock = clock
         self._decision_log = decision_log
+        self._prompts = prompts
         self._cached_preferences: str | None = None
         self._cached_tools: list[ToolInfo] | None = None
         self._cache_time: float = 0.0
@@ -117,6 +125,12 @@ class ReflexEngine:
         tz_name = await self._context_reader.get_user_timezone()
         return (None if snapshot is None else index_snapshot(snapshot)), tz_name
 
+    async def _prose(self, origin: Literal["state_change", "trigger_fired"]) -> ReflexProse:
+        """The prompt's intro and rules: the store's (a cache hit once warm), else the repo's."""
+        if self._prompts is None:
+            return repo_prose(origin)
+        return await fetch_prose(self._prompts, origin)
+
     @traced(name="reflex.process_event")
     @track_latency(category="reflex")
     async def process_event(self, event: StateChangedEvent) -> ReflexProposal:
@@ -130,9 +144,9 @@ class ReflexEngine:
             entities=entities,
             now=self._clock(),
             tz_name=tz_name,
+            prose=await self._prose("state_change"),
         )
-        response = await inference.infer(prompt)
-        proposal = parse_decision(str(response.get("response", "")), tools)
+        proposal = await decide(self._agent, prompt, tools)
         if self._decision_log is not None:
             await self._decision_log.record("state_change", event, prompt, proposal)
         return proposal
@@ -150,9 +164,9 @@ class ReflexEngine:
             entities=entities,
             now=self._clock(),
             tz_name=tz_name,
+            prose=await self._prose("trigger_fired"),
         )
-        response = await inference.infer(prompt)
-        proposal = parse_decision(str(response.get("response", "")), tools)
+        proposal = await decide(self._agent, prompt, tools)
         if self._decision_log is not None:
             await self._decision_log.record("trigger_fired", event, prompt, proposal)
         return proposal

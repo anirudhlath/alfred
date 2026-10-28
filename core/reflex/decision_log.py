@@ -12,7 +12,7 @@ never changes the proposal it decided.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from loguru import logger
 from pydantic import BaseModel
@@ -35,9 +35,19 @@ if TYPE_CHECKING:
 
 _FIELD = "decision"
 
+# How far past ``until`` ``read`` asks Redis for entries. ``record`` stamps a record's time before
+# its XADD and Redis assigns the id after, so an id can lead the time by the write's latency;
+# the time filter, not the id, decides which of them belong to the window.
+UNTIL_SLACK_MS: Final = 5_000
+
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _ms(moment: datetime) -> int:
+    """The unix milliseconds a stream id leads with."""
+    return int(moment.timestamp() * 1000)
 
 
 class DecisionRecord(BaseModel):
@@ -87,14 +97,31 @@ class DecisionLog:
         except Exception as e:
             logger.warning("Reflex decision log failed ({}): {}", origin, e)
 
-    async def read(self, *, since: datetime) -> list[DecisionRecord]:
-        """Every kept decision made at or after *since*, oldest first.
+    async def read(self, *, since: datetime, until: datetime | None = None) -> list[DecisionRecord]:
+        """Every kept decision made at or after *since* and before *until*, oldest first.
 
-        Filters on each record's own ``time``. An entry that cannot be parsed is skipped with
-        a warning, so one bad row cannot break the reader.
+        Both bounds are timezone-aware. A record's time is stamped before its XADD, so its id
+        (which leads with the unix-ms Redis wrote it at) can be later than its time by the
+        write's latency. Redis is therefore asked for the ids from *since* to
+        ``UNTIL_SLACK_MS`` past *until* (to the end of the stream without *until*), and each
+        record is kept by its own ``time``: ``since <= time < until``. An entry that cannot be
+        parsed is skipped with a warning, so one bad row cannot break the reader.
+
+        Raises:
+            ValueError: *since* or *until* is naive.
         """
+        for name, bound in (("since", since), ("until", until)):
+            if bound is not None and bound.tzinfo is None:
+                raise ValueError(f"{name} must be timezone-aware, got the naive {bound!r}")
+        # A bare id is completed by Redis: `<ms>-0` as a start, `<ms>-<max>` as an end.
+        entries = await forward_range(
+            self._redis,
+            REFLEX_DECISION_LOG_STREAM,
+            min_id=str(_ms(since)),
+            max_id="+" if until is None else str(_ms(until) + UNTIL_SLACK_MS),
+        )
         records: list[DecisionRecord] = []
-        for entry_id, fields in await forward_range(self._redis, REFLEX_DECISION_LOG_STREAM):
+        for entry_id, fields in entries:
             raw = fields.get(_FIELD.encode()) or fields.get(_FIELD)
             try:
                 if raw is None:
@@ -104,6 +131,6 @@ class DecisionLog:
                 entry = decode_stream_value(entry_id)
                 logger.warning("Skipping unreadable decision log entry {}: {}", entry, e)
                 continue
-            if record.time >= since:
+            if record.time >= since and (until is None or record.time < until):
                 records.append(record)
         return records

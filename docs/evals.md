@@ -407,7 +407,7 @@ uv run alfred evals run --include-pending --no-build --keep
 | `--display` | `rich` | Inspect's console display: `rich`, `plain` or `none`. Inspect's `full` display crashes under `eval_async`, so it is not offered (`evals/harness/display.py`) |
 | `--fake-ha-port` | 18123 | Port the fake Home Assistant listens on, on the bridge gateway; `0` takes any free port. See [Host firewall](#host-firewall) |
 | `--proxy-port` | 18100 | Port the LLM proxy listens on, on the bridge gateway; `0` takes any free port |
-| `--prompt-label` | none | Serve System 2's and the Librarian's prompts from Langfuse at this label instead of the repo defaults. See [Testing a prompt in Langfuse](#testing-a-prompt-in-langfuse) |
+| `--prompt-label` | none | Serve every role's prompts (Reflex, System 2, the Librarian, the approval classifier) from Langfuse at this label instead of the repo defaults. See [Testing a prompt in Langfuse](#testing-a-prompt-in-langfuse) |
 
 ### Testing a prompt in Langfuse
 

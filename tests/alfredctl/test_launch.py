@@ -93,9 +93,9 @@ def test_models_always_mounted() -> None:
 
 def test_localhost_rewritten_to_gateway(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
-    env_file.write_text("OLLAMA_HOST=http://localhost:11434\nHA_TOKEN=abc\n")
+    env_file.write_text("LMSTUDIO_HOST=http://localhost:1234\nHA_TOKEN=abc\n")
     args = _plan(env_file=env_file).run_args
-    assert "OLLAMA_HOST=http://host.docker.internal:11434" in args
+    assert "LMSTUDIO_HOST=http://host.docker.internal:1234" in args
     assert "HA_TOKEN=abc" in args
 
 
@@ -129,10 +129,10 @@ def test_apple_gateway_lookup_only_triggered_when_key_present(
     """The lazy-lookup half of the guard: with a gateway-rewrite key present, the Apple
     vmnet lookup DOES get invoked (and its result is used for the rewrite)."""
     env_file = tmp_path / ".env"
-    env_file.write_text("OLLAMA_HOST=http://localhost:11434\n")
+    env_file.write_text("LMSTUDIO_HOST=http://localhost:1234\n")
     monkeypatch.setattr(runtime_module, "_apple_vmnet_gateway", lambda rt: "192.168.64.9")
     args = _plan(rt=APPLE, env_file=env_file).run_args
-    assert "OLLAMA_HOST=http://192.168.64.9:11434" in args
+    assert "LMSTUDIO_HOST=http://192.168.64.9:1234" in args
 
 
 def test_trusted_networks_merge(tmp_path: Path) -> None:

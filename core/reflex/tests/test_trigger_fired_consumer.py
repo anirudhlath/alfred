@@ -129,7 +129,7 @@ async def test_handle_trigger_fired_slm_failure_does_not_block_notification(
     from core.reflex.__main__ import _handle_trigger_fired
 
     engine = AsyncMock()
-    engine.process_trigger_fired = AsyncMock(side_effect=RuntimeError("Ollama down"))
+    engine.process_trigger_fired = AsyncMock(side_effect=RuntimeError("model server down"))
 
     event = TriggerFired(
         trigger_id="t-1",

@@ -16,7 +16,6 @@ its own ``--env-file``.
 from __future__ import annotations
 
 GATEWAY_REWRITE_KEYS = (
-    "OLLAMA_HOST",
     "LMSTUDIO_HOST",
     "OPENAI_COMPAT_HOST",
     "EMBEDDING_HOST",

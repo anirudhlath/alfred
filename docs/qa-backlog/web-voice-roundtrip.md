@@ -10,7 +10,7 @@
 - Alfred runner fully started (`uv run python -m runner`)
 - Real browser with microphone access (Chrome or Safari on macOS; Safari is the one that
   matters — it has no WebM)
-- Ollama running with a model loaded (e.g. `gpt-oss:20b`)
+- A model for System 2: an OpenAI-compatible server with a model loaded (`SYSTEM2_MODEL=vllm:<name>`), or `OPENROUTER_API_KEY`
 - Whisper STT and Piper TTS configured (auto-downloaded on first use)
 - Navigate to `http://localhost:8081`, signed in, standing in the Room
 

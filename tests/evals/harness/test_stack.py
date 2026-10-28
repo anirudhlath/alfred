@@ -174,15 +174,22 @@ def test_container_env_points_every_llm_at_the_proxy_and_ha_at_the_fake(tmp_path
     env = container_env(cfg(tmp_path), proxy_port=9100, fake_ha_port=9200)
     assert env["HA_HOST"] == "http://host.docker.internal:9200"
     assert env["HA_TOKEN"] == "alfred-eval-ha-token"
-    assert env["OPENAI_COMPAT_HOST"] == "http://host.docker.internal:9100"
     assert env["VLLM_BASE_URL"] == "http://host.docker.internal:9100/v1"
     assert env["SYSTEM2_MODEL"] == env["LIBRARIAN_MODEL"] == "vllm:gemma-4-26b-a4b"
     assert env["EMBEDDING_HOST"] == "http://host.docker.internal:8001"
     assert env["OPENROUTER_API_KEY"] == "alfred-eval-not-a-key"
-    assert env["REFLEX_BACKEND"] == env["EMBEDDING_BACKEND"] == "openai"
-    assert env["OPENAI_COMPAT_MODEL"] == "gemma-4-26b-a4b"
+    assert env["EMBEDDING_BACKEND"] == "openai"
     # The legacy settings would be translated over the new ones; none is sent.
     assert not {"CLAUDE_MODEL", "OPENAI_API_BASE", "OPENAI_BASE_URL"} & set(env)
+
+
+def test_stack_sets_reflex_model(tmp_path: Path) -> None:
+    env = container_env(cfg(tmp_path, model="test-model"), proxy_port=9100, fake_ha_port=9200)
+    assert env["REFLEX_MODEL"] == "vllm:test-model"
+    assert env["VLLM_BASE_URL"] == "http://host.docker.internal:9100/v1"
+    # Reflex follows REFLEX_MODEL alone: no backend switch, and no second spelling of the
+    # model or its host to drift from the first.
+    assert not {"REFLEX_BACKEND", "OPENAI_COMPAT_HOST", "OPENAI_COMPAT_MODEL"} & set(env)
 
 
 def test_up_command_is_eval_mode_with_every_env_pair(tmp_path: Path) -> None:

@@ -18,6 +18,7 @@ from pydantic.json_schema import SkipJsonSchema
 
 from bus.schemas.events import StateChangedEvent
 from core.reflex.prompt import build_state_change_prompt, render_tools
+from core.reflex.prose import repo_prose
 from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo, ToolRegistry
 from sdk.alfred_sdk.feature import BaseFeature, ToolMeta, ToolParameter, tool
 
@@ -161,6 +162,7 @@ async def _render(tools: list[dict[str, Any]]) -> str:
         entities=None,
         now=datetime(2026, 10, 8, 3, 30, tzinfo=UTC),
         tz_name="UTC",
+        prose=repo_prose("state_change"),
     )
 
 

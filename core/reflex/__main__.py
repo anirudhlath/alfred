@@ -10,6 +10,7 @@ import json
 import logging
 import signal
 import time
+from functools import partial
 from typing import TYPE_CHECKING
 
 from bus.schemas.events import TriggerFired
@@ -19,14 +20,17 @@ from core.notifications.dispatcher import NotificationDispatcher
 from core.notifications.dnd import DNDChecker
 from core.notifications.publisher import NotificationPublisher
 from core.notifications.schema import Urgency
-from core.reflex import inference
+from core.reflex.agent import build_reflex_agent
 from core.reflex.attention import AttentionSet
 from core.reflex.context_reader import ContextReader
 from core.reflex.decision_log import DecisionLog
 from core.reflex.engine import ReflexEngine, build_notification_body
+from core.reflex.prose import warm_prose
 from core.reflex.runner import (
+    already_decided,
     count_decision,
     ensure_consumer_group,
+    mark_decided,
     process_stream_entry,
     publish_proposal,
 )
@@ -36,8 +40,10 @@ from core.triggers.models import TRIGGER_ENGINE_SOURCE, TRIGGER_TITLE_PREFIX
 from core.warmup import start_warmup
 from domains.home.home_agent import HomeAgent
 from sdk.alfred_sdk.telemetry import clear_telemetry_buffer, get_telemetry_buffer
-from shared.config import AlfredConfig
+from shared.agents import resolve_model
+from shared.config import AlfredConfig, apply_model_env
 from shared.logging import configure_logging
+from shared.prompts.store import PromptStore
 from shared.redis_streams import create_redis, read_group, reclaim_replayable
 from shared.streams import (
     EVENTS_STREAM,
@@ -49,8 +55,12 @@ from shared.streams import (
 from telemetry.collector import flush_to_csv
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
+    from pydantic_ai import Agent
+
+    from bus.schemas.events import ReflexProposal
+    from core.reflex.tool_registry import ToolInfo
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
@@ -69,9 +79,58 @@ EVENTS_GROUP = "reflex-trigger-fired"
 EVENTS_CONSUMER = "worker-1"
 
 
+def build_agent(config: AlfredConfig) -> Agent[list[ToolInfo], ReflexProposal] | None:
+    """The Reflex agent over ``REFLEX_MODEL``, or None, with one ERROR, when that names none.
+
+    Call after ``init_tracing``, which the agent's instrumentation reads.
+    """
+    apply_model_env(config)
+    model = resolve_model("REFLEX_MODEL", config.reflex_model)
+    if model is None:
+        logger.error(
+            "Reflex is off: it has no model (the cause is logged above). To turn it on, set "
+            "REFLEX_MODEL, or OPENAI_COMPAT_MODEL for the vllm:<that name> default, and restart"
+        )
+        return None
+    return build_reflex_agent(model)
+
+
+def warmup_steps(prompts: PromptStore) -> dict[str, Callable[[], Awaitable[object]]]:
+    """What the process warms in the background, so the first decision pays for none of it."""
+    return {"reflex prompts": partial(warm_prose, prompts)}
+
+
 def _handle_signal() -> None:
     logger.info("Shutdown signal received")
     _shutdown.set()
+
+
+def _install_signal_handlers() -> None:
+    """SIGTERM and SIGINT set ``_shutdown``: how the supervisor and a terminal stop Reflex."""
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _handle_signal)
+
+
+async def stay_off() -> None:
+    """Reflex without a model: alive and idle until the shutdown signal, then return.
+
+    It creates no consumer group, reads no stream, warms no prompt and calls no model. It
+    must not exit: the supervisor stops every service when one exits cleanly, and when one
+    has crashed more than ``max_restarts`` times, so an exit would take the stack down.
+    """
+    _install_signal_handlers()
+    await _shutdown.wait()
+    logger.info("Reflex was off; shutting down")
+
+
+async def serve(config: AlfredConfig) -> None:
+    """The service: decide events with ``REFLEX_MODEL``, or stay off when it names no model."""
+    agent = build_agent(config)
+    if agent is None:
+        await stay_off()
+        return
+    await run(config, agent)
 
 
 async def _handle_trigger_fired(
@@ -86,11 +145,14 @@ async def _handle_trigger_fired(
     Returning normally means "ACK this entry". That covers entries that are not
     ours (no ``event`` field, another event type on the shared stream) and
     entries that can never parse — retrying cannot fix a malformed payload, and
-    left pending it would be reclaimed for eternity. Only a failure while
-    *acting* on a valid TriggerFired propagates, leaving the entry pending for
-    the reclaim pass in ``_consume_trigger_fired``.
+    left pending it would be reclaimed for eternity. Two failures propagate,
+    leaving the entry pending for the reclaim pass in ``_consume_trigger_fired``:
+    the decided-check's Redis error (Redis cannot say whether the event was
+    decided) and a failure while *acting* on a valid TriggerFired.
 
     In shadow mode (#285) ``agent`` is unused: Reflex's decision is recorded, never executed.
+    A trigger event is handled once: once its decision is counted and published it is marked
+    decided, and a redelivery of its entry (same ``event_id``) does nothing.
     """
     raw_event = entry_data.get("event") or entry_data.get(b"event")
     if raw_event is None:
@@ -103,6 +165,17 @@ async def _handle_trigger_fired(
         trigger_event = TriggerFired.model_validate(parsed)
     except Exception as e:
         logger.error("Unparseable trigger_fired event — dropping: %s", e)
+        return
+
+    # A redelivered entry (an un-ACKed one the reclaim pass replays, or a crash between the
+    # decision and the ACK) was handled whole: its notification went out before the decision
+    # that marked it, so neither is repeated.
+    if await already_decided(redis, trigger_event.event_id):
+        logger.info(
+            "Trigger '%s' (event %s) already decided — not handling it again",
+            trigger_event.trigger_name,
+            trigger_event.event_id,
+        )
         return
 
     # Path A: Immediate notification (DND-aware via dispatcher)
@@ -122,22 +195,23 @@ async def _handle_trigger_fired(
         logger.error("SLM reasoning failed for trigger '%s': %s", trigger_event.trigger_name, e)
         return
     await count_decision(redis, proposal.decision)
-    if proposal.decision == "none":
-        return
-    if proposal.decision == "invalid":
-        logger.warning(
-            "Invalid Reflex output for trigger '%s': %s",
-            trigger_event.trigger_name,
-            proposal.problem,
-        )
-    try:
-        await publish_proposal(
-            redis, REFLEX_OBSERVATIONS_STREAM, "trigger_fired", trigger_event, proposal
-        )
-    except Exception as e:
-        logger.warning(
-            "Proposal observation failed for trigger '%s': %s", trigger_event.trigger_name, e
-        )
+    if proposal.decision != "none":
+        if proposal.decision == "invalid":
+            logger.warning(
+                "Invalid Reflex output for trigger '%s': %s",
+                trigger_event.trigger_name,
+                proposal.problem,
+            )
+        try:
+            await publish_proposal(
+                redis, REFLEX_OBSERVATIONS_STREAM, "trigger_fired", trigger_event, proposal
+            )
+        except Exception as e:
+            logger.warning(
+                "Proposal observation failed for trigger '%s': %s", trigger_event.trigger_name, e
+            )
+    # Counted and published, so a redelivery stops at the top; a crash before this decides again.
+    await mark_decided(redis, trigger_event.event_id)
 
 
 async def _consume_trigger_fired(
@@ -215,11 +289,9 @@ async def flush_telemetry_periodically(config: AlfredConfig, interval: float = 3
             logger.info("Flushed %d telemetry entries", len(entries))
 
 
-async def run(config: AlfredConfig) -> None:
+async def run(config: AlfredConfig, agent: Agent[list[ToolInfo], ReflexProposal]) -> None:
     """Main Reflex Runner event loop."""
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, _handle_signal)
+    _install_signal_handlers()
 
     r: AioRedis = create_redis(config.redis_url)
 
@@ -247,12 +319,16 @@ async def run(config: AlfredConfig) -> None:
         profile_dir=profile_dir(),
         default_proactivity=config.proactivity_level,
     )
+    prompts = PromptStore.from_config(config, redis=r)
+    logger.info("Prompts: %s", prompts.describe())
     engine = ReflexEngine(
         preferences_dir=str(preferences_dir()),
         tool_registry=registry,
         context_reader=context_reader,
         memory_reader=memory_reader,
+        agent=agent,
         decision_log=DecisionLog(r),
+        prompts=prompts,
     )
     attention = AttentionSet(redis=r)
 
@@ -267,7 +343,7 @@ async def run(config: AlfredConfig) -> None:
     # Background tasks
     telemetry_task = asyncio.create_task(flush_telemetry_periodically(config))
     trigger_fired_task = asyncio.create_task(_consume_trigger_fired(r, engine, router, publisher))
-    warmup_task = start_warmup("reflex", {"inference backend": inference.warmup})
+    warmup_task = start_warmup("reflex", warmup_steps(prompts))
 
     logger.info("Reflex Runner started. Listening on stream '%s'...", STREAM)
 
@@ -301,7 +377,7 @@ async def run(config: AlfredConfig) -> None:
                         observation_stream=REFLEX_OBSERVATIONS_STREAM,
                         attention=attention,
                     )
-                    # ACK only on success — retriable errors (Ollama down) leave the
+                    # ACK only on success — retriable errors (the model is down) leave the
                     # entry pending for the reclaim pass above to pick back up.
                     await r.xack(STREAM, GROUP, entry_id)
                 except Exception as e:
@@ -311,6 +387,7 @@ async def run(config: AlfredConfig) -> None:
         warmup_task.cancel()
         trigger_fired_task.cancel()
         telemetry_task.cancel()
+        await prompts.aclose()
         await r.aclose()
 
 
@@ -323,7 +400,7 @@ def main() -> None:
         service_name="reflex",
         endpoint=config.otel_endpoint if config.signoz_enabled else None,
     )
-    asyncio.run(run(config))
+    asyncio.run(serve(config))
 
 
 if __name__ == "__main__":

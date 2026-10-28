@@ -6,7 +6,7 @@
 
 ## Prerequisites
 - Full stack running with live HA state flowing on `alfred:home:state_changed`
-- Ollama up (Reflex SLM active)
+- Model server up with `REFLEX_MODEL` served (Reflex SLM active)
 
 ## Test Steps
 1. Toggle a seeded entity (e.g. a light) in HA; watch reflex logs

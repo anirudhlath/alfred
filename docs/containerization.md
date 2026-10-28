@@ -26,7 +26,7 @@ the container itself stays disposable.
 flowchart TB
     subgraph HOST["Host (macOS dev / CachyOS prod)"]
         Browser["Browser / iOS app"]
-        Ollama["Ollama (optional, external)"]
+        LLM["Model server: vLLM / LM Studio (optional, external)"]
         OR["OpenRouter (external)"]
         subgraph C["alfred container — one fat OCI image"]
             tini["tini (PID 1)"]
@@ -43,7 +43,7 @@ flowchart TB
         end
     end
     Browser -->|"only :8081 published"| core
-    core -.->|OLLAMA_HOST gateway rewrite| Ollama
+    core -.->|"VLLM_BASE_URL / LMSTUDIO_HOST gateway rewrite"| LLM
     core -.->|OPENROUTER_API_KEY| OR
     C -.->|"/data (persistent mode only)"| DataVol[("data volume/bind-mount")]
     C -.->|"/models (every mode)"| ModelVol[("model cache volume")]
@@ -349,7 +349,7 @@ services:
     ports:
       - "8081:8081"
     extra_hosts:
-      - "host.docker.internal:host-gateway"   # reach host Ollama on Linux
+      - "host.docker.internal:host-gateway"   # reach the host model server on Linux
     restart: unless-stopped
 volumes:
   alfred_data:
@@ -364,12 +364,12 @@ ALFRED_SECRETS_PASSPHRASE=... docker compose up -d
 
 Two things `alfredctl up` does for you that plain `docker compose` does **not**:
 
-- **Gateway rewriting** — `alfredctl` rewrites `localhost`/`127.0.0.1` in `OLLAMA_HOST`
-  (and `LMSTUDIO_HOST`, `OPENAI_COMPAT_HOST`, `EMBEDDING_HOST`, `HA_HOST`,
+- **Gateway rewriting** — `alfredctl` rewrites `localhost`/`127.0.0.1` in `LMSTUDIO_HOST`
+  (and `OPENAI_COMPAT_HOST`, `VLLM_BASE_URL`, `EMBEDDING_HOST`, `HA_HOST`,
   `OTEL_EXPORTER_OTLP_ENDPOINT` — the list is `GATEWAY_REWRITE_KEYS` in
   `shared/gateway.py`) to the runtime's host gateway. Compose passes `.env` through
-  **untouched** — if Ollama runs on the compose
-  host, set `OLLAMA_HOST=http://host.docker.internal:11434` in `.env` yourself (the
+  **untouched** — if the model server runs on the compose
+  host, set `VLLM_BASE_URL=http://host.docker.internal:8000` in `.env` yourself (the
   `extra_hosts` entry above makes that hostname resolve on Linux; Docker Desktop
   provides it natively on macOS/Windows).
 - **Trusted-network injection** — see Section 7; set `ALFRED_TRUSTED_NETWORKS` in `.env`
@@ -401,7 +401,7 @@ other's host paths.
 |---|---|---|---|
 | Port publishing | `-p 8081:8081` | **not supported** — reach the container at its own IP | `-p 8081:8081` |
 | URL resolution | `http://localhost:<port>` | `alfredctl` runs `container inspect <name>`, reads `status.networks[0].ipv4Address` from the JSON, prints `http://<ip>:8081` | `http://localhost:<port>` |
-| Host gateway (reach Ollama/LM Studio/HA on the host) | `host.docker.internal` (native on Docker Desktop; needs `--add-host`/`extra_hosts: host-gateway` on Linux Docker Engine) | vmnet gateway, derived from `container network inspect default` → `status.ipv4Subnet`, base + `.1` (fallback `192.168.64.1`) | `host.containers.internal` |
+| Host gateway (reach vLLM/LM Studio/HA on the host) | `host.docker.internal` (native on Docker Desktop; needs `--add-host`/`extra_hosts: host-gateway` on Linux Docker Engine) | vmnet gateway, derived from `container network inspect default` → `status.ipv4Subnet`, base + `.1` (fallback `192.168.64.1`) | `host.containers.internal` |
 | Trusted container subnet (auto-added to `ALFRED_TRUSTED_NETWORKS`) | `172.16.0.0/12` | `192.168.64.0/24` | `10.88.0.0/16` |
 | VM sizing | Docker Desktop / host limits apply | **per-container VM defaults to 2 GB RAM** — far too small for the full stack (the VM OOMs and stops silently). `alfredctl up` passes `--memory 8g --cpus 4` (tune with `--memory`/`--cpus`) | host limits apply |
 | Detection order on macOS | 2nd | 1st (preferred when present) | 3rd |
@@ -412,11 +412,11 @@ other's host paths.
 platform order unless `--runtime` is passed explicitly.
 
 **Apple `container` + host inference caveat:** Docker's `host.docker.internal`
-forwards to the host's *loopback*, so a default Ollama (`127.0.0.1:11434`) just
+forwards to the host's *loopback*, so a model server bound to `127.0.0.1` just
 works. The Apple `container` vmnet gateway does **not** — the host service must
-actually listen on the vmnet interface. Run Ollama with `OLLAMA_HOST=0.0.0.0`
-(or enable "Expose Ollama to the network" in the Ollama app); otherwise the
-container's rewritten `OLLAMA_HOST=http://192.168.64.1:11434` gets connection
+actually listen on the vmnet interface. Bind the server to all interfaces (vLLM's
+`--host 0.0.0.0`, or LM Studio's "Serve on Local Network"); otherwise the
+container's rewritten `LMSTUDIO_HOST=http://192.168.64.1:1234` gets connection
 refused while everything else works.
 
 ## 11. devcontainer — deviation from the design spec

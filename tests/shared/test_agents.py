@@ -194,13 +194,13 @@ def test_the_legacy_fields_are_gone() -> None:
 def test_another_provider_warns_once_that_it_keeps_the_sdks_retries(
     no_provider_env: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    no_provider_env.setenv("OLLAMA_BASE_URL", "http://ollama.test:11434/v1")
+    no_provider_env.setenv("DEEPSEEK_API_KEY", "not-a-key")
     with caplog.at_level(logging.WARNING, logger="shared.agents"):
-        model = resolve_model("SYSTEM2_MODEL", "ollama:model-x")
+        model = resolve_model("SYSTEM2_MODEL", "deepseek:model-x")
     assert model is not None
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
-    assert "ollama" in warnings[0] and "SDK's own retries" in warnings[0]
+    assert "deepseek" in warnings[0] and "SDK's own retries" in warnings[0]
 
 
 def test_the_openai_compatible_providers_do_not_warn(

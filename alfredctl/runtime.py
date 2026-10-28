@@ -70,7 +70,7 @@ DOCKER_HOST_ALIAS = "host.docker.internal"
 
 
 def host_gateway(rt: Runtime) -> str:
-    """Address at which the container reaches the HOST (for Ollama/LM Studio/HA)."""
+    """Address at which the container reaches the HOST (for LM Studio/vLLM/HA)."""
     if rt.name == "docker":
         return DOCKER_HOST_ALIAS
     if rt.name == "podman":

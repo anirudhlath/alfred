@@ -25,6 +25,9 @@ LIBRARIAN_COMPRESS: Final = "librarian-compress"
 LIBRARIAN_RESOLVE: Final = "librarian-resolve"
 LIBRARIAN_PATTERNS: Final = "librarian-patterns"
 APPROVAL_CLASSIFIER: Final = "approval-classifier"
+REFLEX_STATE_CHANGE: Final = "reflex-state-change"
+REFLEX_TRIGGER: Final = "reflex-trigger"
+REFLEX_RULES: Final = "reflex-rules"
 
 PROMPTS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
     {
@@ -41,5 +44,8 @@ PROMPTS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         LIBRARIAN_RESOLVE: frozenset({"min_observations", "min_days"}),
         LIBRARIAN_PATTERNS: frozenset({"min_occurrences", "min_days", "tz_name"}),
         APPROVAL_CLASSIFIER: frozenset(),
+        REFLEX_STATE_CHANGE: frozenset(),
+        REFLEX_TRIGGER: frozenset(),
+        REFLEX_RULES: frozenset(),
     }
 )

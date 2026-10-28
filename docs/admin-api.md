@@ -104,18 +104,13 @@ Returns a single JSON object with:
 - `counts.deferred` — `LLEN alfred:notifications:deferred`
 - `counts.triggers` — `HLEN alfred:triggers`
 - `streams` — same payload as `GET /api/admin/streams`
-- `inference.ollama` — bool: probe `{OLLAMA_HOST}/api/tags` returns < 500
-- `inference.lmstudio` — bool: probe `{LMSTUDIO_HOST}/v1/models` returns < 500
-- `reflex.model` — the model the Reflex Engine decides with: `OPENAI_COMPAT_MODEL` when `REFLEX_BACKEND=openai`, `OLLAMA_MODEL` when it is `ollama` (both matched case-insensitively after stripping, as the dispatcher does). `null` when that backend's model is unconfigured **or** when `REFLEX_BACKEND` names a backend the dispatcher does not accept — `core/reflex/inference.py` raises on those, so no model runs at all, and the overview mirrors its `REFLEX_BACKENDS` set rather than retyping it
+- `reflex.model` — the model the Reflex Engine decides with: the `REFLEX_MODEL` value (stripped), else `vllm:` + `OPENAI_COMPAT_MODEL`, the same rule the engine applies at start. `null` when neither is set — Reflex stays off then. The overview makes no inference-server probe
 - `reflex.last_ms` — decision latency of the newest `reflex_observations` entry, in ms, rounded to 0.1 ms
 - `reflex.p50_ms` — median of those latencies over the newest 20 observations, in ms, rounded to 0.1 ms
 - `librarian.last_run_at` — ISO timestamp of the Librarian's last pass, or `null` before its first run
 - `librarian.reviewed` — int: scratchpad lines drained on that pass (`len(lines)` in `consolidator.py`, not a count of memories written), or `null` when unset or non-numeric
 - `librarian.next_run_at` — ISO timestamp of the next scheduled pass, or `null` when none is scheduled
 - `session.idle_minutes` — `SESSION_TIMEOUT_MINUTES`: how long a chat session survives without a turn. Config rather than Redis, so it is present on the degraded path too. The web client reads it rather than hard-coding 30, for both the Room's session window and the lifetime of a stored `alfred.session` — see `docs/web-frontend.md`
-
-Inference probes use the lifespan-owned `httpx.AsyncClient` (`request.app.state.http`).
-In tests (no lifespan) the client is absent and both bools are deterministically `false`.
 
 Reflex latency is derived, not stored: each observation stamps its own `timestamp` and carries
 the originating event under `trigger_event.timestamp`, so the difference is how long the engine

@@ -24,7 +24,6 @@ from core.channels.admin_api import (
 )
 from core.channels.web_server import create_app, require_trusted_network
 from core.conscious.session import MESSAGES_FIELD, text_turn
-from core.reflex.inference import REFLEX_BACKENDS
 from shared.streams import SPEND_PREFIX
 from tests.core.channels.conftest import _TEST_SESSION_ID, session_hgetall
 from tests.helpers import aiter_values, attention_redis
@@ -111,7 +110,6 @@ def test_overview_shape() -> None:
     r.hgetall = _spend_hgetall({b"usd_nanos": b"1240000000", b"requests": b"2"})
     r.exists = AsyncMock(return_value=1)
     client = make_admin_client(r)
-    # No httpx client on app.state → inference checks report False, not errors.
     resp = client.get("/api/admin/overview")
     assert resp.status_code == 200
     data = resp.json()
@@ -123,7 +121,7 @@ def test_overview_shape() -> None:
     assert data["dnd"] == {"active": False}
     assert data["counts"] == {"sessions": 0, "devices": 0, "deferred": 0, "triggers": 0}
     assert data["streams"]["events"]["length"] == 0
-    assert data["inference"] == {"ollama": False, "lmstudio": False}
+    assert "inference" not in data
     assert data["session"] == {"idle_minutes": 30}
 
 
@@ -150,7 +148,7 @@ def test_overview_reports_redis_down() -> None:
     assert data["dnd"] == {"active": False}
     assert data["counts"] == {"sessions": 0, "devices": 0, "deferred": 0, "triggers": 0}
     assert data["streams"] == {}
-    assert data["inference"] == {"ollama": False, "lmstudio": False}
+    assert "inference" not in data
     assert data["reflex"] == {"model": None, "last_ms": None, "p50_ms": None}
     assert data["librarian"] == {"last_run_at": None, "reviewed": None, "next_run_at": None}
     assert data["session"] == {"idle_minutes": 30}
@@ -183,15 +181,22 @@ def test_overview_survives_a_corrupt_dnd_value() -> None:
     assert data["dnd"] == {"active": False}
 
 
-def test_overview_inference_up_with_http_client() -> None:
+def test_overview_reports_the_reflex_model_and_no_inference_probe(monkeypatch: Any) -> None:
+    """Reflex has no inference server of its own to probe: the overview names the model it
+    decides with, and never calls out to a local server on the way."""
+    monkeypatch.setenv("REFLEX_MODEL", "vllm:test-model")
     r = _overview_redis()
     client = make_admin_client(r)
-    fake_http = AsyncMock()
-    fake_http.get = AsyncMock(return_value=MagicMock(status_code=200))
-    client.app.state.http = fake_http  # type: ignore[attr-defined]
+    probe = AsyncMock()
+    client.app.state.http = probe  # type: ignore[attr-defined]
+
     resp = client.get("/api/admin/overview")
+
     assert resp.status_code == 200
-    assert resp.json()["inference"] == {"ollama": True, "lmstudio": True}
+    data = resp.json()
+    assert data["reflex"]["model"] == "vllm:test-model"
+    assert "inference" not in data
+    probe.get.assert_not_awaited()
 
 
 def _observation(observed_at: str, triggered_at: str) -> tuple[bytes, dict[bytes, bytes]]:
@@ -206,8 +211,7 @@ def _observation(observed_at: str, triggered_at: str) -> tuple[bytes, dict[bytes
 
 
 def test_overview_reports_reflex_latency_and_librarian_status(monkeypatch: Any) -> None:
-    monkeypatch.setenv("REFLEX_BACKEND", "ollama")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:8b")
+    monkeypatch.setenv("REFLEX_MODEL", "vllm:test-model")
     r = _overview_redis()
     # newest first, as XREVRANGE returns them
     r.xrevrange = AsyncMock(
@@ -237,7 +241,7 @@ def test_overview_reports_reflex_latency_and_librarian_status(monkeypatch: Any) 
 
     data = client.get("/api/admin/overview").json()
 
-    assert data["reflex"] == {"model": "qwen3:8b", "last_ms": 900.1, "p50_ms": 250.1}
+    assert data["reflex"] == {"model": "vllm:test-model", "last_ms": 900.1, "p50_ms": 250.1}
     assert data["librarian"] == {
         "last_run_at": "2026-09-04T09:00:00+00:00",
         "reviewed": 23,
@@ -246,61 +250,37 @@ def test_overview_reports_reflex_latency_and_librarian_status(monkeypatch: Any) 
     r.xrevrange.assert_awaited_once_with("alfred:reflex:observations", max="+", min="-", count=20)
 
 
-def test_overview_reflex_model_normalises_the_backend_name(monkeypatch: Any) -> None:
-    """The dispatcher strips and lowercases REFLEX_BACKEND before matching it
-    (core/reflex/inference.py); so must the overview, or `REFLEX_BACKEND=OpenAI`
-    reports a model the engine never runs."""
-    monkeypatch.setenv("REFLEX_BACKEND", " OpenAI ")
-    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "Qwen/Qwen3-8B")
+def test_overview_reflex_model_follows_the_served_model_name(monkeypatch: Any) -> None:
+    """With REFLEX_MODEL unset the engine runs vllm:<OPENAI_COMPAT_MODEL> (the config
+    resolves it), so that is what the overview must name."""
+    monkeypatch.delenv("REFLEX_MODEL", raising=False)
+    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "test-model")
     client = make_admin_client(_overview_redis())
 
-    assert client.get("/api/admin/overview").json()["reflex"]["model"] == "Qwen/Qwen3-8B"
+    assert client.get("/api/admin/overview").json()["reflex"]["model"] == "vllm:test-model"
+
+
+def test_overview_reflex_model_is_normalised_like_the_engine_reads_it(monkeypatch: Any) -> None:
+    monkeypatch.setenv("REFLEX_MODEL", " openrouter:vendor/small ")
+    client = make_admin_client(_overview_redis())
+
+    assert client.get("/api/admin/overview").json()["reflex"]["model"] == "openrouter:vendor/small"
 
 
 def test_overview_reflex_model_is_null_when_unconfigured(monkeypatch: Any) -> None:
-    """OPENAI_COMPAT_MODEL defaults to "" — report null, not an empty string."""
-    monkeypatch.setenv("REFLEX_BACKEND", "openai")
+    """Neither setting names a model, so Reflex stays off — report null, not ""."""
+    monkeypatch.setenv("REFLEX_MODEL", "")
     monkeypatch.setenv("OPENAI_COMPAT_MODEL", "")
     client = make_admin_client(_overview_redis())
 
     assert client.get("/api/admin/overview").json()["reflex"]["model"] is None
 
 
-def test_overview_reflex_model_is_null_for_a_backend_the_dispatcher_rejects(
-    monkeypatch: Any,
-) -> None:
-    """`core/reflex/inference.py` raises on anything outside its accepted set, so
-    `REFLEX_BACKEND=vllm` runs no model at all. Falling back to `OLLAMA_MODEL` would
-    name a model the engine will never reach — and hide a misconfiguration that is
-    otherwise only visible in a crash."""
-    monkeypatch.setenv("REFLEX_BACKEND", "vllm")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:8b")
-    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "Qwen/Qwen3-8B")
-    client = make_admin_client(_overview_redis())
-
-    assert client.get("/api/admin/overview").json()["reflex"]["model"] is None
-
-
-def test_overview_reflex_model_covers_every_backend_the_dispatcher_accepts(
-    monkeypatch: Any,
-) -> None:
-    """The overview mirrors the dispatcher's set rather than retyping it, so a new
-    backend cannot be added there and silently report null here."""
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:8b")
-    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "Qwen/Qwen3-8B")
-    client = make_admin_client(_overview_redis())
-
-    for backend in REFLEX_BACKENDS:
-        monkeypatch.setenv("REFLEX_BACKEND", backend)
-        assert client.get("/api/admin/overview").json()["reflex"]["model"] is not None
-
-
 def test_overview_reflex_reads_only_the_newest_samples(monkeypatch: Any) -> None:
     """The window is the newest 20 observations. Pinned by what it *does* to the
     median — a fake that honours `count` the way Redis does — rather than by
     asserting the argument, which a cap of any size would satisfy."""
-    monkeypatch.setenv("REFLEX_BACKEND", "ollama")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:8b")
+    monkeypatch.setenv("REFLEX_MODEL", "vllm:test-model")
     # Newest first: 1..20 ms, then one much older and much slower entry.
     entries = [
         _observation(f"2026-09-04T10:00:00.{ms:06d}Z", "2026-09-04T10:00:00.000000Z")
@@ -326,8 +306,7 @@ def test_overview_reflex_reads_only_the_newest_samples(monkeypatch: Any) -> None
 
 def test_overview_reflex_skips_mixed_timezone_entries(monkeypatch: Any) -> None:
     """A naive/aware timestamp pair raises on subtraction — skip it, never 500."""
-    monkeypatch.setenv("REFLEX_BACKEND", "ollama")
-    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:8b")
+    monkeypatch.setenv("REFLEX_MODEL", "vllm:test-model")
     r = _overview_redis()
     r.xrevrange = AsyncMock(
         return_value=[
@@ -342,7 +321,11 @@ def test_overview_reflex_skips_mixed_timezone_entries(monkeypatch: Any) -> None:
 
     assert resp.status_code == 200
     # Only the well-formed entry counts, so it is both the latest and the median.
-    assert resp.json()["reflex"] == {"model": "qwen3:8b", "last_ms": 250.1, "p50_ms": 250.1}
+    assert resp.json()["reflex"] == {
+        "model": "vllm:test-model",
+        "last_ms": 250.1,
+        "p50_ms": 250.1,
+    }
 
 
 @pytest.mark.parametrize(
@@ -400,15 +383,14 @@ def test_overview_librarian_survives_hash_failure() -> None:
 
 
 def test_overview_reflex_survives_stream_failure(monkeypatch: Any) -> None:
-    monkeypatch.setenv("REFLEX_BACKEND", "openai")
-    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "Qwen/Qwen3-8B")
+    monkeypatch.setenv("REFLEX_MODEL", "vllm:test-model")
     r = _overview_redis()
     r.xrevrange = AsyncMock(side_effect=Exception("boom"))
     client = make_admin_client(r)
 
     data = client.get("/api/admin/overview").json()
 
-    assert data["reflex"] == {"model": "Qwen/Qwen3-8B", "last_ms": None, "p50_ms": None}
+    assert data["reflex"] == {"model": "vllm:test-model", "last_ms": None, "p50_ms": None}
     assert data["librarian"] == {"last_run_at": None, "reviewed": None, "next_run_at": None}
 
 

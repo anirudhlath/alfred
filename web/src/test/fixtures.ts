@@ -113,7 +113,6 @@ export const overviewFixture: Overview = {
       rate_5m: 0.5,
     },
   },
-  inference: { ollama: true, lmstudio: false },
   reflex: { model: "reflex-3b", last_ms: 380, p50_ms: 372 },
   librarian: {
     last_run_at: "2026-09-07T03:00:00Z",

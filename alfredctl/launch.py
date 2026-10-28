@@ -61,7 +61,7 @@ def _env_pairs(
     if env_file is not None and env_file.is_file():
         merged.update({k: v for k, v in dotenv_values(env_file).items() if v is not None})
     # Gateway rewriting stays scoped to env-file values, which is what it has always
-    # done. `--env OLLAMA_HOST=http://localhost:11434` arguably deserves the same
+    # done. `--env LMSTUDIO_HOST=http://localhost:1234` arguably deserves the same
     # rewrite, but widening it here would also make `host_gateway()` shell out for a
     # key the file never mentioned; that is a separate change with its own blast radius.
     if any(key in merged for key in GATEWAY_REWRITE_KEYS):

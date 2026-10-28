@@ -19,6 +19,7 @@ from core.reflex.prompt import (
     render_event,
     state_change_line,
 )
+from core.reflex.prose import repo_prose
 
 NOW = datetime(2026, 10, 8, 3, 30, tzinfo=UTC)
 
@@ -94,6 +95,7 @@ def test_read_state_change_finds_the_change_in_the_whole_prompt() -> None:
         entities=None,
         now=NOW,
         tz_name="UTC",
+        prose=repo_prose("state_change"),
     )
     assert read_state_change(prompt) == RenderedEvent(
         name="Alex", area=None, old="home", new="not_home"
@@ -103,7 +105,13 @@ def test_read_state_change_finds_the_change_in_the_whole_prompt() -> None:
 def test_state_change_line_is_the_line_under_the_heading_read_or_not() -> None:
     event = _change("person.alex", "home", "not_home", friendly_name="Alex")
     prompt = build_state_change_prompt(
-        event=event, preferences="", tools=[], entities=None, now=NOW, tz_name="UTC"
+        event=event,
+        preferences="",
+        tools=[],
+        entities=None,
+        now=NOW,
+        tz_name="UTC",
+        prose=repo_prose("state_change"),
     )
     assert state_change_line(prompt) == render_event(event, None)
     odd = "## What changed\nAlex left\n\n## Decision (JSON only):"
@@ -118,6 +126,7 @@ def test_a_trigger_prompt_is_about_no_state_change() -> None:
         entities=None,
         now=NOW,
         tz_name="UTC",
+        prose=repo_prose("trigger_fired"),
     )
     assert read_state_change(prompt) is None
     assert state_change_line(prompt) is None
