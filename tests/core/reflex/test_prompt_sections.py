@@ -118,6 +118,86 @@ def test_a_bad_timezone_falls_back_to_utc(tz_name: str) -> None:
     assert render_now(NIGHT_UTC, tz_name, None) == "Thu 8 Oct, 03:30 (night)"
 
 
+def _living_room() -> dict[str, LiveEntity]:
+    return _index(
+        _e("light.living_room_lamp", "off", friendly_name="Lamp", area="Living room"),
+        _e("media_player.living_room_tv", "off", friendly_name="TV", area="Living room"),
+        _e("light.hall", "on", friendly_name="Hall light"),
+        _e("person.a", "home", friendly_name="Person A"),
+    )
+
+
+def test_the_prompt_lists_what_to_leave_alone() -> None:
+    entities = _living_room()
+
+    now = render_now(
+        NIGHT_UTC,
+        "America/Chicago",
+        entities,
+        leave_alone=["media_player.living_room_tv", "light.living_room_lamp"],
+    )
+
+    assert now == (
+        "Wed 7 Oct, 22:30 (night)\nPeople: Person A home\n"
+        "Leave alone, a person just changed: Lamp (Living room), TV (Living room)"
+    )
+
+
+def test_what_to_leave_alone_is_named_as_the_house_names_it() -> None:
+    entities = _living_room()
+
+    now = render_now(NIGHT_UTC, "UTC", entities, leave_alone=["light.hall"])
+
+    # An entity with no room is just its name; the House block shows it as "Hall light on".
+    assert now.endswith("\nLeave alone, a person just changed: Hall light")
+
+
+def test_what_to_leave_alone_is_sorted_by_the_text_shown() -> None:
+    entities = _index(
+        _e("light.a_zed", "on", friendly_name="Amber", area="Study"),
+        _e("light.b_alpha", "on", friendly_name="Zinc", area="Attic"),
+        _e("light.c_mid", "on", friendly_name="Amber", area="Attic"),
+    )
+
+    now = render_now(
+        NIGHT_UTC, "UTC", entities, leave_alone=["light.a_zed", "light.b_alpha", "light.c_mid"]
+    )
+
+    assert now.endswith(
+        "Leave alone, a person just changed: Amber (Attic), Amber (Study), Zinc (Attic)"
+    )
+
+
+def test_an_entity_the_snapshot_lacks_is_named_by_its_id() -> None:
+    entities = _living_room()
+
+    now = render_now(
+        NIGHT_UTC, "UTC", entities, leave_alone=["light.gone", "light.living_room_lamp"]
+    )
+
+    assert now.endswith("Leave alone, a person just changed: Lamp (Living room), light.gone")
+
+
+def test_without_live_state_what_to_leave_alone_is_named_by_id() -> None:
+    now = render_now(NIGHT_UTC, "UTC", None, leave_alone=["light.living_room_lamp"])
+
+    assert now == (
+        "Thu 8 Oct, 03:30 (night)\nLeave alone, a person just changed: light.living_room_lamp"
+    )
+
+
+@pytest.mark.parametrize("leave_alone", [(), []])
+def test_with_nothing_to_leave_alone_the_now_section_is_unchanged(
+    leave_alone: list[str],
+) -> None:
+    entities = _living_room()
+
+    assert render_now(NIGHT_UTC, "UTC", entities, leave_alone) == render_now(
+        NIGHT_UTC, "UTC", entities
+    )
+    assert "Leave alone" not in render_now(NIGHT_UTC, "UTC", entities, leave_alone)
+
+
 # --- House ---------------------------------------------------------------------
 
 

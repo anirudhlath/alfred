@@ -2,7 +2,7 @@
 
     docker exec alfred python -m core.reflex.shadow_report --days 7
 
-Prints Markdown for the owner's review: daily decision counts from
+Prints Markdown for the owner's review: daily decision counts and daily outcome counts from
 ``alfred:reflex:decisions:<UTC date>``, then every act, ask and invalid proposal in
 the window, oldest first, in the user's local time. The proposals name people, their
 comings and goings and what was playing, so the report is reviewed privately: only
@@ -27,11 +27,15 @@ from shared.streams import REFLEX_OBSERVATIONS_STREAM, decode_stream_value
 from shared.usertime import get_user_timezone
 
 if TYPE_CHECKING:
+    from datetime import date
     from zoneinfo import ZoneInfo
 
     from shared.types import AioRedis
 
 DECISIONS: tuple[str, ...] = ("act", "ask", "none", "invalid")
+# What each decision came to (``bus.schemas.events.OutcomeKind``), in the order they are shown;
+# the daily hash counts them as ``outcome:<kind>``.
+OUTCOMES: tuple[str, ...] = ("none", "invalid", "would_reverse", "shadow", "asked", "held")
 # Upper bound on observations scanned. A week runs to a few thousand; past this the
 # report says it was truncated rather than silently dropping the oldest.
 MAX_SCAN = 20_000
@@ -68,25 +72,46 @@ def format_proposal(obs: ReflexObservation, tz: ZoneInfo) -> str:
     return " — ".join(parts)
 
 
+def _counts_table(
+    columns: tuple[str, ...], days: list[tuple[date, dict[str, str]]], *, prefix: str
+) -> list[str]:
+    """A Markdown table: a row per UTC day, a column per counted field (``prefix`` + its name)."""
+    lines = [
+        f"| Day (UTC) | {' | '.join(columns)} |",
+        f"|---|{'---|' * len(columns)}",
+    ]
+    for day, counts in days:
+        cells = " | ".join(counts.get(f"{prefix}{name}", "0") for name in columns)
+        lines.append(f"| {day.isoformat()} | {cells} |")
+    return lines
+
+
 async def build_report(redis: AioRedis, *, days: int, now: datetime, tz_name: str) -> str:
-    """Markdown: per-day decision counts, then every non-none proposal in the window."""
+    """Markdown: per-day decision and outcome counts, then every non-none proposal in the window."""
     from zoneinfo import ZoneInfo
 
     tz = ZoneInfo(tz_name)
     start = now - timedelta(days=days)
-    lines = [
-        f"## Reflex shadow report: the last {days} days (times in {tz_name})",
-        "",
-        "| Day (UTC) | act | ask | none | invalid |",
-        "|---|---|---|---|---|",
-    ]
+    days_counted: list[tuple[date, dict[str, str]]] = []
     day = start.astimezone(UTC).date()
     while day <= now.astimezone(UTC).date():
         raw_counts = await redis.hgetall(decisions_key(day))
         counts = {decode_stream_value(k): decode_stream_value(v) for k, v in raw_counts.items()}
-        cells = " | ".join(counts.get(d, "0") for d in DECISIONS)
-        lines.append(f"| {day.isoformat()} | {cells} |")
+        days_counted.append((day, counts))
         day += timedelta(days=1)
+
+    lines = [
+        f"## Reflex shadow report: the last {days} days (times in {tz_name})",
+        "",
+        *_counts_table(DECISIONS, days_counted, prefix=""),
+        "",
+        "### Outcomes",
+        "",
+        "_What each decision came to. `would_reverse` is a proposal that would have undone what"
+        " a person just changed: counted, never published._",
+        "",
+        *_counts_table(OUTCOMES, days_counted, prefix="outcome:"),
+    ]
 
     entries = await revrange(
         redis,

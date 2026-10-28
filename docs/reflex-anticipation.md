@@ -15,7 +15,7 @@ is measured before the next starts.
 | Slice | What it adds | Doc |
 |---|---|---|
 | 1. Who did it | Every state change carries its cause (person, Alfred, automation, outside); Reflex's prompt shows it; every decision that reached the model is kept whole in a private log | [attribution.md](attribution.md) |
-| 2. Reflex asks | Never reverse a person (a rule in code), asking instead of acting, a replay set and a model comparison built from the decision log | this page, for the replay |
+| 2. Reflex asks | Never reverse a person (a rule in code), asking instead of acting, a replay set and a model comparison built from the decision log | this page |
 | 3. Learning | Answers stored with their situation; yes acts next time after three yeses, no stops it; undo | the design |
 | 4. Promotion | A learned habit becomes an automation, on the owner's say-so | the design |
 
@@ -32,6 +32,41 @@ marker. A `TriggerFired` uses its own `event_id`. This makes it unlikely that a 
 entry is inferred, counted and recorded twice; a crash between the decision and the marker can
 still record an event twice, so the replay drops duplicates (below), which would otherwise
 skew every count it prints.
+
+## Never reverse a person
+
+A rule in code, applied after the model answers: Reflex does not propose moving back what a
+person just changed. It does not ask the model to remember.
+
+- **What is kept.** The runner takes every state change of a house device (an entity whose ID
+  starts with a domain in `HOUSE_DOMAINS`; a sensor update is not one) into
+  `alfred:reflex:person_changes`, a hash with one field per entity (`core/reflex/reversal.py`,
+  `PersonChanges.note`). It does this before the attention gate, so a change the gate drops is
+  still known. A change by a person, or by a switch, an app or a device nobody can name, becomes
+  that entity's record. A change by Alfred or an automation deletes it: that is the latest word
+  on the entity. An attributes-only report with the same context id as the record (a bulb
+  giving its brightness after being turned on) leaves it as it is, and an event older than the
+  record never overwrites or clears it.
+- **How long.** `reverse_window_minutes` in the settings document `alfred:reflex:settings`
+  (default 60, from 1 to 1440; `core/reflex/settings.py`). The engine reads the document on
+  every decision, so a change applies to the next one. A missing, unreadable or invalid
+  document reads as the defaults, and a typo never stops Reflex.
+- **What the model sees.** The `## Now` section ends with a `Leave alone, a person just
+  changed:` line naming those entities as the House block names them (`Name (Area)`, or just
+  `Name`; sorted; an entity the snapshot lacks is named by its id). It is there so the model
+  does not waste a proposal; the rule below does not depend on it.
+- **The rule.** `reversed_entities` takes the proposed action, those records and the live
+  snapshot, and names the entities the action would move back. With no live snapshot nothing
+  is reversed.
+- **One outcome per decision.** Every decision ends in a `ReflexOutcome`: `none`, `invalid`,
+  `would_reverse` (the proposal would undo a person's change; it names the entities and is not
+  published as a proposal), `shadow` (published; nothing executes) and, for later slices,
+  `asked` and `held`. It is kept on the decision-log record and on the observation, counted in
+  `alfred:reflex:decisions:<UTC date>` as `outcome:<kind>` (and `<kind>:<reason>` when there is
+  a reason), and printed as the Outcomes table of `python -m core.reflex.shadow_report`.
+- **Fail closed.** A Redis error while reading the settings or the records propagates, before
+  the model is asked: the entry stays pending and is retried rather than decided without
+  knowing what a person did. Noting a change is best-effort and never raises.
 
 ## Replay
 

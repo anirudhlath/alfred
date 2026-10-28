@@ -85,6 +85,33 @@ async def test_the_counts_table_covers_every_utc_day_in_the_window() -> None:
     assert "| 2026-10-08 | 0 | 0 | 0 | 0 |" in report
 
 
+async def test_shadow_report_prints_outcomes() -> None:
+    redis = _redis(
+        [],
+        {
+            "alfred:reflex:decisions:2026-10-07": {
+                b"act": b"5",
+                b"none": b"40",
+                b"outcome:none": b"40",
+                b"outcome:shadow": b"3",
+                b"outcome:would_reverse": b"2",
+                b"outcome:held": b"1",
+                b"held:tool_off": b"1",
+            }
+        },
+    )
+
+    report = await build_report(redis, days=2, now=NOW, tz_name="America/Chicago")
+
+    assert "### Outcomes" in report
+    assert "| Day (UTC) | none | invalid | would_reverse | shadow | asked | held |" in report
+    assert "| 2026-10-06 | 0 | 0 | 0 | 0 | 0 | 0 |" in report
+    assert "| 2026-10-07 | 40 | 0 | 2 | 3 | 0 | 1 |" in report
+    # Between the decision counts and the proposals, so a reader meets them in that order.
+    assert report.index("| 2026-10-07 | 5 |") < report.index("### Outcomes")
+    assert report.index("### Outcomes") < report.index("### Proposals")
+
+
 async def test_proposals_are_listed_oldest_first_in_local_time() -> None:
     redis = _redis(
         [

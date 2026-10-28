@@ -24,6 +24,7 @@ import pytest
 
 from bus.schemas.events import ReflexProposal, TriggerFired
 from shared.streams import EVENTS_STREAM
+from tests.core.reflex.fakes import decided
 
 # An id from 1970 — far outside reclaim_replayable's 5-minute replay window.
 ANCIENT_ID = b"1-1"
@@ -141,7 +142,7 @@ async def _run(
         monkeypatch.setattr(reflex_main, "_PEL_RECLAIM_EVERY", reclaim_every)
     publisher = publisher or _publisher()
     engine = AsyncMock()
-    engine.process_trigger_fired = AsyncMock(return_value=ReflexProposal(decision="none"))
+    engine.process_trigger_fired = AsyncMock(return_value=decided(ReflexProposal(decision="none")))
 
     await asyncio.wait_for(
         reflex_main._consume_trigger_fired(

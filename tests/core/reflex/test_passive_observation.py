@@ -9,6 +9,7 @@ import pytest
 
 from bus.schemas.events import ReflexObservation, ReflexProposal, StateChangedEvent
 from shared.streams import OBSERVED_ENTITY_PREFIX
+from tests.core.reflex.fakes import decided
 
 STREAM = "alfred:reflex:observations"
 
@@ -151,7 +152,7 @@ async def test_no_action_path_publishes_an_observation() -> None:
 
     engine = AsyncMock()
     engine.process_event = AsyncMock(
-        return_value=ReflexProposal(decision="none")
+        return_value=decided(ReflexProposal(decision="none"))
     )  # SLM: nothing to do
     agent = AsyncMock()
     redis = AsyncMock()
@@ -181,7 +182,7 @@ async def test_debounced_no_action_publishes_nothing() -> None:
     from core.reflex.runner import process_stream_entry
 
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
+    engine.process_event = AsyncMock(return_value=decided(ReflexProposal(decision="none")))
     redis = AsyncMock()
     redis.set = AsyncMock(return_value=None)  # inside the window
 
@@ -238,7 +239,7 @@ async def test_a_proposal_skips_the_debounce() -> None:
 
     engine = AsyncMock()
     engine.process_event = AsyncMock(
-        return_value=ReflexProposal(decision="ask", reason="Dim for the film?")
+        return_value=decided(ReflexProposal(decision="ask", reason="Dim for the film?"))
     )
     redis = AsyncMock()
     redis.set = AsyncMock(return_value=None)  # the entity is inside its debounce window
@@ -427,7 +428,7 @@ async def test_a_failed_observation_write_does_not_block_the_ack() -> None:
     from core.reflex.runner import process_stream_entry
 
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
+    engine.process_event = AsyncMock(return_value=decided(ReflexProposal(decision="none")))
     redis = AsyncMock()
     redis.set = AsyncMock(return_value=True)
     redis.xadd = AsyncMock(
@@ -453,7 +454,7 @@ async def test_a_failed_debounce_write_does_not_block_the_ack() -> None:
     from core.reflex.runner import process_stream_entry
 
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
+    engine.process_event = AsyncMock(return_value=decided(ReflexProposal(decision="none")))
     redis = AsyncMock()
     redis.set = AsyncMock(side_effect=Exception("OOM command not allowed"))
 
@@ -477,7 +478,7 @@ async def test_a_failed_proposal_write_does_not_block_the_ack() -> None:
 
     engine = AsyncMock()
     engine.process_event = AsyncMock(
-        return_value=ReflexProposal(decision="ask", reason="Dim for the film?")
+        return_value=decided(ReflexProposal(decision="ask", reason="Dim for the film?"))
     )
     redis = AsyncMock()
     redis.xadd = AsyncMock(

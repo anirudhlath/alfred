@@ -26,6 +26,7 @@ from bus.schemas.events import (
     StateChangedEvent,
 )
 from shared.streams import AVAILABILITY_DECISION_PREFIX, LAST_KNOWN_STATE_KEY
+from tests.core.reflex.fakes import decided
 from tests.helpers import attention_redis
 
 if TYPE_CHECKING:
@@ -397,7 +398,7 @@ async def test_a_bridged_change_reaches_the_model_and_memory_as_one_change() -> 
     redis = await _seeded("off")
     redis.set = AsyncMock(return_value=True)  # outside the observation debounce window
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
+    engine.process_event = AsyncMock(return_value=decided(ReflexProposal(decision="none")))
 
     await _process(redis, _event("unavailable", "on"), engine)
 
@@ -415,8 +416,8 @@ async def test_a_bridged_change_survives_a_failed_inference() -> None:
     engine.process_event = AsyncMock(
         side_effect=[
             ConnectionError("model down"),
-            ReflexProposal(decision="none"),
-            ReflexProposal(decision="none"),
+            decided(ReflexProposal(decision="none")),
+            decided(ReflexProposal(decision="none")),
         ]
     )
 
@@ -444,7 +445,7 @@ async def test_a_blip_does_not_start_the_attention_cooldown() -> None:
     redis = await _seeded("off", attention_redis({"alfred:attention:home": {ENTITY}}))
     attention = AttentionSet(redis=redis, cooldown_seconds=60.0)  # type: ignore[arg-type]
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
+    engine.process_event = AsyncMock(return_value=decided(ReflexProposal(decision="none")))
 
     await _process(redis, _event("off", "unavailable"), engine, attention)
     await _process(redis, _event("unavailable", "on"), engine, attention)
@@ -460,7 +461,7 @@ async def test_a_bridged_return_keeps_its_context(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr("core.reflex.runner.record_change", spy)
     redis = await _seeded("on")
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
+    engine.process_event = AsyncMock(return_value=decided(ReflexProposal(decision="none")))
     returned = _event("unavailable", "off").model_copy(
         update={"context": ChangeContext(user_id="u")}
     )

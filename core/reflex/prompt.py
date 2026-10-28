@@ -51,6 +51,8 @@ NO_PREFERENCES = "None recorded yet."
 # The What changed line: "{name} ({room}): {old} → {new} · {cause} · {detail} · …".
 STATE_CHANGE_HEADING = "What changed"
 NO_OLD_STATE = "(none)"
+# The last line of the Now section when a person has just changed something.
+LEAVE_ALONE_HEADING = "Leave alone, a person just changed: "
 _ARROW = " → "
 _DETAIL_SEP = " · "
 _HEAD = re.compile(r"(?P<name>.+) \((?P<area>[^()]+)\)")
@@ -154,23 +156,54 @@ def _zone(tz_name: str) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
-def render_now(now: datetime, tz_name: str, entities: Mapping[str, LiveEntity] | None) -> str:
-    """Local time and time of day, then the sun and who is where, when live state has them."""
+def _head(entity_id: str, attributes: Mapping[str, Any]) -> str:
+    """How an entity is named for the model: ``Name (Room)``, or just ``Name`` with no room."""
+    name = _name(entity_id, attributes)
+    area = _area(attributes)
+    return f"{name} ({area})" if area else name
+
+
+def _leave_alone(entity_ids: Sequence[str], entities: Mapping[str, LiveEntity] | None) -> str:
+    """The Leave alone line: what a person just changed, named as the House block names it.
+
+    An entity the live state does not hold is named by its id.
+    """
+    known = entities or {}
+    heads = [
+        _head(entity_id, known[entity_id].attributes) if entity_id in known else entity_id
+        for entity_id in entity_ids
+    ]
+    return f"{LEAVE_ALONE_HEADING}{', '.join(sorted(heads, key=lambda h: (h.casefold(), h)))}"
+
+
+def render_now(
+    now: datetime,
+    tz_name: str,
+    entities: Mapping[str, LiveEntity] | None,
+    leave_alone: Sequence[str] = (),
+) -> str:
+    """Local time and time of day, then the sun and who is where, when live state has them.
+
+    *leave_alone* is the entity IDs a person just changed; they get a last line of their own.
+    With none, the section is what it was.
+    """
     local = now.astimezone(_zone(tz_name))
     clock = f"{local:%a} {local.day} {local:%b}, {local:%H:%M} ({time_of_day(local.hour)})"
-    if entities is None:
-        return clock
-    sun = entities.get("sun.sun")
-    if sun is not None and sun.state in ("above_horizon", "below_horizon"):
-        clock += " · sun up" if sun.state == "above_horizon" else " · sun down"
-    people = sorted(
-        (e for e in entities.values() if e.domain == "person"),
-        key=lambda e: _name(e.entity_id, e.attributes).casefold(),
-    )
-    if not people:
-        return clock
-    who = " · ".join(f"{_name(p.entity_id, p.attributes)} {_clip(p.state)}" for p in people)
-    return f"{clock}\nPeople: {who}"
+    lines = [clock]
+    if entities is not None:
+        sun = entities.get("sun.sun")
+        if sun is not None and sun.state in ("above_horizon", "below_horizon"):
+            lines[0] += " · sun up" if sun.state == "above_horizon" else " · sun down"
+        people = sorted(
+            (e for e in entities.values() if e.domain == "person"),
+            key=lambda e: _name(e.entity_id, e.attributes).casefold(),
+        )
+        if people:
+            who = " · ".join(f"{_name(p.entity_id, p.attributes)} {_clip(p.state)}" for p in people)
+            lines.append(f"People: {who}")
+    if leave_alone:
+        lines.append(_leave_alone(leave_alone, entities))
+    return "\n".join(lines)
 
 
 def _house_detail(entity: LiveEntity) -> str | None:
@@ -258,9 +291,7 @@ def render_event(event: StateChangedEvent, entities: Mapping[str, LiveEntity] | 
     known = entities.get(event.entity_id) if entities is not None else None
     # Live state names and places the entity; the event carries only HA's raw attributes.
     attributes = {**event.attributes, **(known.attributes if known is not None else {})}
-    name = _name(event.entity_id, attributes)
-    area = _area(attributes)
-    head = f"{name} ({area})" if area else name
+    head = _head(event.entity_id, attributes)
     old = _clip(event.old_state) if event.old_state is not None else NO_OLD_STATE
     line = f"{head}: {old}{_ARROW}{_clip(event.new_state)}"
     details = [
@@ -389,13 +420,14 @@ def _assemble(
     tz_name: str,
     change_heading: str,
     change: str,
+    leave_alone: Sequence[str],
 ) -> str:
     # Stable → volatile. Keep this order: it is what lets vLLM reuse the prefix.
     return "\n\n".join(
         [
             f"{prose.intro}\n\n{prose.rules}\n\n{render_tools(tools)}",
             f"## Preferences\n{preferences.strip() or NO_PREFERENCES}",
-            f"## Now\n{render_now(now, tz_name, entities)}",
+            f"## Now\n{render_now(now, tz_name, entities, leave_alone)}",
             f"## House\n{render_house(entities)}",
             f"## {change_heading}\n{change}",
             "## Decision (JSON only):",
@@ -412,8 +444,12 @@ def build_state_change_prompt(
     now: datetime,
     tz_name: str,
     prose: ReflexProse,
+    leave_alone: Sequence[str] = (),
 ) -> str:
-    """The Reflex prompt for one state change."""
+    """The Reflex prompt for one state change.
+
+    *leave_alone* is the entity IDs a person just changed (see ``render_now``).
+    """
     return _assemble(
         prose,
         preferences=preferences,
@@ -423,6 +459,7 @@ def build_state_change_prompt(
         tz_name=tz_name,
         change_heading=STATE_CHANGE_HEADING,
         change=render_event(event, entities),
+        leave_alone=leave_alone,
     )
 
 
@@ -435,6 +472,7 @@ def build_trigger_prompt(
     now: datetime,
     tz_name: str,
     prose: ReflexProse,
+    leave_alone: Sequence[str] = (),
 ) -> str:
     """The Reflex prompt for a trigger that fired; the owner is already being notified."""
     return _assemble(
@@ -446,4 +484,5 @@ def build_trigger_prompt(
         tz_name=tz_name,
         change_heading="Trigger fired",
         change=render_trigger(event),
+        leave_alone=leave_alone,
     )

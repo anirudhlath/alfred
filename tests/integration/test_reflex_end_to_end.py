@@ -79,7 +79,8 @@ async def test_full_reflex_pipeline(preferences_dir: str, tv_on_event: StateChan
         preferences_dir=preferences_dir, tool_registry=_make_mock_registry(), agent=agent
     )
 
-    proposal = await engine.process_event(tv_on_event)
+    decided = await engine.process_event(tv_on_event)
+    proposal = decided.proposal
 
     # Structured output verification (eval contract)
     assert proposal.decision == "act"
@@ -108,7 +109,9 @@ async def test_reflex_no_action_for_irrelevant_event(preferences_dir: str) -> No
         preferences_dir=preferences_dir, tool_registry=_make_mock_registry(), agent=agent
     )
 
-    proposal = await engine.process_event(temp_event)
+    decided = await engine.process_event(temp_event)
+    proposal = decided.proposal
 
     assert proposal.decision == "none"
+    assert decided.outcome.kind == "none"
     assert proposal.action is None
