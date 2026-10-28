@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
     from pydantic import BaseModel
 
+    from core.reflex.decision_log import DecisionRecord
     from core.reflex.tool_registry import ToolInfo
     from evals.harness.evidence import Role, StepKind, TranscriptTurn
 
@@ -125,6 +126,9 @@ class FakeBus:
         self.tz_set: list[str | None] = []
         self.dnd: list[bool] = []
         self.cleared = 0
+        self.decision_log: list[DecisionRecord] = []  # Reflex's decision log
+        self.decisions_waited: list[float] = []  # each wait_for_decisions' timeout
+        self.person_changes_cleared = 0
         self.advanced: list[str] = []
         self.deleted: list[str] = []
         self.responses: list[AlfredResponse] = []  # the user responses stream
@@ -215,6 +219,30 @@ class FakeBus:
         except TimeoutError:
             return False
         return True
+
+    async def decision_records(self, since: datetime) -> list[DecisionRecord]:
+        return [r.model_copy(deep=True) for r in self.decision_log if r.time >= since]
+
+    async def wait_for_decisions(
+        self, since: datetime, timeout_s: float, enough: Callable[[list[DecisionRecord]], bool]
+    ) -> list[DecisionRecord]:
+        self.decisions_waited.append(timeout_s)
+        try:
+            async with asyncio.timeout(timeout_s):
+                while not enough(records := await self.decision_records(since)):
+                    await self._landed.wait()
+        except TimeoutError:
+            return await self.decision_records(since)
+        return records
+
+    def log_decision(self, record: DecisionRecord) -> None:
+        """Reflex logs a decision, now."""
+        self.decision_log.append(record)
+        landed, self._landed = self._landed, asyncio.Event()
+        landed.set()
+
+    async def clear_person_changes(self) -> None:
+        self.person_changes_cleared += 1
 
     async def notifications(self, since_wall: float) -> list[Entry]:
         return [e for e in self.sent if e.wall >= since_wall]

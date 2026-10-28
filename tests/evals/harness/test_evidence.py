@@ -10,6 +10,7 @@ from evals.harness.evidence import (
     Advance,
     ClockSet,
     Evidence,
+    LoggedDecision,
     NotificationRecord,
     ReflexCall,
     StatePush,
@@ -205,3 +206,30 @@ def test_a_naive_trigger_created_at_reads_as_utc() -> None:
     )
     assert record.created_at == datetime(2026, 10, 8, 18, 0, tzinfo=UTC)
     assert record.created_at.tzinfo is UTC
+
+
+def logged(t: float, entity_id: str = "light.bedroom_lamp", state: str = "off") -> LoggedDecision:
+    return LoggedDecision(t=t, entity_id=entity_id, state=state, decision="none", outcome="none")
+
+
+def test_decisions_about_a_step_are_the_logged_ones_for_its_change_from_its_start() -> None:
+    ev = three_steps().model_copy(
+        update={
+            "decisions": [
+                logged(5.0),  # before step 1 and step 2: neither's
+                logged(12.0),
+                logged(25.0),
+                logged(12.0, entity_id="light.kitchen_pendants"),  # another entity
+                logged(12.0, state="on"),  # the same entity, another state
+            ]
+        }
+    )
+    # Step 1 and 2 push the same change: a decision from a step's start on is about it.
+    assert [d.t for d in ev.decisions_about(1)] == [12.0, 25.0]
+    assert [d.t for d in ev.decisions_about(2)] == [25.0]
+    assert [d.t for d in ev.decisions_about(-1)] == [25.0]
+
+
+def test_a_step_that_pushed_nothing_has_no_decisions_about_it() -> None:
+    ev = three_steps().model_copy(update={"decisions": [logged(5.0)]})
+    assert ev.decisions_about(0) == []  # the clock step

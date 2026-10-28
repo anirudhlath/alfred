@@ -4,6 +4,9 @@ The calls a check reads are the System 1 calls about one step's state change tha
 the proxy during that step, an ``ha_event`` (``at_step``, which counts every step; default
 the golden's last one). A call in the window about anything else is named in the reason
 as unattributed, never judged.
+
+``reflex_outcome`` reads Reflex's decision log instead: what the code made of the model's
+decision (a proposal that would undo what a person just changed is ``would_reverse``).
 """
 
 from __future__ import annotations
@@ -14,10 +17,10 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
 from evals.harness.checks.llm import same_tool
 from evals.harness.checks.result import CheckResult, failed, passed
-from evals.harness.evidence import Decision
+from evals.harness.evidence import Decision, Outcome
 
 if TYPE_CHECKING:
-    from evals.harness.evidence import Evidence, ReflexCall
+    from evals.harness.evidence import Evidence, LoggedDecision, ReflexCall
 
 
 def _as_list(value: Any) -> Any:
@@ -26,6 +29,7 @@ def _as_list(value: Any) -> Any:
 
 Decisions = Annotated[list[Decision], BeforeValidator(_as_list), Field(min_length=1)]
 Tools = Annotated[list[str], BeforeValidator(_as_list), Field(min_length=1)]  # any of them
+Outcomes = Annotated[list[Outcome], BeforeValidator(_as_list), Field(min_length=1)]
 
 
 PROPOSALS: tuple[Decision, ...] = ("act", "ask")  # the decisions that propose a tool call
@@ -53,6 +57,13 @@ class ReflexNotProposedParams(_AtStep):
     tool: str
     target: str | None = None
     decision: Decisions = Field(default_factory=_proposals)
+
+
+class ReflexOutcomeParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    outcome: Outcomes
+    target: str | None = None  # an entity id or an area id
+    at_step: int | None = None
 
 
 def _clock_problem(evidence: Evidence, step: int, calls: list[ReflexCall]) -> str | None:
@@ -205,3 +216,59 @@ def reflex_not_proposed(evidence: Evidence, p: ReflexNotProposedParams) -> Check
     seen = "; ".join(_describe(c) for c in window.calls) or "it was not called"
     on = "" if p.target is None else f" on {p.target}"
     return passed(name, f"no {'/'.join(p.decision)} {p.tool}{on} (System 1: {seen}){window.note()}")
+
+
+def _describe_logged(d: LoggedDecision) -> str:
+    what = d.decision if d.tool is None else f"{d.decision} {d.tool}"
+    named = [t for t in d.targets if "." in t] or d.targets
+    if named:
+        what += f" on {', '.join(named)}"
+    return f"{what} → {d.outcome}"
+
+
+def reflex_outcome(evidence: Evidence, p: ReflexOutcomeParams) -> CheckResult:
+    """Every decision in Reflex's log about the step's change (and, with a ``target``, every
+    one that proposes it) came to an outcome in the set.
+
+    A decision that proposes nothing there has nothing to reverse, so none proposing the
+    target is a pass. No decision in the log at all is an ``error``: the change was lost, or
+    its record was, and there is no outcome to score.
+    """
+    name = "reflex_outcome"
+    window = _window(evidence, name, p.at_step)
+    if isinstance(window, CheckResult):
+        return window
+    logged = evidence.decisions_about(window.step)
+    if not logged:
+        called = "System 1 was called" if window.calls else "System 1 was not called"
+        return CheckResult(
+            name=name,
+            status="error",
+            reason=(
+                f"Reflex's decision log holds no decision about step {window.step}'s change "
+                f"({called}): no outcome to judge" + window.note()
+            ),
+        )
+    seen = "; ".join(_describe_logged(d) for d in logged)
+    judged = logged if p.target is None else [d for d in logged if p.target in d.targets]
+    if not judged:
+        return passed(name, f"no decision proposed {p.target} (Reflex: {seen}){window.note()}")
+    if any(d.outcome is None for d in judged):
+        return CheckResult(
+            name=name,
+            status="error",
+            reason=(
+                "a decision in Reflex's log has no outcome (written before outcomes were "
+                f"kept): {seen}{window.note()}"
+            ),
+        )
+    if all(d.outcome in p.outcome for d in judged):
+        return passed(name, "; ".join(_describe_logged(d) for d in judged) + window.note())
+    on = "" if p.target is None else f" on {p.target}"
+    wanted = "/".join(p.outcome)
+    return failed(
+        name,
+        f"wanted outcome {wanted}{on}; Reflex decided "
+        + "; ".join(_describe_logged(d) for d in judged)
+        + window.note(),
+    )

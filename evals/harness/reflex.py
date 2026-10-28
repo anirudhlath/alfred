@@ -14,11 +14,12 @@ from typing import TYPE_CHECKING, Any
 from core.reflex.decision import parse_decision
 from core.reflex.prompt import parse_event, state_change_line
 from evals.harness.checks.llm import message_text
-from evals.harness.evidence import ReflexCall, ReflexEvent
+from evals.harness.evidence import LoggedDecision, ReflexCall, ReflexEvent
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    from core.reflex.decision_log import DecisionRecord
     from core.reflex.prompt import RenderedEvent
     from core.reflex.tool_registry import ToolInfo
     from evals.harness.evidence import LlmCall
@@ -165,6 +166,40 @@ def reflex_calls(
                 local_hour=hour,
                 event=event,
                 unread_change=unread,
+            )
+        )
+    return out
+
+
+def logged_decisions(
+    records: Sequence[DecisionRecord], world: World, *, started: float, started_wall: float
+) -> list[LoggedDecision]:
+    """The decision log's records about state changes, as the evidence keeps them, oldest first.
+
+    A record's time is wall time; the evidence's is the sample's monotonic clock, so it is
+    moved by the offset between the two at the sample's start. A trigger's decision is about
+    no state change and is left out. What each proposal would act on is worked out the way
+    ``reflex_calls`` does, so a check names the same targets for either.
+    """
+    out: list[LoggedDecision] = []
+    for record in records:
+        entity_id, state = record.event.get("entity_id"), record.event.get("new_state")
+        if record.origin != "state_change" or not isinstance(entity_id, str):
+            continue
+        if not isinstance(state, str):
+            continue
+        action = record.proposal.action
+        tool = None if action is None else action.tool_name
+        parameters = {} if action is None else dict(action.parameters)
+        out.append(
+            LoggedDecision(
+                t=started + (record.time.timestamp() - started_wall),
+                entity_id=entity_id,
+                state=state,
+                decision=record.proposal.decision,
+                outcome=None if record.outcome is None else record.outcome.kind,
+                tool=tool,
+                targets=targets(world, tool, parameters),
             )
         )
     return out

@@ -93,7 +93,8 @@ Thu 8 Oct, 15:10 (afternoon) · sun up · partlycloudy
 - **An entity seen before the seed named it.** The seed decides membership the first time Reflex
   sees an entity, and the `seen` set keeps that decision. A sun or weather entity Reflex saw
   before the seed listed its domain stays out until it is allowed through
-  `PUT /api/admin/attention/{domain}` (see [autonomy.md](autonomy.md)).
+  `PUT /api/admin/attention/{domain}` (see [autonomy.md](autonomy.md)); the `{domain}` there
+  is the attention set's, the event's domain (`home`), not the entity's (`sun`, `weather`).
 
 ## Replay
 

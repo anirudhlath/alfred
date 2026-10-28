@@ -396,7 +396,8 @@ only entities in the **attention set** trigger SLM inference (Tier 2). `Attentio
 Redis SET per domain (`alfred:attention:{domain}`); membership is lazily seeded from
 `attention_seed.yaml` (domain + device-class rules) on first sight of an entity and persisted
 via `SADD`. The seed's domains are `light`, `switch`, `media_player`, `scene`, `climate`, `lock`,
-`person`, `sun` and `weather` (the last two feed the `## Now` line's sun and weather condition);
+`person`, `sun` and `weather` (the last two make a change in the sun or the weather wake the
+model; the `## Now` line reads them live either way);
 its device classes are `door`, `motion`, `occupancy`, `presence`, `window` and `garage_door`. A
 companion `alfred:attention:{domain}:seen` set makes runtime removals sticky -- the YAML seed
 never re-adds a demoted entity. The gate lives in `core/reflex/runner.py

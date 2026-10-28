@@ -11,10 +11,11 @@ from typing import Any, Literal, Self, get_args
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from bus.schemas.events import ActionRequest, ReflexDecision, UrgencyLevel
+from bus.schemas.events import ActionRequest, OutcomeKind, ReflexDecision, UrgencyLevel
 
 Role = Literal["system1", "system2", "librarian", "approval", "unknown"]
 Decision = ReflexDecision
+Outcome = OutcomeKind
 Urgency = UrgencyLevel
 StepKind = Literal["user", "ha_event", "wait", "clock", "advance_trigger", "dnd", "door"]
 STEP_KINDS: tuple[StepKind, ...] = get_args(StepKind)
@@ -141,6 +142,28 @@ class ReflexCall(BaseModel):
         return self.t + self.latency_ms / 1000
 
 
+class LoggedDecision(BaseModel):
+    """One entry of Reflex's decision log about a state change: what it decided, and what that
+    came to once the code had checked it (``bus.schemas.events.ReflexOutcome``).
+
+    Lean on purpose: the log keeps each prompt whole, and the evidence carries no prompt text.
+    """
+
+    t: float  # when Reflex logged it, on the sample's monotonic clock
+    entity_id: str  # the entity the change was about
+    state: str  # the new state
+    decision: Decision
+    # None for a record written before outcomes were kept.
+    outcome: Outcome | None = None
+    tool: str | None = None
+    # Entity and area ids the proposal names (``ReflexCall.targets``); empty for no proposal.
+    targets: list[str] = Field(default_factory=list)
+
+    def is_of(self, entity_id: str, state: str) -> bool:
+        """Whether this decision is about *entity_id* changing to *state*."""
+        return self.entity_id == entity_id and self.state == state
+
+
 class TriggerRecord(BaseModel):
     """A trigger System 2 created through its tool (``TriggerCreated`` on alfred:events)."""
 
@@ -229,6 +252,8 @@ class Evidence(BaseModel):
     llm_calls: list[LlmCall] = Field(default_factory=list)
     step_kinds: list[StepKind] = Field(default_factory=list)
     reflex: list[ReflexCall] = Field(default_factory=list)
+    # Reflex's decision log for the sample, read only by a golden that judges an outcome.
+    decisions: list[LoggedDecision] = Field(default_factory=list)
     triggers_created: list[TriggerRecord] = Field(default_factory=list)
     triggers_fired: list[TriggerFire] = Field(default_factory=list)
     notifications: list[NotificationRecord] = Field(default_factory=list)  # dispatched
@@ -298,6 +323,18 @@ class Evidence(BaseModel):
         an earlier step's, a replayed one, or a trigger's fire."""
         push = self.state_push(step)
         return [c for c in self._reflex_in(step) if push is None or not c.is_about(push)]
+
+    def decisions_about(self, step: int) -> list[LoggedDecision]:
+        """The logged decisions about the step's own state change, made at or after its start.
+
+        Same entity and same new state; a step that pushed nothing has none. Reflex writes its
+        log entry after the model's reply, so the entry may fall past the step's window.
+        """
+        push = self.state_push(step)
+        if push is None:
+            return []
+        start = self.step_start(step)
+        return [d for d in self.decisions if d.t >= start and d.is_of(push.entity_id, push.state)]
 
     def last_step(self, kind: StepKind) -> int | None:
         """The index of the last step of *kind*, or None when the sample has none."""

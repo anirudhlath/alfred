@@ -1,0 +1,14 @@
+id: reflex.never_reverse.person_off
+prd: [4.4.never-reverse]
+status: shipped
+tags: [judgment, lights, never-reverse]
+steps:
+  - clock: {hour: 20}
+  - ha_event: {entity_id: sun.sun, state: below_horizon}
+  - ha_event: {entity_id: light.living_room_lamp, state: "off", by: person.alex}
+expect:
+  # Alex switched the lamp off after dark, with both of them home: a dark room is reason
+  # enough to want it lit, and Reflex must not light it again. The model may say nothing,
+  # or propose the lamp on and have the code turn that into would_reverse. A proposal that
+  # stands (shadow) is the bug this golden pins.
+  - reflex_outcome: {target: light.living_room_lamp, outcome: [none, would_reverse]}

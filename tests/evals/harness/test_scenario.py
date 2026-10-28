@@ -410,10 +410,22 @@ def test_a_plain_golden_does_not_watch_reflex() -> None:
     assert not golden([{"user": "a"}], [{"reply_contains": {"text": "x"}}]).watches_reflex
 
 
+def test_only_a_reflex_outcome_check_makes_a_golden_read_the_decision_log() -> None:
+    outcome = golden([EVENT], [{"reflex_outcome": {"outcome": "none"}}])
+    assert outcome.reads_outcomes and outcome.watches_reflex
+    for expect in (
+        {"reflex_decision": {"decision": "none"}},
+        {"prompt_contains": {"role": "system1", "text": "x"}},
+        {"ha_not_called": {}},
+    ):
+        assert not golden([EVENT], [expect]).reads_outcomes
+
+
 # Every check step_kind_needed names, with the kind of step its at_step must name.
 AT_STEP_CHECKS = [
     ("reflex_decision", {"decision": "none"}, "ha_event"),
     ("reflex_not_proposed", {"tool": "home.light_turn_on"}, "ha_event"),
+    ("reflex_outcome", {"outcome": "none"}, "ha_event"),
     ("latency", {"metric": "reflex_ms", "max": 500}, "ha_event"),
     ("latency", {"metric": "reminder_fire_ms", "max": 5000}, "advance_trigger"),
 ]

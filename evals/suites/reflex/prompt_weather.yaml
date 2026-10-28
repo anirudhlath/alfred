@@ -1,0 +1,10 @@
+id: reflex.prompt.weather
+prd: [4.4.reflex-judgment]
+status: shipped
+tags: [prompt]
+steps:
+  - ha_event: {entity_id: weather.home, state: rainy}
+expect:
+  # Reflex watches the weather: the change wakes the model, and the prompt names it. (The
+  # What changed line carries the word too; a prompt is built only if the change gets through.)
+  - prompt_contains: {role: system1, text: "rainy"}

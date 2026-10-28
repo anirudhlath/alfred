@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -13,7 +13,18 @@ import httpx
 import pytest
 from redis import exceptions as redis_exceptions
 
-from bus.schemas.events import ActionRequest, AlfredResponse, ParkedAction, ParkedCall, ParkedRun
+from bus.schemas.events import (
+    ActionRequest,
+    AlfredResponse,
+    ParkedAction,
+    ParkedCall,
+    ParkedRun,
+    ReflexOutcome,
+    ReflexProposal,
+    StateChangedEvent,
+)
+from core.reflex.decision_log import DecisionLog
+from core.reflex.outcome import Decided
 from core.reflex.tool_registry import ToolRegistry
 from evals.harness.bus import BusError, ContainerBus, zone_for_hour
 from shared.redis_streams import read
@@ -25,6 +36,8 @@ from shared.streams import (
     EVENTS_STREAM,
     NOTIFICATION_DISPATCH_STREAM,
     PENDING_PREFIX,
+    REFLEX_DECISION_LOG_STREAM,
+    REFLEX_PERSON_CHANGES_KEY,
     TRIGGERS_CHANGED_CHANNEL,
     TRIGGERS_KEY,
     USER_RESPONSES_STREAM,
@@ -356,6 +369,9 @@ FROZEN_CALLS: dict[str, Callable[[ContainerBus], Awaitable[object]]] = {
     "set_dnd": lambda b: b.set_dnd(True),
     "clear_dnd": lambda b: b.clear_dnd(),
     "wait_for_event": lambda b: b.wait_for_event(time.time(), 0.2, lambda e: True),
+    "decision_records": lambda b: b.decision_records(at(12)),
+    "wait_for_decisions": lambda b: b.wait_for_decisions(at(12), 0.2, lambda records: True),
+    "clear_person_changes": lambda b: b.clear_person_changes(),
     "decide_pending": lambda b: b.decide_pending("a", "confirm"),
     "responses_tail": lambda b: b.responses_tail(),
     "followup": lambda b: b.followup("r1", since_id="0-0", timeout_s=0.2),
@@ -375,7 +391,8 @@ async def test_a_frozen_redis_is_a_bus_error_not_a_hang(call: str) -> None:
         await asyncio.wait_for(FROZEN_CALLS[call](frozen), timeout=5)
     elapsed = time.monotonic() - started
     assert elapsed < 1
-    if call in ("wait_for_event", "followup"):  # its own wait (0.2 s), then the call's bound
+    if call in ("wait_for_event", "followup", "wait_for_decisions"):
+        # its own wait (0.2 s), then the call's bound
         assert elapsed >= 0.3
 
 
@@ -625,3 +642,130 @@ async def test_an_unreadable_response_is_a_bus_error(redis: fakeredis.FakeAsyncR
     await redis.xadd(USER_RESPONSES_STREAM, {"event": "{not json"})
     with pytest.raises(BusError, match=USER_RESPONSES_STREAM):
         await bus(redis).followup("r1", since_id="0-0", timeout_s=1)
+
+
+def state_change(
+    entity_id: str = "light.living_room_lamp", new_state: str = "off"
+) -> StateChangedEvent:
+    return StateChangedEvent(
+        source="home-service",
+        domain="home",
+        entity_id=entity_id,
+        old_state="on",
+        new_state=new_state,
+    )
+
+
+async def log_decision(
+    redis: fakeredis.FakeAsyncRedis,
+    kind: str = "none",
+    *,
+    entity_id: str = "light.living_room_lamp",
+    when: datetime | None = None,
+) -> None:
+    """Reflex writes one decision to its log, as the runner does (``DecisionLog.record``)."""
+    decided = Decided(
+        proposal=ReflexProposal(decision="none"),
+        outcome=ReflexOutcome.model_validate({"kind": kind}),
+        prompt="the prompt",
+        recent={},
+    )
+    log = DecisionLog(redis, clock=lambda: when or datetime.now(UTC))
+    await log.record("state_change", state_change(entity_id), decided)
+
+
+async def test_decision_records_are_what_reflex_logged_from_the_start_of_the_window(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    started = datetime.now(UTC)
+    await log_decision(redis, "shadow", when=started - timedelta(minutes=5))  # an earlier sample's
+    await log_decision(redis, "would_reverse")
+    records = await bus(redis).decision_records(started)
+    assert [(r.event["entity_id"], r.outcome and r.outcome.kind) for r in records] == [
+        ("light.living_room_lamp", "would_reverse")
+    ]
+    assert await bus(redis).decision_records(started + timedelta(minutes=1)) == []
+
+
+async def test_wait_for_decisions_returns_at_once_when_the_log_already_holds_enough(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    started = datetime.now(UTC) - timedelta(seconds=1)
+    await log_decision(redis)
+    t0 = time.monotonic()
+    records = await bus(redis).wait_for_decisions(started, 5, lambda rs: len(rs) >= 1)
+    assert len(records) == 1 and time.monotonic() - t0 < 1
+
+
+async def test_wait_for_decisions_blocks_until_enough_have_landed(
+    redis: fakeredis.FakeAsyncRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reflex logs a decision just after the proxy records the call it came from: the wait
+    wakes as the record lands, one blocking read per record, not a poll."""
+    reads = 0
+
+    async def counted(*args: Any, **kwargs: Any) -> Any:
+        nonlocal reads
+        reads += 1
+        return await read(*args, **kwargs)
+
+    monkeypatch.setattr("evals.harness.bus.read", counted)
+
+    async def reflex_logs() -> None:
+        await asyncio.sleep(0.1)
+        await log_decision(redis, "none")
+        await asyncio.sleep(0.1)
+        await log_decision(redis, "would_reverse")
+
+    started = datetime.now(UTC) - timedelta(seconds=1)
+    logging = asyncio.create_task(reflex_logs())
+    t0 = time.monotonic()
+    records = await bus(redis).wait_for_decisions(started, 5, lambda rs: len(rs) >= 2)
+    await logging
+    assert [r.outcome and r.outcome.kind for r in records] == ["none", "would_reverse"]
+    assert 0.2 <= time.monotonic() - t0 < 2
+    assert reads == 2
+
+
+async def test_wait_for_decisions_gives_what_there_is_after_its_timeout(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    started = datetime.now(UTC) - timedelta(seconds=1)
+    await log_decision(redis)
+    t0 = time.monotonic()
+    records = await bus(redis).wait_for_decisions(started, 0.2, lambda rs: len(rs) >= 2)
+    assert len(records) == 1 and time.monotonic() - t0 >= 0.2
+
+
+async def test_a_decision_logged_between_the_read_and_the_block_is_not_missed(
+    redis: fakeredis.FakeAsyncRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tail is taken before the first read, so a record that lands after that read and
+    before the block still ends the wait."""
+    started = datetime.now(UTC) - timedelta(seconds=1)
+    first = True
+
+    async def lands_before_the_block(*args: Any, **kwargs: Any) -> Any:
+        nonlocal first
+        if first:
+            first = False
+            await log_decision(redis)
+        return await read(*args, **kwargs)
+
+    monkeypatch.setattr("evals.harness.bus.read", lands_before_the_block)
+    t0 = time.monotonic()
+    records = await bus(redis).wait_for_decisions(started, 5, lambda rs: len(rs) >= 1)
+    assert len(records) == 1 and time.monotonic() - t0 < 1
+
+
+async def test_clearing_person_changes_drops_reflexs_record_and_nothing_else(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    await redis.hset(REFLEX_PERSON_CHANGES_KEY, "light.living_room_lamp", "{}")
+    await redis.xadd(REFLEX_DECISION_LOG_STREAM, {"decision": "kept"})
+    await redis.set("unrelated", "kept")
+    await bus(redis).clear_person_changes()
+    assert not await redis.exists(REFLEX_PERSON_CHANGES_KEY)
+    assert await redis.xlen(REFLEX_DECISION_LOG_STREAM) == 1
+    assert await redis.get("unrelated") == b"kept"
+    await bus(redis).clear_person_changes()  # nothing to clear is fine

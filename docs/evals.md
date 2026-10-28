@@ -176,6 +176,9 @@ The driver reads and acts on the eval container through `evals/harness/bus.py`.
   - fires of triggers that have an action, from `alfred:actions`;
   - notifications, from the dispatch stream and the deferred list;
   - Reflex's tools, the registry's reflex-audience ones;
+  - Reflex's decision log (`decision_records`, `wait_for_decisions`), from
+    `alfred:reflex:decision_log`: what Reflex decided about each state change, and the outcome
+    of that decision (see `reflex_outcome` in [Checks](#checks));
   - the pending store, as typed records: a router-held action as itself, a parked run as one
     request per deferred call, all under the record's id;
   - the tail of the user responses stream (`responses_tail`) and the follow-up to a given
@@ -186,6 +189,8 @@ The driver reads and acts on the eval container through `evals/harness/bus.py`.
   - sets do-not-disturb through `POST /api/admin/dnd`, with an admin session minted for
     that one call;
   - sets the stored user timezone (`clock`);
+  - clears Reflex's record of who last changed each entity (`clear_person_changes`), so one
+    sample's switch does not put an entity on the next sample's Leave alone line;
   - confirms or denies a pending action with `POST /api/actions/{id}/confirm` or `/deny`, with
     an admin session minted for that one call, as the Door does (`decide_pending`). It returns
     the status when it is one of the product's answers (`DOOR_ANSWERS`: 200, 400, 404, 500,
@@ -198,9 +203,9 @@ A trigger that has an action fires as an `ActionRequest` (source `trigger-engine
 critical action the routing layer re-publishes under its original source once the user
 confirms it, not a fire.
 
-Neither wait for an event polls: a fire is waited for with a blocking `XREAD` on
-`alfred:events` and `alfred:actions`, and System 1's answer wakes the wait as the proxy
-records each call.
+No wait for an event polls: a fire is waited for with a blocking `XREAD` on
+`alfred:events` and `alfred:actions`, a decision with a blocking `XREAD` on the decision log,
+and System 1's answer wakes its wait as the proxy records each call.
 
 Every bus call is bounded, so a container frozen with its socket open fails the sample
 (`E`, "did not answer") instead of hanging it:
@@ -212,6 +217,7 @@ Every bus call is bounded, so a container frozen with its socket open fails the 
 | The blocking wait for a fire | its own wait plus `timeout_s` |
 | `decide_pending`'s HTTP request | `timeout_s` |
 | The wait for a follow-up | its own wait plus `timeout_s` |
+| The wait for Reflex's decisions | its own wait (`decision_log_timeout_s`, 10 s) plus `timeout_s` |
 
 `collect.py` turns bus entries into evidence. `reflex.py` turns System 1's recorded replies
 into Reflex's decisions, with Reflex's own `parse_decision` and the same tools its prompt
@@ -222,7 +228,9 @@ window: it registers only when it starts, after reloading every trigger snapshot
 brings back the triggers earlier samples deleted. Anything else on the streams is ignored.
 
 After each sample the driver deletes the triggers that sample created. If the sample touched
-do-not-disturb, it clears it and drops what it held. It also puts the user timezone back. A
+do-not-disturb, it clears it and drops what it held. It also puts the user timezone back, and,
+after a golden that watches Reflex, forgets who last changed what (the restore changes entities
+as `outside`, which Reflex would take for a person's). A
 sample the harness fails mid-play (it raises, and scores `E`) is not cleaned up: its stack
 is dirty and restarts.
 
@@ -257,8 +265,8 @@ sequenceDiagram
     T->>T: scorer: deterministic checks, then judge rubrics
 ```
 
-A golden with a reflex check (`reflex_decision` or `reflex_not_proposed`), a `reflex_ms`
-latency, or a `prompt_contains` or `prompt_not_contains` on `system1` **watches Reflex**.
+A golden with a reflex check (`reflex_decision`, `reflex_not_proposed` or `reflex_outcome`), a
+`reflex_ms` latency, or a `prompt_contains` or `prompt_not_contains` on `system1` **watches Reflex**.
 After each `ha_event` the driver waits for System 1's answer to that change, not for an HA call.
 
 Before its first step, such a golden waits until System 1 has been quiet for 6 s. Reflex
@@ -842,6 +850,7 @@ scored separately. Params are validated at load and unknown keys are rejected.
 | `reply_not_contains` | as `reply_contains` | No needle hits the chosen replies. No reply at that step fails |
 | `latency` | `metric` (required: `reply_ms`, `reflex_ms` or `reminder_fire_ms`), `max` (required; ms, > 0); `step` (int, default `-1`) for `reply_ms`; `at_step` for the other two | `reply_ms`: the reply at `step` arrived within `max` ms of its request. `reflex_ms`: the earliest System 1 call about the `ha_event` step's change was answered within `max` ms of the step's start (any wait for one of the proxy's upstream slots included). With no such call it errors, as a reflex check does: no judgment, nothing to time. `reminder_fire_ms`: the notification of that trigger's fire was dispatched within `max` ms of the `advance_trigger` making it due |
 | `reflex_decision` | `decision` (required: `act`, `ask`, `none`, `invalid`, or a list of them); `tool` (one, or a list of which any will do); `target`; `at_step`; `uncalled_ok` (default `false`) | Every System 1 call about the step's change has a decision in the set, and, for act/ask, one of the `tool`s and the `target` (entity or area id) given. With no such call it errors (no judgment to score), unless `uncalled_ok` is set and `none` is in the set: then it passes |
+| `reflex_outcome` | `outcome` (required: `none`, `invalid`, `would_reverse`, `shadow`, `asked`, `held`, or a list of them); `target` (entity or area id); `at_step` | Reflex's decision log holds a record about the step's change (same entity, same new state, logged at or after the step's start), and every such record's outcome is in the set. With a `target`, only the records whose proposal resolves to it are judged (as `reflex_decision` resolves one), and none proposing it is a pass. No record is an error: a log with nothing about the change has no outcome to judge. A record with no outcome (one written before outcomes existed) is an error too |
 | `reflex_not_proposed` | `tool` (required); `target`; `decision` (default `[act, ask]`); `at_step`; `uncalled_ok` (default `false`) | No call about the step's change proposes that tool (on that target). With no such call it errors, unless `uncalled_ok` is set |
 | `prompt_contains` | exactly one of `text`, `any`, `regex`; `role` (default `system2`) | Some string leaf or mapping key in a full recorded request body for the role contains the needle, matched as `prompt_not_contains` matches (case-insensitive; older evidence falls back to messages). Fails when the role was never called. On `system1` it watches Reflex, so the driver waits for System 1's answer to each `ha_event` |
 | `prompt_not_contains` | exactly one of `text`, `any`, `regex`; `role` (default `system2`) | No string leaf or mapping key in any full recorded request body for the role contains the needle (messages, tool descriptions/schemas and extra fields included); older evidence falls back to messages. Fails when the role was never called |
@@ -867,6 +876,14 @@ on that step. Set `uncalled_ok: true` only for an entity outside the attention s
 A System 1 call vLLM answered with a 5xx holds no judgment, so a reflex check or
 `reflex_ms` on its step reports `error`, naming the status. A 4xx stays Reflex's `invalid`: it
 is Reflex's own request refused, such as a prompt too long.
+
+`reflex_outcome` judges what Reflex did with a decision, which the replies alone do not show
+(a proposal it turned into `would_reverse` reads as an `act` in `reflex_decision`). The driver
+reads Reflex's decision log for a golden that has one, after the last step: it waits, up to
+10 s with a blocking read, until the log holds as many decisions as System 1 answered calls,
+then keeps the records of state changes. A missing record is not a harness error: the check
+reports it. The log has one record per answered call, written just after the proxy records the
+reply, so the wait is for that write, not for a model.
 
 A call's change is read off its prompt's What changed line, by the parser that sits beside
 Reflex's renderer (`core/reflex/prompt.parse_event`). The name on it is resolved to the
@@ -1130,7 +1147,7 @@ goldens are public. Everything about it is fake or fenced.
 | `evals/harness/driver.py` | `play()`: one variant against a running stack; `build_request()` |
 | `evals/harness/bus.py` | `ContainerBus`: what the driver reads from the container and does through it (see [The bus](#the-bus)) |
 | `evals/harness/collect.py` | Bus entries into evidence: triggers created and fired, notifications sent and deferred |
-| `evals/harness/reflex.py` | System 1's recorded calls into Reflex's decisions, with Reflex's `parse_decision` |
+| `evals/harness/reflex.py` | System 1's recorded calls into Reflex's decisions, with Reflex's `parse_decision`; its decision-log records into `LoggedDecision`s |
 | `evals/harness/evidence.py` | `Evidence` and its parts: the checks' only input |
 | `evals/harness/checks/` | `home.py`, `llm.py`, `reply.py`, `latency.py`, `reflex.py`, `triggers.py`, `notifications.py`, `matching.py`, `judge_spec.py`, `result.py`; the registry in `__init__.py` |
 | `evals/harness/judge.py` | `Judge`, `make_judge_model()`, `judge_check()`, calibration sets and report, `TRUST_THRESHOLD` |
@@ -1139,7 +1156,7 @@ goldens are public. Everything about it is fake or fenced.
 | `evals/harness/display.py` | `--display` choices and how Inspect's display is pinned |
 | `evals/harness/coverage.py` | PRD parsing and `coverage_problems()` |
 | `evals/suites/<suite>/` | Goldens |
-| `evals/suites/reflex/` | System 1's judgment on house events, its prompt, its latency, and (pending) whether its What changed line says who caused a change |
+| `evals/suites/reflex/` | System 1's judgment on house events, its prompt (who caused a change, the weather), its latency, and whether it leaves a person's change alone (`never_reverse_*`) |
 | `evals/suites/triggers/` | Reminders and rules System 2 sets: relative, timezone, recurring, sensor and fast |
 | `evals/suites/notifications/` | Reminder urgency, do-not-disturb and its release |
 | `evals/suites/guest_boundary/` | Web/Signal identity, sir controls, personal-data requests and a sir-to-guest session transition; policy enforcement remains pending |

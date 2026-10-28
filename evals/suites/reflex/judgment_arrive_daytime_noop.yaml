@@ -4,8 +4,9 @@ status: shipped
 tags: [judgment, presence]
 steps:
   - clock: {hour: 13}
-  - ha_event: {entity_id: light.living_room_lamp, state: "off"}
-  - ha_event: {entity_id: light.kitchen_pendants, state: "off"}
+  # By an automation, as in arrive_after_dark: the two differ in the hour and the sun only.
+  - ha_event: {entity_id: light.living_room_lamp, state: "off", by: automation}
+  - ha_event: {entity_id: light.kitchen_pendants, state: "off", by: automation}
   - ha_event: {entity_id: person.sam, state: not_home}
   - ha_event: {entity_id: person.alex, state: not_home}
   - wait: 6

@@ -1,6 +1,6 @@
 # Alfred — Product Requirements Document
 
-**Status:** Living document. Capability statuses current as of **2026-10-27**.
+**Status:** Living document. Capability statuses current as of **2026-10-28**.
 **Maintenance rule:** any PR that adds or changes a user-facing capability updates the
 relevant row(s) in the [Capability Catalog](#4-capability-catalog) in the same branch.
 
@@ -130,6 +130,7 @@ Legend: **Shipped** (on master, tested) · **In review** (built, PR open) ·
 | Live state streaming without HA-side setup (WebSocket ingest) | Shipped | `alfred-home-service` repo (WebSocket ingest); [#281](https://github.com/anirudhlath/alfred/issues/281) (live state written per event, read fresh) |
 | Reflex judgment calls: the fast mind sees the time, who is home and the house by room, and decides act, ask or nothing on common sense and learned habits — recorded in shadow mode for a week of review before it acts | In review | [#285](https://github.com/anirudhlath/alfred/issues/285), spec `2026-10-07-reflex-context-design.md` |
 | Who did it: every home change says whether a person, Alfred, an automation or something outside caused it; a private report lists what Alfred changed and why | Shipped | `docs/attribution.md`, spec `2026-10-24-reflex-anticipation-design.md` |
+| Never reverses a person: when a person changes a light, a switch or a player, Reflex leaves it alone, and a change it proposes against theirs is dropped and logged as would-reverse; it watches the sun and the weather | Shipped | PR B ([#317](https://github.com/anirudhlath/alfred/issues/317)), `docs/reflex-anticipation.md`, spec `2026-10-24-reflex-anticipation-design.md` |
 | Tiered autonomy: reflex touches only benign devices; risky domains need the conscious mind | Planned | HA integration spec, Plan 3 |
 | Confirmation required for critical actions (locks, alarm, garage) — even when you asked. Alfred parks the action and asks; you answer in the conversation or on the Door, and he tells you what happened, even if it takes a while | Shipped | `docs/autonomy.md`, `docs/notifications.md`, [#317](https://github.com/anirudhlath/alfred/issues/317) |
 

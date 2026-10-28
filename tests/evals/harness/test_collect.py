@@ -5,8 +5,16 @@ from datetime import UTC, datetime
 
 import pytest
 
-from bus.schemas.events import ActionRequest, ServiceRegistered, TriggerCreated, TriggerFired
+from bus.schemas.events import (
+    ActionRequest,
+    ReflexOutcome,
+    ReflexProposal,
+    ServiceRegistered,
+    TriggerCreated,
+    TriggerFired,
+)
 from core.notifications.schema import Notification, Urgency
+from core.reflex.decision_log import DecisionRecord
 from core.reflex.tool_registry import ToolInfo
 from core.triggers.models import TRIGGER_ENGINE_SOURCE, TRIGGER_TITLE_PREFIX
 from evals.harness.bus import Entry
@@ -19,8 +27,15 @@ from evals.harness.collect import (
     trigger_records,
 )
 from evals.harness.errors import HarnessError
-from evals.harness.evidence import LlmCall, ReflexEvent
-from evals.harness.reflex import local_hour, reflex_calls, reflex_event, targets, tool_domain
+from evals.harness.evidence import LlmCall, LoggedDecision, ReflexEvent
+from evals.harness.reflex import (
+    local_hour,
+    logged_decisions,
+    reflex_calls,
+    reflex_event,
+    targets,
+    tool_domain,
+)
 from evals.harness.world import World, load_world
 from tests.evals.harness.factories import evidence, reflex_prompt
 
@@ -493,3 +508,72 @@ def test_reflex_calls_come_back_in_request_order() -> None:
         load_world("apartment"),
     )
     assert [c.t for c in calls] == [4.0, 4.5, 5.0]
+
+
+def record(
+    outcome: str | None,
+    *,
+    wall: float,
+    entity_id: str = "light.living_room_lamp",
+    new_state: str = "off",
+    proposal: ReflexProposal | None = None,
+    origin: str = "state_change",
+) -> DecisionRecord:
+    """A decision log record made at wall time *wall* about *entity_id* changing to *new_state*."""
+    event = {"entity_id": entity_id, "new_state": new_state} if origin == "state_change" else {}
+    return DecisionRecord.model_validate(
+        {
+            "time": datetime.fromtimestamp(wall, UTC),
+            "origin": origin,
+            "event": event,
+            "cause": None,
+            "prompt": "the prompt",
+            "proposal": proposal or ReflexProposal(decision="none"),
+            "outcome": None if outcome is None else ReflexOutcome.model_validate({"kind": outcome}),
+        }
+    )
+
+
+def test_a_decision_record_becomes_a_logged_decision_on_the_samples_monotonic_clock() -> None:
+    turn_on = ReflexProposal(
+        decision="act",
+        action=ActionRequest(
+            source="reflex",
+            target_service="home-service",
+            tool_name="home.light_turn_on",
+            parameters={"target": "Living Room"},
+        ),
+    )
+    world = load_world("apartment")
+    records = [
+        record("would_reverse", wall=WALL0 + 2.5, proposal=turn_on),
+        record("none", wall=WALL0 + 4.0, entity_id="person.alex", new_state="home"),
+    ]
+    reversed_, quiet = logged_decisions(records, world, started=STARTED, started_wall=WALL0)
+    assert reversed_ == LoggedDecision(
+        t=STARTED + 2.5,
+        entity_id="light.living_room_lamp",
+        state="off",
+        decision="act",
+        outcome="would_reverse",
+        tool="home.light_turn_on",
+        targets=reversed_.targets,
+    )
+    # The area name resolves the way home-service resolves it: the room's lights and the room.
+    assert set(reversed_.targets) == {
+        "living_room",
+        "light.living_room_lamp",
+        "light.living_room_ceiling",
+    }
+    assert (quiet.t, quiet.entity_id, quiet.state) == (STARTED + 4.0, "person.alex", "home")
+    assert (quiet.decision, quiet.outcome, quiet.tool, quiet.targets) == ("none", "none", None, [])
+
+
+def test_a_record_with_no_outcome_is_kept_and_a_triggers_record_is_not() -> None:
+    world = load_world("apartment")
+    old = record(None, wall=WALL0 + 1)
+    fired = record("none", wall=WALL0 + 1, origin="trigger_fired")
+    [only] = logged_decisions([old, fired], world, started=STARTED, started_wall=WALL0)
+    assert only.outcome is None  # a record from before outcomes were kept
+    # A trigger's decision is about no state change: nothing for a check to key on.
+    assert only.entity_id == "light.living_room_lamp"

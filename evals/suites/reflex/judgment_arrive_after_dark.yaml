@@ -5,8 +5,10 @@ tags: [judgment, presence]
 steps:
   - clock: {hour: 20}
   - ha_event: {entity_id: sun.sun, state: below_horizon}
-  - ha_event: {entity_id: light.living_room_lamp, state: "off"}
-  - ha_event: {entity_id: light.kitchen_pendants, state: "off"}
+  # An automation turns them off: Reflex leaves alone what a person switched off, and this
+  # golden is about coming home to dark rooms (never_reverse_outside is the person's twin).
+  - ha_event: {entity_id: light.living_room_lamp, state: "off", by: automation}
+  - ha_event: {entity_id: light.kitchen_pendants, state: "off", by: automation}
   - ha_event: {entity_id: person.sam, state: not_home}
   - ha_event: {entity_id: person.alex, state: not_home}
   - wait: 6  # Reflex ignores Alex for 5 s after the last change
