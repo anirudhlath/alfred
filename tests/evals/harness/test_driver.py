@@ -1045,7 +1045,7 @@ async def test_a_decision_that_never_reaches_the_log_is_missing_evidence_not_a_h
     assert [(c.decision, c.reason) for c in ev.reflex] == [("none", "quiet")]
 
 
-async def test_no_system1_call_means_no_wait_for_the_log() -> None:
+async def test_with_no_system1_call_the_one_wait_for_the_log_comes_straight_back() -> None:
     bus = FakeBus()
     play_ctx = ctx(Recorder(), bus=bus, reflex_cooldown_s=0, reflex_timeout_s=0.1)
     play_ctx.decision_log_timeout_s = 30.0

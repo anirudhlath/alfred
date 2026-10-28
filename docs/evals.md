@@ -228,9 +228,7 @@ window: it registers only when it starts, after reloading every trigger snapshot
 brings back the triggers earlier samples deleted. Anything else on the streams is ignored.
 
 After each sample the driver deletes the triggers that sample created. If the sample touched
-do-not-disturb, it clears it and drops what it held. It also puts the user timezone back, and,
-after a golden that watches Reflex, forgets who last changed what (the restore changes entities
-as `outside`, which Reflex would take for a person's). A
+do-not-disturb, it clears it and drops what it held. It also puts the user timezone back. A
 sample the harness fails mid-play (it raises, and scores `E`) is not cleaned up: its stack
 is dirty and restarts.
 
@@ -284,6 +282,11 @@ restore's push, and Reflex judges one event at a time. So:
 The drain waits only on System 1's calls. Another role's call still upstream, such as
 Conscious answering a turn, does not hold it. A call whose body the proxy is still reading
 counts until the body says whose it is.
+
+Then, before step 0, the driver clears Reflex's record of what people just changed
+(`clear_person_changes`). The restore pushes its changes as `outside`, which Reflex notes as a
+person's, so the golden would open with them on its Leave alone line; the clear also drops
+what the golden before it left.
 
 ---
 
@@ -850,7 +853,7 @@ scored separately. Params are validated at load and unknown keys are rejected.
 | `reply_not_contains` | as `reply_contains` | No needle hits the chosen replies. No reply at that step fails |
 | `latency` | `metric` (required: `reply_ms`, `reflex_ms` or `reminder_fire_ms`), `max` (required; ms, > 0); `step` (int, default `-1`) for `reply_ms`; `at_step` for the other two | `reply_ms`: the reply at `step` arrived within `max` ms of its request. `reflex_ms`: the earliest System 1 call about the `ha_event` step's change was answered within `max` ms of the step's start (any wait for one of the proxy's upstream slots included). With no such call it errors, as a reflex check does: no judgment, nothing to time. `reminder_fire_ms`: the notification of that trigger's fire was dispatched within `max` ms of the `advance_trigger` making it due |
 | `reflex_decision` | `decision` (required: `act`, `ask`, `none`, `invalid`, or a list of them); `tool` (one, or a list of which any will do); `target`; `at_step`; `uncalled_ok` (default `false`) | Every System 1 call about the step's change has a decision in the set, and, for act/ask, one of the `tool`s and the `target` (entity or area id) given. With no such call it errors (no judgment to score), unless `uncalled_ok` is set and `none` is in the set: then it passes |
-| `reflex_outcome` | `outcome` (required: `none`, `invalid`, `would_reverse`, `shadow`, `asked`, `held`, or a list of them); `target` (entity or area id); `at_step` | Reflex's decision log holds a record about the step's change (same entity, same new state, logged at or after the step's start), and every such record's outcome is in the set. With a `target`, only the records whose proposal resolves to it are judged (as `reflex_decision` resolves one), and none proposing it is a pass. No record is an error: a log with nothing about the change has no outcome to judge. A record with no outcome (one written before outcomes existed) is an error too |
+| `reflex_outcome` | `outcome` (required: `none`, `invalid`, `would_reverse`, `shadow`, `asked`, `held`, or a list of them); `target` (entity or area id); `at_step` | Reflex's decision log holds a record about the step's change (same entity, same new state, logged at or after the step's start), and every such record's outcome is in the set. With a `target`, only the records whose proposal resolves to it are judged (as `reflex_decision` resolves one), and none proposing it is a pass. No record is an error: a log with nothing about the change has no outcome to judge. A record with no outcome (one written before outcomes existed) is an error too. The records have no upper time bound: a later step that pushes the same entity to the same state is judged for this step too |
 | `reflex_not_proposed` | `tool` (required); `target`; `decision` (default `[act, ask]`); `at_step`; `uncalled_ok` (default `false`) | No call about the step's change proposes that tool (on that target). With no such call it errors, unless `uncalled_ok` is set |
 | `prompt_contains` | exactly one of `text`, `any`, `regex`; `role` (default `system2`) | Some string leaf or mapping key in a full recorded request body for the role contains the needle, matched as `prompt_not_contains` matches (case-insensitive; older evidence falls back to messages). Fails when the role was never called. On `system1` it watches Reflex, so the driver waits for System 1's answer to each `ha_event` |
 | `prompt_not_contains` | exactly one of `text`, `any`, `regex`; `role` (default `system2`) | No string leaf or mapping key in any full recorded request body for the role contains the needle (messages, tool descriptions/schemas and extra fields included); older evidence falls back to messages. Fails when the role was never called |
@@ -883,7 +886,9 @@ reads Reflex's decision log for a golden that has one, after the last step: it w
 10 s with a blocking read, until the log holds as many decisions as System 1 answered calls,
 then keeps the records of state changes. A missing record is not a harness error: the check
 reports it. The log has one record per answered call, written just after the proxy records the
-reply, so the wait is for that write, not for a model.
+reply, so the wait is for that write, not for a model. A System 1 call refused with a 4xx leaves
+no record, so a golden with a `reflex_outcome` waits its full 10 s for one and then reports it
+missing.
 
 A call's change is read off its prompt's What changed line, by the parser that sits beside
 Reflex's renderer (`core/reflex/prompt.parse_event`). The name on it is resolved to the

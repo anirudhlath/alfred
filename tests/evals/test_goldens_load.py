@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import inspect
 import pkgutil
+from dataclasses import replace
 from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
@@ -527,6 +528,14 @@ def test_every_golden_names_real_services_and_tools() -> None:
     # otherwise every tool could be skipped as another feature's and the test would pass
     # vacuously.
     assert seen == {"service", "tool"} and all(checked.values()), checked
+
+
+def _live_state(world: World) -> dict[str, LiveEntity]:
+    """The live state Reflex reads for the whole world."""
+    live: dict[str, LiveEntity] = {}
+    for e in world.entities:
+        live |= _served(world, e)
+    return live
 
 
 def _served(world: World, entity: WorldEntity) -> dict[str, LiveEntity]:
@@ -1167,23 +1176,31 @@ def test_alfred_is_not_a_person_golden_wants_by_alfred_and_no_lamp_on_the_leave_
     assert absent.name == "prompt_not_contains"
 
     # The needle must hit the line Reflex writes for the lamp, and only for the lamp: the line
-    # names entities as the House block does ("Living Room Lamp (Living Room)"), not by id.
+    # names an entity as the House block does ("Living Room Lamp (Living Room)"), or by its id
+    # when the live state does not hold it.
     world = load_world("apartment")
-    live: dict[str, LiveEntity] = {}
-    for e in world.entities:
-        live |= _served(world, e)
+    live = _live_state(world)
+    unknown_lamp = {k: v for k, v in live.items() if k != "light.living_room_lamp"}
     now = datetime(2026, 10, 8, 20, 0, tzinfo=UTC)
     lamp_left = render_now(now, "UTC", live, leave_alone=["light.living_room_lamp"])
     both = render_now(
         now, "UTC", live, leave_alone=["light.kitchen_pendants", "light.living_room_lamp"]
     )
+    lamp_by_id = render_now(now, "UTC", unknown_lamp, leave_alone=["light.living_room_lamp"])
+    no_snapshot = render_now(now, "UTC", None, leave_alone=["light.living_room_lamp"])
     pendants_left = render_now(now, "UTC", live, leave_alone=["light.kitchen_pendants"])
+    pendants_by_id = render_now(now, "UTC", None, leave_alone=["light.kitchen_pendants"])
     nothing_left = render_now(now, "UTC", live)
     assert "Leave alone, a person just changed: Living Room Lamp (Living Room)" in lamp_left
+    assert "Leave alone, a person just changed: light.living_room_lamp" in lamp_by_id
+    assert "Leave alone, a person just changed: light.living_room_lamp" in no_snapshot
     for text, status in (
         (lamp_left, "fail"),
         (both, "fail"),
+        (lamp_by_id, "fail"),
+        (no_snapshot, "fail"),
         (pendants_left, "pass"),
+        (pendants_by_id, "pass"),
         (nothing_left, "pass"),
     ):
         assert run_check(absent.name, absent.params, _system1_saw(text)).status == status, text
@@ -1218,5 +1235,32 @@ def test_the_weather_golden_has_the_rain_come_from_outside_and_wants_it_in_the_p
     [check] = s.expect
     assert (check.name, check.params.model_dump(exclude_none=True)) == (
         "prompt_contains",
-        {"role": "system1", "text": "rainy"},
+        {"role": "system1", "text": " · rainy"},
     )
+
+
+def test_the_weather_golden_needle_is_the_now_lines_and_not_the_what_changed_lines() -> None:
+    """It hits the Now line Reflex writes with the rain in it, and misses the What changed line
+    for the same change and a Now line that still says sunny."""
+    [check] = _goldens()["reflex.prompt.weather"].expect
+    world = load_world("apartment")
+    live = _live_state(world)
+    rainy = live | {"weather.home": replace(live["weather.home"], state="rainy")}
+    now = datetime(2026, 10, 28, 20, 0, tzinfo=UTC)
+    change = StateChangedEvent(
+        source="home-service",
+        domain="home",
+        entity_id="weather.home",
+        old_state="sunny",
+        new_state="rainy",
+    )
+    sun_down = rainy | {"sun.sun": replace(live["sun.sun"], state="below_horizon")}
+    for text, status in (
+        (render_now(now, "UTC", rainy), "pass"),
+        (render_now(now, "UTC", sun_down), "pass"),
+        (render_now(now, "UTC", live), "fail"),
+        (render_event(change, rainy), "fail"),
+        (render_event(change, None), "fail"),
+    ):
+        assert run_check(check.name, check.params, _system1_saw(text)).status == status, text
+    assert "rainy" in render_event(change, rainy)  # the word alone would have passed it

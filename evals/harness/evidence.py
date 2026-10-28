@@ -328,7 +328,9 @@ class Evidence(BaseModel):
         """The logged decisions about the step's own state change, made at or after its start.
 
         Same entity and same new state; a step that pushed nothing has none. Reflex writes its
-        log entry after the model's reply, so the entry may fall past the step's window.
+        log entry after the model's reply, so the entry may fall past the step's window. The
+        records have no upper time bound, so a later step that pushes the same entity to the
+        same state is counted for this one too.
         """
         push = self.state_push(step)
         if push is None:
