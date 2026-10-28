@@ -63,10 +63,13 @@ def reply_format(tools: list[ToolInfo]) -> dict[str, Any]:
     With no tools the only reply is "none". The names are sorted, as the prompt lists them,
     so the same tools give the same schema and the server can reuse what it built for it.
     Without the enum the model sometimes wrote a tool it had not been shown (#317).
+
+    The reply line of the ``reflex-rules`` prompt describes the same reply: change the two
+    together, because the server enforces this schema whatever the prompt asks for.
     """
     if not tools:
         return _json_schema(_NONE_REPLY)
-    choose = {
+    act_or_ask = {
         "type": "object",
         "properties": {
             "decision": {"enum": ["act", "ask"]},
@@ -77,7 +80,7 @@ def reply_format(tools: list[ToolInfo]) -> dict[str, Any]:
         "required": ["decision", "reason", "tool_name", "parameters"],
         "additionalProperties": False,
     }
-    return _json_schema({"anyOf": [_NONE_REPLY, choose]})
+    return _json_schema({"anyOf": [_NONE_REPLY, act_or_ask]})
 
 
 def _json_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -123,7 +126,8 @@ async def infer(
     ``track_tokens`` only reads a returned dict, so the counts travel with the proposal.
     The name is the research series' ``function`` column. The response format goes in the
     run's settings because it differs by call; it has no ``ModelSettings`` field, and
-    ``extra_body`` lands in the request as written.
+    ``extra_body`` lands in the request as written. The agent sets no ``extra_body`` of its
+    own: the run's would replace it whole.
     """
     format_settings = ModelSettings(extra_body={"response_format": reply_format(tools)})
     result = await agent.run(prompt, deps=tools, model_settings=format_settings)

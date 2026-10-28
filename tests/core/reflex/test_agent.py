@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import threading
 from typing import TYPE_CHECKING, Any
 
@@ -16,10 +17,12 @@ from pydantic_ai.providers.vllm import VLLMProvider
 
 import shared.llm_http as llm_http
 from core.reflex import agent as agent_module
-from core.reflex.agent import build_reflex_agent, decide
+from core.reflex.agent import build_reflex_agent, decide, reply_format
 from core.reflex.tool_registry import ToolInfo
 from sdk.alfred_sdk.telemetry import get_telemetry_buffer
 from shared.agents import resolve_model
+from shared.prompts.names import REFLEX_RULES
+from shared.prompts.template import repo_text
 from tests.core.reflex.fakes import reflex_agent
 
 if TYPE_CHECKING:
@@ -48,7 +51,7 @@ ASK = (
     '"parameters": {"target": "Lamp"}, "reason": "dark"}'
 )
 
-NONE_REPLY = {
+NONE_REPLY: dict[str, Any] = {
     "type": "object",
     "properties": {"decision": {"const": "none"}},
     "required": ["decision"],
@@ -56,7 +59,7 @@ NONE_REPLY = {
 }
 
 # The reply format a call with TOOLS sends: "none", or an act or ask that names one of TOOLS.
-REPLY_FORMAT = {
+REPLY_FORMAT: dict[str, Any] = {
     "type": "json_schema",
     "json_schema": {
         "name": "reflex_reply",
@@ -171,7 +174,7 @@ async def test_the_whole_prompt_is_the_single_user_message_with_no_instructions(
     assert script.offered() == []  # no tools, so the request carries none
 
 
-async def test_the_settings_are_todays() -> None:
+async def test_the_settings_are_pinned() -> None:
     agent, script = reflex_agent('{"decision": "none"}')
 
     await decide(agent, PROMPT, TOOLS)
@@ -203,6 +206,19 @@ async def test_with_no_tools_the_only_reply_is_none() -> None:
     await decide(agent, PROMPT, [])
 
     assert _reply_schema(script.settings()) == NONE_REPLY
+
+
+def test_the_reply_format_is_the_reply_the_rules_prompt_asks_for() -> None:
+    """The server enforces the schema, so a reply line it disagrees with would be ignored."""
+    line = repo_text(REFLEX_RULES).rpartition("Respond with JSON only.")[2]
+    [none, act_or_ask] = reply_format(TOOLS)["json_schema"]["schema"]["anyOf"]
+
+    assert re.findall(r'"(\w+)":', line) == [*none["properties"], *act_or_ask["properties"]]
+    decisions = re.findall(r'"decision": ("\w+"(?: \| "\w+")*)', line)
+    assert [re.findall(r"\w+", d) for d in decisions] == [
+        [none["properties"]["decision"]["const"]],
+        act_or_ask["properties"]["decision"]["enum"],
+    ]
 
 
 # --- the wire -------------------------------------------------------------------------
@@ -260,12 +276,12 @@ def _vllm(upstream: Upstream, *, api_key: str | None = None) -> OpenAIChatModel:
     return OpenAIChatModel("test-model", provider=provider)
 
 
-async def test_the_request_matches_todays_wire_form(upstream: Upstream) -> None:
+async def test_the_request_is_pinned_on_the_wire(upstream: Upstream) -> None:
     await decide(build_reflex_agent(_vllm(upstream)), PROMPT, TOOLS)
 
     assert str(upstream.requests[0].url) == "http://vllm.test/v1/chat/completions"
     assert upstream.headers["x-alfred-role"] == "system1"
-    # The whole body, not a subset: a field the old request did not send would show here.
+    # The whole body, not a subset: a field this request should not send would show here.
     # `max_completion_tokens` is how Pydantic AI spells the `max_tokens` setting for an
     # OpenAI-compatible server; vLLM reads either.
     assert upstream.body == {

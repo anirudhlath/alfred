@@ -6,7 +6,7 @@ This directory contains Alfred's brain:
 
 Fast event → decision loop via a local SLM on an OpenAI-compatible server (vLLM, LM Studio), named by `REFLEX_MODEL`. Shadow mode (#285): decisions are recorded, nothing executes.
 
-- `agent.py` — `build_reflex_agent(model)` and `decide(agent, prompt, tools)`: the one Pydantic AI agent Reflex decides through (no instructions; the prompt is the single user message, the reply goes through `parse_decision`). `reply_format(tools)` is each call's response format: a JSON schema whose `tool_name` is one of that prompt's tools. `__main__.py` builds it from `REFLEX_MODEL` via `resolve_model` and stays off, alive until shutdown, when none resolves
+- `agent.py` — `build_reflex_agent(model)` and `decide(agent, prompt, tools)`: the one Pydantic AI agent Reflex decides through (no instructions; the prompt is the single user message, the reply goes through `parse_decision`). `reply_format(tools)` is each call's response format: a JSON schema whose `tool_name` is one of that prompt's tools. `__main__.py` builds the agent from `REFLEX_MODEL` via `resolve_model` and stays off, alive until shutdown, when none resolves
 - `prose.py` — fetches Reflex's three prompts (`reflex-state-change`, `reflex-trigger`, `reflex-rules`) from the prompt store; `warm_prose` fills the cache at start
 - `engine.py` — `ReflexEngine`: gathers preferences, reflex-audience tools, live state and timezone; returns a `ReflexProposal` (act/ask/none/invalid) for StateChanged and TriggerFired
 - `prompt.py` — pure prompt builder: rules + tools, Preferences, Now, House by `attributes.area`, What changed / Trigger fired; `HOUSE_DOMAINS`
