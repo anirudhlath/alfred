@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final
 
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from core.attribution.cause import Cause  # noqa: TC001  # pydantic field type
 from core.reflex.prompt import _area, _name
@@ -44,15 +44,25 @@ _ATTRIBUTE_PARAMETER: Final = "brightness_pct"
 _SUPERSEDING: Final[frozenset[Cause | None]] = frozenset({"alfred", "automation"})
 
 
+def _utc(moment: datetime) -> datetime:
+    """*moment*, read as UTC when it carries no offset."""
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
 class PersonChange(BaseModel):
     """The last change a person made to one entity."""
 
-    time: datetime
+    time: datetime  # always aware: a stored time with no offset is read as UTC
     cause: Cause | None
     old_state: str | None
     new_state: str
     context_id: str | None
     attributes_only: bool  # old_state == new_state: a brightness or volume, not a state
+
+    @field_validator("time")
+    @classmethod
+    def _aware(cls, value: datetime) -> datetime:
+        return _utc(value)
 
 
 class PersonChanges:
@@ -74,9 +84,7 @@ class PersonChanges:
         would have gone, so a replayed old event never overwrites or clears a newer record.
         """
         try:
-            when = (
-                event.timestamp if event.timestamp.tzinfo else event.timestamp.replace(tzinfo=UTC)
-            )
+            when = _utc(event.timestamp)
             stored = await self._stored(event.entity_id)
             if stored is not None and when < stored.time:
                 return

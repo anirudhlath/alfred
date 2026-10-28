@@ -433,6 +433,28 @@ async def test_a_clock_that_does_not_match_the_records_raises_and_deletes_nothin
     assert await redis.hkeys(REFLEX_PERSON_CHANGES_KEY) == [LAMP.encode()]
 
 
+async def test_a_stored_time_with_no_offset_is_read_as_utc() -> None:
+    """A record whose JSON time has no offset still ages normally: recent() does not raise."""
+    redis = fakeredis.FakeAsyncRedis()
+    changes = PersonChanges(redis, clock=lambda: _NOW)
+
+    def record(ago: timedelta) -> str:
+        naive = (_NOW - ago).replace(tzinfo=None).isoformat()
+        return (
+            f'{{"time": "{naive}", "cause": "person", "old_state": "on", "new_state": "off", '
+            '"context_id": null, "attributes_only": false}'
+        )
+
+    await redis.hset(REFLEX_PERSON_CHANGES_KEY, LAMP, record(timedelta(minutes=10)))
+    await redis.hset(REFLEX_PERSON_CHANGES_KEY, TV, record(timedelta(minutes=61)))
+
+    kept = await changes.recent(_WINDOW)
+
+    assert list(kept) == [LAMP]
+    assert kept[LAMP].time == _NOW - timedelta(minutes=10)
+    assert await redis.hkeys(REFLEX_PERSON_CHANGES_KEY) == [LAMP.encode()]
+
+
 async def test_recent_holds_a_change_as_it_was_noted() -> None:
     event = _event(LAMP, "on", "off")
 
