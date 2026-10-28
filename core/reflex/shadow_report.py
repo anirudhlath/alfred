@@ -14,11 +14,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
 from pydantic import ValidationError
 
-from bus.schemas.events import ReflexObservation, StateChangedEvent
+from bus.schemas.events import OutcomeKind, ReflexObservation, StateChangedEvent
 from core.reflex.prompt import render_event
 from core.reflex.runner import decisions_key
 from shared.config import AlfredConfig
@@ -33,9 +33,9 @@ if TYPE_CHECKING:
     from shared.types import AioRedis
 
 DECISIONS: tuple[str, ...] = ("act", "ask", "none", "invalid")
-# What each decision came to (``bus.schemas.events.OutcomeKind``), in the order they are shown;
-# the daily hash counts them as ``outcome:<kind>``.
-OUTCOMES: tuple[str, ...] = ("none", "invalid", "would_reverse", "shadow", "asked", "held")
+# What each decision came to, in the order ``OutcomeKind`` lists them; the daily hash counts
+# them as ``outcome:<kind>``.
+OUTCOMES: tuple[str, ...] = get_args(OutcomeKind)
 # Upper bound on observations scanned. A week runs to a few thousand; past this the
 # report says it was truncated rather than silently dropping the oldest.
 MAX_SCAN = 20_000

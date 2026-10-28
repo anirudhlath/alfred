@@ -369,7 +369,7 @@ The bridge subscribes to MQTT topics `home/#` and `media/#` by default and liste
 
 **Files:** `core/reflex/engine.py`, `core/reflex/prompt.py`, `core/reflex/decision.py`, `core/reflex/agent.py`
 
-The `ReflexEngine` class is the System 1 fast path. It has no effect on the house and writes nothing itself (the runner keeps a private decision log, `alfred:reflex:decision_log`) -- it takes a `StateChangedEvent` (or a `TriggerFired`) and returns a `Decided` (the `ReflexProposal` plus its outcome and the exact prompt): **act**, **ask**, **none** or **invalid** ([#285](https://github.com/anirudhlath/alfred/issues/285), [design](superpowers/specs/2026-10-07-reflex-context-design.md)).
+The `ReflexEngine` class is the System 1 fast path. It has no effect on the house and its only write is pruning expired person-change records while it reads them (the runner keeps a private decision log, `alfred:reflex:decision_log`) -- it takes a `StateChangedEvent` (or a `TriggerFired`) and returns a `Decided` (the `ReflexProposal` plus its outcome and the exact prompt): **act**, **ask**, **none** or **invalid** ([#285](https://github.com/anirudhlath/alfred/issues/285), [design](superpowers/specs/2026-10-07-reflex-context-design.md)).
 
 **How it works:**
 
@@ -385,7 +385,7 @@ The runner then writes one record to the decision log (`alfred:reflex:decision_l
 
 **Shadow mode (slice 1 of #285 → #286 → #287):** nothing a proposal names is executed. The runner counts every decision and records act, ask and invalid proposals; see section 2.
 
-The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer (the measured latency includes the sub-millisecond decision-log write), and `@track_tokens` on the agent's `infer` records token usage.
+The `@track_latency(category="reflex")` decorator on `process_event` records inference latency to the telemetry buffer (the measured latency now includes the settings read and the person-changes read, both before the model is asked), and `@track_tokens` on the agent's `infer` records token usage.
 
 #### 3.2.1 AttentionSet (Tiered Autonomy — Reflex Gating)
 

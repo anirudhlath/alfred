@@ -31,12 +31,11 @@ from core.reflex.prose import warm_prose
 from core.reflex.reversal import PersonChanges
 from core.reflex.runner import (
     already_decided,
-    count_decision,
-    count_outcome,
     ensure_consumer_group,
     mark_decided,
     process_stream_entry,
     publish_proposal,
+    record_decision,
 )
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
@@ -202,10 +201,7 @@ async def _handle_trigger_fired(
         logger.error("SLM reasoning failed for trigger '%s': %s", trigger_event.trigger_name, e)
         return
     proposal = decided.proposal
-    if decision_log is not None:
-        await decision_log.record("trigger_fired", trigger_event, decided)
-    await count_decision(redis, proposal.decision)
-    await count_outcome(redis, decided.outcome)
+    await record_decision(redis, decision_log, "trigger_fired", trigger_event, decided)
     # A "none", and a proposal that would reverse a person's change, publish nothing here.
     if publishes(decided.outcome):
         if proposal.decision == "invalid":

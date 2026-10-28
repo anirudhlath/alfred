@@ -35,6 +35,7 @@ from core.reflex.runner import (
     decisions_key,
     process_stream_entry,
     publish_proposal,
+    record_decision,
 )
 from core.reflex.tool_registry import ToolInfo
 from sdk.alfred_sdk.context import ContextEntry, ContextSnapshot
@@ -42,7 +43,7 @@ from shared.streams import (
     REFLEX_OBSERVATIONS_STREAM,
     REFLEX_PERSON_CHANGES_KEY,
 )
-from tests.core.reflex.fakes import reflex_agent
+from tests.core.reflex.fakes import decided, reflex_agent
 
 if TYPE_CHECKING:
     from shared.types import AioRedis
@@ -415,6 +416,45 @@ async def test_a_trigger_proposal_that_reverses_nothing_is_published_with_its_ou
 
 
 # --- the counts -------------------------------------------------------------------------------
+
+
+async def test_record_decision_logs_then_counts_the_decision_then_the_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one step both origins take: the same three writes, in the same order."""
+    from core.reflex import runner
+
+    order: list[str] = []
+    log = AsyncMock()
+    log.record.side_effect = lambda *_: order.append("log")
+    monkeypatch.setattr(
+        runner, "count_decision", AsyncMock(side_effect=lambda *_: order.append("decision"))
+    )
+    monkeypatch.setattr(
+        runner, "count_outcome", AsyncMock(side_effect=lambda *_: order.append("outcome"))
+    )
+    event = _change(LAMP, "on", "off")
+    result = decided(ReflexProposal(decision="none"))
+
+    await record_decision(AsyncMock(), log, "state_change", event, result)
+
+    assert order == ["log", "decision", "outcome"]
+    log.record.assert_awaited_once_with("state_change", event, result)
+
+
+async def test_record_decision_without_a_log_still_counts() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+
+    await record_decision(
+        redis,
+        None,
+        "trigger_fired",
+        _change(LAMP, "on", "off"),
+        decided(ReflexProposal(decision="invalid", raw="nope", problem="not JSON")),
+    )
+
+    counted = await redis.hgetall(decisions_key(datetime.now(UTC).date()))
+    assert {k.decode(): int(v) for k, v in counted.items()} == {"invalid": 1, "outcome:invalid": 1}
 
 
 async def test_count_outcome_counts_the_kind_and_the_reason() -> None:

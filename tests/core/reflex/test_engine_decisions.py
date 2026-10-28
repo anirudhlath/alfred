@@ -18,6 +18,7 @@ from core.reflex.reversal import PersonChanges
 from core.reflex.settings import ReflexSettings, save_settings
 from core.reflex.tool_registry import ToolInfo
 from sdk.alfred_sdk.context import ContextEntry, ContextSnapshot
+from shared.streams import REFLEX_SETTINGS_KEY
 from tests.core.reflex.fakes import reflex_agent
 
 if TYPE_CHECKING:
@@ -392,7 +393,7 @@ async def test_the_window_is_read_from_the_settings_for_every_decision() -> None
 
 async def test_a_bad_settings_document_reads_as_the_default_window() -> None:
     engine, changes, redis, _ = _with_changes(NONE, snapshot=_snapshot())
-    await redis.set("alfred:reflex:settings", b"{not json")
+    await redis.set(REFLEX_SETTINGS_KEY, b"{not json")
     await changes.note(_person_turned_lamp_off(ago=timedelta(minutes=30)), "person")
 
     decided = await engine.process_event(TV_PLAYS)

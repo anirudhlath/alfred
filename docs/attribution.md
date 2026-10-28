@@ -57,7 +57,8 @@ sequenceDiagram
         Rt->>R: XADD alfred:attribution:changes
     end
     Rt->>E: event (cause in the prompt line)
-    E->>R: XADD alfred:reflex:decision_log (prompt, cause, proposal, outcome)
+    E-->>Rt: Decided (proposal, outcome, the exact prompt)
+    Rt->>R: XADD alfred:reflex:decision_log (prompt, cause, proposal, outcome)
     D->>HS: ActionRequest (executed, through HomeAgent)
     HS-->>D: ActionResult (context_id)
     D->>R: XADD alfred:attribution:calls

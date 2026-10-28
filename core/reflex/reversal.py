@@ -40,6 +40,18 @@ SERVICE_STATES: Final = {
 # What an action carries when it sets an attribute (a brightness, a volume) rather than a state.
 _ATTRIBUTE_SERVICES: Final = frozenset({"volume_set"})
 _ATTRIBUTE_PARAMETER: Final = "brightness_pct"
+# Deletes each field only while it still holds the bytes ``recent`` read. The state loop and the
+# trigger loop share one event loop: a change can be noted between ``recent`` reading an expired
+# record and deleting it, and an unconditional HDEL would take the fresh record with it.
+_DELETE_IF_UNCHANGED: Final = """
+local removed = 0
+for i = 1, #ARGV, 2 do
+  if redis.call('HGET', KEYS[1], ARGV[i]) == ARGV[i + 1] then
+    removed = removed + redis.call('HDEL', KEYS[1], ARGV[i])
+  end
+end
+return removed
+"""
 # A change by either of these replaces whatever a person did before it.
 _SUPERSEDING: Final[frozenset[Cause | None]] = frozenset({"alfred", "automation"})
 
@@ -129,30 +141,36 @@ class PersonChanges:
     async def recent(self, window: timedelta) -> dict[str, PersonChange]:
         """The changes no older than *window*, by entity ID.
 
-        Older ones, and any that cannot be read, are deleted in the same call. A Redis error
-        propagates (fail closed): the event stays pending and is retried rather than decided
-        blind to a person's change.
+        Older ones, and any that cannot be read, are deleted in the same call, each only while
+        it still holds what was read: a change noted since stays. A Redis error propagates (fail
+        closed): the event stays pending and is retried rather than decided blind to a
+        person's change.
         """
         stored: dict[bytes | str, bytes | str] = await self._redis.hgetall(
             REFLEX_PERSON_CHANGES_KEY
         )
         now = self._clock()
         kept: dict[str, PersonChange] = {}
-        dropped: list[bytes | str] = []
+        dropped: list[tuple[bytes | str, bytes | str]] = []
         for field, value in stored.items():
             try:  # only an unreadable record is deleted for it: a clock mismatch must raise
                 entity_id = decode_stream_value(field)
                 change = PersonChange.model_validate_json(value)
             except ValueError as e:
                 logger.warning("Reflex dropped an unreadable person change ({!r}): {}", field, e)
-                dropped.append(field)
+                dropped.append((field, value))
                 continue
             if now - change.time > window:
-                dropped.append(field)
+                dropped.append((field, value))
             else:
                 kept[entity_id] = change
         if dropped:
-            await self._redis.hdel(REFLEX_PERSON_CHANGES_KEY, *dropped)
+            await self._redis.eval(
+                _DELETE_IF_UNCHANGED,
+                1,
+                REFLEX_PERSON_CHANGES_KEY,
+                *(part for pair in dropped for part in pair),
+            )
         return kept
 
 

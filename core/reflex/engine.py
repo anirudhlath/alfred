@@ -9,7 +9,8 @@ checked after the model answers and ends as ``would_reverse``.
 
 Design for eval-ability: structured (event, preferences, live state) in → structured
 decision out. The engine has no effect on the house — in shadow mode nothing a proposal names
-is executed — and writes nothing: the runner records, counts and publishes the decision.
+is executed — and its only write is ``PersonChanges.recent`` pruning expired person-change
+records as it reads them: the runner records, counts and publishes the decision.
 """
 
 from __future__ import annotations

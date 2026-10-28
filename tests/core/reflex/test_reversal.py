@@ -7,7 +7,7 @@ names are test data; the code under test names no tool.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis
@@ -400,6 +400,50 @@ async def test_recent_deletes_the_fields_older_than_the_window() -> None:
 
     assert list(kept) == [TV]
     assert await redis.hkeys(REFLEX_PERSON_CHANGES_KEY) == [TV.encode()]
+
+
+async def test_recent_keeps_a_record_a_newer_change_replaced_after_it_was_read() -> None:
+    """The prune deletes only the value it read. Two loops share one event loop: a fresh change
+    can land between ``recent`` reading an expired record and deleting it, and must survive."""
+    redis = fakeredis.FakeAsyncRedis()
+    changes = PersonChanges(redis, clock=lambda: _NOW)
+    await changes.note(_event(LAMP, "on", "off", ago=timedelta(minutes=61)), "person")
+    fresh = _event(LAMP, "off", "on", ago=timedelta(minutes=1))
+    read = redis.hgetall
+
+    async def read_then_a_person_changes_the_lamp(*args: Any, **kwargs: Any) -> Any:
+        stored = await read(*args, **kwargs)
+        await changes.note(fresh, "person")  # the state loop, between the read and the delete
+        return stored
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(redis, "hgetall", read_then_a_person_changes_the_lamp)
+        assert await changes.recent(_WINDOW) == {}  # what it read was expired
+
+    kept = await changes.recent(_WINDOW)
+    assert list(kept) == [LAMP]
+    assert kept[LAMP].new_state == "on"
+
+
+async def test_recent_keeps_an_unreadable_record_that_was_replaced_after_it_was_read(
+    warnings: list[str],
+) -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    changes = PersonChanges(redis, clock=lambda: _NOW)
+    await redis.hset(REFLEX_PERSON_CHANGES_KEY, LAMP, "{not json")
+    read = redis.hgetall
+
+    async def read_then_a_person_changes_the_lamp(*args: Any, **kwargs: Any) -> Any:
+        stored = await read(*args, **kwargs)
+        await changes.note(_event(LAMP, "off", "on", ago=timedelta(minutes=1)), "person")
+        return stored
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(redis, "hgetall", read_then_a_person_changes_the_lamp)
+        assert await changes.recent(_WINDOW) == {}
+
+    assert list(await changes.recent(_WINDOW)) == [LAMP]
+    assert len(warnings) == 1
 
 
 async def test_a_change_exactly_a_window_old_is_still_held() -> None:

@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
     from pydantic import BaseModel
 
-    from bus.schemas.events import ActionRequest, ReflexOutcome, ReflexProposal
+    from bus.schemas.events import ActionRequest, ReflexOutcome, ReflexProposal, TriggerFired
     from core.reflex.attention import AttentionSet
     from core.reflex.decision_log import DecisionLog
     from core.reflex.engine import ReflexEngine
@@ -145,6 +145,24 @@ async def count_outcome(
         await redis.expire(key, DECISION_COUNT_TTL_SECONDS)
     except Exception as e:
         logger.warning("Outcome count failed (%s): %s", outcome.kind, e)
+
+
+async def record_decision(
+    redis: AioRedis,
+    decision_log: DecisionLog | None,
+    origin: Literal["state_change", "trigger_fired"],
+    event: StateChangedEvent | TriggerFired,
+    decided: Decided,
+) -> None:
+    """Keep and count one decision: the decision log, the decision, then its outcome.
+
+    The one step both origins take, ahead of their own publish or passive observation and the
+    ``mark_decided`` that follows. Best-effort throughout: none of the three writes raises.
+    """
+    if decision_log is not None:
+        await decision_log.record(origin, event, decided)
+    await count_decision(redis, decided.proposal.decision)
+    await count_outcome(redis, decided.outcome)
 
 
 def decided_key(event_id: str) -> str:
@@ -338,10 +356,7 @@ async def process_stream_entry(
     # engine.process_event() calls the model. If it is down this raises
     # (httpx.ConnectError, etc.) and the caller does NOT ACK — Redis redelivers.
     decided = await engine.process_event(event)
-    if decision_log is not None:
-        await decision_log.record("state_change", event, decided)
-    await count_decision(redis, decided.proposal.decision)
-    await count_outcome(redis, decided.outcome)
+    await record_decision(redis, decision_log, "state_change", event, decided)
     await _record_outcome(redis, observation_stream, event, decided)
     # Counted and published, so a redelivery stops here; a crash before this line decides again.
     await mark_decided(redis, event.event_id)

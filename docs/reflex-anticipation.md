@@ -46,7 +46,9 @@ person just changed. It does not ask the model to remember.
   that entity's record. A change by Alfred or an automation deletes it: that is the latest word
   on the entity. An attributes-only report with the same context id as the record (a bulb
   giving its brightness after being turned on) leaves it as it is, and an event older than the
-  record never overwrites or clears it.
+  record never overwrites or clears it. Reading the records prunes the expired ones, each deleted
+  only while it still holds what was read (a Lua compare-and-delete), so a change noted by the
+  other consumer loop in between is kept.
 - **How long.** `reverse_window_minutes` in the settings document `alfred:reflex:settings`
   (default 60, from 1 to 1440; `core/reflex/settings.py`). The engine reads the document on
   every decision, so a change applies to the next one. A missing, unreadable or invalid
@@ -61,7 +63,8 @@ person just changed. It does not ask the model to remember.
 - **One outcome per decision.** Every decision ends in a `ReflexOutcome`: `none`, `invalid`,
   `would_reverse` (the proposal would undo a person's change; it names the entities and is not
   published as a proposal), `shadow` (published; nothing executes) and, for later slices,
-  `asked` and `held`. It is kept on the decision-log record and on the observation, counted in
+  `asked` and `held`. It is kept on the decision-log record and on a published proposal's
+  observation (a `none` or `would_reverse` is observed passively, with no outcome), counted in
   `alfred:reflex:decisions:<UTC date>` as `outcome:<kind>` (and `<kind>:<reason>` when there is
   a reason), and printed as the Outcomes table of `python -m core.reflex.shadow_report`.
 - **Fail closed.** A Redis error while reading the settings or the records propagates, before
