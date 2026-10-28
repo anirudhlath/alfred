@@ -1020,6 +1020,9 @@ After PR D merges, move `~/code/.worktrees/home-service/evals-main` to the merge
 - `class ReflexReply(BaseModel)` has `decision`, `tool`, `parameters` and `reason`.
 - Every shape converts to a `ReflexProposal` through one function that applies `parse_decision`'s checks:
   the tool must be one of Reflex's, and the parameters must be an object.
+- Note (added after PR A): `text` already sends a per-call JSON schema, `reply_format(tools)`, whose
+  `tool_name` is an enum of the prompt's tools. A shape compared against it keeps that enum, or its
+  invalid rate is measured against a weaker request.
 
 - [ ] **Step 1: Write the failing tests:** each shape with a `FunctionModel`, an unknown tool → `invalid`
   in every shape, and a bad `REFLEX_OUTPUT` → a startup error.

@@ -84,7 +84,11 @@ The agent has no instructions. The prompt `core/reflex/prompt.py` builds, rules 
 single user message, and the reply text goes through `parse_decision`, so a reply that is not
 a decision is an `invalid` proposal that keeps the raw text, never a second ask (`retries=0`:
 Reflex has one chance inside its latency budget). Every request carries temperature 0, a 150-token
-cap, a 30 s timeout, a JSON-object response format and the `system1` role header. A transport
+cap, a 30 s timeout, the `system1` role header and a response format built for that call by
+`reply_format`: a JSON schema whose reply is `{"decision": "none"}` or an act or ask whose
+`tool_name` is one of the tools the prompt showed (only "none" when it showed none). vLLM holds
+the model to it while it writes, so a reply cannot name a tool Reflex was not given;
+`parse_decision` still checks, for a server that ignores the format. A transport
 or provider failure propagates, so the stream entry stays pending and the reclaim pass replays
 it. Reflex's prose comes from the prompt store (see [Prompts](#prompts)). It calls no tool and
 no other role: nothing in the decision path waits on System 2.
