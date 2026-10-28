@@ -25,5 +25,11 @@
     /* Path aliases */
     "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["src"]
+  // `src/test/icons.test.ts` reads bytes off disk, and
+  // `src/test/sw-server-routes.test.ts` reads core/'s Python, so both belong to
+  // the Node project (tsconfig.node.json) instead: `types` here is `vite/client`
+  // alone on purpose, and adding `node` would put `process`, `Buffer` and Node's
+  // `setTimeout` overloads in front of every browser component in `src`.
+  "include": ["src"],
+  "exclude": ["src/test/icons.test.ts", "src/test/sw-server-routes.test.ts"]
 }

@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { ApiError, errorText } from "@/lib/api";
 import {
   fetchEpisodic,
@@ -96,17 +96,39 @@ export interface Memory {
   /** A read is in flight. */
   loading: boolean;
   /**
-   * The showing tab's own read has landed at least once, well or badly — the
-   * flag `useSystem`'s sections each carry, for the same reason. Without it an
-   * empty list cannot be told from one nobody has been told about yet, and the
-   * bench opens by asserting `No episodic memories yet.` about a store it has
-   * not read: a claim about the server made from no evidence, which spec §5.2
-   * forbids. `dataUpdatedAt` and not `isSuccess`, because the question is "has
-   * this ever been read", not "did the last attempt succeed".
+   * The showing tab's own read has landed at least once: that tab's
+   * `dataUpdatedAt !== 0`, so a first read that fails leaves it false and no
+   * later failure takes it back. It is the flag `useSystem`'s sections each
+   * carry, for the same reason. Without it an empty list cannot be told from
+   * one nobody has been told about yet, and the bench opens by asserting
+   * `No episodic memories yet.` about a store it has not read: a claim about
+   * the server made from no evidence, which spec §5.2 forbids. `dataUpdatedAt`
+   * and not `isSuccess`, because the question is "has a read ever landed", not
+   * "did the last attempt succeed".
    */
   read: boolean;
   /** Why the showing tab's read failed, if it did. Null while the bench is not showing. */
   error: string | null;
+}
+
+/**
+ * What a search says about the embedder, or null while it says nothing new.
+ *
+ * Nothing until it has settled since its words were submitted:
+ * `isFetchedAfterMount` is per key, and react-query counts a failure only once
+ * it has stopped retrying, so a refused attempt that will be asked again
+ * settles nothing — in flight, nothing is proven yet. The same flag keeps an
+ * answer that came out of the cache from counting as news about the embedder
+ * now: the pill keeps what the last request learned. (A search asked again
+ * reads its last settle while it is in flight, which is what the pill already
+ * says.) And only a 503 is the model: a 401 is a gate and a 500 is the store
+ * behind it, and reading either as a dead embedder would be inventing a
+ * diagnosis.
+ */
+function verdict(search: UseQueryResult<EpisodicRow[]>): ModelState | null {
+  if (!search.isFetchedAfterMount) return null;
+  if (search.isSuccess) return "ok";
+  return search.error instanceof ApiError && search.error.status === 503 ? "503" : null;
 }
 
 /**
@@ -145,27 +167,7 @@ export function useMemory(enabled: boolean): Memory {
 
   const searchQuery = useQuery({
     queryKey: ["memory", "episodic", "search", submitted],
-    // The pill is set here, where the answer arrives, in the idiom `useOverview`
-    // already uses for `markTrue`: the embedder has no readiness probe, so a
-    // search answering is the only evidence there is. Unlike `markTrue`, which
-    // writes module state, this writes *React* state from outside render —
-    // legitimate in a queryFn, which runs from the fetch rather than from a
-    // render or an effect, but it lands a tick after the rows it explains, so
-    // every assertion about the pill has to wait for it. Do not copy the idiom
-    // into a component body, where it would be a render-phase update.
-    //
-    // Only a 503 is the model: a 401 is a gate and a 500 is the store behind
-    // it, and reading either as a dead embedder would be inventing a diagnosis.
-    queryFn: async () => {
-      try {
-        const found = await fetchEpisodic(submitted);
-        setModel("ok");
-        return found;
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 503) setModel("503");
-        throw error;
-      }
-    },
+    queryFn: () => fetchEpisodic(submitted),
     enabled: showing && submitted !== "",
     // Holds the matches already on screen while the next search is in flight,
     // so a second search does not flash the browse between the two answers.
@@ -174,6 +176,20 @@ export function useMemory(enabled: boolean): Memory {
     placeholderData: keepPreviousData,
     staleTime: STALE_MS,
   });
+
+  // The pill is what the last search *learned*, and a search has learned
+  // something only once it has settled. It was set from the queryFn, which runs
+  // once per attempt rather than once per search — and `QUERY_DEFAULTS` retries
+  // a 5xx once, a second later — so the first refusal raised `The embedder is
+  // not answering.` while that same search was still being asked again: over a
+  // list drawn as a search in flight, with nothing yet in the error region, and
+  // over the previous search's held matches if there were any, which the card
+  // then called "the list below is by recency". Adjusted during render — the
+  // pattern React documents for state that follows an input — so the pill lands
+  // in the same render as the rows and the error it explains, never a retry
+  // ahead of them.
+  const learned = verdict(searchQuery);
+  if (learned !== null && learned !== model) setModel(learned);
 
   const semanticQuery = useQuery({
     queryKey: ["memory", "semantic"],

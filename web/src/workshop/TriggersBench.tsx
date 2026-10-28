@@ -90,9 +90,11 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
                   claim rather than a blank. `SystemSections` writes the rule
                   down — "a count of a list nobody has read yet is `0
                   registered` … It appears when the read does." On a phone with
-                  no signal the read is *paused*, so the list area correctly
-                  said nothing while this chip said `All 0` over the top of
-                  it. */}
+                  no signal the read is *paused* once react-query's
+                  `onlineManager` has heard the phone go offline, and on a
+                  launch that began offline it runs and fails; either way
+                  nothing has been read, so the list area correctly said
+                  nothing while this chip said `All 0` over the top of it. */}
               {kind === "all" && triggers.read && (
                 <span className="font-mono"> {triggers.triggers.length}</span>
               )}
@@ -144,12 +146,14 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
             evidence for it — on the one bench whose whole ethic is not saying
             what it does not know.
 
-            `read` and not `!loading`: react-query *pauses* a read with no
-            network rather than failing it, so a bench reached for the first
-            time on a phone with no signal is not fetching, holds no rows and
-            has no error to show. `loading` says the same thing there as it does
-            for an answered, genuinely empty house. `read` is the flag
-            `MemoryBench` and every `SystemSections` card already guard on.
+            `read` and not `!loading`: react-query *pauses* a read only once
+            its `onlineManager` has heard the phone go offline (on a launch
+            that began offline the read runs and fails instead), so a bench
+            reached for the first time on a phone that has lost its signal is
+            not fetching, holds no rows and has no error to show. `loading`
+            says the same thing there as it does for an answered, genuinely
+            empty house. `read` is the flag `MemoryBench` and every
+            `SystemSections` card already guard on.
 
             `error === null` as well, which is the other half of that guard and
             the term all four `SystemSections` empty gates carry: once a read

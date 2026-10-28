@@ -413,8 +413,8 @@ describe("Workshop", () => {
   it("says last true --:-- when the pump has never been up", () => {
     sockets.telemetryUp = false;
     mount(true);
-    // The *feed's* stamp, not the connection's: the chat socket is up and has
-    // set `lastTrueAt` to 21:14, but the pump has never been live, and the
+    // The *feed's* stamp, not the house's (`useLastTrue()`): the chat socket is
+    // up and has stamped that 21:14, but the pump has never been live, and the
     // header may not say a thing the banner below it contradicts.
     expect(screen.getByTestId("workshop-status")).toHaveTextContent("last true --:-- · not live");
     // The bench's banner says the same thing in its own words, and no longer

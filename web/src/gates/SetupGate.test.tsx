@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { UserEvent } from "@testing-library/user-event";
@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api";
 import { defaultDeviceName, DEVICE_KEY } from "@/lib/auth";
 import { hhmm } from "@/lib/format";
-import { attentionFixture, integrationsFixture } from "@/test/fixtures";
+import { attentionFixture, integrationsFixture, NETWORK_GATE_DETAIL } from "@/test/fixtures";
 import { SetupGate } from "./SetupGate";
 
 const { registerPasskeyMock } = vi.hoisted(() => ({ registerPasskeyMock: vi.fn() }));
@@ -128,16 +128,17 @@ describe("SetupGate — step 0, the passkey", () => {
   it("leaves a 403 to the Denied gate: no error line, no advance", async () => {
     const user = userEvent.setup();
     stubApi(HAPPY);
-    registerPasskeyMock.mockRejectedValue(new ApiError(403, "Request from untrusted network"));
+    registerPasskeyMock.mockRejectedValue(new ApiError(403, NETWORK_GATE_DETAIL));
     renderSetup();
 
-    await user.click(screen.getByRole("button", { name: "Create passkey with Face ID" }));
+    const create = screen.getByRole("button", { name: "Create passkey with Face ID" });
+    await user.click(create);
 
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Create passkey with Face ID" })).toBeEnabled(),
-    );
+    // Released, not merely enabled: the button is never natively disabled (Gate.tsx).
+    await waitFor(() => expect(create).not.toHaveAttribute("aria-busy"));
+    expect(create).not.toHaveAttribute("aria-disabled");
     expect(screen.getByRole("heading", { name: "Good evening. I am Alfred." })).toBeInTheDocument();
-    expect(screen.queryByText("Request from untrusted network")).toBeNull();
+    expect(screen.queryByText(NETWORK_GATE_DETAIL)).toBeNull();
   });
 
   it("reports a cancelled Face ID in its own words, not WebKit's", async () => {
@@ -239,7 +240,15 @@ describe("SetupGate — step 1, Home Assistant", () => {
     await register(user);
 
     expect(await screen.findByText("Keyring locked")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    const next = screen.getByRole("button", { name: "Continue" });
+    expect(next).toHaveAttribute("aria-disabled", "true");
+    // Unavailable, not busy: nothing is in flight.
+    expect(next).not.toHaveAttribute("aria-busy");
+
+    await user.click(next);
+
+    expect(calls.filter((call) => call.method === "PUT")).toEqual([]);
+    expect(screen.getByRole("heading", { name: "Registered." })).toBeInTheDocument();
   });
 
   it("holds Do this later while the credentials are being written", async () => {
@@ -249,10 +258,20 @@ describe("SetupGate — step 1, Home Assistant", () => {
     await register(user);
     await screen.findByLabelText("Access Token");
 
-    await user.click(screen.getByRole("button", { name: "Continue" }));
+    const next = screen.getByRole("button", { name: "Continue" });
+    await user.click(next);
 
-    expect(screen.getByRole("button", { name: "Do this later" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    expect(next).toHaveAttribute("aria-disabled", "true");
+    expect(next).toHaveAttribute("aria-busy", "true");
+    expect(next).toHaveFocus();
+    const later = screen.getByRole("button", { name: "Do this later" });
+    expect(later).toHaveAttribute("aria-disabled", "true");
+
+    await user.click(later);
+    await user.click(next);
+
+    expect(screen.getByRole("heading", { name: "Registered." })).toBeInTheDocument();
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
   });
 
   it("skips the write entirely on Do this later", async () => {
@@ -432,9 +451,15 @@ describe("SetupGate — step 2, the attention set", () => {
     const user = userEvent.setup();
     stubApi({ ...HAPPY, "/api/admin/attention": { body: { domains: [] } } });
     const spy = vi.fn();
+    const committed = vi.fn();
     // What AuthGate does: an inline closure, so `onDone` is new on every render.
     function Parent() {
       const [renders, setRenders] = useState(0);
+      // A parent's effects run after its children's in the same commit, so by
+      // the time this hears a render, SetupGate's effects have run on its onDone.
+      useEffect(() => {
+        committed(renders);
+      }, [renders]);
       return (
         <SetupGate
           onDone={() => {
@@ -454,8 +479,10 @@ describe("SetupGate — step 2, the attention set", () => {
     await screen.findByLabelText("Access Token");
     await user.click(screen.getByRole("button", { name: "Do this later" }));
 
-    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The skip's onDone renders the parent again, which hands SetupGate a new
+    // one. Once that render's effects have run, a skip that fires again on a
+    // new onDone has had its chance, and must not have taken it.
+    await waitFor(() => expect(committed).toHaveBeenCalledWith(1));
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
@@ -487,5 +514,91 @@ describe("SetupGate — step 2, the attention set", () => {
 
     expect(await screen.findByText("Attention store unavailable")).toBeInTheDocument();
     expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+describe("SetupGate — from one step to the next by keyboard", () => {
+  // Measured in Chromium before this: the Enter that registered the passkey left
+  // focus on the button, which was now `Continue`; a second Enter PUT the
+  // defaults with an empty token, and a third finished setup.
+
+  it("takes the press that registers the passkey to the next step's title, where Enter does nothing", async () => {
+    const user = userEvent.setup();
+    stubApi(HAPPY);
+    const { onDone } = renderSetup();
+    const create = screen.getByRole("button", { name: "Create passkey with Face ID" });
+    create.focus();
+
+    await user.keyboard("{Enter}");
+    const title = await screen.findByRole("heading", { name: "Registered." });
+    await screen.findByLabelText("Access Token");
+
+    // The heading, so a screen reader says where the press went.
+    expect(title).toHaveFocus();
+    // And a new step is new controls. A screen reader's cursor is not DOM focus:
+    // left on a node the next step reused, it would sit on `Continue` without
+    // having moved.
+    expect(screen.getByRole("button", { name: "Continue" })).not.toBe(create);
+
+    await user.keyboard("{Enter}");
+    await user.keyboard("{Enter}");
+
+    expect(calls.filter((call) => call.method === "PUT")).toEqual([]);
+    expect(screen.getByRole("heading", { name: "Registered." })).toHaveFocus();
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("takes the press that stores the credentials to the last step's title, where Enter does not finish", async () => {
+    const user = userEvent.setup();
+    stubApi(HAPPY);
+    const { onDone } = renderSetup();
+    await register(user);
+    await user.type(await screen.findByLabelText("Access Token"), "llat-abc123");
+    screen.getByRole("button", { name: "Continue" }).focus();
+
+    await user.keyboard("{Enter}");
+    const title = await screen.findByRole("heading", { name: "What may the reflex touch?" });
+    // Finish answers presses once the list is read; wait for that, or the Enter
+    // below would prove nothing.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Finish" })).not.toHaveAttribute("aria-disabled"),
+    );
+
+    expect(title).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+
+    expect(onDone).not.toHaveBeenCalled();
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
+  });
+
+  it("reads each step's title with what its foot says: the caveat, then a 502's sentence", async () => {
+    // Keyed, a step's foot is a new status region, whose first text a screen
+    // reader may not speak; the title the press lands on is described by it.
+    const user = userEvent.setup();
+    const sentence =
+      "Credentials stored, but push to home-service failed: connection refused. They will be re-pushed when the service re-registers.";
+    stubApi({
+      ...HAPPY,
+      "PUT /api/integrations/home-service/credentials": { status: 502, body: { detail: sentence } },
+    });
+    renderSetup();
+    screen.getByRole("button", { name: "Create passkey with Face ID" }).focus();
+
+    await user.keyboard("{Enter}");
+    const registered = await screen.findByRole("heading", { name: "Registered." });
+
+    // Focus moves in the gate's effect, after the heading is in the document:
+    // a wait of its own, not a read straight after finding it.
+    await waitFor(() => expect(registered).toHaveFocus());
+    expect(registered).toHaveAccessibleDescription("Stored encrypted at rest on your hardware.");
+
+    await user.type(await screen.findByLabelText("Access Token"), "llat-abc123");
+    screen.getByRole("button", { name: "Continue" }).focus();
+    await user.keyboard("{Enter}");
+    const reflex = await screen.findByRole("heading", { name: "What may the reflex touch?" });
+
+    await waitFor(() => expect(reflex).toHaveFocus());
+    expect(reflex).toHaveAccessibleDescription(sentence);
   });
 });

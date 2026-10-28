@@ -9,6 +9,7 @@ import { pendingActionTitles, toTimelineItems } from "@/lib/history";
 import { onVisible } from "@/lib/lifecycle";
 import { PresenceSignal } from "@/lib/presence-signal";
 import type { StreamRef } from "@/lib/streams";
+import { applyUpdate } from "@/lib/sw";
 import { Composer } from "@/room/Composer";
 import { DndRow } from "@/room/DndRow";
 import { Headline } from "@/room/Headline";
@@ -23,16 +24,20 @@ import { useRoom } from "@/room/useRoom";
 import { useRoomHistory } from "@/room/useRoomHistory";
 import { HeldBackSheet } from "@/sheets/HeldBackSheet";
 import { WhySheet } from "@/sheets/WhySheet";
-import { useConnection } from "@/shell/ConnectionProvider";
+import { useConnection, useLastTrue } from "@/shell/ConnectionProvider";
 import { ThemeToggle } from "@/shell/ThemeToggle";
+import { UpdateNote } from "@/shell/UpdateNote";
+import { useUpdateReady } from "@/shell/useUpdateReady";
 import { Workshop } from "@/workshop/Workshop";
 
 export function Room() {
-  const { online, chatStatus, lastTrueAt, chat } = useConnection();
+  const { online, chatStatus, chat } = useConnection();
+  const lastTrueAt = useLastTrue();
   const { data: overview } = useOverview();
   const idleMs = sessionIdleMs(overview);
   const { data: history } = useRoomHistory();
   const door = useDoor();
+  const updateReady = useUpdateReady();
 
   // One signal for the app's lifetime: the field reads it every frame and
   // hold-to-talk writes to it, so it must not be rebuilt on a render.
@@ -117,6 +122,7 @@ export function Room() {
         </div>
         <StatusLine overview={overview} online={online} lastTrueAt={lastTrueAt} />
         <OfflineNote online={online} reconnecting={reconnecting} lastTrueAt={lastTrueAt} />
+        <UpdateNote ready={updateReady} onReload={applyUpdate} />
         {dnd.active ? (
           <DndRow until={dnd.until} heldCount={overview?.counts.deferred ?? 0} onOpen={openHeld} />
         ) : null}

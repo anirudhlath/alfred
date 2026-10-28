@@ -21,9 +21,12 @@ never signed in. Record the device, iOS version and date at the bottom.
 
 ## §4.2 — home-screen icon
 
-- [ ] **Deferred to phase 4.** `manifest.json` still ships SVG only, and no
-      `apple-touch-icon` PNG exists yet. Expect a screenshot-style icon if you
-      add it to the home screen; that is not a phase 1 defect.
+- [ ] **Overtaken by phase 4, which shipped the icons and the manifests.** When
+      this list was written `manifest.json` named an SVG alone and there was no
+      `apple-touch-icon` PNG, so a home-screen tile was a screenshot of the page
+      and that was not a phase 1 defect. Both are now false: `index.html` links
+      `/apple-touch-icon.png` and the manifests name the two raster icons. Check
+      the tile against the phase-4 checklist instead — it has the real steps.
 
 ## §4.3 — notch, island and home indicator
 

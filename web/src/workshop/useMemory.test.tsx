@@ -62,6 +62,14 @@ function defer(): Gate {
  */
 let held: Gate | null = null;
 
+/**
+ * While set, a search the hook has already sent once — the retry
+ * `QUERY_DEFAULTS` makes after a 5xx — is held open until the test releases
+ * it: the only way to observe the bench between a refusal and the search
+ * giving up, which in the app is a second of backoff and in this harness none.
+ */
+let heldRetry: Gate | null = null;
+
 function stubFetch(): void {
   vi.stubGlobal(
     "fetch",
@@ -71,6 +79,8 @@ function stubFetch(): void {
       const path = url.split("?")[0];
       const searching = path === EPISODIC && qOf(url) !== null;
       if (searching && held) await held.promise;
+      const repeat = calls.filter((sent) => sent === url).length > 1;
+      if (searching && repeat && heldRetry) await heldRetry.promise;
       let answer: Answer;
       if (path === EPISODIC) answer = searching ? search : browse;
       else if (path === SEMANTIC) answer = semantic;
@@ -121,6 +131,7 @@ function searchFor(result: { current: { setQuery: (q: string) => void; submit: (
 beforeEach(() => {
   calls = [];
   held = null;
+  heldRetry = null;
   browse = ok({ entries: [hotRow(), coldRow()] });
   search = ok({ entries: [searchRow()] });
   semantic = ok({ files: [semanticFile()] });
@@ -131,6 +142,7 @@ beforeEach(() => {
 
 afterEach(() => {
   held?.release();
+  heldRetry?.release();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -324,6 +336,90 @@ describe("useMemory", () => {
     // `retry: false` this read three, which was the harness's policy and not
     // the app's.
     expect(asked(EPISODIC)).toHaveLength(4);
+  });
+
+  it("learns nothing from a refusal while the search is still being asked again", async () => {
+    const { result } = renderMemory();
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+    searchFor(result, "dentist");
+    await waitFor(() => expect(result.current.model).toBe("ok"));
+    const matches = result.current.rows;
+
+    // One attempt refused and the second held: the search is in flight, so the
+    // matches on screen hold and nothing about the embedder is proven yet. The
+    // pill used to turn here, a whole retry ahead of the search giving up.
+    search = EMBEDDER_DOWN;
+    heldRetry = defer();
+    searchFor(result, "hygienist");
+    await waitFor(() => expect(asked(EPISODIC)).toHaveLength(4));
+    await settle();
+
+    expect(result.current.searching).toBe(true);
+    expect(result.current.rows).toEqual(matches);
+    expect(result.current.model).toBe("ok");
+    expect(result.current.error).toBeNull();
+
+    heldRetry.release();
+    await waitFor(() => expect(result.current.model).toBe("503"));
+    // The same render as the pill: the error, and the browse under it.
+    expect(result.current.error).toBe("Vector search unavailable");
+    expect(result.current.searched).toBe(false);
+  });
+
+  it("takes nothing from a search the reader has moved on from", async () => {
+    const { result, client } = renderMemory();
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+    const lamp = defer();
+    held = lamp;
+    searchFor(result, "lamp");
+    await waitFor(() => expect(asked(EPISODIC)).toHaveLength(2));
+    held = null;
+    searchFor(result, "dentist");
+    await waitFor(() => expect(result.current.model).toBe("ok"));
+
+    // The words nobody is looking at any more are refused after all. Their
+    // query still runs to the end, and its answer is about a search off the
+    // screen: the pill stays with the matches on it.
+    search = EMBEDDER_DOWN;
+    lamp.release();
+    await waitFor(() =>
+      expect(client.getQueryState(["memory", "episodic", "search", "lamp"])?.status).toBe("error"),
+    );
+    await settle();
+
+    expect(result.current.model).toBe("ok");
+    expect(result.current.submitted).toBe("dentist");
+    expect(result.current.searched).toBe(true);
+  });
+
+  it("keeps what the last request learned when a search is answered from the cache", async () => {
+    const { result } = renderMemory();
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+    searchFor(result, "dentist");
+    await waitFor(() => expect(result.current.model).toBe("ok"));
+    search = EMBEDDER_DOWN;
+    searchFor(result, "lamp");
+    await waitFor(() => expect(result.current.model).toBe("503"));
+
+    // The first words again, inside their 30 s: an answer out of the cache with
+    // no request behind it, which is no news about the embedder now.
+    searchFor(result, "dentist");
+    await waitFor(() => expect(result.current.searched).toBe(true));
+
+    expect(asked(EPISODIC).filter((url) => qOf(url) === "dentist")).toHaveLength(1);
+    expect(result.current.model).toBe("503");
+  });
+
+  it("does not read a search the store refused as news about the embedder", async () => {
+    search = { status: 500, body: { detail: "redis gone" } };
+    const { result } = renderMemory();
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+
+    searchFor(result, "dentist");
+
+    await waitFor(() => expect(result.current.error).toBe("redis gone"));
+    // A 500 is the store behind the search, not the model in front of it.
+    expect(result.current.model).toBe("unknown");
   });
 
   it("browses when a blank query is submitted", async () => {
@@ -631,9 +727,38 @@ describe("MemoryBench over useMemory", () => {
     );
 
     // The browse was read, and it is what the list is showing. The refusal is
-    // news about the search, and the region above says so.
+    // news about the search, and the region above says so. Read straight after
+    // the card because they land in one render: the pill is learned from the
+    // search settling, never from the first of its two attempts.
     expect(screen.getByText("No episodic memories yet.")).toBeInTheDocument();
     expect(screen.queryByText("Episodic memory could not be read.")).toBeNull();
     expect(screen.getByLabelText("Read errors")).toHaveTextContent("Vector search unavailable");
+  });
+
+  it("does not say the embedder is down while the refused search is still being asked again", async () => {
+    browse = ok({ entries: [] });
+    renderBench();
+    await waitFor(() => expect(screen.getByText("No episodic memories yet.")).toBeInTheDocument());
+
+    // `QUERY_DEFAULTS` asks a 5xx twice, a second apart in the app, so the first
+    // refusal is not the search's answer. Held between the two, the search is in
+    // flight and the bench must draw it as one: no card saying the list below
+    // is by recency over a list that is not drawn, and a pill that has learned
+    // nothing yet.
+    search = EMBEDDER_DOWN;
+    heldRetry = defer();
+    searchOnScreen("dentist");
+    await waitFor(() => expect(asked(EPISODIC)).toHaveLength(3));
+    await settle();
+
+    expect(screen.queryByText("The embedder is not answering.")).toBeNull();
+    expect(screen.getByText("model: unknown")).toBeInTheDocument();
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-busy", "true");
+
+    heldRetry.release();
+    await waitFor(() =>
+      expect(screen.getByText("The embedder is not answering.")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("No episodic memories yet.")).toBeInTheDocument();
   });
 });

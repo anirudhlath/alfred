@@ -314,11 +314,39 @@ describe("useTriggers", () => {
 
     await wait(REREAD_MS);
 
-    await waitFor(() => expect(reads()).toHaveLength(2));
     // The window is up: the row now says what the server says, and the client's
-    // note about it is gone.
-    expect(result.current.pending).toEqual({});
+    // note about it is gone — in the same render, so wait for the note and read
+    // the rest after it.
+    await waitFor(() => expect(result.current.pending).toEqual({}));
+    expect(reads()).toHaveLength(2);
     expect(result.current.triggers[0].enabled).toBe(true);
+  });
+
+  // The window closing and the read it asks for landing are a round trip apart.
+  // Dropping the note at the first left the row, for that round trip, on the
+  // state the tap meant to change — switch back to off and tappable again,
+  // nothing under it — before the read flipped it on.
+  it("keeps the note up over the re-read, and drops it with the rows that read brings", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result } = renderTriggers();
+    await waitFor(() => expect(result.current.triggers).toHaveLength(3));
+
+    act(() => result.current.toggle(BINS));
+    await waitFor(() => expect(result.current.pending.trg_bins).toBeDefined());
+    list = { status: 200, body: { triggers: [{ ...BINS, enabled: true }, WEEKLY, DOOR] } };
+    hold(LIST);
+    await wait(REREAD_MS);
+    await waitFor(() => expect(parked.has(LIST)).toBe(true));
+
+    // The read is out and not back: the row still shows the last thing the
+    // server said, and the note is still what explains it.
+    expect(result.current.triggers[0].enabled).toBe(false);
+    expect(result.current.pending.trg_bins?.kind).toBe("enabling");
+
+    await answerHeld(LIST, list);
+
+    await waitFor(() => expect(result.current.triggers[0].enabled).toBe(true));
+    expect(result.current.pending).toEqual({});
   });
 
   it("drops the note on the re-read even when the server still says the old thing", async () => {
@@ -332,9 +360,10 @@ describe("useTriggers", () => {
     await wait(REREAD_MS);
 
     // No second window, no note that outlives its evidence (spec §5.2): the row
-    // goes back to telling the truth the server last told us, whatever it is.
-    await waitFor(() => expect(reads()).toHaveLength(2));
-    expect(result.current.pending).toEqual({});
+    // goes back to telling the truth the server last told us, whatever it is —
+    // with the read that told it, so the note is what to wait for.
+    await waitFor(() => expect(result.current.pending).toEqual({}));
+    expect(reads()).toHaveLength(2);
     expect(result.current.triggers[0].enabled).toBe(false);
   });
 
@@ -369,8 +398,8 @@ describe("useTriggers", () => {
 
     await wait(30_000);
 
-    await waitFor(() => expect(reads()).toHaveLength(2));
-    expect(result.current.pending).toEqual({});
+    await waitFor(() => expect(result.current.pending).toEqual({}));
+    expect(reads()).toHaveLength(2);
   });
 
   it("records a failed toggle on the row that failed, not on the bench", async () => {
@@ -432,8 +461,8 @@ describe("useTriggers", () => {
     // A POST slower than the window it opened — which the 60 s window makes a
     // real shape, not a contrived one.
     await wait(REREAD_MS);
-    await waitFor(() => expect(reads()).toHaveLength(2));
-    expect(result.current.pending).toEqual({});
+    await waitFor(() => expect(result.current.pending).toEqual({}));
+    expect(reads()).toHaveLength(2);
 
     await answerHeld(enabledPath("trg_bins"), {
       status: 500,
@@ -480,8 +509,8 @@ describe("useTriggers", () => {
 
     await wait(REREAD_MS);
 
-    await waitFor(() => expect(reads()).toHaveLength(2));
-    expect(result.current.pending).toEqual({});
+    await waitFor(() => expect(result.current.pending).toEqual({}));
+    expect(reads()).toHaveLength(2);
     // `fired` outlives the note: the button still reads `Fire again`, because
     // this client did queue one. It never claims the trigger ran.
     expect(result.current.fired.trg_bins).toBeDefined();
@@ -604,17 +633,20 @@ describe("useTriggers", () => {
     rerender({ on: false });
     await wait(REREAD_MS);
 
-    // The window still closes — the note is this client's claim and it has run
-    // out — but the read behind it does not run: an invalidated query with no
-    // observer is marked stale and left alone.
+    // The window still closes, but the read behind it does not run: an
+    // invalidated query with no observer is marked stale and left alone. So
+    // the note stays — nothing has spoken for the row yet, and a bench opened
+    // now must not draw its old state without the note that explains it.
     expect(reads()).toEqual([LIST]);
-    expect(result.current.pending).toEqual({});
+    expect(result.current.pending.trg_bins?.kind).toBe("enabling");
 
     rerender({ on: true });
 
     // And the invalidation was waiting: the bench reads on the way back in,
-    // rather than drawing rows from before a change it queued itself.
-    await waitFor(() => expect(reads()).toHaveLength(2));
+    // rather than drawing rows from before a change it queued itself, and the
+    // note comes down with that read.
+    await waitFor(() => expect(result.current.pending).toEqual({}));
+    expect(reads()).toHaveLength(2);
   });
 
   it("does not poll: a trigger list changes when someone changes it", async () => {
