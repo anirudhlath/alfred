@@ -70,19 +70,30 @@ class PersonChanges:
         latest word on the entity, and what a person did before it is not what Reflex would
         be undoing. An attributes-only change that shares the record's context id is the same
         action reporting itself (a bulb giving its brightness after being turned on) and
-        leaves the record as it is.
+        leaves the record as it is. An event older than the record is ignored whichever way it
+        would have gone, so a replayed old event never overwrites or clears a newer record.
         """
         try:
+            when = (
+                event.timestamp if event.timestamp.tzinfo else event.timestamp.replace(tzinfo=UTC)
+            )
+            stored = await self._stored(event.entity_id)
+            if stored is not None and when < stored.time:
+                return
             if cause in _SUPERSEDING:
                 await self._redis.hdel(REFLEX_PERSON_CHANGES_KEY, event.entity_id)
                 return
             context_id = event.context.id if event.context else None
             attributes_only = event.old_state == event.new_state
-            if attributes_only and await self._is_same_action(event.entity_id, context_id):
+            if (
+                attributes_only
+                and stored is not None
+                and context_id is not None
+                and stored.context_id == context_id
+            ):
                 return
-            when = event.timestamp
             change = PersonChange(
-                time=when if when.tzinfo else when.replace(tzinfo=UTC),
+                time=when,
                 cause=cause,
                 old_state=event.old_state,
                 new_state=event.new_state,
@@ -97,17 +108,15 @@ class PersonChanges:
                 "Reflex could not note the change to {} ({}): {}", event.entity_id, cause, e
             )
 
-    async def _is_same_action(self, entity_id: str, context_id: str | None) -> bool:
-        """Whether the entity's record came from the action with this context id."""
-        if context_id is None:
-            return False
+    async def _stored(self, entity_id: str) -> PersonChange | None:
+        """The entity's record, or ``None`` when there is none or it cannot be read."""
         raw = await self._redis.hget(REFLEX_PERSON_CHANGES_KEY, entity_id)
         if raw is None:
-            return False
+            return None
         try:
-            return PersonChange.model_validate_json(raw).context_id == context_id
+            return PersonChange.model_validate_json(raw)
         except ValueError:  # an unreadable record is replaced, not trusted
-            return False
+            return None
 
     async def recent(self, window: timedelta) -> dict[str, PersonChange]:
         """The changes no older than *window*, by entity ID.
@@ -123,15 +132,14 @@ class PersonChanges:
         kept: dict[str, PersonChange] = {}
         dropped: list[bytes | str] = []
         for field, value in stored.items():
-            try:
+            try:  # only an unreadable record is deleted for it: a clock mismatch must raise
                 entity_id = decode_stream_value(field)
                 change = PersonChange.model_validate_json(value)
-                age = now - change.time
-            except (ValueError, TypeError) as e:
+            except ValueError as e:
                 logger.warning("Reflex dropped an unreadable person change ({!r}): {}", field, e)
                 dropped.append(field)
                 continue
-            if age > window:
+            if now - change.time > window:
                 dropped.append(field)
             else:
                 kept[entity_id] = change
@@ -187,8 +195,9 @@ def reversed_entities(
     *changes* is ``PersonChanges.recent()``: the window is already applied. A target with a
     record is reversed when:
 
-    - the record is attributes-only (a brightness, a volume) and the action sets attributes or
-      leaves the entity in a state other than the one it had; or
+    - the record is attributes-only (a brightness, a volume) and the action sets attributes, or
+      its resulting state is unknown or differs from the one the entity had (fail closed: a
+      service not in ``SERVICE_STATES`` has no known state); or
     - the record is a state change and the action's state is known and differs from the record's;
       or
     - the record is a state change and the action is of a kind not known (its service is neither
@@ -205,9 +214,9 @@ def reversed_entities(
     )
 
     def reverses(change: PersonChange) -> bool:
-        differs = state is not None and state != change.new_state
         if change.attributes_only:
-            return sets_attributes or differs
+            return sets_attributes or state != change.new_state  # an unknown state differs too
+        differs = state is not None and state != change.new_state
         return differs or (state is None and not sets_attributes)
 
     return sorted(

@@ -185,6 +185,32 @@ async def test_a_later_alfred_change_clears_the_persons() -> None:
     assert changes == {}
 
 
+async def test_an_older_person_event_does_not_overwrite_a_newer_record() -> None:
+    changes = await _noted(
+        _event(LAMP, "off", "on", ago=timedelta(minutes=5)),
+        _event(
+            LAMP,
+            "on",
+            "off",
+            ago=timedelta(minutes=20),
+            context=ChangeContext(id="ctx-replayed", user_id="u"),
+        ),
+    )
+
+    assert changes[LAMP].new_state == "on"
+    assert changes[LAMP].time == _NOW - timedelta(minutes=5)
+
+
+async def test_an_older_automation_event_does_not_clear_a_newer_record() -> None:
+    changes = await _noted(
+        _event(LAMP, "on", "off", ago=timedelta(minutes=5)),
+        _event(LAMP, "off", "on", ago=timedelta(minutes=20), context=_AUTOMATION),
+    )
+
+    assert list(changes) == [LAMP]
+    assert changes[LAMP].new_state == "off"
+
+
 async def test_a_room_target_reverses_only_the_entities_a_person_changed() -> None:
     changes = await _noted(_event(LAMP, "on", "off"))
 
@@ -207,6 +233,38 @@ async def test_a_service_it_does_not_know_is_a_reversal_of_a_state_change() -> N
     changes = await _noted(_event(LAMP, "on", "off"))
 
     assert reversed_entities(_action("home.light_toggle", LAMP), changes, _SNAPSHOT) == [LAMP]
+
+
+async def test_a_service_it_does_not_know_is_a_reversal_of_a_brightness_change() -> None:
+    changes = await _noted(_event(LAMP, "on", "on"))
+
+    assert reversed_entities(_action("home.light_toggle", LAMP), changes, _SNAPSHOT) == [LAMP]
+
+
+async def test_an_unknown_service_that_sets_a_brightness_is_allowed_after_a_state_change() -> None:
+    changes = await _noted(_event(LAMP, "off", "on"))
+
+    action = _action("home.light_toggle", LAMP, brightness_pct=30)
+
+    assert reversed_entities(action, changes, _SNAPSHOT) == []
+
+
+async def test_setting_the_volume_of_what_a_person_just_set_the_volume_of_reverses_it() -> None:
+    changes = await _noted(_event(TV, "playing", "playing"))
+
+    action = _action("home.media_player_volume_set", TV, volume_level=0.5)
+
+    assert reversed_entities(action, changes, _SNAPSHOT) == [TV]
+
+
+async def test_setting_the_volume_of_what_a_person_started_is_not_a_reversal() -> None:
+    """The person started the TV; they did not set its volume. ``volume_set`` is an attribute
+    setter, so against a state change it is neither a known state nor an unknown kind."""
+    changes = await _noted(_event(TV, "off", "playing"))
+
+    action = _action("home.media_player_volume_set", TV, volume_level=0.5)
+
+    assert reversed_entities(action, changes, _SNAPSHOT) == []
 
 
 async def test_an_attribute_report_in_the_same_action_leaves_the_turn_on_as_it_was() -> None:
@@ -361,6 +419,18 @@ async def test_recent_drops_a_field_it_cannot_parse(warnings: list[str]) -> None
     assert list(kept) == [LAMP]
     assert await redis.hkeys(REFLEX_PERSON_CHANGES_KEY) == [LAMP.encode()]
     assert len(warnings) == 1
+
+
+async def test_a_clock_that_does_not_match_the_records_raises_and_deletes_nothing() -> None:
+    """Only an unreadable record is deleted for it; a naive clock is the caller's mistake."""
+    redis = fakeredis.FakeAsyncRedis()
+    await PersonChanges(redis, clock=lambda: _NOW).note(_event(LAMP, "on", "off"), "person")
+    naive = PersonChanges(redis, clock=lambda: _NOW.replace(tzinfo=None))
+
+    with pytest.raises(TypeError):
+        await naive.recent(_WINDOW)
+
+    assert await redis.hkeys(REFLEX_PERSON_CHANGES_KEY) == [LAMP.encode()]
 
 
 async def test_recent_holds_a_change_as_it_was_noted() -> None:
