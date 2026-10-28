@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from bus.schemas.events import ReflexObservation, ReflexProposal, StateChangedEvent
+from core.reflex.tests.fakes import decided
 from shared.streams import OBSERVED_ENTITY_PREFIX
-from tests.core.reflex.fakes import decided
 
 STREAM = "alfred:reflex:observations"
 

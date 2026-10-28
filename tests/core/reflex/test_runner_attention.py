@@ -10,8 +10,8 @@ import pytest
 from redis import exceptions as redis_exceptions
 
 from bus.schemas.events import ChangeContext, ReflexProposal
+from core.reflex.tests.fakes import decided
 from shared.streams import ATTRIBUTION_CAUSES_PREFIX, ATTRIBUTION_CHANGES_STREAM
-from tests.core.reflex.fakes import decided
 
 if TYPE_CHECKING:
     from bus.schemas.events import StateChangedEvent

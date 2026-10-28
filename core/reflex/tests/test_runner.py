@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, call
 import pytest
 
 from bus.schemas.events import ActionRequest, ReflexProposal, StateChangedEvent
+from core.reflex.tests.fakes import decided
 from shared.streams import OBSERVED_ENTITY_PREFIX, REFLEX_DECISIONS_PREFIX
-from tests.core.reflex.fakes import decided
 
 
 def _tv_event() -> StateChangedEvent:

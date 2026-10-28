@@ -25,8 +25,8 @@ from bus.schemas.events import (
     ReflexProposal,
     StateChangedEvent,
 )
+from core.reflex.tests.fakes import decided
 from shared.streams import AVAILABILITY_DECISION_PREFIX, LAST_KNOWN_STATE_KEY
-from tests.core.reflex.fakes import decided
 from tests.helpers import attention_redis
 
 if TYPE_CHECKING:

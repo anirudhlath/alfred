@@ -10,8 +10,8 @@ import pytest
 
 from bus.schemas.events import ReflexProposal, TriggerFired
 from core.notifications.schema import Urgency
+from core.reflex.tests.fakes import decided
 from core.triggers.models import TRIGGER_ENGINE_SOURCE, TRIGGER_TITLE_PREFIX
-from tests.core.reflex.fakes import decided
 
 
 @pytest.fixture

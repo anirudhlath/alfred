@@ -37,13 +37,14 @@ from core.reflex.runner import (
     publish_proposal,
     record_decision,
 )
+from core.reflex.tests.fakes import decided
 from core.reflex.tool_registry import ToolInfo
 from sdk.alfred_sdk.context import ContextEntry, ContextSnapshot
 from shared.streams import (
     REFLEX_OBSERVATIONS_STREAM,
     REFLEX_PERSON_CHANGES_KEY,
 )
-from tests.core.reflex.fakes import decided, reflex_agent
+from tests.core.reflex.fakes import reflex_agent
 
 if TYPE_CHECKING:
     from shared.types import AioRedis

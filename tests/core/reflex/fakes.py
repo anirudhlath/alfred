@@ -5,14 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from core.reflex.agent import build_reflex_agent
-from core.reflex.outcome import Decided, first_outcome
 from tests.llm_fakes import Script
 
 if TYPE_CHECKING:
     from pydantic_ai import Agent
 
-    from bus.schemas.events import ReflexOutcome, ReflexProposal
-    from core.reflex.reversal import PersonChange
+    from bus.schemas.events import ReflexProposal
     from core.reflex.tool_registry import ToolInfo
     from tests.llm_fakes import Reply
 
@@ -25,19 +23,3 @@ def reflex_agent(*replies: Reply) -> tuple[Agent[list[ToolInfo], ReflexProposal]
     """
     script = Script(*replies)
     return build_reflex_agent(script.model), script
-
-
-def decided(
-    proposal: ReflexProposal,
-    *,
-    prompt: str = "the prompt",
-    outcome: ReflexOutcome | None = None,
-    recent: dict[str, PersonChange] | None = None,
-) -> Decided:
-    """What the engine returns for *proposal*: its first outcome (nothing reversed) unless given."""
-    return Decided(
-        proposal=proposal,
-        outcome=outcome or first_outcome(proposal, []),
-        prompt=prompt,
-        recent=recent or {},
-    )

@@ -22,8 +22,8 @@ from bus.schemas.events import (
 from core.reflex import decision_log
 from core.reflex.decision_log import DecisionLog, DecisionRecord
 from core.reflex.reversal import PersonChange
+from core.reflex.tests.fakes import decided
 from shared.streams import REFLEX_DECISION_LOG_STREAM
-from tests.core.reflex.fakes import decided
 
 if TYPE_CHECKING:
     from shared.types import AioRedis

@@ -23,8 +23,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from bus.schemas.events import ReflexProposal, TriggerFired
+from core.reflex.tests.fakes import decided
 from shared.streams import EVENTS_STREAM
-from tests.core.reflex.fakes import decided
 
 # An id from 1970 — far outside reclaim_replayable's 5-minute replay window.
 ANCIENT_ID = b"1-1"
