@@ -583,6 +583,19 @@ def test_every_world_entity_reads_back_from_reflexs_what_changed_line(world_name
     assert _unreadable(load_world(world_name), world_name) == []
 
 
+def test_the_world_has_the_weather_the_round_trip_covers() -> None:
+    """Reflex reads the weather condition off the live state: the world serves one, and the
+    round trip above reads its changes back like every other entity's."""
+    world = load_world("apartment")
+    [weather] = [e for e in world.entities if e.domain == "weather"]
+    assert (weather.entity_id, weather.state, weather.friendly_name) == (
+        "weather.home",
+        "sunny",
+        "Home",
+    )
+    assert _unreadable(world, "apartment") == []
+
+
 def test_the_round_trip_guard_flags_a_name_the_line_cannot_carry() -> None:
     world = load_world("apartment")
     lamp = next(e for e in world.entities if e.entity_id == "light.bedroom_lamp")
@@ -776,6 +789,28 @@ def test_only_an_entity_reflex_does_not_attend_to_may_go_uncalled() -> None:
             assert not attended, f"{s.path}: Reflex attends to {entity.entity_id}"
             found += 1
     assert found > 0  # the sensor-noise golden sets it
+
+
+def test_a_step_on_an_attended_entity_waits_for_reflexs_call() -> None:
+    """A ``settle`` on an ha_event makes the driver stop waiting for System 1 after that many
+    seconds. It stands in for an event Reflex never answers: on an entity it attends to
+    (the sun among them), it would cut the wait short of the call it is there to catch."""
+    rules = AttentionSeedRules.model_validate(yaml.safe_load(DEFAULT_SEED_PATH.read_text()))
+    world = {e.entity_id: e for e in load_world("apartment").entities}
+    sun_steps = 0
+    for s in _goldens().values():
+        if not s.watches_reflex:
+            continue
+        for step in s.steps:
+            if not isinstance(step, HaEventStep):
+                continue
+            entity = world[step.ha_event.entity_id]
+            attended = entity.domain in rules.domains or (
+                entity.attributes.get("device_class") in rules.device_classes
+            )
+            sun_steps += entity.domain == "sun"
+            assert not (attended and step.settle is not None), f"{s.path}: {entity.entity_id}"
+    assert sun_steps > 0  # the after-dark goldens push the sun
 
 
 def test_the_dnd_drain_guard_is_tighter_than_the_fire_wait() -> None:

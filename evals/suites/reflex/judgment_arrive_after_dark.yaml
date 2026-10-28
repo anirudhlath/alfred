@@ -5,7 +5,6 @@ tags: [judgment, presence]
 steps:
   - clock: {hour: 20}
   - ha_event: {entity_id: sun.sun, state: below_horizon}
-    settle: 1  # Reflex does not attend to the sun
   - ha_event: {entity_id: light.living_room_lamp, state: "off"}
   - ha_event: {entity_id: light.kitchen_pendants, state: "off"}
   - ha_event: {entity_id: person.sam, state: not_home}

@@ -56,6 +56,18 @@ async def test_seeds_by_device_class() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_new_sun_and_weather_entity_are_attended() -> None:
+    """Neither was seen before, and both pass via the seed: Reflex watches the sun and the
+    weather, which the Now line carries."""
+    redis = attention_redis()
+    attention = _attention(redis)
+    assert await attention.should_fire(_event("sun.sun", "above_horizon", "below_horizon"))
+    assert await attention.should_fire(_event("weather.home", "sunny", "rainy"))
+    assert {"sun.sun", "weather.home"} <= redis.sets["alfred:attention:home"]
+    assert {"sun.sun", "weather.home"} <= redis.sets["alfred:attention:home:seen"]
+
+
+@pytest.mark.asyncio
 async def test_non_matching_entity_is_gated_and_marked_seen() -> None:
     redis = attention_redis()
     attention = _attention(redis)
@@ -129,6 +141,8 @@ def test_seed_yaml_matches_contract() -> None:
         "climate",
         "lock",
         "person",
+        "sun",
+        "weather",
     ]
     assert rules.device_classes == [
         "door",

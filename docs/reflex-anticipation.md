@@ -71,6 +71,30 @@ person just changed. It does not ask the model to remember.
   the model is asked: the entry stays pending and is retried rather than decided without
   knowing what a person did. Noting a change is best-effort and never raises.
 
+## The sun and the weather
+
+Reflex attends to the sun and the weather: `sun` and `weather` are in the attention seed
+(`core/reflex/attention_seed.yaml`), so a change of either is judged like a light's. The `## Now`
+section carries them: its first line ends with the sun (`sun up` or `sun down`) and then the
+weather condition, and the `Leave alone` line, when there is one, stays last.
+
+```
+## Now
+Thu 8 Oct, 15:10 (afternoon) · sun up · partlycloudy
+```
+
+- **Which entity.** The first `weather` entity in the live state, by entity ID. A house with none
+  has no condition on the line.
+- **How it reads.** The entity's state with HA's hyphens turned to spaces (`clear-night` reads
+  `clear night`), clipped like every other detail. An `unavailable`, `unknown` or empty state
+  leaves the condition out: the first entity speaks for the house, and a later one does not
+  stand in for it.
+- **No sun.** With a condition but no sun, the condition follows the time with the same ` · `.
+- **An entity seen before the seed named it.** The seed decides membership the first time Reflex
+  sees an entity, and the `seen` set keeps that decision. A sun or weather entity Reflex saw
+  before the seed listed its domain stays out until it is allowed through
+  `PUT /api/admin/attention/{domain}` (see [autonomy.md](autonomy.md)).
+
 ## Replay
 
 `python -m core.reflex.replay run` decides recorded prompts again, through the same agent and

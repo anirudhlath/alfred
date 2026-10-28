@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from core.attribution.cause import cause_words
+from core.reflex.availability import UNAVAILABLE_STATES
 from core.reflex.context_reader import LIVE_STATE_UNAVAILABLE
 from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo
 
@@ -44,6 +45,7 @@ MAX_EVENT_DETAILS = 3
 # One long name, title or trigger context must not bloat the prompt.
 MAX_DETAIL_CHARS = 80
 MAX_TRIGGER_CONTEXT_CHARS = 500
+WEATHER_DOMAIN = "weather"
 OTHER_ROOM = "Other"
 NO_DEVICES = "No devices to show."
 NO_TOOLS = "No tools available."
@@ -176,13 +178,30 @@ def _leave_alone(entity_ids: Sequence[str], entities: Mapping[str, LiveEntity] |
     return f"{LEAVE_ALONE_HEADING}{', '.join(sorted(heads, key=lambda h: (h.casefold(), h)))}"
 
 
+def _weather(entities: Mapping[str, LiveEntity]) -> str | None:
+    """The weather condition, as the model reads it: the state of the first ``weather`` entity
+    by ID, with HA's hyphens turned to spaces (``clear-night`` is ``clear night``).
+
+    None when the house has no weather entity or the first says nothing.
+    """
+    first = min(
+        (e for e in entities.values() if e.domain == WEATHER_DOMAIN),
+        key=lambda e: e.entity_id,
+        default=None,
+    )
+    if first is None or first.state in UNAVAILABLE_STATES:
+        return None
+    return _clip(first.state.replace("-", " ")) or None
+
+
 def render_now(
     now: datetime,
     tz_name: str,
     entities: Mapping[str, LiveEntity] | None,
     leave_alone: Sequence[str] = (),
 ) -> str:
-    """Local time and time of day, then the sun and who is where, when live state has them.
+    """Local time and time of day, then the sun and the weather, and who is where, when live
+    state has them.
 
     *leave_alone* is the entity IDs a person just changed; they get a last line of their own.
     With none, the section is what it was.
@@ -194,6 +213,8 @@ def render_now(
         sun = entities.get("sun.sun")
         if sun is not None and sun.state in ("above_horizon", "below_horizon"):
             lines[0] += " · sun up" if sun.state == "above_horizon" else " · sun down"
+        if (weather := _weather(entities)) is not None:
+            lines[0] += f"{_DETAIL_SEP}{weather}"
         people = sorted(
             (e for e in entities.values() if e.domain == "person"),
             key=lambda e: _name(e.entity_id, e.attributes).casefold(),

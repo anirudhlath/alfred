@@ -376,7 +376,7 @@ The `ReflexEngine` class is the System 1 fast path. It has no effect on the hous
 1. Loads user preferences from `core/memory/preferences/` (cached after first read).
 2. Fetches the `audience == "reflex"` tools from `ToolRegistry` (5-minute cache, invalidatable via `reload_tools()`).
 3. Reads live state fresh through `ContextReader.get_snapshot()`, and the user's timezone through `ContextReader.get_user_timezone()`.
-4. Builds the prompt with `core/reflex/prompt.py`, ordered from stable to volatile so vLLM's prefix cache covers as much as it can: rules and compact tools, `## Preferences`, `## Now` (local time, time of day, sun, people, and a `Leave alone` line naming what a person just changed), `## House` (the actionable domains, one line per room by `attributes.area` — see [live-state.md](live-state.md#well-known-attributes)), then `## What changed` in one line or `## Trigger fired`. About 1,000 tokens.
+4. Builds the prompt with `core/reflex/prompt.py`, ordered from stable to volatile so vLLM's prefix cache covers as much as it can: rules and compact tools, `## Preferences`, `## Now` (local time, time of day, sun and the weather condition, people, and a `Leave alone` line naming what a person just changed), `## House` (the actionable domains, one line per room by `attributes.area` — see [live-state.md](live-state.md#well-known-attributes)), then `## What changed` in one line or `## Trigger fired`. About 1,000 tokens.
 5. Sends it through the Pydantic AI agent in `core/reflex/agent.py` (`decide`), built from `REFLEX_MODEL` via `resolve_model`, with `temperature=0`, JSON output and `max_tokens=150` (see [llm.md](llm.md#system-1-reflex)).
 6. `parse_decision()` turns the reply into a `ReflexProposal`, validating the tool against Reflex's own tool list. Anything else becomes **invalid**, keeping the raw text.
 7. Applies the never-reverse rule (`reversed_entities`) to an action and gives the decision its one outcome: none, invalid, would_reverse or shadow. See [reflex-anticipation.md](reflex-anticipation.md#never-reverse-a-person).
@@ -395,8 +395,11 @@ Every `state_changed` event still reaches triggers and context (Tier 1, full vis
 only entities in the **attention set** trigger SLM inference (Tier 2). `AttentionSet` is a
 Redis SET per domain (`alfred:attention:{domain}`); membership is lazily seeded from
 `attention_seed.yaml` (domain + device-class rules) on first sight of an entity and persisted
-via `SADD`. A companion `alfred:attention:{domain}:seen` set makes runtime removals sticky --
-the YAML seed never re-adds a demoted entity. The gate lives in `core/reflex/runner.py
+via `SADD`. The seed's domains are `light`, `switch`, `media_player`, `scene`, `climate`, `lock`,
+`person`, `sun` and `weather` (the last two feed the `## Now` line's sun and weather condition);
+its device classes are `door`, `motion`, `occupancy`, `presence`, `window` and `garage_door`. A
+companion `alfred:attention:{domain}:seen` set makes runtime removals sticky -- the YAML seed
+never re-adds a demoted entity. The gate lives in `core/reflex/runner.py
 process_stream_entry()`, upstream of `Engine`; gated-out events are still `XACK`ed. The
 Conscious action tools (`attention_add`/`attention_remove`/`attention_list`, see 3.8) and the
 Librarian can reshape membership at runtime. Full detail: [docs/autonomy.md](autonomy.md).
