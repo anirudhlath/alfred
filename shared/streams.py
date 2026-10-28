@@ -51,6 +51,11 @@ ATTRIBUTION_MAX_AGE = timedelta(days=30)
 ATTRIBUTION_CALLS_MAXLEN: Final = 20_000
 ATTRIBUTION_CHANGES_MAXLEN: Final = 50_000
 REFLEX_DECISION_LOG_MAXLEN: Final = 10_000
+# Reflex's settings: one JSON document (core.reflex.settings.ReflexSettings).
+REFLEX_SETTINGS_KEY = "alfred:reflex:settings"
+# What a person last changed, per entity: a hash of entity ID -> PersonChange JSON, read back by
+# core.reflex.reversal.PersonChanges so Reflex never reverses a change a person just made.
+REFLEX_PERSON_CHANGES_KEY = "alfred:reflex:person_changes"
 
 # Phase 3: Conscious Engine
 USER_REQUESTS_STREAM = "alfred:user:requests"
