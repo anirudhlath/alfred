@@ -87,15 +87,23 @@ class PersonChanges:
     async def note(self, event: StateChangedEvent, cause: Cause | None) -> None:
         """Take one state change into the record. Best-effort: never raises.
 
-        A person's change, or one nobody can name (``outside``, or no context at all), becomes
-        the entity's record. A change by Alfred or an automation deletes it: that change is the
-        latest word on the entity, and what a person did before it is not what Reflex would
-        be undoing. An attributes-only change that shares the record's context id is the same
-        action reporting itself (a bulb giving its brightness after being turned on) and
-        leaves the record as it is. An event older than the record is ignored whichever way it
-        would have gone, so a replayed old event never overwrites or clears a newer record.
+        A state change by a person, or by one nobody can name (``outside``, or no context at
+        all), becomes the entity's record. A change by Alfred or an automation deletes it: that
+        change is the latest word on the entity, and what a person did before it is not what
+        Reflex would be undoing. An attributes-only change (the old and new state are the same:
+        a brightness, a volume) counts only when an HA user made it. The event carries no old
+        attributes, so a device report (a bulb or player giving its brightness, position or
+        metadata) cannot be told apart from an outside app's slider, and recording one would
+        replace a person's change and refresh its time; an attributes-only change with any other
+        cause leaves the record as it is. A person's attributes-only change that shares the
+        record's context id is the same action reporting itself and leaves the record as it is
+        too. An event older than the record is ignored whichever way it would have gone, so a
+        replayed old event never overwrites or clears a newer record.
         """
         try:
+            attributes_only = event.old_state == event.new_state
+            if attributes_only and cause != "person" and cause not in _SUPERSEDING:
+                return
             when = _utc(event.timestamp)
             stored = await self._stored(event.entity_id)
             if stored is not None and when < stored.time:
@@ -104,7 +112,6 @@ class PersonChanges:
                 await self._redis.hdel(REFLEX_PERSON_CHANGES_KEY, event.entity_id)
                 return
             context_id = event.context.id if event.context else None
-            attributes_only = event.old_state == event.new_state
             if (
                 attributes_only
                 and stored is not None
@@ -143,8 +150,8 @@ class PersonChanges:
 
         Older ones, and any that cannot be read, are deleted in the same call, each only while
         it still holds what was read: a change noted since stays. A Redis error propagates (fail
-        closed): the event stays pending and is retried rather than decided blind to a
-        person's change.
+        closed), the read's or the prune's: the event stays pending and is retried rather than
+        decided blind to a person's change.
         """
         stored: dict[bytes | str, bytes | str] = await self._redis.hgetall(
             REFLEX_PERSON_CHANGES_KEY
@@ -187,25 +194,33 @@ def _split_tool(tool_name: str, snapshot: Mapping[str, LiveEntity]) -> tuple[str
 
 
 def _resolve(domain: str, target: str, snapshot: Mapping[str, LiveEntity]) -> list[str]:
-    target = target.strip()
-    if target in snapshot:
-        return [target]
-    wanted = target.casefold()
+    """What home-service's ``EntityIndex.resolve`` would act on, within *domain*, case ignored.
+
+    The first step that finds anything decides: the entity IDs equal to the target, else the
+    entities in the area it names, else the entities whose friendly name it is.
+    """
+    wanted = target.strip().casefold()
     entities = [e for e in snapshot.values() if e.domain == domain]
-    named = [e.entity_id for e in entities if _name(e.entity_id, e.attributes).casefold() == wanted]
-    if named:
-        return sorted(named)
-    return sorted(
+    by_id = [e.entity_id for e in entities if e.entity_id.casefold() == wanted]
+    if by_id:
+        return sorted(by_id)
+    by_area = [
         e.entity_id for e in entities if (area := _area(e.attributes)) and area.casefold() == wanted
+    ]
+    if by_area:
+        return sorted(by_area)
+    return sorted(
+        e.entity_id for e in entities if _name(e.entity_id, e.attributes).casefold() == wanted
     )
 
 
 def resolve_targets(tool_name: str, target: str, snapshot: Mapping[str, LiveEntity]) -> list[str]:
     """The entity IDs a tool call's *target* names, or ``[]`` when it names none.
 
-    The target is read as an entity ID in the snapshot, then as the friendly name of one of the
-    tool's domain's entities, then as an area name, which gives that domain's entities in it
-    (names and areas ignore case).
+    The target is resolved the way home-service resolves it (``EntityIndex.resolve``), among the
+    entities of the tool's domain, ignoring case: as an entity ID, else as an area name, which
+    gives every entity of the domain in that area, else as a friendly name. An entity ID in
+    another domain names nothing, and a room-named entity does not hide the rest of its room.
     """
     split = _split_tool(tool_name, snapshot)
     return [] if split is None else _resolve(split[0], target, snapshot)

@@ -42,13 +42,21 @@ person just changed. It does not ask the model to remember.
   starts with a domain in `HOUSE_DOMAINS`; a sensor update is not one) into
   `alfred:reflex:person_changes`, a hash with one field per entity (`core/reflex/reversal.py`,
   `PersonChanges.note`). It does this before the attention gate, so a change the gate drops is
-  still known. A change by a person, or by a switch, an app or a device nobody can name, becomes
-  that entity's record. A change by Alfred or an automation deletes it: that is the latest word
-  on the entity. An attributes-only report with the same context id as the record (a bulb
-  giving its brightness after being turned on) leaves it as it is, and an event older than the
-  record never overwrites or clears it. Reading the records prunes the expired ones, each deleted
-  only while it still holds what was read (a Lua compare-and-delete), so a change noted by the
-  other consumer loop in between is kept.
+  still known. A state change by a person, or by a switch, an app or a device nobody can name,
+  becomes that entity's record. A change by Alfred or an automation deletes it: that is the
+  latest word on the entity. An event older than the record never overwrites or clears it.
+  Reading the records prunes the expired ones, each deleted only while it still holds what was
+  read (a Lua compare-and-delete), so a change noted by the other consumer loop in between is
+  kept.
+- **Attributes only.** An event whose old and new state are the same (a brightness, a volume, a
+  media position) counts only when an HA user made it: it then replaces the record, unless it
+  shares the record's context id (a bulb giving its brightness after being turned on is the
+  same action reporting itself). Any other attributes-only event is left alone: it neither
+  writes, replaces, refreshes nor deletes. The event carries no old attributes, so a device
+  report (a player's media position and metadata, a polled bulb) cannot be told apart from an
+  outside app's slider, and on the live stream the reports are most of the attributes-only
+  events by far. The cost: a brightness or volume set from outside HA (an app, a voice
+  assistant) is not protected.
 - **How long.** `reverse_window_minutes` in the settings document `alfred:reflex:settings`
   (default 60, from 1 to 1440; `core/reflex/settings.py`). The engine reads the document on
   every decision, so a change applies to the next one. A missing, unreadable or invalid
@@ -60,16 +68,27 @@ person just changed. It does not ask the model to remember.
 - **The rule.** `reversed_entities` takes the proposed action, those records and the live
   snapshot, and names the entities the action would move back. With no live snapshot nothing
   is reversed.
+- **Which entities a proposal names.** The proposal's `target` is resolved the way home-service
+  resolves it (`EntityIndex.resolve`), among the entities of the tool's domain and ignoring
+  case: an entity ID, else an area (every entity of the domain in it), else a friendly name.
+  The first step that finds anything decides, so a light named for its room does not stand in
+  for the room, and an entity ID in another domain names nothing.
 - **One outcome per decision.** Every decision ends in a `ReflexOutcome`: `none`, `invalid`,
   `would_reverse` (the proposal would undo a person's change; it names the entities and is not
   published as a proposal), `shadow` (published; nothing executes) and, for later slices,
   `asked` and `held`. It is kept on the decision-log record and on a published proposal's
   observation (a `none` or `would_reverse` is observed passively, with no outcome), counted in
   `alfred:reflex:decisions:<UTC date>` as `outcome:<kind>` (and `<kind>:<reason>` when there is
-  a reason), and printed as the Outcomes table of `python -m core.reflex.shadow_report`.
+  a reason), and printed as the Outcomes table of `python -m core.reflex.shadow_report`, with
+  `—` in every cell of a day written before outcomes were counted (a day with at least one
+  `outcome:*` field counts the kinds it lacks as `0`). The report then lists the `would_reverse`
+  decisions it reads from the decision log, newest first, at most 20 and then `(N more)`, each
+  with its local time, tool, target and the entities it would have reversed. It is private,
+  like the rest of the report: only counts are ever posted.
 - **Fail closed.** A Redis error while reading the settings or the records propagates, before
   the model is asked: the entry stays pending and is retried rather than decided without
-  knowing what a person did. Noting a change is best-effort and never raises.
+  knowing what a person did. Reading the records includes the prune, so a Redis error there
+  fails the decision too. Noting a change is best-effort and never raises.
 
 ## The sun and the weather
 

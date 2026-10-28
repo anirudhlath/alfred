@@ -3,10 +3,11 @@
     docker exec alfred python -m core.reflex.shadow_report --days 7
 
 Prints Markdown for the owner's review: daily decision counts and daily outcome counts from
-``alfred:reflex:decisions:<UTC date>``, then every act, ask and invalid proposal in
-the window, oldest first, in the user's local time. The proposals name people, their
-comings and goings and what was playing, so the report is reviewed privately: only
-the counts and verdict tallies go to the public #285 thread.
+``alfred:reflex:decisions:<UTC date>``, the decisions that would have reversed a person (newest
+first, from the decision log), then every act, ask and invalid proposal in the window, oldest
+first, in the user's local time. The proposals name people, their comings and goings and what
+was playing, so the report is reviewed privately: only the counts and verdict tallies go to
+the public #285 thread.
 """
 
 from __future__ import annotations
@@ -16,9 +17,11 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, get_args
 
+from loguru import logger
 from pydantic import ValidationError
 
 from bus.schemas.events import OutcomeKind, ReflexObservation, StateChangedEvent
+from core.reflex.decision_log import DecisionLog
 from core.reflex.prompt import render_event
 from core.reflex.runner import decisions_key
 from shared.config import AlfredConfig
@@ -30,6 +33,7 @@ if TYPE_CHECKING:
     from datetime import date
     from zoneinfo import ZoneInfo
 
+    from core.reflex.decision_log import DecisionRecord
     from shared.types import AioRedis
 
 DECISIONS: tuple[str, ...] = ("act", "ask", "none", "invalid")
@@ -40,6 +44,15 @@ OUTCOMES: tuple[str, ...] = get_args(OutcomeKind)
 # report says it was truncated rather than silently dropping the oldest.
 MAX_SCAN = 20_000
 MAX_RAW_CHARS = 200
+# How many would_reverse decisions the report lists; the rest are counted.
+MAX_REVERSED = 20
+# A day written before outcomes were counted has no ``outcome:*`` field: its cells read as this.
+NOT_COUNTED = "—"
+
+
+def _local(moment: datetime, tz: ZoneInfo) -> str:
+    """*moment* in the user's local time, the way every line of the report shows it."""
+    return moment.astimezone(tz).strftime("%a %d %b %H:%M")
 
 
 def _describe(obs: ReflexObservation) -> str:
@@ -58,7 +71,7 @@ def format_proposal(obs: ReflexObservation, tz: ZoneInfo) -> str:
     proposal = obs.proposal
     if proposal is None:
         raise ValueError("format_proposal needs an observation that carries a proposal")
-    when = obs.timestamp.astimezone(tz).strftime("%a %d %b %H:%M")
+    when = _local(obs.timestamp, tz)
     head = f"- {when} · **{proposal.decision}** · {_describe(obs)}"
     if proposal.decision == "invalid":
         raw = " ".join((proposal.raw or "").split()).replace("`", "'")[:MAX_RAW_CHARS]
@@ -75,19 +88,58 @@ def format_proposal(obs: ReflexObservation, tz: ZoneInfo) -> str:
 def _counts_table(
     columns: tuple[str, ...], days: list[tuple[date, dict[str, str]]], *, prefix: str
 ) -> list[str]:
-    """A Markdown table: a row per UTC day, a column per counted field (``prefix`` + its name)."""
+    """A Markdown table: a row per UTC day, a column per counted field (``prefix`` + its name).
+
+    With a ``prefix``, a day whose hash holds no field with it at all was written before those
+    fields were counted: every cell of that day is ``NOT_COUNTED``, not a zero nobody counted.
+    A day with at least one such field counts the kinds it lacks as ``0``.
+    """
     lines = [
         f"| Day (UTC) | {' | '.join(columns)} |",
         f"|---|{'---|' * len(columns)}",
     ]
     for day, counts in days:
-        cells = " | ".join(counts.get(f"{prefix}{name}", "0") for name in columns)
+        counted = not prefix or any(field.startswith(prefix) for field in counts)
+        cells = " | ".join(
+            counts.get(f"{prefix}{name}", "0") if counted else NOT_COUNTED for name in columns
+        )
         lines.append(f"| {day.isoformat()} | {cells} |")
     return lines
 
 
+def format_reversal(record: DecisionRecord, tz: ZoneInfo) -> str:
+    """One Markdown bullet for one decision that would have reversed a person."""
+    action = record.proposal.action
+    tool = "?" if action is None else action.tool_name
+    target = "?" if action is None else action.parameters.get("target", "?")
+    reversed_ids = ", ".join(record.outcome.reversed) if record.outcome else "?"
+    return f"- {_local(record.time, tz)} · {tool} · target {target} · reversed {reversed_ids}"
+
+
+async def _reversal_lines(
+    redis: AioRedis, *, start: datetime, now: datetime, tz: ZoneInfo
+) -> list[str]:
+    """The ``Would have reversed`` section's lines, read from the decision log over the window.
+
+    Newest first, at most ``MAX_REVERSED``. A log that cannot be read costs this section only.
+    """
+    try:
+        records = await DecisionLog(redis).read(since=start, until=now)
+    except Exception as e:
+        logger.warning("Shadow report could not read the decision log: {}", e)
+        return ["The decision log could not be read, so this list is unavailable."]
+    reversing = [r for r in reversed(records) if r.outcome and r.outcome.kind == "would_reverse"]
+    if not reversing:
+        return ["None."]
+    lines = [format_reversal(record, tz) for record in reversing[:MAX_REVERSED]]
+    if len(reversing) > MAX_REVERSED:
+        lines.append(f"({len(reversing) - MAX_REVERSED} more)")
+    return lines
+
+
 async def build_report(redis: AioRedis, *, days: int, now: datetime, tz_name: str) -> str:
-    """Markdown: per-day decision and outcome counts, then every non-none proposal in the window."""
+    """Markdown: per-day decision and outcome counts, the decisions that would have reversed a
+    person, then every non-none proposal in the window."""
     from zoneinfo import ZoneInfo
 
     tz = ZoneInfo(tz_name)
@@ -111,6 +163,10 @@ async def build_report(redis: AioRedis, *, days: int, now: datetime, tz_name: st
         " a person just changed: counted, never published._",
         "",
         *_counts_table(OUTCOMES, days_counted, prefix="outcome:"),
+        "",
+        "### Would have reversed",
+        "",
+        *await _reversal_lines(redis, start=start, now=now, tz=tz),
     ]
 
     entries = await revrange(

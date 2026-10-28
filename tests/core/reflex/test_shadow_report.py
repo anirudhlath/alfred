@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
+
+from redis import exceptions as redis_exceptions
 
 from bus.schemas.events import (
     ActionRequest,
     ChangeContext,
     ReflexObservation,
+    ReflexOutcome,
     ReflexProposal,
     StateChangedEvent,
     TriggerFired,
 )
 from core.reflex import shadow_report
+from core.reflex.decision_log import DecisionRecord
 from core.reflex.shadow_report import build_report
 
 if TYPE_CHECKING:
@@ -65,12 +69,47 @@ def _entry(
     return f"{int(at.timestamp() * 1000)}-0".encode(), {b"event": obs.model_dump_json().encode()}
 
 
+def _decision(
+    at: datetime, outcome: ReflexOutcome, *, target: str = "Kitchen"
+) -> tuple[bytes, dict[bytes, bytes]]:
+    """One decision-log entry: Reflex proposed turning *target*'s lights on."""
+    event = StateChangedEvent(
+        source="home-service",
+        domain="home",
+        entity_id="media_player.living_room_tv",
+        old_state="paused",
+        new_state="playing",
+    )
+    record = DecisionRecord(
+        time=at,
+        origin="state_change",
+        event=event.model_dump(mode="json"),
+        cause=None,
+        prompt="prompt",
+        proposal=ReflexProposal(
+            decision="act",
+            action=ActionRequest(
+                source="reflex-engine",
+                target_service="home-service",
+                tool_name="home.light_turn_on",
+                parameters={"target": target},
+            ),
+        ),
+        outcome=outcome,
+    )
+    return f"{int(at.timestamp() * 1000)}-0".encode(), {
+        b"decision": record.model_dump_json().encode()
+    }
+
+
 def _redis(
     entries: list[tuple[bytes, dict[bytes, bytes]]],
     counts: dict[str, dict[bytes, bytes]] | None = None,
+    decisions: list[tuple[bytes, dict[bytes, bytes]]] | None = None,
 ) -> AsyncMock:
     redis = AsyncMock()
     redis.xrevrange = AsyncMock(return_value=list(reversed(entries)))  # newest first
+    redis.xrange = AsyncMock(return_value=decisions or [])  # the decision log, oldest first
     redis.hgetall = AsyncMock(side_effect=lambda key: (counts or {}).get(key, {}))
     return redis
 
@@ -105,11 +144,113 @@ async def test_shadow_report_prints_outcomes() -> None:
 
     assert "### Outcomes" in report
     assert "| Day (UTC) | none | invalid | would_reverse | shadow | asked | held |" in report
-    assert "| 2026-10-06 | 0 | 0 | 0 | 0 | 0 | 0 |" in report
     assert "| 2026-10-07 | 40 | 0 | 2 | 3 | 0 | 1 |" in report
     # Between the decision counts and the proposals, so a reader meets them in that order.
     assert report.index("| 2026-10-07 | 5 |") < report.index("### Outcomes")
     assert report.index("### Outcomes") < report.index("### Proposals")
+
+
+async def test_a_day_with_no_outcome_counts_shows_dashes_but_the_decisions_stay_zeros() -> None:
+    """A day written before outcomes were counted has nothing to show: not a zero nobody counted."""
+    redis = _redis(
+        [],
+        {
+            "alfred:reflex:decisions:2026-10-06": {b"act": b"2", b"none": b"9"},
+            "alfred:reflex:decisions:2026-10-07": {b"outcome:shadow": b"3"},
+        },
+    )
+
+    report = await build_report(redis, days=2, now=NOW, tz_name="America/Chicago")
+
+    assert "| 2026-10-06 | 2 | 0 | 9 | 0 |" in report  # the decisions table
+    assert "| 2026-10-06 | — | — | — | — | — | — |" in report  # the outcomes table
+    assert "| 2026-10-08 | — | — | — | — | — | — |" in report  # no hash at all
+    assert "| 2026-10-07 | 0 | 0 | 0 | 3 | 0 | 0 |" in report  # counted: the missing kinds are 0
+
+
+async def test_would_reverse_decisions_are_listed_newest_first_in_local_time() -> None:
+    reversing = ReflexOutcome(kind="would_reverse", reversed=["light.kitchen_pendants"])
+    redis = _redis(
+        [],
+        decisions=[
+            _decision(datetime(2026, 10, 5, 3, 0, tzinfo=UTC), reversing),  # before the window
+            _decision(datetime(2026, 10, 7, 3, 0, tzinfo=UTC), reversing),  # Tue 6 Oct 22:00 local
+            _decision(datetime(2026, 10, 7, 4, 0, tzinfo=UTC), ReflexOutcome(kind="shadow")),
+            _decision(
+                datetime(2026, 10, 8, 2, 0, tzinfo=UTC),  # Wed 7 Oct 21:00 local
+                ReflexOutcome(kind="would_reverse", reversed=["light.a", "light.b"]),
+                target="Hall",
+            ),
+        ],
+    )
+
+    report = await build_report(redis, days=2, now=NOW, tz_name="America/Chicago")
+
+    newest = "- Wed 07 Oct 21:00 · home.light_turn_on · target Hall · reversed light.a, light.b"
+    older = (
+        "- Tue 06 Oct 22:00 · home.light_turn_on · target Kitchen · reversed light.kitchen_pendants"
+    )
+    assert report.index(newest) < report.index(older)
+    assert report.count("target Kitchen") == 1  # the one before the window and the shadow: absent
+    # After the Outcomes table and before the Proposals, so a reader meets them in that order.
+    assert report.index("### Outcomes") < report.index("### Would have reversed")
+    assert report.index(older) < report.index("### Proposals")
+
+
+async def test_the_would_reverse_list_is_capped_and_counts_the_rest() -> None:
+    start = datetime(2026, 10, 7, 0, 0, tzinfo=UTC)
+    redis = _redis(
+        [],
+        decisions=[
+            _decision(
+                start + timedelta(minutes=n),
+                ReflexOutcome(kind="would_reverse", reversed=[f"light.l{n}"]),
+            )
+            for n in range(23)
+        ],
+    )
+
+    report = await build_report(redis, days=2, now=NOW, tz_name="UTC")
+
+    listed = [line for line in report.splitlines() if "· target Kitchen ·" in line]
+    assert len(listed) == shadow_report.MAX_REVERSED == 20
+    assert "reversed light.l22" in listed[0]  # the newest
+    assert "reversed light.l3" in listed[-1]  # the twentieth newest
+    assert "light.l2\n" not in report
+    assert "(3 more)" in report
+
+
+async def test_no_would_reverse_decisions_says_none() -> None:
+    redis = _redis(
+        [],
+        decisions=[
+            _decision(datetime(2026, 10, 7, 3, 0, tzinfo=UTC), ReflexOutcome(kind="shadow"))
+        ],
+    )
+
+    report = await build_report(redis, days=2, now=NOW, tz_name="UTC")
+
+    assert "### Would have reversed\n\nNone.\n" in report
+
+
+async def test_an_unreadable_decision_log_costs_only_its_section() -> None:
+    redis = _redis([_entry(datetime(2026, 10, 7, 3, 0, tzinfo=UTC), ACT)])
+    redis.xrange = AsyncMock(side_effect=redis_exceptions.ConnectionError("reset"))
+
+    report = await build_report(redis, days=2, now=NOW, tz_name="UTC")
+
+    assert "### Would have reversed\n\nThe decision log could not be read" in report
+    assert "### Proposals (1)" in report
+    assert "· **act** ·" in report
+
+
+async def test_the_decision_log_is_read_over_the_reports_window() -> None:
+    redis = _redis([])
+
+    await build_report(redis, days=2, now=NOW, tz_name="UTC")
+
+    start_ms = int(datetime(2026, 10, 6, 3, 30, tzinfo=UTC).timestamp() * 1000)
+    assert redis.xrange.await_args.kwargs["min"] == str(start_ms)
 
 
 async def test_proposals_are_listed_oldest_first_in_local_time() -> None:

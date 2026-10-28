@@ -38,6 +38,8 @@ LAMP = "light.living_room_lamp"
 CEILING = "light.living_room_ceiling"
 BEDROOM_LAMP = "light.bedroom_lamp"
 TV = "media_player.living_room_tv"
+PENDANTS = "light.kitchen_pendants"
+KITCHEN_STRIP = "light.kitchen_strip"  # its friendly name is its room's name
 
 _PERSON = ChangeContext(id="ctx-person", user_id="user-1")
 _OUTSIDE = ChangeContext(id="ctx-outside")
@@ -62,6 +64,15 @@ _SNAPSHOT = {
         _entity(CEILING, "Living Room Ceiling", "Living Room", "off"),
         _entity(BEDROOM_LAMP, "Bedroom Lamp", "Bedroom", "off"),
         _entity(TV, "Living Room TV", "Living Room", "off"),
+    )
+}
+
+
+_KITCHEN = {
+    e.entity_id: e
+    for e in (
+        _entity(PENDANTS, "Kitchen Pendants", "Kitchen", "off"),
+        _entity(KITCHEN_STRIP, "Kitchen", "Kitchen"),
     )
 }
 
@@ -229,6 +240,16 @@ async def test_a_friendly_name_target_reaches_the_entity() -> None:
     assert reversed_ == [LAMP]
 
 
+async def test_a_light_named_for_its_room_does_not_hide_the_rest_of_the_room() -> None:
+    """home-service reads "Kitchen" as the area before the friendly name, so the call turns on
+    the pendants too: a person's change to them is reversed."""
+    changes = await _noted(_event(PENDANTS, "on", "off"))
+
+    reversed_ = reversed_entities(_action("home.light_turn_on", "Kitchen"), changes, _KITCHEN)
+
+    assert reversed_ == [PENDANTS]
+
+
 async def test_a_service_it_does_not_know_is_a_reversal_of_a_state_change() -> None:
     changes = await _noted(_event(LAMP, "on", "off"))
 
@@ -296,6 +317,61 @@ async def test_an_attribute_change_from_another_action_replaces_the_record() -> 
     assert reversed_entities(action, changes, _SNAPSHOT) == [LAMP]
 
 
+async def test_a_device_report_after_a_turn_on_leaves_the_dim_allowed() -> None:
+    """The spec's allowed case: dim what a person just turned on. A bulb's poll, reported
+    as an attributes-only change by no user, must not turn that into a reversal."""
+    changes = await _noted(
+        _event(LAMP, "off", "on", ago=timedelta(minutes=10)),
+        _event(
+            LAMP,
+            "on",
+            "on",
+            ago=timedelta(minutes=5),
+            context=ChangeContext(id="ctx-poll"),
+        ),
+    )
+
+    action = _action("home.light_turn_on", LAMP, brightness_pct=30)
+
+    assert reversed_entities(action, changes, _SNAPSHOT) == []
+    assert changes[LAMP].time == _NOW - timedelta(minutes=10)
+    assert changes[LAMP].attributes_only is False
+    assert changes[LAMP].new_state == "on"
+
+
+async def test_an_outside_attribute_report_on_an_entity_with_no_record_writes_nothing() -> None:
+    changes = await _noted(_event(TV, "playing", "playing", context=_OUTSIDE))
+
+    assert changes == {}
+
+
+async def test_an_attribute_report_with_no_context_writes_nothing() -> None:
+    changes = await _noted(_event(TV, "playing", "playing", context=None))
+
+    assert changes == {}
+
+
+async def test_a_non_person_attribute_report_does_not_refresh_the_time_of_a_record() -> None:
+    changes = await _noted(
+        _event(TV, "off", "playing", ago=timedelta(minutes=50)),
+        _event(TV, "playing", "playing", ago=timedelta(minutes=1), context=_OUTSIDE),
+    )
+
+    assert changes[TV].time == _NOW - timedelta(minutes=50)
+
+
+@pytest.mark.parametrize("context", [_AUTOMATION, _ALFRED], ids=["automation", "alfred"])
+async def test_an_attribute_change_by_alfred_or_an_automation_still_clears_the_record(
+    context: ChangeContext,
+) -> None:
+    changes = await _noted(
+        _event(LAMP, "off", "on", ago=timedelta(minutes=10)),
+        _event(LAMP, "on", "on", ago=timedelta(minutes=5), context=context),
+    )
+
+    assert changes == {}
+
+
 async def test_attribute_changes_without_a_context_id_are_never_one_action() -> None:
     changes = await _noted(
         _event(LAMP, "off", "on", ago=timedelta(minutes=10), context=ChangeContext(user_id="u")),
@@ -334,6 +410,18 @@ async def test_an_action_on_something_nobody_changed_reverses_nothing() -> None:
 
 def test_a_target_resolves_as_an_entity_id() -> None:
     assert resolve_targets("home.light_turn_on", LAMP, _SNAPSHOT) == [LAMP]
+
+
+def test_an_entity_id_matches_ignoring_case() -> None:
+    assert resolve_targets("home.light_turn_on", " Light.Living_Room_Lamp ", _SNAPSHOT) == [LAMP]
+
+
+def test_an_entity_id_in_another_domain_names_nothing() -> None:
+    assert resolve_targets("home.light_turn_on", TV, _SNAPSHOT) == []
+
+
+def test_an_area_wins_over_a_friendly_name_equal_to_it() -> None:
+    assert resolve_targets("home.light_turn_on", "Kitchen", _KITCHEN) == [PENDANTS, KITCHEN_STRIP]
 
 
 def test_a_target_resolves_as_a_friendly_name_ignoring_case() -> None:
@@ -531,6 +619,20 @@ async def test_note_never_raises_when_redis_refuses(warnings: list[str]) -> None
     await changes.note(_event(LAMP, "off", "on", context=_AUTOMATION), "automation")
 
     assert len(warnings) == 2
+
+
+async def test_recent_lets_a_failed_prune_propagate() -> None:
+    """The prune is part of the read: its failure fails the decision too (fail closed)."""
+    redis = fakeredis.FakeAsyncRedis()
+    changes = PersonChanges(redis, clock=lambda: _NOW)
+    await changes.note(_event(LAMP, "on", "off", ago=timedelta(minutes=61)), "person")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            redis, "eval", AsyncMock(side_effect=redis_exceptions.ConnectionError("reset"))
+        )
+        with pytest.raises(redis_exceptions.ConnectionError):
+            await changes.recent(_WINDOW)
 
 
 async def test_recent_lets_a_redis_error_propagate() -> None:
