@@ -3,9 +3,11 @@
 The agent has no instructions. The prompt ``core.reflex.prompt`` builds, rules and all, is
 the single user message, and the reply text goes through ``parse_decision``, so a reply
 that is not a decision is an ``invalid`` proposal that keeps the raw text, never a retry.
-The request is the one Reflex has always sent: temperature 0, a 150-token cap, a
-JSON-object response format and the ``system1`` role header (``tests/core/reflex/test_agent.py``
-pins it on the wire).
+Every request carries temperature 0, a 150-token cap, the ``system1`` role header and a
+response format built for that call from the tools the prompt showed, so the server only lets
+the model write a reply that is "none" or names one of them (``tests/core/reflex/test_agent.py``
+pins it on the wire). ``parse_decision`` still checks the reply: a server that ignores the
+format sends whatever the model wrote.
 
 The agent is built once per process. Its dependencies are the tools the prompt showed, which
 ``parse_decision`` validates the reply against.
@@ -43,6 +45,47 @@ REQUEST_TIMEOUT_S: Final = 30.0
 # series continues (`.claude/rules/research-protocol.md`).
 TOKENS_MODEL_LABEL: Final = "openai-compat"
 
+# The name the response format gives its schema.
+REPLY_FORMAT_NAME: Final = "reflex_reply"
+
+_NONE_REPLY: Final[dict[str, Any]] = {
+    "type": "object",
+    "properties": {"decision": {"const": "none"}},
+    "required": ["decision"],
+    "additionalProperties": False,
+}
+
+
+def reply_format(tools: list[ToolInfo]) -> dict[str, Any]:
+    """The response format for a call that showed *tools*: the reply the rules prompt asks for.
+
+    That is ``{"decision": "none"}``, or an act or ask whose ``tool_name`` is one of *tools*.
+    With no tools the only reply is "none". The names are sorted, as the prompt lists them,
+    so the same tools give the same schema and the server can reuse what it built for it.
+    Without the enum the model sometimes wrote a tool it had not been shown (#317).
+
+    The reply line of the ``reflex-rules`` prompt describes the same reply: change the two
+    together, because the server enforces this schema whatever the prompt asks for.
+    """
+    if not tools:
+        return _json_schema(_NONE_REPLY)
+    act_or_ask = {
+        "type": "object",
+        "properties": {
+            "decision": {"enum": ["act", "ask"]},
+            "reason": {"type": "string"},
+            "tool_name": {"enum": sorted({tool.name for tool in tools})},
+            "parameters": {"type": "object"},
+        },
+        "required": ["decision", "reason", "tool_name", "parameters"],
+        "additionalProperties": False,
+    }
+    return _json_schema({"anyOf": [_NONE_REPLY, act_or_ask]})
+
+
+def _json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "json_schema", "json_schema": {"name": REPLY_FORMAT_NAME, "schema": schema}}
+
 
 async def _parse(ctx: RunContext[list[ToolInfo]], text: str) -> ReflexProposal:
     # Async so it runs on the event loop: Pydantic AI runs a sync output function in a
@@ -68,8 +111,6 @@ def build_reflex_agent(model: Model) -> Agent[list[ToolInfo], ReflexProposal]:
             max_tokens=MAX_OUTPUT_TOKENS,
             timeout=REQUEST_TIMEOUT_S,
             extra_headers=role_headers(SYSTEM1),
-            # No ModelSettings field for it; extra_body lands in the request as written.
-            extra_body={"response_format": {"type": "json_object"}},
         ),
         capabilities=[instrumentation()],
         defer_model_check=True,
@@ -83,9 +124,13 @@ async def infer(
     """One run, with the token counts ``track_tokens`` records and the proposal it made.
 
     ``track_tokens`` only reads a returned dict, so the counts travel with the proposal.
-    The name is the research series' ``function`` column.
+    The name is the research series' ``function`` column. The response format goes in the
+    run's settings because it differs by call; it has no ``ModelSettings`` field, and
+    ``extra_body`` lands in the request as written. The agent sets no ``extra_body`` of its
+    own: the run's would replace it whole.
     """
-    result = await agent.run(prompt, deps=tools)
+    format_settings = ModelSettings(extra_body={"response_format": reply_format(tools)})
+    result = await agent.run(prompt, deps=tools, model_settings=format_settings)
     usage = result.usage
     return {
         "proposal": result.output,
