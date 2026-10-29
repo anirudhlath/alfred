@@ -4,6 +4,8 @@ One P-256 key per deployment, generated on first use and kept in the keyring und
 ``VAPID_SECRET``. Its public half is what a browser subscribes with, so the key must
 outlive every subscription: a read that fails propagates rather than generating a new key
 over one we merely could not see, which would silently orphan every subscribed browser.
+For the same reason the first read, the generation and the write happen under one keyring
+lock (``get_or_create_secret``), so two first callers cannot each store a key.
 
 Each push carries ``Authorization: vapid t=<jwt>, k=<public key>``; the JWT names the push
 service's origin (``aud``), an expiry (``exp``) and a contact for the service's operator
@@ -23,7 +25,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from loguru import logger
 
-from shared.secrets import aget_secret, aset_secret
+from shared.secrets import aget_or_create_secret
 
 VAPID_SUBJECT_ENV: Final = "WEBPUSH_VAPID_SUBJECT"
 VAPID_SECRET: Final = ("webpush", "vapid_private_key")  # (integration, field) in the keyring
@@ -33,11 +35,15 @@ _SUBJECT_SCHEMES: Final = ("mailto:", "https:")
 
 
 def vapid_subject() -> str | None:
-    """The VAPID contact from the environment, or ``None`` when unset or unusable."""
+    """The VAPID contact from the environment, or ``None`` when unset or unusable.
+
+    Read once, at channels startup, and the result handed to the Web Push adapter: a
+    malformed value then warns once per start, not once per push.
+    """
     value = os.environ.get(VAPID_SUBJECT_ENV, "").strip()
     if not value:
         return None
-    if not value.startswith(_SUBJECT_SCHEMES):
+    if not any(value.startswith(s) and len(value) > len(s) for s in _SUBJECT_SCHEMES):
         # The value is the owner's contact address: name the variable, never echo it.
         logger.warning("{} must start with mailto: or https:; ignoring it", VAPID_SUBJECT_ENV)
         return None
@@ -60,6 +66,8 @@ class VapidKeys:
 
     private_pem: str = field(repr=False)
     public_key: str  # unpadded base64url of the X9.62 uncompressed point, 87 characters
+    # The PEM parsed once, by load_keys, so a push signs without re-parsing it.
+    signing_key: ec.EllipticCurvePrivateKey = field(repr=False, compare=False)
 
     def authorization(self, endpoint: str, subject: str, now: float) -> str:
         """The ``Authorization`` header for a push to ``endpoint``."""
@@ -69,7 +77,7 @@ class VapidKeys:
             "exp": int(now) + VAPID_TOKEN_LIFETIME_S,
             "sub": subject,
         }
-        token = jwt.encode(claims, self.private_pem, algorithm="ES256")
+        token = jwt.encode(claims, self.signing_key, algorithm="ES256")
         return f"vapid t={token}, k={self.public_key}"
 
 
@@ -83,18 +91,18 @@ def load_keys(pem: str) -> VapidKeys:
         serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
     )
     public_key = base64.urlsafe_b64encode(point).rstrip(b"=").decode()
-    return VapidKeys(private_pem=normalized, public_key=public_key)
+    return VapidKeys(private_pem=normalized, public_key=public_key, signing_key=key)
 
 
 async def ensure_vapid_keys() -> VapidKeys:
     """The deployment's VAPID keys, generating and storing them the first time.
 
-    A keyring read that raises propagates and nothing is generated: only a read that
-    succeeds and finds nothing means there is no key yet.
+    The read, the generation and the write run under one keyring lock, so concurrent
+    first callers in any process all get the one key that was stored. A keyring read that
+    raises propagates and nothing is generated: only a read that succeeds and finds
+    nothing means there is no key yet.
     """
-    pem = await aget_secret(*VAPID_SECRET)
-    if not pem:
-        pem = generate_private_pem()
-        await aset_secret(*VAPID_SECRET, pem)
+    pem, generated = await aget_or_create_secret(*VAPID_SECRET, generate_private_pem)
+    if generated:
         logger.info("Generated a VAPID key")
     return load_keys(pem)

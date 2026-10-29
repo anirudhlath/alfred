@@ -116,7 +116,10 @@ class WebPushSubscription(BaseModel):
             raise ValueError(f"endpoint must be at most {MAX_ENDPOINT_LEN} characters")
         if not _VISIBLE_ASCII.fullmatch(value):
             raise ValueError("endpoint must be visible ASCII")
-        parts = urlsplit(value)
+        try:
+            parts = urlsplit(value)
+        except ValueError as exc:  # urllib's message can quote the host it could not read
+            raise ValueError("endpoint is not a URL") from exc
         if parts.scheme != "https":
             raise ValueError("endpoint must be https")
         if "@" in parts.netloc:

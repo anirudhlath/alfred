@@ -32,6 +32,8 @@ APPLE = "https://web.push.apple.com/QGuQyavXutnMH8"
 P256DH = _b64url(_point())
 AUTH = _b64url(os.urandom(16))
 KEYS = {"p256dh": P256DH, "auth": AUTH}
+OFF_CURVE = _b64url(b"\x04" + b"\x01" * 64)  # 65 bytes, the uncompressed tag, not on P-256
+SHORT_AUTH = _b64url(os.urandom(15))
 
 
 @pytest.mark.parametrize(
@@ -72,6 +74,8 @@ def test_ignores_expiration_time() -> None:
         "https://user@web.push.apple.com/x",
         "https://web.push.apple.com:8443/x",
         "https://web.push.apple.com:notaport/x",
+        "https://[web.push.apple.com/x",
+        "https://[::1]/x",
         "https://web.push.apple.com/" + "a" * 2048,
         # A backslash is a path separator to a browser, so the host here is evil.example.com.
         "https://evil.example.com\\.push.apple.com/x",
@@ -85,11 +89,23 @@ def test_refuses_an_endpoint_off_the_push_services(endpoint: str) -> None:
         WebPushSubscription.model_validate({"endpoint": endpoint, "keys": KEYS})
 
 
-def test_a_refusal_never_echoes_the_credential() -> None:
-    endpoint = "https://notpush.apple.com/QGuQyavXutnMH8"
+@pytest.mark.parametrize(
+    ("endpoint", "keys"),
+    [
+        ("https://notpush.apple.com/QGuQyavXutnMH8", KEYS),
+        # urllib's own error here reads "'QGuQyavXutnMH8' does not appear to be an IPv4…".
+        ("https://[QGuQyavXutnMH8]/x", KEYS),
+        (APPLE, {"p256dh": OFF_CURVE, "auth": AUTH}),
+        (APPLE, {"p256dh": P256DH, "auth": SHORT_AUTH}),
+        (APPLE, {"p256dh": P256DH, "auth": "not base64!" + AUTH}),
+    ],
+)
+def test_a_refusal_never_echoes_the_credential(endpoint: str, keys: dict[str, str]) -> None:
     with pytest.raises(ValidationError) as caught:
-        WebPushSubscription.model_validate({"endpoint": endpoint, "keys": KEYS})
-    assert "QGuQyavXutnMH8" not in str(caught.value)
+        WebPushSubscription.model_validate({"endpoint": endpoint, "keys": keys})
+    message = str(caught.value)
+    for credential in (endpoint, "QGuQyavXutnMH8", keys["p256dh"], keys["auth"], AUTH):
+        assert credential not in message
 
 
 def test_strips_padding() -> None:
@@ -99,9 +115,8 @@ def test_strips_padding() -> None:
 
 
 def test_refuses_a_p256dh_that_is_not_a_point() -> None:
-    off_curve = _b64url(b"\x04" + b"\x01" * 64)
     with pytest.raises(ValidationError, match="p256dh"):
-        WebPushKeys.model_validate({"p256dh": off_curve, "auth": AUTH})
+        WebPushKeys.model_validate({"p256dh": OFF_CURVE, "auth": AUTH})
 
 
 def test_refuses_a_compressed_p256dh() -> None:
@@ -118,7 +133,7 @@ def test_refuses_a_key_that_is_not_base64url() -> None:
 
 def test_refuses_an_auth_of_the_wrong_length() -> None:
     with pytest.raises(ValidationError, match="auth"):
-        WebPushKeys.model_validate({"p256dh": P256DH, "auth": _b64url(os.urandom(15))})
+        WebPushKeys.model_validate({"p256dh": P256DH, "auth": SHORT_AUTH})
 
 
 def test_endpoint_field_is_sha256_hex() -> None:

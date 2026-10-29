@@ -1,9 +1,10 @@
 """The VAPID key: generated once, kept in the keyring, signing each push service's token."""
 
+import asyncio
 import base64
 import time
 from collections.abc import Iterator
-from unittest.mock import AsyncMock
+from unittest.mock import Mock
 
 import jwt
 import pytest
@@ -22,6 +23,7 @@ from core.notifications.vapid import (
     load_keys,
     vapid_subject,
 )
+from shared import secrets
 from shared.secrets import get_secret
 
 SUBJECT = "mailto:you@example.com"
@@ -33,6 +35,12 @@ def _b64url_decode(value: str) -> bytes:
 
 def _token(header: str, public_key: str) -> str:
     return header.removeprefix("vapid t=").removesuffix(f", k={public_key}")
+
+
+def _stored_pem() -> str:
+    stored = get_secret(*VAPID_SECRET)
+    assert stored is not None
+    return stored
 
 
 @pytest.fixture
@@ -103,27 +111,34 @@ def test_load_keys_refuses_another_curve() -> None:
 
 async def test_ensure_generates_once(logs: list[str]) -> None:
     first = await ensure_vapid_keys()
-    stored = get_secret(*VAPID_SECRET)
-    assert stored is not None
-    assert stored.startswith("-----BEGIN PRIVATE KEY-----")
+    assert _stored_pem().startswith("-----BEGIN PRIVATE KEY-----")
 
     second = await ensure_vapid_keys()
     assert second.public_key == first.public_key
     assert sum("Generated a VAPID key" in m for m in logs) == 1
 
 
+async def test_concurrent_first_callers_share_one_key(logs: list[str]) -> None:
+    results = await asyncio.gather(*(ensure_vapid_keys() for _ in range(8)))
+    assert {keys.public_key for keys in results} == {load_keys(_stored_pem()).public_key}
+    assert sum("Generated a VAPID key" in m for m in logs) == 1
+
+
 async def test_ensure_never_generates_over_an_unreadable_keyring(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def unreadable(integration: str, field: str) -> str | None:
+    def unreadable(integration: str, field: str) -> str | None:
         raise KeyringError("locked")
 
-    stored = AsyncMock()
-    monkeypatch.setattr(vapid, "aget_secret", unreadable)
-    monkeypatch.setattr(vapid, "aset_secret", stored)
+    stored = Mock()
+    generate = Mock(side_effect=generate_private_pem)
+    monkeypatch.setattr(secrets, "get_secret", unreadable)
+    monkeypatch.setattr(secrets, "set_secret", stored)
+    monkeypatch.setattr(vapid, "generate_private_pem", generate)
 
     with pytest.raises(KeyringError, match="locked"):
         await ensure_vapid_keys()
+    generate.assert_not_called()
     stored.assert_not_called()
 
 
@@ -132,6 +147,8 @@ async def test_ensure_never_generates_over_an_unreadable_keyring(
     [
         ("", None),
         ("you@example.com", None),
+        ("mailto:", None),
+        (" https: ", None),
         ("mailto:you@example.com", "mailto:you@example.com"),
         (" https://alfred.example.com ", "https://alfred.example.com"),
     ],
