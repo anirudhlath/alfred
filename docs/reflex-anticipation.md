@@ -82,6 +82,13 @@ entry is inferred, counted and recorded twice; a crash between the decision and 
 still record an event twice, so the replay drops duplicates (below), which would otherwise
 skew every count it prints.
 
+A fired trigger's own notification is sent at most once per event. The handler sets
+`alfred:reflex:notified:{event_id}` (same window, best-effort) after a successful send and skips
+the send when it is set; a failed send sets nothing and is retried. This matters because the ask
+step (below) can fail after the notification has gone out, which leaves the entry pending: the
+redelivery decides the event but does not notify again. A crash between the send and the marker
+can still repeat it once.
+
 ## Never reverse a person
 
 A rule in code, applied after the model answers: Reflex does not propose moving back what a

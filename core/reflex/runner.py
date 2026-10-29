@@ -37,6 +37,7 @@ from shared.streams import (
     OBSERVED_ENTITY_PREFIX,
     REFLEX_DECIDED_PREFIX,
     REFLEX_DECISIONS_PREFIX,
+    REFLEX_NOTIFIED_PREFIX,
     decode_stream_value,
 )
 from shared.types import AioRedis as AioRedis  # noqa: TC001  # re-export for backward compat
@@ -176,16 +177,19 @@ async def record_decision(
     origin: Literal["state_change", "trigger_fired"],
     event: StateChangedEvent | TriggerFired,
     decided: Decided,
+    *,
+    now: datetime | None = None,
 ) -> None:
     """Keep and count one decision: the decision log, the decision, then its outcome.
 
     The one step both origins take, ahead of their own publish or passive observation and the
     ``mark_decided`` that follows. Best-effort throughout: none of the three writes raises.
+    The counts go under the UTC day of *now* (the real moment when not given).
     """
     if decision_log is not None:
         await decision_log.record(origin, event, decided)
-    await count_decision(redis, decided.proposal.decision)
-    await count_outcome(redis, decided.outcome)
+    await count_decision(redis, decided.proposal.decision, now=now)
+    await count_outcome(redis, decided.outcome, now=now)
 
 
 def decided_key(event_id: str) -> str:
@@ -214,6 +218,33 @@ async def mark_decided(redis: AioRedis, event_id: str) -> None:
         await redis.set(decided_key(event_id), 1, nx=True, ex=REPLAY_MARKER_TTL_SECONDS)
     except Exception as e:
         logger.warning("Decided marker not saved for %s: %s", event_id, e)
+
+
+def notified_key(event_id: str) -> str:
+    """The marker that a fired trigger's own notification has gone out."""
+    return f"{REFLEX_NOTIFIED_PREFIX}{event_id}"
+
+
+async def already_notified(redis: AioRedis, event_id: str) -> bool:
+    """Whether the notification for the fired trigger *event_id* has already been sent.
+
+    A redelivery of the trigger's entry (the ask step failed after the send) must not send it
+    again. Raises when Redis cannot answer, like ``already_decided``: the entry stays pending
+    and is replayed, where guessing "not sent" could notify the owner twice.
+    """
+    return await redis.exists(notified_key(event_id)) == 1
+
+
+async def mark_notified(redis: AioRedis, event_id: str) -> None:
+    """Mark the notification for *event_id* sent, for the same window as ``mark_decided``.
+
+    Call it only after the send succeeded, so a failed send is retried. Best-effort, like
+    ``mark_decided``: a refusal is logged, and the worst it costs is one repeated notification.
+    """
+    try:
+        await redis.set(notified_key(event_id), 1, nx=True, ex=REPLAY_MARKER_TTL_SECONDS)
+    except Exception as e:
+        logger.warning("Notified marker not saved for %s: %s", event_id, e)
 
 
 async def publish_proposal(
@@ -476,7 +507,7 @@ async def process_stream_entry(
     # (httpx.ConnectError, etc.) and the caller does NOT ACK — Redis redelivers.
     decided = await engine.process_event(event)
     decided = await ask_or_hold(redis, notifier, dnd, "state_change", event, decided, clock=clock)
-    await record_decision(redis, decision_log, "state_change", event, decided)
+    await record_decision(redis, decision_log, "state_change", event, decided, now=clock())
     await _record_outcome(redis, observation_stream, event, decided)
     # Counted and published, so a redelivery stops here; a crash before this line decides again.
     await mark_decided(redis, event.event_id)

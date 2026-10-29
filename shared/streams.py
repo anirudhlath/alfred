@@ -32,6 +32,9 @@ REFLEX_DECISIONS_PREFIX = "alfred:reflex:decisions:"
 # decision, so a redelivery of its entry (an un-ACKed entry the reclaim pass replays) does not
 # ask the model again. Set after the decision, so a crash before it decides again.
 REFLEX_DECIDED_PREFIX = "alfred:reflex:decided:"
+# + event_id -> "1" (the same TTL): a fired trigger's own notification went out, so a redelivery
+# of its entry (the ask step failed after it) does not send it again. Set after a successful send.
+REFLEX_NOTIFIED_PREFIX = "alfred:reflex:notified:"
 
 # Who caused each home state change. Private logs, each kept ATTRIBUTION_MAX_AGE: an append
 # (shared.redis_streams.append_capped) trims everything older, and the MAXLEN caps bound a

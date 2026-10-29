@@ -34,14 +34,22 @@ from core.reflex.answers import OpenAsk
 from core.reflex.asks import asked_key, asks_key
 from core.reflex.decision_log import DecisionLog
 from core.reflex.prompt import LiveEntity
-from core.reflex.runner import already_decided, decisions_key, process_stream_entry
+from core.reflex.runner import (
+    already_decided,
+    already_notified,
+    decisions_key,
+    notified_key,
+    process_stream_entry,
+)
 from core.reflex.settings import ReflexSettings, save_settings
 from core.reflex.tests.fakes import decided
 from core.routing.pending import read_pending
+from core.triggers.models import TRIGGER_ENGINE_SOURCE
 from shared.streams import (
     DND_STATE_KEY,
     PENDING_PREFIX,
     REFLEX_ASK_OPEN_KEY,
+    REFLEX_NOTIFIED_PREFIX,
     REFLEX_OBSERVATIONS_STREAM,
     TOOL_REGISTRY_KEY,
     USER_TIMEZONE_KEY,
@@ -225,8 +233,18 @@ class Rig:
         """The calls that were asks: a fired trigger's own notification is not."""
         return [c for c in self.notifier.publish.await_args_list if c.kwargs["source"] == ASK]
 
-    async def counted(self) -> dict[str, int]:
-        counts = await self.redis.hgetall(decisions_key(datetime.now(UTC).date()))
+    def trigger_sent(self) -> list[Any]:
+        """The calls that were a fired trigger's own notification (Path A)."""
+        return [
+            c
+            for c in self.notifier.publish.await_args_list
+            if c.kwargs["source"] == TRIGGER_ENGINE_SOURCE
+        ]
+
+    async def counted(self, day: datetime | None = None) -> dict[str, int]:
+        """The decision counts under the UTC day of *day* (the rig's clock when not given)."""
+        key = decisions_key((day or self.now).astimezone(UTC).date())
+        counts = await self.redis.hgetall(key)
         return {k.decode(): int(v) for k, v in counts.items()}
 
     async def pending(self) -> list[bytes]:
@@ -240,6 +258,14 @@ class Rig:
 
 
 ASK = "reflex-engine"
+ASK_STEP_READS = ("load_settings", "tool_risk", "get_user_timezone", "gate", "open_ask")
+
+
+def forbid_the_ask_step(monkeypatch: pytest.MonkeyPatch, why: str) -> None:
+    """Make any read of the ask step fail the test: it must not run at all."""
+    boom = AsyncMock(side_effect=AssertionError(why))
+    for name in ASK_STEP_READS:
+        monkeypatch.setattr(runner, name, boom)
 
 
 def rig_for(redis: fakeredis.FakeAsyncRedis, answer: Decided | None = None) -> Rig:
@@ -505,9 +531,7 @@ async def test_an_outcome_that_is_not_shadow_is_never_asked_about(
     rig: Rig, origin: Origin, outcome: ReflexOutcome, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Nothing is resolved or read for it: not the settings, not the risk, not the clock."""
-    boom = AsyncMock(side_effect=AssertionError("read for an outcome that is not shadow"))
-    for name in ("load_settings", "tool_risk", "get_user_timezone", "gate", "open_ask"):
-        monkeypatch.setattr(runner, name, boom)
+    forbid_the_ask_step(monkeypatch, "read for an outcome that is not shadow")
     rig.engine.answer = decided(proposal(), outcome=outcome, snapshot=SNAPSHOT)
 
     await origin.deliver(rig)
@@ -524,9 +548,7 @@ async def test_without_a_notifier_and_a_dnd_checker_a_shadow_outcome_stays_shado
     rig: Rig, wired: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The old behaviour, for callers that wire no asks: nothing is read, nothing is asked."""
-    boom = AsyncMock(side_effect=AssertionError("read without the wiring for asks"))
-    for name in ("load_settings", "tool_risk", "get_user_timezone", "gate", "open_ask"):
-        monkeypatch.setattr(runner, name, boom)
+    forbid_the_ask_step(monkeypatch, "read without the wiring for asks")
     notifier = None if wired in ("no notifier", "neither") else rig.notifier
     dnd = None if wired in ("no dnd", "neither") else rig.dnd
 
@@ -551,9 +573,7 @@ async def test_without_a_notifier_and_a_dnd_checker_a_shadow_outcome_stays_shado
 async def test_a_trigger_handled_without_a_dnd_checker_stays_shadow(
     rig: Rig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    boom = AsyncMock(side_effect=AssertionError("read without the wiring for asks"))
-    for name in ("load_settings", "tool_risk", "get_user_timezone", "gate", "open_ask"):
-        monkeypatch.setattr(runner, name, boom)
+    forbid_the_ask_step(monkeypatch, "read without the wiring for asks")
 
     await _handle_trigger_fired(
         {b"event": rig.fired.model_dump_json().encode()},
@@ -751,12 +771,14 @@ async def test_a_crash_just_after_parking_sends_no_notification_and_asks_once(
     assert len(await rig.pending()) == 1
     assert rig.asks_sent() == []
     assert await rig.records() == []
+    assert not await rig.marked()
 
     await origin.deliver(rig)  # the redelivered entry
 
     assert await rig.outcomes() == [ReflexOutcome(kind="held", reason="ask_open")]
     assert (await rig.counted())["held:ask_open"] == 1
     assert rig.asks_sent() == []
+    assert await rig.marked()
     assert len(await rig.pending()) == 1  # still the one action, never a second
 
 
@@ -771,6 +793,7 @@ async def test_a_crash_after_the_ask_went_out_sends_one_notification_in_all(
 
     assert len(rig.asks_sent()) == 1
     assert await rig.records() == []
+    assert not await rig.marked()
 
     await origin.deliver(rig)  # the redelivered entry
 
@@ -778,6 +801,7 @@ async def test_a_crash_after_the_ask_went_out_sends_one_notification_in_all(
     assert (await rig.counted())["held:ask_open"] == 1
     assert len(rig.asks_sent()) == 1
     assert len(await rig.pending()) == 1
+    assert await rig.marked()
 
 
 async def test_a_redelivery_after_the_decision_was_marked_does_nothing(rig: Rig) -> None:
@@ -788,3 +812,137 @@ async def test_a_redelivery_after_the_decision_was_marked_does_nothing(rig: Rig)
     assert rig.engine.asked == 1
     assert len(rig.asks_sent()) == 1
     assert len(await rig.outcomes()) == 1
+
+
+# --- the counts follow the injected clock ---------------------------------------------------------
+
+
+async def test_the_decision_counts_go_under_the_day_of_the_injected_clock(
+    rig: Rig, origin: Origin
+) -> None:
+    rig.now = datetime(2020, 1, 15, 12, tzinfo=ZoneInfo(NEW_YORK))
+
+    await origin.deliver(rig)
+
+    counted = await rig.counted()
+    assert counted["outcome:asked"] == 1
+    assert counted["act"] == 1
+    assert await rig.counted(datetime.now(UTC)) == {}  # nothing under the real day
+
+
+# --- a fired trigger notifies once, whatever happens to the ask step -----------------------------
+
+
+def fired_marker(rig: Rig) -> str:
+    return f"{REFLEX_NOTIFIED_PREFIX}{rig.fired.event_id}"
+
+
+async def test_a_failed_ask_step_on_a_trigger_does_not_notify_again_when_it_is_retried(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner, "load_settings", raising_once(runner.load_settings, after=False))
+
+    with pytest.raises(RuntimeError, match="a crash"):
+        await rig.fired_trigger()
+
+    assert len(rig.trigger_sent()) == 1
+    assert await already_notified(rig.redis, rig.fired.event_id)
+    assert not await rig.marked()  # the event is still to be decided
+
+    await rig.fired_trigger()  # the entry's redelivery
+
+    assert len(rig.trigger_sent()) == 1  # Path A, once in all
+    assert len(rig.asks_sent()) == 1  # and the ask went out at the retry
+    assert await rig.outcomes() == [ReflexOutcome(kind="asked", ask_id="ask-1")]
+    assert await rig.marked()
+
+
+async def test_every_reclaim_pass_of_a_failing_ask_step_leaves_one_trigger_notification(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runner, "gate", AsyncMock(side_effect=ConnectionError("redis is down")))
+
+    for _ in range(3):
+        with pytest.raises(ConnectionError):
+            await rig.fired_trigger()
+
+    assert len(rig.trigger_sent()) == 1
+    assert rig.asks_sent() == []
+    assert rig.engine.asked == 3  # the event is decided afresh each time, as it is not marked
+    assert not await rig.marked()
+
+
+async def test_a_decided_trigger_is_skipped_whole_and_notifies_nothing_more(rig: Rig) -> None:
+    await rig.fired_trigger()
+
+    await rig.fired_trigger()
+
+    assert len(rig.trigger_sent()) == 1
+    assert len(rig.asks_sent()) == 1
+    assert rig.engine.asked == 1
+
+
+async def test_a_trigger_already_notified_skips_the_notification_and_is_decided(
+    rig: Rig,
+) -> None:
+    await rig.redis.set(notified_key(rig.fired.event_id), 1)
+
+    await rig.fired_trigger()
+
+    assert rig.trigger_sent() == []
+    assert len(rig.asks_sent()) == 1
+    assert await rig.outcomes() == [ReflexOutcome(kind="asked", ask_id="ask-1")]
+
+
+async def test_the_notified_marker_is_set_only_after_a_successful_send(rig: Rig) -> None:
+    sends = 0
+
+    async def flaky(*_: Any, **kwargs: Any) -> None:
+        nonlocal sends
+        if kwargs["source"] == TRIGGER_ENGINE_SOURCE:
+            sends += 1
+            if sends == 1:
+                raise ConnectionError("the channel is down")
+
+    rig.notifier.publish.side_effect = flaky
+
+    with pytest.raises(ConnectionError):
+        await rig.fired_trigger()
+
+    assert not await rig.redis.exists(fired_marker(rig))
+    assert rig.engine.asked == 0  # the decision waits for the retry
+    assert not await rig.marked()
+
+    await rig.fired_trigger()  # the retry sends it
+
+    assert sends == 2
+    assert await rig.redis.exists(fired_marker(rig))
+    assert len(rig.asks_sent()) == 1
+    assert await rig.marked()
+
+
+async def test_the_notified_marker_lasts_as_long_as_the_decided_marker(rig: Rig) -> None:
+    await rig.fired_trigger()
+
+    assert await rig.redis.ttl(fired_marker(rig)) == await rig.redis.ttl(
+        f"{runner.REFLEX_DECIDED_PREFIX}{rig.fired.event_id}"
+    )
+
+
+async def test_a_refused_marker_write_never_fails_the_trigger(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Best-effort, like the decided marker: the worst case is one repeated notification."""
+    real_set = rig.redis.set
+
+    async def set_refusing_the_marker(key: str, *args: Any, **kwargs: Any) -> Any:
+        if key.startswith(REFLEX_NOTIFIED_PREFIX):
+            raise ConnectionError("OOM command not allowed")
+        return await real_set(key, *args, **kwargs)
+
+    monkeypatch.setattr(rig.redis, "set", set_refusing_the_marker)
+
+    await rig.fired_trigger()
+
+    assert len(rig.trigger_sent()) == 1
+    assert await rig.marked()

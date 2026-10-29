@@ -30,9 +30,11 @@ from core.reflex.prose import warm_prose
 from core.reflex.reversal import PersonChanges
 from core.reflex.runner import (
     already_decided,
+    already_notified,
     ask_or_hold,
     ensure_consumer_group,
     mark_decided,
+    mark_notified,
     process_stream_entry,
     publish_proposal,
     record_decision,
@@ -158,6 +160,8 @@ async def _handle_trigger_fired(
     leaving the entry pending for the reclaim pass in ``_consume_trigger_fired``:
     the decided-check's Redis error (Redis cannot say whether the event was
     decided) and a failure while *acting* on a valid TriggerFired, the ask step's included.
+    The trigger's own notification is sent at most once per event: it is marked sent
+    (``mark_notified``) after a successful send, and a redelivery skips it.
 
     In shadow mode (#285) ``agent`` is unused: Reflex's decision is recorded, never executed
     (in *decision_log*, when given, and counted with its outcome). A proposal that stands is
@@ -180,8 +184,9 @@ async def _handle_trigger_fired(
         return
 
     # A redelivered entry (an un-ACKed one the reclaim pass replays, or a crash between the
-    # decision and the ACK) was handled whole: its notification went out before the decision
-    # that marked it, so neither is repeated.
+    # decision and the ACK) that was decided is handled whole: it is skipped. One that was not
+    # (the ask step raised after the notification went out) is handled again, and the
+    # notification is skipped when it was sent: it goes out at most once per event.
     if await already_decided(redis, trigger_event.event_id):
         logger.info(
             "Trigger '%s' (event %s) already decided — not handling it again",
@@ -190,17 +195,26 @@ async def _handle_trigger_fired(
         )
         return
 
-    # Path A: Immediate notification (DND-aware via dispatcher)
-    urgency = Urgency(trigger_event.urgency)
-    await publisher.publish(
-        title=f"{TRIGGER_TITLE_PREFIX}{trigger_event.trigger_name}",
-        body=build_notification_body(trigger_event),
-        source=TRIGGER_ENGINE_SOURCE,
-        urgency=urgency,
-    )
+    # Path A: Immediate notification (DND-aware via dispatcher), at most once per event. A send
+    # that fails propagates before the marker, so the retry sends it.
+    if await already_notified(redis, trigger_event.event_id):
+        logger.info(
+            "Trigger '%s' (event %s) already notified — not sending it again",
+            trigger_event.trigger_name,
+            trigger_event.event_id,
+        )
+    else:
+        urgency = Urgency(trigger_event.urgency)
+        await publisher.publish(
+            title=f"{TRIGGER_TITLE_PREFIX}{trigger_event.trigger_name}",
+            body=build_notification_body(trigger_event),
+            source=TRIGGER_ENGINE_SOURCE,
+            urgency=urgency,
+        )
+        await mark_notified(redis, trigger_event.event_id)
 
-    # Path B: Reflex's decision, recorded in shadow (#285) — nothing executes.
-    # Isolated: failures don't block ACK.
+    # Path B: Reflex's decision, recorded in shadow (#285) — nothing executes. The model call is
+    # isolated: its failure is logged and the entry ACKed. The ask step after it is not (below).
     try:
         decided = await engine.process_trigger_fired(trigger_event)
     except Exception as e:
@@ -211,7 +225,7 @@ async def _handle_trigger_fired(
         redis, publisher, dnd, "trigger_fired", trigger_event, decided, clock=clock
     )
     proposal = decided.proposal
-    await record_decision(redis, decision_log, "trigger_fired", trigger_event, decided)
+    await record_decision(redis, decision_log, "trigger_fired", trigger_event, decided, now=clock())
     # A "none", and a proposal that would reverse a person's change, publish nothing here.
     if publishes(decided.outcome):
         if proposal.decision == "invalid":
