@@ -256,9 +256,9 @@ async def decide(
     as its answer, from *channel* (the Door, or the channel a reply came on), and only the
     first answer to an ask records and runs anything. A decision that finds no open ask naming
     the record (it was settled elsewhere), or that lost the race to another answer, runs nothing
-    and is False. When there is nothing to
-    claim, an ask whose time has passed is settled as expired: its pending record lapsed with
-    it. *now* is the clock for that, the current time unless a caller says otherwise.
+    and is False. When there is nothing to claim, an ask whose time has passed is settled as
+    expired: its pending record lapsed with it. *now* is the clock for that, the current time
+    unless a caller says otherwise.
     """
     now = now or datetime.now(UTC)
     try:

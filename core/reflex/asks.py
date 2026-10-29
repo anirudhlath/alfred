@@ -135,14 +135,14 @@ async def gate(
 ) -> ReflexOutcome:
     """What the ask limits make of a proposal that stands (a ``shadow`` outcome).
 
-    Any other outcome comes back unchanged. An expired ask is settled first, on every decision
-    and in either mode, so a lapsed ask ends as ``expired`` whatever limit the decision then
-    meets, and whether or not Reflex is still asking. The limits are checked in this order, and
-    the first one hit is the reason: ``tool_off`` (no ``ask_tools`` pattern matches the tool, or
-    the tool is not *askable*: the router refuses one whose declared risk is critical or unknown
-    even when it is confirmed, so a yes could only fail), ``quiet_hours`` (the owner's local
-    time, in *tz_name*), ``dnd`` (a check that fails counts as on), ``ask_open``,
-    ``asked_recently`` and ``daily_cap`` (counted by local date).
+    Any other outcome comes back unchanged and settles nothing. For a standing proposal, an
+    expired ask is settled first, in either mode, so a lapsed ask ends as ``expired`` whatever
+    limit the proposal then meets, and whether or not Reflex is still asking. The limits are
+    checked in this order, and the first one hit is the reason: ``tool_off`` (no ``ask_tools``
+    pattern matches the tool, or the tool is not *askable*: the router refuses one whose
+    declared risk is critical or unknown even when it is confirmed, so a yes could only fail),
+    ``quiet_hours`` (the owner's local time, in *tz_name*), ``dnd`` (a check that fails counts
+    as on), ``ask_open``, ``asked_recently`` and ``daily_cap`` (counted by local date).
 
     In ``shadow`` mode only the first three are checked, and the result stays ``shadow``,
     carrying the reason or none. In ``ask`` mode a limit hit is ``held`` with its reason, and

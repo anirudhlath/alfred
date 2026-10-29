@@ -159,9 +159,10 @@ The answers (the Door, a reply, or silence) are in
 [`autonomy.md`](autonomy.md#reflex-asks); this page keeps what it does not repeat.
 
 `gate` reduces a standing (`shadow`) proposal to `asked` or `held`, naming the first limit it
-meets. It first settles an ask whose deadline has passed, on every decision and in either mode
-(recorded as `expired` at its deadline), so a lapsed ask ends whatever limit the decision then
-meets. The limits, in this order:
+meets. It first settles an ask whose deadline has passed (recorded as `expired` at its
+deadline), on every proposal it is given and in either mode, so a lapsed ask ends whatever limit
+the proposal then meets. A decision that never reaches the gate (`none`, `invalid`,
+`would_reverse`) settles nothing. The limits, in this order:
 
 1. `tool_off`: no `ask_tools` pattern matches the tool (an empty list turns every tool off), or
    the tool's declared risk is critical or unknown, which the router refuses even when the owner
@@ -219,10 +220,11 @@ Reflex had noticed; capped near 5,000 entries). Three roads lead there, all in
   answers whatever Alfred just said, so it is a normal turn and the ask stays open for the Door.
 - **Silence.** Nothing watches the clock: an ask past its deadline (`ask_expiry_seconds` after it
   was made, 600 s by default) is recorded as `expired`, with no channel, the next time anything
-  looks. The ask gate looks first, on every decision and in `shadow` mode too, before it checks
-  `tool_off`, quiet hours or do-not-disturb, so a lapsed ask is settled even by a decision that
-  one of them holds, and after the mode is flipped to `shadow`. The shadow report settles it
-  too, before it counts.
+  looks. The ask gate looks first, on every proposal that reaches it and in `shadow` mode too,
+  before it checks `tool_off`, quiet hours or do-not-disturb, so a lapsed ask is settled even by
+  a proposal that one of them holds, and after the mode is flipped to `shadow`. A `none`,
+  `invalid` or `would_reverse` decision does not reach the gate and settles nothing. The shadow
+  report settles it too, before it counts.
 
 One answer per ask: `alfred:reflex:answered:<ask id>` arbitrates between a Door tap and a reply that
 arrive together, and the loser runs nothing and is told nothing (a reply is a normal turn, the Door
@@ -232,9 +234,9 @@ Switching the mode to `shadow` stops new asks, but an ask already open can still
 the Door or a reply, and a yes then runs.
 
 A yes runs the benign or elevated action asked about; a critical or unknown one is never asked
-about (`tool_off`), because the router refuses it even when confirmed. When the ask was for a script, the yes adds its targets to
-`allowed_scripts` in the settings, each once and as opaque ids, through the function the command
-line's `allow-script` uses. That addition is best effort: if it fails, the answer stands and the
+about (`tool_off`), because the router refuses it even when confirmed. When the ask was for a
+script, the yes adds its targets to `allowed_scripts` in the settings, each once and as opaque
+ids, through the function the command line's `allow-script` uses. That addition is best effort: if it fails, the answer stands and the
 action runs, and the owner can add the id by hand.
 
 ### The report
