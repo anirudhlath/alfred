@@ -30,6 +30,8 @@ dependencies = [
     "pydantic-ai-harness==0.55.0",
     "jsonschema>=4.26",
     "tenacity>=9.1,<10",
+    "http-ece>=1.2.1",
+    "cryptography>=46",
 ]
 
 [project.optional-dependencies]
