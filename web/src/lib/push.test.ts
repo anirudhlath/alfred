@@ -35,14 +35,22 @@ const OLD_BYTES = point(9);
 const HELD = "https://fcm.googleapis.com/fcm/send/fake-held";
 const FRESH = "https://fcm.googleapis.com/fcm/send/fake-fresh";
 
+const sameBytes = (held: ArrayBuffer, want: Uint8Array) =>
+  new Uint8Array(held).length === want.length &&
+  new Uint8Array(held).every((byte, i) => byte === want[i]);
+
 class FakeSubscription {
   readonly endpoint: string;
   readonly options: { userVisibleOnly: boolean; applicationServerKey: ArrayBuffer | null };
+  /** The manager holding it, which unsubscribing leaves empty. */
+  manager: FakePushManager | null = null;
   /** Whether unsubscribing fails. */
   refuses = false;
   readonly unsubscribe = vi.fn(() => {
     log.push(`unsubscribe ${this.endpoint}`);
-    return this.refuses ? Promise.reject(new Error("unsubscribe failed")) : Promise.resolve(true);
+    if (this.refuses) return Promise.reject(new Error("unsubscribe failed"));
+    if (this.manager?.subscription === this) this.manager.subscription = null;
+    return Promise.resolve(true);
   });
 
   constructor(endpoint: string, key: Uint8Array | null) {
@@ -59,24 +67,44 @@ class FakeSubscription {
   }
 }
 
+/**
+ * A PushManager as strict as a browser's: subscribing under one key while a
+ * subscription under another is held is an InvalidStateError, and subscribing
+ * under the held one hands that subscription back.
+ */
 class FakePushManager {
-  subscription: FakeSubscription | null;
+  subscription: FakeSubscription | null = null;
   readonly getSubscription = vi.fn(() => Promise.resolve(this.subscription));
   readonly subscribe = vi.fn((options: PushSubscriptionOptionsInit) => {
     log.push("subscribe");
     const key = new Uint8Array(options.applicationServerKey as ArrayBuffer);
-    this.subscription = new FakeSubscription(FRESH, key);
-    return Promise.resolve(this.subscription);
+    const current = this.subscription;
+    if (current) {
+      const heldKey = current.options.applicationServerKey;
+      if (heldKey && !sameBytes(heldKey, key)) {
+        const message = "A subscription with a different applicationServerKey already exists.";
+        return Promise.reject(new DOMException(message, "InvalidStateError"));
+      }
+      return Promise.resolve(current);
+    }
+    return Promise.resolve(this.hold(new FakeSubscription(FRESH, key)));
   });
 
   constructor(held: FakeSubscription | null) {
-    this.subscription = held;
+    if (held) this.hold(held);
+  }
+
+  hold(subscription: FakeSubscription): FakeSubscription {
+    subscription.manager = this;
+    this.subscription = subscription;
+    return subscription;
   }
 }
 
 /**
  * A browser's service worker container. `ready: false` is what `ready` is with
- * no worker registered — dev, always — a promise that never settles.
+ * no worker registered — dev, always — a promise that never settles. `ready` is
+ * a getter that counts its reads, so a test can show it was never even looked at.
  */
 function registry(
   options: { held?: FakeSubscription | null; ready?: boolean; registered?: boolean } = {},
@@ -84,19 +112,29 @@ function registry(
   const { held = null, ready = true, registered = true } = options;
   const pushManager = new FakePushManager(held);
   const registration = { pushManager };
+  const whenReady = ready ? Promise.resolve(registration) : new Promise<never>(() => {});
+  let readyReads = 0;
   const container = Object.assign(new EventTarget(), {
-    ready: ready ? Promise.resolve(registration) : new Promise<never>(() => {}),
     getRegistration: vi.fn(() => Promise.resolve(registered ? registration : undefined)),
   });
+  Object.defineProperty(container, "ready", {
+    get: () => {
+      readyReads += 1;
+      return whenReady;
+    },
+  });
   Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: container });
-  return { pushManager, container };
+  return { pushManager, container, readyReads: () => readyReads };
 }
 
 const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
 
-/** The house: its key (null when Web Push is not configured), and how a DELETE ends. */
-function stubHouse(options: { key?: string | null; onDelete?: () => Promise<Response> } = {}) {
-  const { key = HOUSE_KEY, onDelete = async () => reply(200, { status: "ok" }) } = options;
+type Answer = (init?: RequestInit) => Promise<Response>;
+
+/** The house: its key (null when Web Push is not configured), and how a DELETE and a POST end. */
+function stubHouse(options: { key?: string | null; onDelete?: Answer; onPost?: Answer } = {}) {
+  const ok: Answer = async () => reply(200, { status: "ok" });
+  const { key = HOUSE_KEY, onDelete = ok, onPost = ok } = options;
   const mock = vi.fn<typeof fetch>(async (input, init) => {
     const method = init?.method ?? "GET";
     log.push(`${method} ${String(input)}`);
@@ -105,11 +143,28 @@ function stubHouse(options: { key?: string | null; onDelete?: () => Promise<Resp
         ? reply(404, { detail: "Web Push not configured" })
         : reply(200, { public_key: key });
     }
-    if (method === "DELETE") return onDelete();
-    return reply(200, { status: "ok" });
+    return method === "DELETE" ? onDelete(init) : onPost(init);
   });
   vi.stubGlobal("fetch", mock);
   return mock;
+}
+
+/** A request that never answers and fails only when its signal aborts, as fetch does. */
+const stalled: Answer = (init) =>
+  new Promise((_, reject) => {
+    init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+  });
+
+/**
+ * `AbortSignal.timeout` on the faked clock. jsdom's runs on a timer vitest's fake
+ * timers do not reach, so a test advancing the clock would never see it fire.
+ */
+function fakeDeadlines(): void {
+  vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+    const deadline = new AbortController();
+    setTimeout(() => deadline.abort(new DOMException("signal timed out", "TimeoutError")), ms);
+    return deadline.signal;
+  });
 }
 
 /** What each request asked for, in order. */
@@ -224,9 +279,10 @@ describe("fetchPublicKey", () => {
 
 describe("syncSubscription", () => {
   it("subscribes with the house key and registers", async () => {
-    const { pushManager } = registry();
+    const { pushManager, readyReads } = registry();
     const fetchMock = stubHouse();
     await syncSubscription(HOUSE_KEY);
+    expect(readyReads()).toBe(1);
     expect(pushManager.subscribe).toHaveBeenCalledTimes(1);
     const [options] = pushManager.subscribe.mock.calls[0];
     expect(options.userVisibleOnly).toBe(true);
@@ -283,6 +339,37 @@ describe("syncSubscription", () => {
       "subscribe",
       `POST ${DEVICES_PATH}`,
     ]);
+  });
+
+  it("resubscribes once the old row's DELETE runs out of time", async () => {
+    vi.useFakeTimers();
+    fakeDeadlines();
+    const held = new FakeSubscription(HELD, OLD_BYTES);
+    registry({ held });
+    stubHouse({ onDelete: stalled });
+    const syncing = syncSubscription(HOUSE_KEY);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(held.unsubscribe).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(syncing).resolves.toBeUndefined();
+    expect(log).toEqual([
+      `DELETE ${DEVICES_PATH}`,
+      `unsubscribe ${HELD}`,
+      "subscribe",
+      `POST ${DEVICES_PATH}`,
+    ]);
+  });
+
+  it("hands the house's busy store back to the caller, to retry", async () => {
+    registry();
+    stubHouse({ onPost: async () => reply(503, { detail: "Device store busy" }) });
+    const error = await syncSubscription(HOUSE_KEY).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({
+      status: 503,
+      detail: "Device store busy",
+      message: "Device store busy",
+    });
   });
 
   it("gives up when no worker is ready", async () => {
@@ -344,7 +431,7 @@ describe("forgetPush", () => {
   it("forgets: DELETEs, then unsubscribes, and never rejects", async () => {
     const held = new FakeSubscription(HELD, HOUSE_BYTES);
     held.refuses = true;
-    registry({ held, ready: false });
+    const { readyReads } = registry({ held, ready: false });
     const offline = () => Promise.reject(new TypeError("Failed to fetch"));
     const fetchMock = stubHouse({ onDelete: offline });
     await expect(forgetPush()).resolves.toBeUndefined();
@@ -352,13 +439,33 @@ describe("forgetPush", () => {
       { method: "DELETE", path: DEVICES_PATH, body: { endpoint: HELD } },
     ]);
     expect(log).toEqual([`DELETE ${DEVICES_PATH}`, `unsubscribe ${HELD}`]);
+    expect(readyReads()).toBe(0);
   });
 
-  it("returns at once with no worker registered, never waiting for one", async () => {
-    const { container } = registry({ registered: false, ready: false });
+  it("gives up on a DELETE that never answers, and still unsubscribes", async () => {
+    vi.useFakeTimers();
+    fakeDeadlines();
+    const held = new FakeSubscription(HELD, HOUSE_BYTES);
+    registry({ held });
+    stubHouse({ onDelete: stalled });
+    let settled = false;
+    const forgetting = forgetPush().then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(settled).toBe(false);
+    expect(held.unsubscribe).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await forgetting;
+    expect(held.unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns at once with no worker registered, never looking at ready", async () => {
+    const { container, readyReads } = registry({ registered: false, ready: false });
     const fetchMock = stubHouse();
     await expect(forgetPush()).resolves.toBeUndefined();
     expect(container.getRegistration).toHaveBeenCalledTimes(1);
+    expect(readyReads()).toBe(0);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -392,8 +499,14 @@ describe("onOpenPath", () => {
   });
 
   it("listens to nothing where there is no service worker", () => {
+    const listening = vi.spyOn(EventTarget.prototype, "addEventListener");
     const fn = vi.fn();
     const off = onOpenPath(fn);
-    expect(() => off()).not.toThrow();
+    // Nothing stands in for the missing container: no listener is attached to any
+    // target, so a tap's message on the window, say, is not heard.
+    window.dispatchEvent(new MessageEvent("message", { data: { type: "OPEN_PATH", path: "/" } }));
+    expect(listening).not.toHaveBeenCalled();
+    expect(fn).not.toHaveBeenCalled();
+    off();
   });
 });

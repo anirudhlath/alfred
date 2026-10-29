@@ -8,6 +8,12 @@ export const PUSH_KEY_PATH = "/api/push/public-key";
 export const DEVICES_PATH = "/api/devices/register";
 /** How long a sync waits for a worker to be ready before it gives up. */
 export const READY_TIMEOUT_MS = 10_000;
+/**
+ * How long a best-effort DELETE may take. Its answer changes nothing, and a
+ * stalled connection would otherwise hold sign-out until the browser gives up —
+ * about a minute on iOS.
+ */
+export const FORGET_TIMEOUT_MS = 5_000;
 
 /**
  * Where this page stands for Web Push. "tab": not on the Home Screen, and iOS
@@ -68,16 +74,21 @@ function sameBytes(held: ArrayBuffer, want: Uint8Array): boolean {
 }
 
 /**
- * Drop the house's row for `endpoint`. Best effort: whoever calls this is
- * leaving the subscription behind either way, and a row left at the house names
- * an endpoint the browser drops next, which the push service answers 404 or 410
- * and the adapter prunes. The cap bounds it meanwhile.
+ * Drop the house's row for `endpoint`, giving up after `FORGET_TIMEOUT_MS`.
+ * Best effort: whoever calls this unsubscribes next, whatever it answered. A row
+ * left behind stays until a push service refuses it with 404 or 410, and the
+ * adapter prunes it, or until the cap evicts it. After a key change a push
+ * service may answer 403 instead, which prunes nothing.
  */
 async function forgetRow(endpoint: string): Promise<void> {
   try {
-    await api(DEVICES_PATH, { method: "DELETE", body: JSON.stringify({ endpoint }) });
+    await api(DEVICES_PATH, {
+      method: "DELETE",
+      body: JSON.stringify({ endpoint }),
+      signal: AbortSignal.timeout(FORGET_TIMEOUT_MS),
+    });
   } catch {
-    // Nothing to tell anyone: see above.
+    // A refusal, an outage or the deadline: nothing to tell anyone, see above.
   }
 }
 
@@ -134,9 +145,9 @@ export async function requestAndSubscribe(): Promise<NotificationPermission> {
  *
  * It never waits for `ready`, which never settles without a registered worker
  * (always, in dev) and would hold sign-out forever: `getRegistration()` answers
- * at once. And it never rejects, so sign-out never stops here. The unsubscribe
- * runs whatever the DELETE answered, so the browser stops receiving even when
- * the house could not be told.
+ * at once. And it never rejects, so sign-out never stops here. The DELETE gives
+ * up after `FORGET_TIMEOUT_MS`, and the unsubscribe runs whatever it answered, so
+ * the browser stops receiving even when the house could not be told.
  */
 export async function forgetPush(): Promise<void> {
   if (!("serviceWorker" in navigator)) return;
@@ -147,8 +158,9 @@ export async function forgetPush(): Promise<void> {
     await forgetRow(subscription.endpoint);
     await subscription.unsubscribe();
   } catch {
-    // A subscription the browser kept is registered again by the next sync, and
-    // one it dropped is pruned at the house: neither is worth failing sign-out.
+    // A known gap, which "never rejects" accepts: when the DELETE and the
+    // unsubscribe both fail, the browser keeps its subscription and the house its
+    // row, so this browser goes on receiving pushes while signed out.
   }
 }
 

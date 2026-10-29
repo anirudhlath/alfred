@@ -88,11 +88,13 @@ token for every stored subscription (RFC 8292 suggests a 403), the adapter logs 
 per push and keeps the rows (only 404 and 410 prune). At each phone's next launch, the
 PWA's re-validation (`syncSubscription()` in `web/src/lib/push.ts`) sees that its
 subscription's key differs byte for byte from the house's, `DELETE`s its old row (best
-effort: a failed `DELETE` stops nothing), unsubscribes, subscribes with the house's key
-and registers the new subscription. A subscription whose key the browser does not report
-is kept and registered as it is. A phone that never relaunches keeps its dead row until
-the cap evicts it. Back up the data dir, which holds the keyring, as for every other
-credential ([`secrets.md`](secrets.md)).
+effort, giving up after 5 s: a failed `DELETE` stops nothing), unsubscribes, subscribes
+with the house's key and registers the new subscription. An old row whose `DELETE` failed
+stays until a push service refuses it with 404 or 410, or until the cap evicts it; the 403
+a push service may answer instead prunes nothing. A subscription whose key the browser
+does not report is kept and registered as it is. A phone that never relaunches keeps its
+dead row until the cap evicts it. Back up the data dir, which holds the keyring, as for
+every other credential ([`secrets.md`](secrets.md)).
 
 ## Registration
 
