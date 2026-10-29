@@ -79,6 +79,9 @@ _INTERNAL_HANDLERS: dict[str, Any] = {}
 # The source of a confirmed action's outcome: its notification, or a failure result.
 OUTCOME_SOURCE = "conscious-engine"
 
+# An action whose source starts with this was proposed by Reflex.
+REFLEX_SOURCE_PREFIX: Final = "reflex"
+
 # The streams the conscious loop answers, each with the runner function for its entries:
 # a user's request, and the owner's decision from the Door on a parked run.
 _ENTRY_RUNNERS: Final[dict[str, EntryRunner]] = {
@@ -102,7 +105,9 @@ async def _report_outcome(
 
     The result goes to the stream the PWA's Door waits on; the owner is notified either
     way, and a failure is logged at WARNING. Neither delivery can fail the consumer: the
-    action has already run, so its entry is acked regardless.
+    action has already run, so its entry is acked regardless. The one exception to "either
+    way": an action Reflex proposed and the owner said yes to is not announced when it
+    worked (the owner has just said so, and the house shows it); a failure still is.
     """
     if result.status == "error":
         log.warning(
@@ -124,6 +129,8 @@ async def _report_outcome(
         await publish_action_result(redis, result)
     except Exception as e:
         log.error("Could not publish the result of confirmed action '{}': {}", action.tool_name, e)
+    if result.status != "error" and action.source.startswith(REFLEX_SOURCE_PREFIX):
+        return
     try:
         await notifier.publish(
             title=title, body=body, source=OUTCOME_SOURCE, urgency=Urgency.IMPORTANT

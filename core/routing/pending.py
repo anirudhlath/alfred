@@ -23,6 +23,7 @@ from bus.schemas.events import (
     ParkedRun,
     PendingRecord,
 )
+from core.reflex.answers import ASK_SOURCE, read_open_ask, record_answer, settle_expired
 from shared.streams import (
     ACTIONS_STREAM,
     APPROVALS_STREAM,
@@ -175,20 +176,85 @@ def pending_payload(record: PendingRecord, ttl_seconds: int) -> dict[str, Any]:
     }
 
 
-async def decide(redis: AioRedis, record_id: str, decision: Literal["approve", "deny"]) -> bool:
+async def _republish_confirmed(redis: AioRedis, action: ActionRequest) -> None:
+    """Put *action* back on ``ACTIONS_STREAM`` confirmed, for the conscious process to run."""
+    confirmed = action.model_copy(update={"confirmed": True})
+    await redis.xadd(ACTIONS_STREAM, {"event": confirmed.model_dump_json()})
+    logger.info(
+        "Pending action {} confirmed → republished '{}'", action.request_id, confirmed.tool_name
+    )
+
+
+async def _answer_ask(
+    redis: AioRedis,
+    action: ActionRequest,
+    decision: Literal["approve", "deny"],
+    *,
+    channel: str | None,
+    now: datetime,
+) -> bool:
+    """Record the owner's decision on a claimed Reflex ask; republish it confirmed on a yes.
+
+    False, and nothing runs, when no open ask names the action: it was settled elsewhere (it
+    expired, or another answer was recorded first and cleared the key). The action is
+    republished only when this call recorded the answer, so a yes that lost the race to
+    another answer runs nothing.
+    """
+    ask = await read_open_ask(redis)
+    if ask is None or ask.ask_id != action.request_id:
+        logger.info(
+            "Pending action {} was decided after its ask was settled → dropped '{}'",
+            action.request_id,
+            action.tool_name,
+        )
+        return False
+    recorded = await record_answer(
+        redis, ask, "yes" if decision == "approve" else "no", at=now, channel=channel
+    )
+    if recorded and decision == "approve":
+        await _republish_confirmed(redis, action)
+    else:
+        logger.info(
+            "Pending action {} dropped '{}' (decision: {}, answer recorded: {})",
+            action.request_id,
+            action.tool_name,
+            decision,
+            recorded,
+        )
+    return True
+
+
+async def decide(
+    redis: AioRedis,
+    record_id: str,
+    decision: Literal["approve", "deny"],
+    *,
+    channel: str | None = "door",
+    now: datetime | None = None,
+) -> bool:
     """Resolve a pending record: claim it, then act on the decision.
 
     A parked run is handed, with the decision, to the conscious process through
     ``APPROVALS_STREAM``. A router-held action is republished confirmed on approval
     and dropped on denial. False when there was nothing to claim — absent, expired,
     already decided, or unreadable (never acted on).
+
+    An action Reflex proposed is an ask (``core/reflex/answers.py``): the decision is recorded
+    as its answer, from *channel* (the Door, or the channel a reply came on), and only the
+    first answer to an ask records and runs anything. A decision that finds no open ask naming
+    the record (it was settled elsewhere) runs nothing and is False. When there is nothing to
+    claim, an ask whose time has passed is settled as expired: its pending record lapsed with
+    it. *now* is the clock for that, the current time unless a caller says otherwise.
     """
+    now = now or datetime.now(UTC)
     try:
         record = await claim_pending(redis, record_id)
     except ValueError:  # claimed, but no longer parses: it is gone and acts on nothing
         logger.warning("Pending record {} is unreadable — discarded", record_id)
+        await settle_expired(redis, now=now)
         return False
     if record is None:
+        await settle_expired(redis, now=now)
         return False
     if isinstance(record, ParkedRun):
         event = ApprovalDecision(
@@ -199,12 +265,11 @@ async def decide(redis: AioRedis, record_id: str, decision: Literal["approve", "
         )
         await redis.xadd(APPROVALS_STREAM, {"event": event.model_dump_json()})
         logger.info("Parked run {} decided: {}", record_id, decision)
-    elif decision == "approve":
-        confirmed = record.action.model_copy(update={"confirmed": True})
-        await redis.xadd(ACTIONS_STREAM, {"event": confirmed.model_dump_json()})
-        logger.info(
-            "Pending action {} confirmed → republished '{}'", record_id, confirmed.tool_name
-        )
+        return True
+    if record.action.source == ASK_SOURCE:
+        return await _answer_ask(redis, record.action, decision, channel=channel, now=now)
+    if decision == "approve":
+        await _republish_confirmed(redis, record.action)
     else:
         logger.info("Pending action {} denied → dropped '{}'", record_id, record.action.tool_name)
     return True

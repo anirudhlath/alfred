@@ -339,3 +339,21 @@ def test_get_pending_action_refuses_a_request_id_outside_the_charset(
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Invalid request id"
     redis.get.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("route", "decision"), [("confirm", "approve"), ("deny", "deny")], ids=["confirm", "deny"]
+)
+def test_the_door_decides_on_the_door_channel(
+    web_client: TestClient, monkeypatch: pytest.MonkeyPatch, route: str, decision: str
+) -> None:
+    """A Reflex ask records where its answer came from: the Door's routes say so."""
+    decided = AsyncMock(return_value=True)
+    monkeypatch.setattr("core.channels.web_server.decide", decided)
+
+    resp = web_client.post(f"/api/actions/some-id/{route}")
+
+    assert resp.status_code == 200
+    decided.assert_awaited_once()
+    assert decided.await_args.args[1:] == ("some-id", decision)
+    assert decided.await_args.kwargs == {"channel": "door"}

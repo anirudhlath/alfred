@@ -150,8 +150,9 @@ person just changed. It does not ask the model to remember.
 
 `core/reflex/asks.py` holds the limits that keep asks few and the asking itself. The runner
 calls it for both origins, a state change and a fired trigger, through `ask_or_hold`
-(`core/reflex/runner.py`): between the engine and the record, only a `shadow` outcome is gated,
-and the answers are a later task of this slice (the full account of asks lands with them).
+(`core/reflex/runner.py`): between the engine and the record, only a `shadow` outcome is gated.
+The answers (the Door, a reply, or silence) are in
+[`autonomy.md`](autonomy.md#reflex-asks).
 
 `gate` reduces a standing (`shadow`) proposal to `asked` or `held`, naming the first limit it
 meets, in this order:
@@ -162,12 +163,14 @@ meets, in this order:
 2. `quiet_hours`: the owner's local time is in `quiet_hours_start` up to `quiet_hours_end`
    (a start later than the end wraps midnight; equal means none);
 3. `dnd`: Do Not Disturb is on;
-4. `ask_open`: an ask is already waiting (an expired one is settled first);
+4. `ask_open`: an ask is already waiting (an expired one is settled first, and recorded as
+   `expired` at its deadline);
 5. `asked_recently`: `alfred:reflex:asked:<tool>:<sorted targets>` exists;
 6. `daily_cap`: `alfred:reflex:asks:<local YYYY-MM-DD>` has reached `daily_ask_cap`.
 
 In `shadow` mode only the first three are checked and the outcome stays `shadow`, with the
-reason or none. The gate writes nothing, apart from settling an expired ask.
+reason or none. The gate writes nothing, apart from settling an expired ask: that records
+the `expired` answer and deletes the open key (`settle_expired`, `core/reflex/answers.py`).
 
 `open_ask` claims `alfred:reflex:ask:open` first, with `SET NX` (the value is the `OpenAsk`
 JSON, kept for `ask_expiry_seconds` plus a day), because the state-change and trigger loops

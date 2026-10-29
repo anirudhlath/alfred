@@ -16,6 +16,10 @@ the approval it waits on, and answers with a fixed template. The owner's next tu
 session is read as approving, declining or moving on from it, and resumes the parked run
 with the verdict and the turn's words in one run. A decision from the Door resumes it as a
 turn of its own (``resume_approval``), under the approval id, answered as a follow-up.
+
+A reply that no parked run in its conversation takes may still answer the ask Reflex has open
+(``_answer_reflex_ask``): a yes or no is recorded and answered with a short fixed reply, and
+no model runs.
 """
 
 from __future__ import annotations
@@ -31,7 +35,14 @@ from pydantic_ai.messages import ModelMessagesTypeAdapter, repair_messages
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness.spend import SpendLimitExceeded
 
-from bus.schemas.events import AlfredResponse, ApprovalDecision, ParkedRun, UserRequest
+from bus.schemas.events import (
+    AlfredResponse,
+    ApprovalDecision,
+    ParkedAction,
+    ParkedCall,
+    ParkedRun,
+    UserRequest,
+)
 from core.conscious.agent import REQUEST_LIMIT
 from core.conscious.approvals import (
     approval_id_for,
@@ -48,7 +59,8 @@ from core.conscious.session import text_turn
 from core.conscious.system2_prompts import fetch_system2_prompts
 from core.conscious.tools.integrations import fetch_integration_tools
 from core.identity.schemas import IdentityResult
-from core.routing.pending import claim_pending
+from core.reflex.answers import ASK_REPLY_CHANNELS, read_open_ask, settle_expired
+from core.routing.pending import claim_pending, decide, read_pending
 from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 from shared.otel import langfuse_attributes
 from shared.prompts.link import linked_prompts
@@ -100,6 +112,9 @@ DELIBERATING_REPLY: Final = (
 NOT_CONFIGURED_REPLY: Final = (
     "I'm afraid my connection to the thinking engine is not configured, sir."
 )
+# The replies to a "yes" and a "no" that answered one of Reflex's asks.
+ASK_CONFIRMED_REPLY: Final = "Okay."
+ASK_DECLINED_REPLY: Final = "Okay, I'll leave it."
 # The owner's side of a Door decision, as the session records it: the Door sends no words.
 APPROVED_MARKER: Final = "[Approved from the confirmation prompt]"
 DECLINED_MARKER: Final = "[Declined from the confirmation prompt]"
@@ -341,6 +356,10 @@ class ConsciousEngine:
         if resume is not None:
             history, results = resume.history, resume.results
             deps.approval_id = resume.approval_id
+        else:
+            ack = await self._answer_reflex_ask(request, identity.identity)
+            if ack is not None:  # a yes or no to Reflex's ask: no model run, nothing parked
+                return self._reply(request, ack, [])
 
         usage = RunUsage()
         text, mood, messages, deferred = await self._run(
@@ -520,6 +539,47 @@ class ConsciousEngine:
             return None
         logger.info("Reply decides approval %s: %s", approval_id, decision)
         return _Resume(approval_id, history, results_for(run, decision))
+
+    async def _answer_reflex_ask(self, request: UserRequest, who: str) -> str | None:
+        """The reply to *request* when it answers the ask Reflex has open, else ``None``.
+
+        Runs only when no parked run in this conversation took the reply (``_resume_for``).
+        Only the owner answers, on a channel an ask's notification reaches
+        (``ASK_REPLY_CHANNELS``, never speech), and only with a classifier: without one every
+        reply moves on. An ask past its deadline is settled first. The parked action is read,
+        not claimed, and the reply classified against it; ``decide`` then claims it, so a Door
+        tap and a reply can never both answer. ``None`` is a normal turn: no open ask, a pending
+        record that no longer reads, a reply that is neither yes nor no, or an answer that lost
+        to another.
+        """
+        if who != "sir" or request.channel not in ASK_REPLY_CHANNELS or self._approval is None:
+            return None
+        await settle_expired(self._redis, now=datetime.now(UTC))
+        ask = await read_open_ask(self._redis)
+        if ask is None:
+            return None
+        try:
+            record = await read_pending(self._redis, ask.ask_id)
+        except ValueError:
+            logger.warning("Reflex ask %s holds a record that no longer reads", ask.ask_id)
+            return None
+        if not isinstance(record, ParkedAction):
+            return None
+        action = record.action
+        call = ParkedCall(
+            tool_call_id=ask.ask_id,
+            tool_name=action.tool_name,
+            target_service=action.target_service,
+            parameters=action.parameters,
+            reason=action.reason or "",
+        )
+        verdict = await self._approval.classify([call], request.content)
+        if verdict == "other":
+            return None
+        logger.info("Reply decides Reflex ask %s: %s", ask.ask_id, verdict)
+        if not await decide(self._redis, ask.ask_id, verdict, channel=request.channel):
+            return None
+        return ASK_CONFIRMED_REPLY if verdict == "approve" else ASK_DECLINED_REPLY
 
     async def _park(
         self,

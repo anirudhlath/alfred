@@ -128,6 +128,16 @@ def _confirmed(tool: str = "home.unlock_door") -> ActionRequest:
     )
 
 
+def _reflex_confirmed(tool: str = "home.light_turn_on") -> ActionRequest:
+    """An action Reflex proposed and the owner said yes to."""
+    return ActionRequest(
+        source="reflex-engine",
+        target_service="home-service",
+        tool_name=tool,
+        confirmed=True,
+    )
+
+
 def _router_returning(result: ActionResult) -> AsyncMock:
     router = AsyncMock()
     router.registered_services = {"home-service"}
@@ -248,3 +258,61 @@ async def test_an_unconfirmed_or_foreign_action_publishes_no_result() -> None:
 
     redis.xadd.assert_not_awaited()
     notifier.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_reflex_action_that_worked_is_not_announced() -> None:
+    """The owner has just said yes: "Done" would only repeat it. The result still goes out."""
+    action = _reflex_confirmed()
+    notifier = AsyncMock()
+    redis = AsyncMock()
+    log = MagicMock()
+
+    _, acked = await _drive_once(
+        action,
+        _router_returning(_outcome(action, "success")),
+        notifier=notifier,
+        redis=redis,
+        log=log,
+    )
+
+    notifier.publish.assert_not_awaited()
+    (call,) = redis.xadd.await_args_list
+    assert ActionResult.model_validate_json(call.args[1]["event"]).status == "success"
+    log.info.assert_called()
+    assert b"1-0" in acked
+
+
+@pytest.mark.asyncio
+async def test_a_reflex_action_that_failed_is_still_reported() -> None:
+    action = _reflex_confirmed()
+    notifier = AsyncMock()
+    log = MagicMock()
+
+    await _drive_once(
+        action,
+        _router_returning(_outcome(action, "error", "lamp unreachable")),
+        notifier=notifier,
+        log=log,
+    )
+
+    log.warning.assert_called_once()
+    notifier.publish.assert_awaited_once_with(
+        title="That didn't work",
+        body="'home.light_turn_on' on home-service failed: lamp unreachable",
+        source="conscious-engine",
+        urgency=Urgency.IMPORTANT,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_reflex_action_that_raises_is_reported_as_a_failure() -> None:
+    action = _reflex_confirmed()
+    router = AsyncMock()
+    router.registered_services = {"home-service"}
+    router.route = AsyncMock(side_effect=RuntimeError("agent exploded"))
+    notifier = AsyncMock()
+
+    await _drive_once(action, router, notifier=notifier)
+
+    assert notifier.publish.await_args.kwargs["title"] == "That didn't work"

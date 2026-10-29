@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 from bus.schemas.events import ReflexOutcome
 from core.notifications.schema import Urgency
-from core.reflex.answers import OpenAsk, settle_expired
+from core.reflex.answers import ASK_SOURCE, OpenAsk, settle_expired
 from core.routing.pending import confirmation_metadata, store_pending_action
 from shared.streams import REFLEX_ASK_OPEN_KEY, REFLEX_ASKED_PREFIX, REFLEX_ASKS_PREFIX
 
@@ -33,7 +33,6 @@ if TYPE_CHECKING:
     from core.reflex.settings import ReflexSettings
     from shared.types import AioRedis
 
-ASK_SOURCE: Final = "reflex-engine"
 # The most a notification body may be, and the line that always ends it.
 BODY_MAX_CHARS: Final = 300
 _REPLY_LINE: Final = "Reply yes or no."
