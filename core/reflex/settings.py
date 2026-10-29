@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 _warned: set[bytes | str] = set()
 
 # A clock time of day, 00:00 to 23:59. Part of the model, so a bad time fails the document.
-_HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
+HHMM_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
 
 # The caps on the two lists, the same as the attention set's admin edit (``admin_api.py``,
 # which imports this module and so cannot be imported here).
@@ -75,8 +75,8 @@ class ReflexSettings(BaseModel):
     # The most asks in one local day.
     daily_ask_cap: int = Field(6, ge=0, le=50, strict=True)
     # Quiet hours, local time: no ask in this window. Equal start and end means none.
-    quiet_hours_start: str = Field("23:00", pattern=_HHMM)
-    quiet_hours_end: str = Field("07:00", pattern=_HHMM)
+    quiet_hours_start: str = Field("23:00", pattern=HHMM_PATTERN)
+    quiet_hours_end: str = Field("07:00", pattern=HHMM_PATTERN)
 
 
 def _problems(error: ValidationError) -> str:

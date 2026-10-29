@@ -1275,9 +1275,10 @@ def test_the_weather_golden_needle_is_the_now_lines_and_not_the_what_changed_lin
 ASK_GOLDENS = ("reflex.asks.ask_mode_asks", "reflex.asks.dnd_holds")
 
 
-def test_the_ask_goldens_ask_after_dark_at_an_hour_outside_the_default_quiet_hours() -> None:
+def test_the_ask_goldens_run_in_the_small_hours_with_the_quiet_hours_moved_off_them() -> None:
     """Quiet hours are the first limit after the tool: a golden set inside them would be held
-    for them, whatever it meant to test. It is the dimming golden's evening, with ask mode on."""
+    for them, whatever it meant to test. 02:00 is inside the defaults (pinned by unit tests), so
+    each golden moves the hours off it and reaches the ask gate."""
     defaults = ReflexSettings()
     for golden_id in ASK_GOLDENS:
         s = _goldens()[golden_id]
@@ -1285,14 +1286,23 @@ def test_the_ask_goldens_ask_after_dark_at_an_hour_outside_the_default_quiet_hou
         assert s.watches_reflex and s.reads_outcomes, golden_id
         [clock] = [step for step in s.steps if isinstance(step, ClockStep)]
         hour = clock.clock.hour
-        for minute in (0, 59):  # the whole hour is outside, whenever the clock step lands in it
-            assert not in_quiet_hours(
+        assert hour == 2, golden_id
+        for minute in (0, 59):  # the whole hour is inside the defaults and outside the golden's
+            assert in_quiet_hours(
                 time(hour, minute), defaults.quiet_hours_start, defaults.quiet_hours_end
             ), golden_id
         [settings] = [step for step in s.steps if isinstance(step, ReflexSettingsStep)]
-        assert settings.reflex_settings.mode == "ask", golden_id
-        patterns = settings.reflex_settings.ask_tools or []
-        assert any(fnmatch("home.light_turn_on", p) for p in patterns), golden_id
+        change = settings.reflex_settings
+        assert (change.quiet_hours_start, change.quiet_hours_end) == ("04:00", "05:00"), golden_id
+        assert change.quiet_hours_start and change.quiet_hours_end
+        for minute in (0, 59):
+            assert not in_quiet_hours(
+                time(hour, minute), change.quiet_hours_start, change.quiet_hours_end
+            ), golden_id
+        assert change.mode == "ask", golden_id
+        patterns = change.ask_tools or []
+        assert any(fnmatch("home.light_turn_off", p) for p in patterns), golden_id
+        assert patterns == (["home.light_*"] if "ask_mode" in golden_id else ["home.*"])
         # Everything that sets the scene comes before the first event Reflex judges.
         kinds = [step_kind(step) for step in s.steps]
         first_event = kinds.index("ha_event")
@@ -1300,9 +1310,20 @@ def test_the_ask_goldens_ask_after_dark_at_an_hour_outside_the_default_quiet_hou
         events = [(h.ha_event.entity_id, h.ha_event.state) for h in _steps_of(s)]
         assert events == [
             ("sun.sun", "below_horizon"),
-            ("media_player.living_room_tv", "paused"),
-            ("media_player.living_room_tv", "playing"),
+            ("light.living_room_lamp", "on"),
         ], golden_id
+        # A device's change, not a person's: a lamp a person lit is left alone, so a proposal
+        # to turn it off would be would_reverse and the golden would never reach the ask.
+        assert _causes(s)[("light.living_room_lamp", "on")] == "automation", golden_id
+        assert kinds[-1] == "wait", golden_id  # the decision, and the ask it parks, land in it
+
+
+def test_the_dnd_golden_lets_any_home_tool_be_asked_about_so_only_dnd_can_hold_it() -> None:
+    steps = _goldens()["reflex.asks.dnd_holds"].steps
+    [settings] = [step for step in steps if isinstance(step, ReflexSettingsStep)]
+    asked_about = settings.reflex_settings.ask_tools or []
+    for tool in ("home.light_turn_off", "home.switch_turn_off", "home.cover_close_cover"):
+        assert any(fnmatch(tool, p) for p in asked_about), tool
 
 
 def test_the_ask_golden_expects_an_ask_or_nothing_and_finds_the_ask_it_made() -> None:
@@ -1311,7 +1332,7 @@ def test_the_ask_golden_expects_an_ask_or_nothing_and_finds_the_ask_it_made() ->
     assert outcome.name == "reflex_outcome"
     assert outcome.params.model_dump(exclude_none=True) == {
         "outcome": ["asked", "none", "held"],
-        # Held only because an earlier event of the golden was asked about; no other limit.
+        # Held only for an ask that is already open or was just made; no other limit.
         "reason": ["ask_open", "asked_recently"],
     }
     assert parked.name == "reflex_ask_parked"
@@ -1336,7 +1357,7 @@ def test_the_dnd_golden_turns_do_not_disturb_on_before_the_events_and_expects_it
 def test_neither_ask_golden_can_pass_on_an_ask_that_went_out_or_a_hold_for_another_reason() -> None:
     """The scoring, on the log a bad Reflex would leave. The dnd golden fails on an ask and on
     a hold for the quiet hours; the ask golden fails on a proposal left as a shadow, or held
-    for a limit it had no business hitting at 21:00."""
+    for a limit it had no business hitting at 02:00."""
     from tests.evals.harness.test_checks_reflex import ev, logged
 
     def status(golden_id: str, outcome: str, reason: str | None) -> str:

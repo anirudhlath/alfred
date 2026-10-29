@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
 import fakeredis
@@ -508,12 +508,19 @@ async def test_the_answers_are_counted_per_day_they_were_recorded() -> None:
 
 async def test_an_open_ask_past_its_deadline_is_settled_and_counted_as_expired() -> None:
     redis = fakeredis.FakeAsyncRedis()
-    now = datetime.now(UTC)  # fakeredis stamps the answer with the real clock
+    real_xadd = redis.xadd
+
+    async def stamped_at_now(*args: Any, **kwargs: Any) -> Any:
+        # fakeredis would stamp the answer with the real clock, which crosses a UTC day at
+        # midnight and leaves the answer outside the report's window.
+        return await real_xadd(*args, **{**kwargs, "id": f"{int(NOW.timestamp() * 1000)}-0"})
+
+    redis.xadd = stamped_at_now  # type: ignore[method-assign]
     await redis.set(
-        REFLEX_ASK_OPEN_KEY, an_ask(deadline=now - timedelta(minutes=1)).model_dump_json()
+        REFLEX_ASK_OPEN_KEY, an_ask(deadline=NOW - timedelta(minutes=1)).model_dump_json()
     )
 
-    report = await build_report(redis, days=1, now=now, tz_name="UTC")
+    report = await build_report(redis, days=1, now=NOW, tz_name="UTC")
 
     assert await redis.exists(REFLEX_ASK_OPEN_KEY) == 0
     answers = [line for line in rows_of(report, "### Asks") if line.count("|") == 5]

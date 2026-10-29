@@ -566,7 +566,7 @@ async def test_the_ask_is_not_answered_twice() -> None:
     assert await redis.exists(f"{REFLEX_ANSWERED_PREFIX}{ASK_ID}") == 1
 
 
-# ── a yes meant for Alfred is not an answer to the ask (R52) ─────────────────
+# ── a yes meant for Alfred is not an answer to the ask ─────────────────
 
 
 async def _store_exchange(

@@ -211,12 +211,14 @@ Reflex had noticed; capped near 5,000 entries). Three roads lead there, all in
 - **A reply**, in words: the approval classifier reads it against the parked action. Only the
   owner can answer this way, on `web_pwa`, `ios` or `signal` (the channels an `important`
   notification reaches, never speech), and a reply does not answer once Alfred has spoken in that
-  conversation since the ask went out (R52): a "yes" there answers whatever Alfred just said, so it
+  conversation since the ask went out: a "yes" there answers whatever Alfred just said, so it
   is a normal turn and the ask stays open for the Door.
 - **Silence.** Nothing watches the clock: an ask past its deadline (`ask_expiry_seconds` after it
   was made, 600 s by default) is recorded as `expired`, with no channel, the next time anything
-  looks. The ask gate looks on every decision, so a quiet house settles it when the next event
-  arrives; the shadow report settles it too, before it counts.
+  looks. The ask gate settles it only in `ask` mode, and only after the first three limits
+  (`tool_off`, quiet hours and do-not-disturb) have passed, so a lapsed ask stays open through a
+  decision that one of them holds; the next decision that gets past them settles it. The shadow
+  report settles it too, before it counts.
 
 One answer per ask: `alfred:reflex:answered:<ask id>` arbitrates between a Door tap and a reply that
 arrive together, and the loser runs nothing.
@@ -250,9 +252,16 @@ stream cannot be read, the report says so and prints the rest. A day with no cou
 eval goldens in `evals/suites/reflex/` run the whole path against the real stack
 ([`evals.md`](evals.md)): `reflex.asks.ask_mode_asks` switches to `ask` mode with the
 `reflex_settings` step and expects the proposal to be asked, as a pending action from
-`reflex-engine`, or nothing at all; `reflex.asks.dnd_holds` turns do-not-disturb on first and
-expects it to hold. The step restores the owner's settings when the sample ends, and the harness
-clears the open ask and the repeat keys before the next golden (`clear_reflex_asks`).
+`reflex-engine`, held for an ask already open, or nothing at all; `reflex.asks.dnd_holds` turns
+do-not-disturb on first and expects it to hold or to say nothing. Both run in the small hours,
+with the quiet hours moved off them so the ask gate is reached (the defaults are pinned by unit
+tests), and both switch a lamp on by an automation, because a lamp a person switched on is left
+alone. The step restores the owner's settings when the sample ends, and the harness clears the
+open ask and the repeat keys before the next golden (`clear_reflex_asks`).
+
+When the model says `none`, the ask golden passes without exercising the ask. The end-to-end ask
+path is pinned by `tests/core/reflex/test_runner_asks.py`, and the current System 1 model says
+`none` in the evening TV-dimming shape, which is why the goldens use the lamp instead.
 
 ## The sun and the weather
 

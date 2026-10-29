@@ -377,6 +377,37 @@ async def test_a_field_the_change_does_not_name_keeps_its_value(
     assert api.document == {**FOUND, "mode": "ask"}
 
 
+async def test_a_quiet_hours_change_goes_out_in_the_put_beside_the_rest_of_the_document(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    api = SettingsApi(redis)
+    await bus(redis, api).set_reflex_settings(
+        {"mode": "ask", "quiet_hours_start": "04:00", "quiet_hours_end": "05:00"}
+    )
+    assert api.document == {
+        **FOUND,
+        "mode": "ask",
+        "quiet_hours_start": "04:00",
+        "quiet_hours_end": "05:00",
+    }
+
+
+@pytest.mark.parametrize("method", ["GET", "PUT"])
+async def test_an_unreachable_settings_route_names_the_method_that_failed(
+    redis: fakeredis.FakeAsyncRedis, method: str
+) -> None:
+    api = SettingsApi(redis)
+
+    async def unreachable(request: httpx.Request) -> httpx.Response:
+        if request.method != method:
+            return await api(request)
+        raise httpx.ConnectError("connection refused", request=request)
+
+    with pytest.raises(BusError, match=f"{method} /api/admin/reflex/settings failed: connection"):
+        await bus(redis, unreachable).set_reflex_settings({"mode": "ask"})
+    assert await redis.keys(f"{AUTH_SESSION_PREFIX}*") == []
+
+
 async def test_restore_reflex_settings_puts_the_whole_document_back(
     redis: fakeredis.FakeAsyncRedis,
 ) -> None:

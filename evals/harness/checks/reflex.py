@@ -88,7 +88,9 @@ class ReflexOutcomeParams(BaseModel):
 
 class ReflexAskParkedParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    at_step: int | None = None  # the ha_event step whose decisions are judged
+    # The ha_event step whose change must have a decision in the log: every ask in the sample
+    # is judged whichever step it was about.
+    at_step: int | None = None
 
 
 def _clock_problem(evidence: Evidence, step: int, calls: list[ReflexCall]) -> str | None:
@@ -314,13 +316,16 @@ def reflex_outcome(evidence: Evidence, p: ReflexOutcomeParams) -> CheckResult:
 
 
 def reflex_ask_parked(evidence: Evidence, p: ReflexAskParkedParams) -> CheckResult:
-    """Every ask the decision log says Reflex made about the step's change is a pending action
-    from Reflex in the sample's last pending snapshot.
+    """Every ask the decision log says Reflex made in the sample is a pending action from
+    Reflex in the sample's last pending snapshot.
 
-    The ask is parked just after the model's reply, which can be after the ``ha_event``
-    step's own snapshot: the last one is what a golden's closing ``wait`` step settles. A
-    decision that came to anything but ``asked`` has nothing to park, so a change nothing asked
-    about is a pass. No decision in the log is an ``error``, as for ``reflex_outcome``.
+    All of the sample's asks are judged, not only those about the step's change: a golden can
+    be held for an ask that went out earlier (``held`` for ``ask_open``), and that earlier ask
+    must be parked too. The ask is parked just after the model's reply, which can be after the
+    ``ha_event`` step's own snapshot: the last one is what a golden's closing ``wait`` step
+    settles. A decision that came to anything but ``asked`` has nothing to park, so a sample
+    nothing was asked in is a pass. The step's own change must still have a decision in the
+    log, or the check is an ``error``, as for ``reflex_outcome``.
     """
     name = "reflex_ask_parked"
     window = _window(evidence, name, p.at_step)
@@ -329,7 +334,7 @@ def reflex_ask_parked(evidence: Evidence, p: ReflexAskParkedParams) -> CheckResu
     logged = evidence.decisions_about(window.step)
     if not logged:
         return _unlogged(name, window)
-    asked = [d for d in logged if d.outcome == "asked"]
+    asked = [d for d in evidence.decisions if d.outcome == "asked"]
     if not asked:
         seen = "; ".join(_describe_logged(d) for d in logged)
         return passed(

@@ -512,6 +512,44 @@ def test_an_action_parked_by_another_source_or_for_another_tool_is_not_the_ask()
     )
 
 
+def earlier_ask(**kw: Any) -> LoggedDecision:
+    """An ask about another change than the step's, logged before the step's own decision."""
+    return logged(
+        "asked",
+        tool="home.light_turn_off",
+        targets=KITCHEN,
+        t=0.5,
+        entity_id="light.kitchen_pendants",
+        state="on",
+        **kw,
+    )
+
+
+def test_an_earlier_ask_is_still_checked_when_the_step_was_held_for_it() -> None:
+    """The step's own change was held for the open ask (``ask_open``), so nothing the step
+    decided is ``asked``: the ask that is open must still be parked."""
+    held = logged("held", "none", None, reason="ask_open")
+    decisions = (earlier_ask(), held)
+    status, reason = ask_parked(with_pending([], decisions=decisions))
+    assert status == "fail" and "home.light_turn_off" in reason
+    assert "no pending action from reflex-engine" in reason
+    parked_ask = with_pending([parked(tool="home.light_turn_off")], decisions=decisions)
+    status, reason = ask_parked(parked_ask)
+    assert status == "pass" and "asked home.light_turn_off" in reason
+
+
+def test_every_ask_in_the_sample_needs_its_own_parked_action() -> None:
+    decisions = (earlier_ask(), logged("asked", targets=LIVING))
+    only_the_later = with_pending([parked(tool="home.light_turn_on")], decisions=decisions)
+    status, reason = ask_parked(only_the_later)
+    assert status == "fail" and "home.light_turn_off" in reason
+    both = with_pending(
+        [parked(tool="home.light_turn_on"), parked(tool="home.light_turn_off")],
+        decisions=decisions,
+    )
+    assert ask_parked(both)[0] == "pass"
+
+
 def test_when_nothing_was_asked_there_is_nothing_to_park() -> None:
     for outcomes in (("none",), ("held",), ("shadow",)):
         decisions = tuple(logged(o, "none", None) for o in outcomes)

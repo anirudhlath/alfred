@@ -27,7 +27,7 @@ from pydantic import (
     model_validator,
 )
 
-from core.reflex.settings import MAX_ITEM_CHARS, MAX_LIST_ITEMS
+from core.reflex.settings import HHMM_PATTERN, MAX_ITEM_CHARS, MAX_LIST_ITEMS
 from evals.harness.checks import CHECK_PARAMS, needs_reply, reads_decision_log, step_kind_needed
 from evals.harness.checks import watches_reflex as _watches_reflex
 from evals.harness.checks.home import HaCalledParams
@@ -174,11 +174,18 @@ class ReflexSettingsChange(BaseModel):
     mode: Literal["shadow", "ask"] | None = None
     # fnmatch patterns over tool names: the tools Reflex may ask about.
     ask_tools: list[AskTool] | None = Field(default=None, max_length=MAX_LIST_ITEMS)
+    # The owner's local HH:MM, as the settings document keeps them: moving them lets a golden
+    # run at an hour the defaults would hold for.
+    quiet_hours_start: str | None = Field(default=None, pattern=HHMM_PATTERN)
+    quiet_hours_end: str | None = Field(default=None, pattern=HHMM_PATTERN)
 
     @model_validator(mode="after")
     def _changes_something(self) -> Self:
-        if self.mode is None and self.ask_tools is None:
-            raise ValueError("a reflex_settings step changes mode, ask_tools or both")
+        if all(value is None for value in self.model_dump().values()):
+            raise ValueError(
+                "a reflex_settings step changes at least one of mode, ask_tools, "
+                "quiet_hours_start and quiet_hours_end"
+            )
         return self
 
 

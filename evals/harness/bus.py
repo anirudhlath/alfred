@@ -531,7 +531,7 @@ class ContainerBus:
                     timeout=self._timeout_s,
                 )
         except httpx.HTTPError as exc:
-            raise BusError(f"POST {path} failed: {exc}") from exc
+            raise BusError(f"{method} {path} failed: {exc}") from exc
         finally:
             # Bounded too, or a frozen container hangs the cleanup of the error above.
             async with self.answered(f"{what}'s session delete"):

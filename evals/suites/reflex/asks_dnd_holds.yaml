@@ -1,17 +1,21 @@
 id: reflex.asks.dnd_holds
 prd: [4.4.tiered-autonomy]
 status: shipped
-tags: [asks, dnd, lights, media]
+tags: [asks, dnd, lights]
 steps:
-  - clock: {hour: 21}
-  - reflex_settings: {mode: ask, ask_tools: ["home.light_*"]}
+  # The same shape as asks_ask_mode_asks: a lamp switched on in the small hours. The quiet
+  # hours are moved so the ask gate is reached (02:00 is inside the defaults, which unit tests
+  # pin), and every home tool may be asked about, so no tool_off can stand in for the hold
+  # this golden pins.
+  - clock: {hour: 2}
+  - reflex_settings: {mode: ask, ask_tools: ["home.*"], quiet_hours_start: "04:00", quiet_hours_end: "05:00"}
   - dnd: on
   - ha_event: {entity_id: sun.sun, state: below_horizon}
-  - ha_event: {entity_id: media_player.living_room_tv, state: paused}
+  # By an automation, not a person: see asks_ask_mode_asks.
+  - ha_event: {entity_id: light.living_room_lamp, state: "on", by: automation}
   - wait: 6
-  - ha_event: {entity_id: media_player.living_room_tv, state: playing}
 expect:
   # The owner asked not to be disturbed, so Reflex does not ask. It may say nothing at all.
-  # A proposal it makes is held for do-not-disturb (not for the quiet hours, which 21:00 is
-  # outside), and an ask that went out anyway is the bug this golden pins.
+  # A proposal it makes is held for do-not-disturb (not for the quiet hours, which 02:00 is
+  # outside here), and an ask that went out anyway is the bug this golden pins.
   - reflex_outcome: {outcome: [held, none], reason: dnd}

@@ -38,6 +38,19 @@ async def test_the_step_changes_the_settings_and_the_sample_puts_back_what_it_fo
     assert "reflex settings changed" in ev.transcript[0].text
 
 
+async def test_quiet_hours_the_step_moves_are_put_back_with_the_rest_of_the_document() -> None:
+    bus = FakeBus()
+    hours = {"quiet_hours_start": "04:00", "quiet_hours_end": "05:00"}
+    step = {"reflex_settings": {"mode": "ask", **hours}}
+    ev = await played(ctx(Recorder(), bus=bus), steps=[step, {"user": "Hello."}])
+    assert bus.settings_log == [
+        ("set", {"mode": "ask", "ask_tools": [], **hours}),
+        ("restore", SHADOW),
+    ]
+    assert bus.reflex_settings == SHADOW  # the document it first found: no quiet hours of its own
+    assert "'quiet_hours_start': '04:00'" in ev.transcript[0].text
+
+
 async def test_a_later_change_does_not_move_what_the_sample_restores() -> None:
     bus = FakeBus()
     bus.reflex_settings = {"mode": "shadow", "ask_tools": ["home.cover_*"], "daily_ask_cap": 3}

@@ -621,11 +621,37 @@ def test_a_reflex_settings_step_loads_with_the_settings_it_changes() -> None:
     assert second.reflex_settings.model_dump(exclude_none=True) == {"mode": "shadow"}
 
 
+def test_a_reflex_settings_step_may_move_the_quiet_hours_alone_or_with_the_rest() -> None:
+    hours = {"reflex_settings": {"quiet_hours_start": "04:00", "quiet_hours_end": "05:00"}}
+    one = {"reflex_settings": {"quiet_hours_end": "23:59"}}
+    both = {"reflex_settings": {"mode": "ask", "quiet_hours_start": "00:00"}}
+    s = golden([hours, one, both, EVENT], [{"ha_not_called": {}}])
+    changes = [
+        step.reflex_settings.model_dump(exclude_none=True)
+        for step in s.steps
+        if isinstance(step, ReflexSettingsStep)
+    ]
+    assert changes == [
+        {"quiet_hours_start": "04:00", "quiet_hours_end": "05:00"},
+        {"quiet_hours_end": "23:59"},
+        {"mode": "ask", "quiet_hours_start": "00:00"},
+    ]
+
+
 @pytest.mark.parametrize(
     "change",
     [
         {},  # changes nothing
+        {"quiet_hours_start": None, "quiet_hours_end": None},  # names two, changes none
         {"mode": None},
+        {"quiet_hours_start": "25:00"},
+        {"quiet_hours_start": "24:00"},
+        {"quiet_hours_end": "4:00"},
+        {"quiet_hours_end": "04:60"},
+        {"quiet_hours_start": "0400"},
+        {"quiet_hours_start": "04:00 "},
+        {"quiet_hours_end": 400},
+        {"quiet_hours_end": True},
         {"mode": "act"},  # not a mode
         {"mode": True},
         {"ask_tools": "home.light_*"},  # a list, not a string
