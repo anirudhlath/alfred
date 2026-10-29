@@ -42,12 +42,19 @@ describe("index.html", () => {
     expect(html).toContain('<meta name="format-detection" content="telephone=no" />');
   });
 
-  it("asks iOS for a standalone app with a translucent status bar", () => {
+  it("asks iOS for a standalone app", () => {
     expect(html).toContain('<meta name="apple-mobile-web-app-capable" content="yes" />');
-    expect(html).toContain(
-      '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />',
-    );
     expect(html).toContain('<meta name="apple-mobile-web-app-title" content="Alfred" />');
+  });
+
+  it("leaves the status bar opaque, because iOS 27 lays a translucent one out short", () => {
+    // Measured on an iPhone 18 Pro Max (956 pt) from the Home Screen with
+    // black-translucent: the app is drawn from the top of the screen, under the
+    // status bar, but laid out 894 pt tall, and iOS paints nothing of the page
+    // in the 62 pt below that, not even a fixed box sized to the screen. With no
+    // style the app starts below the bar and is laid out to the bottom of the
+    // screen, and the bar takes theme-color.
+    expect(html).not.toMatch(/<meta\s[^>]*name="apple-mobile-web-app-status-bar-style"/);
   });
 
   it("gives iOS a raster home-screen icon, which is the only kind it takes", () => {

@@ -83,8 +83,9 @@ Nothing here can fail. Why the manifests may have no part in what iOS shows is
 
 ## Standalone
 
-- [ ] No Safari chrome and no address bar. The status bar is translucent over the app's
-      own background, and the composer sits above the home indicator
+- [ ] No Safari chrome and no address bar. The status bar is opaque, in the app's own
+      background colour, with the app starting below it; the app reaches the bottom of the
+      screen with no empty strip, and the composer sits above the home indicator
 
 ## A cold launch with no network
 
