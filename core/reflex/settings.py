@@ -108,6 +108,54 @@ async def save_settings(redis: AioRedis, settings: ReflexSettings) -> None:
     await redis.set(REFLEX_SETTINGS_KEY, settings.model_dump_json())
 
 
+async def _stored(redis: AioRedis) -> tuple[ReflexSettings, str | None]:
+    """What Reflex reads and, when a document is stored but unusable, what is wrong with it.
+
+    A missing document is the defaults and no problem; an unusable one is the defaults too (as
+    ``load_settings`` has it) with its problems.
+    """
+    raw: bytes | str | None = await redis.get(REFLEX_SETTINGS_KEY)
+    if raw is None:
+        return ReflexSettings(), None
+    try:
+        return ReflexSettings.model_validate_json(raw), None
+    except ValidationError as e:
+        return ReflexSettings(), _problems(e)
+
+
+class SettingsUnusableError(ValueError):
+    """The stored document is not usable settings; ``problems`` says what is wrong with it."""
+
+    def __init__(self, problems: str) -> None:
+        super().__init__(f"the stored settings are unusable: {problems}")
+        self.problems = problems
+
+
+async def add_allowed_scripts(
+    redis: AioRedis, ids: Sequence[str]
+) -> tuple[ReflexSettings, list[str]]:
+    """Add *ids* to ``allowed_scripts``, each once: the settings now stored and the ids added.
+
+    The one road a script is allowed by, for the command line's ``allow-script`` and for the
+    owner's yes to a script ask. A plain read, change and save of the whole document (not
+    atomic: a concurrent edit of the same document in the milliseconds between can be lost).
+    Nothing is saved, and the error is raised, when the stored document is unusable
+    (``SettingsUnusableError``: writing the defaults over it would lose what the owner wrote) or the
+    addition would make it invalid (a ``ValidationError``: the list past its cap, a blank id).
+    """
+    current, problems = await _stored(redis)
+    if problems is not None:
+        raise SettingsUnusableError(problems)
+    added = [i for i in dict.fromkeys(i.strip() for i in ids) if i not in current.allowed_scripts]
+    if not added:
+        return current, []
+    updated = ReflexSettings.model_validate(
+        {**current.model_dump(), "allowed_scripts": [*current.allowed_scripts, *added]}
+    )
+    await save_settings(redis, updated)
+    return updated, added
+
+
 # --- the command line ---------------------------------------------------------------------
 
 _PROG = "python -m core.reflex.settings"
@@ -171,21 +219,6 @@ def _refuse(what: str, error: ValidationError) -> int:
     return 1
 
 
-async def _stored(redis: AioRedis) -> tuple[ReflexSettings, str | None]:
-    """What Reflex reads and, when a document is stored but unusable, what is wrong with it.
-
-    A missing document is the defaults and no problem; an unusable one is the defaults too (as
-    ``load_settings`` has it) with its problems.
-    """
-    raw: bytes | str | None = await redis.get(REFLEX_SETTINGS_KEY)
-    if raw is None:
-        return ReflexSettings(), None
-    try:
-        return ReflexSettings.model_validate_json(raw), None
-    except ValidationError as e:
-        return ReflexSettings(), _problems(e)
-
-
 async def _store(redis: AioRedis, current: ReflexSettings, changes: dict[str, object]) -> int:
     """Validate *current* with *changes* applied, then save it: the one road a change takes."""
     try:
@@ -218,12 +251,18 @@ async def execute(redis: AioRedis, args: Args) -> int:
             return await _store(redis, current, {args.field: _read_value(args.value)})
         case "allow-script":
             wanted = args.value.strip()
-            if wanted in current.allowed_scripts:
+            try:
+                updated, added = await add_allowed_scripts(redis, [wanted])
+            except ValidationError as e:
+                return _refuse("allowed_scripts", e)
+            except SettingsUnusableError as e:  # only a write since the read above gets here
+                print(f"{_PROG}: {_UNUSABLE.format(e.problems)}; nothing saved", file=sys.stderr)
+                return 1
+            if not added:
                 print(f"{wanted} is already in allowed_scripts; nothing to do")
                 return 0
-            return await _store(
-                redis, current, {"allowed_scripts": [*current.allowed_scripts, wanted]}
-            )
+            print(updated.model_dump_json(indent=2))
+            return 0
         case "disallow-script":
             wanted = args.value.strip()
             if wanted not in current.allowed_scripts:

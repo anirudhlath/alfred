@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis
 import pytest
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
 from bus.schemas.events import ActionRequest, ParkedCall, UserRequest
 from core.conscious.agent import build_system2_agent, system2_toolsets
@@ -35,6 +36,7 @@ from shared.streams import (
     REFLEX_ANSWERED_PREFIX,
     REFLEX_ANSWERS_STREAM,
     REFLEX_ASK_OPEN_KEY,
+    SESSIONS_KEY_PREFIX,
 )
 from tests.core.conscious.helpers import identity
 from tests.llm_fakes import Script, tool_call
@@ -152,9 +154,12 @@ async def _open_ask(
     *,
     script: bool = False,
     deadline: datetime | None = None,
+    asked_at: datetime | None = None,
     parked: bool = True,
 ) -> ActionRequest:
-    """The ask Reflex has open and, unless *parked* is False, the action it parked."""
+    """The ask Reflex has open and, unless *parked* is False, the action it parked.
+
+    It went out a minute ago unless *asked_at* says otherwise."""
     action = _ask_action(script=script)
     now = datetime.now(UTC)
     ask = OpenAsk(
@@ -162,7 +167,7 @@ async def _open_ask(
         tool_name=action.tool_name,
         targets=[SCRIPT if script else LAMP],
         origin="state_change",
-        asked_at=now - timedelta(minutes=1),
+        asked_at=asked_at or now - timedelta(minutes=1),
         deadline=deadline or now + timedelta(minutes=9),
         noticed="The lamp went off",
         script=script,
@@ -537,7 +542,7 @@ async def test_a_reply_after_its_own_run_lapsed_answers_the_ask() -> None:
     )
     approval_id = await _park_a_run(engine, "sess-1")
     await redis.delete(pending_key(approval_id))
-    await _open_ask(redis)
+    await _open_ask(redis, asked_at=datetime.now(UTC))  # after the turn that parked the run
 
     response = await engine.process_request(_request("yes please", session_id="sess-1"))
 
@@ -559,3 +564,173 @@ async def test_the_ask_is_not_answered_twice() -> None:
     assert len(await _answers(redis)) == 1
     assert len(await _republished(redis)) == 1
     assert await redis.exists(f"{REFLEX_ANSWERED_PREFIX}{ASK_ID}") == 1
+
+
+# ── a yes meant for Alfred is not an answer to the ask (R52) ─────────────────
+
+
+async def _store_exchange(
+    redis: fakeredis.FakeAsyncRedis, session_id: str, *, asked: str, answered_at: datetime
+) -> None:
+    """The owner's session already holds one exchange, Alfred's reply stamped *answered_at*."""
+    await SessionManager(redis).store_run(
+        session_id,
+        [
+            ModelRequest(parts=[UserPromptPart("Anything for the shopping list?")]),
+            ModelResponse(parts=[TextPart(asked)], timestamp=answered_at),
+        ],
+        "sir",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_yes_after_alfred_spoke_in_the_conversation_is_a_normal_turn() -> None:
+    """System 2 asked "Shall I add milk to the list?" after Reflex's ask went out: the owner's
+    yes answers System 2, and Reflex's action must not run."""
+    redis = fakeredis.FakeAsyncRedis()
+    now = datetime.now(UTC)
+    await _open_ask(redis, asked_at=now - timedelta(minutes=5))
+    await _store_exchange(
+        redis,
+        "sess-1",
+        asked="Shall I add milk to the list?",
+        answered_at=now - timedelta(minutes=1),
+    )
+    approval = _classifier("approve")
+    script = Script("Added, sir.")
+
+    response = await _engine(redis, script, approval).process_request(_request("yes please"))
+
+    assert response.text == "Added, sir."
+    assert script.call_count == 1
+    approval.classify.assert_not_awaited()
+    assert await _ask_is_untouched(redis)
+    assert (await load_settings(redis)).allowed_scripts == []
+
+
+@pytest.mark.asyncio
+async def test_a_yes_after_alfred_spoke_does_not_allow_a_script_ask() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    now = datetime.now(UTC)
+    await _open_ask(redis, script=True, asked_at=now - timedelta(minutes=5))
+    await _store_exchange(
+        redis,
+        "sess-1",
+        asked="Shall I add milk to the list?",
+        answered_at=now - timedelta(minutes=1),
+    )
+
+    await _engine(redis, Script("Added."), _classifier("approve")).process_request(_request())
+
+    assert (await load_settings(redis)).allowed_scripts == []
+    assert await _ask_is_untouched(redis)
+
+
+@pytest.mark.asyncio
+async def test_a_yes_when_alfred_last_spoke_before_the_ask_answers_the_ask() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    now = datetime.now(UTC)
+    await _open_ask(redis, asked_at=now - timedelta(minutes=1))
+    await _store_exchange(
+        redis, "sess-1", asked="Anything else, sir?", answered_at=now - timedelta(minutes=5)
+    )
+    script = Script("never sent")
+
+    response = await _engine(redis, script, _classifier("approve")).process_request(
+        _request("yes please")
+    )
+
+    assert response.text == "Okay."
+    assert script.call_count == 0
+    assert [a.answer for a in await _answers(redis)] == ["yes"]
+    assert len(await _republished(redis)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_yes_to_what_system_2_just_asked_is_not_read_against_the_ask() -> None:
+    """The whole road, with the session as the engine stores it: a turn that the classifier
+    reads as neither yes nor no, System 2's question, and then the owner's yes."""
+    redis = fakeredis.FakeAsyncRedis()
+    await _open_ask(redis)  # went out a minute ago
+    approval = _classifier("other")
+    script = Script("Shall I add milk to the list?", "Added, sir.")
+    engine = _engine(redis, script, approval)
+
+    first = await engine.process_request(_request("anything we need?"))
+    approval.classify.return_value = "approve"  # a mistaken read of the next reply would answer
+    second = await engine.process_request(_request("yes please"))
+
+    assert first.text == "Shall I add milk to the list?"
+    assert second.text == "Added, sir."
+    assert script.call_count == 2
+    approval.classify.assert_awaited_once()  # only the first reply was read against the ask
+    assert await _ask_is_untouched(redis)
+
+
+@pytest.mark.asyncio
+async def test_an_acknowledgement_leaves_the_session_history_untouched() -> None:
+    """Answering the ask is not a turn: nothing is stored, and no model ran."""
+    redis = fakeredis.FakeAsyncRedis()
+    now = datetime.now(UTC)
+    await _open_ask(redis, asked_at=now - timedelta(minutes=1))
+    await _store_exchange(
+        redis, "sess-1", asked="Anything else, sir?", answered_at=now - timedelta(minutes=5)
+    )
+    key = f"{SESSIONS_KEY_PREFIX}sess-1"
+    before = await redis.hgetall(key)
+
+    response = await _engine(redis, Script("never sent"), _classifier("approve")).process_request(
+        _request("yes please")
+    )
+
+    assert response.text == "Okay."
+    assert await redis.hgetall(key) == before
+
+
+@pytest.mark.asyncio
+async def test_an_acknowledgement_in_a_new_conversation_stores_no_history() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    await _open_ask(redis)
+
+    await _engine(redis, Script("never sent"), _classifier("approve")).process_request(
+        _request("yes please", session_id="fresh")
+    )
+
+    assert await redis.hget(f"{SESSIONS_KEY_PREFIX}fresh", "messages") is None
+
+
+@pytest.mark.asyncio
+async def test_an_acknowledgement_builds_no_turn_context() -> None:
+    """The ack is sent before involuntary recall and the prompts: it pays for neither."""
+    redis = fakeredis.FakeAsyncRedis()
+    await _open_ask(redis)
+    engine = _engine(redis, Script("never sent"), _classifier("approve"))
+    engine._recall = AsyncMock(side_effect=AssertionError("recall ran"))  # type: ignore[method-assign]
+
+    response = await engine.process_request(_request("yes please"))
+
+    assert response.text == "Okay."
+    engine._recall.assert_not_awaited()
+
+
+# ── only a Reflex ask is answered in words ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_an_action_the_router_held_is_not_approved_by_a_reply() -> None:
+    """The record under the open ask's id is a critical action another source parked: a
+    reply must not approve it, whatever the classifier says."""
+    redis = fakeredis.FakeAsyncRedis()
+    await _open_ask(redis, parked=False)
+    held = _ask_action().model_copy(update={"source": "conscious-engine"})
+    await store_pending_action(redis, held)
+    approval = _classifier("approve")
+    script = Script("Hello.")
+
+    response = await _engine(redis, script, approval).process_request(_request())
+
+    assert response.text == "Hello."
+    approval.classify.assert_not_awaited()
+    assert await _answers(redis) == []
+    assert await _republished(redis) == []
+    assert await read_pending(redis, ASK_ID) is not None  # still waiting for the Door

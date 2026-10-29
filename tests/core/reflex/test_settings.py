@@ -11,7 +11,10 @@ from loguru import logger
 
 from core.reflex import settings as settings_module
 from core.reflex.settings import (
+    MAX_LIST_ITEMS,
     ReflexSettings,
+    SettingsUnusableError,
+    add_allowed_scripts,
     execute,
     load_settings,
     parse_args,
@@ -434,3 +437,53 @@ async def test_disallow_script_with_nothing_stored_writes_nothing() -> None:
     assert await _run(redis, "disallow-script", "target.a") == 0
 
     assert await _stored(redis) is None
+
+
+# --- add_allowed_scripts: the one road a script is allowed by ------------------------------
+
+
+async def test_add_allowed_scripts_adds_each_id_once_in_order() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    await save_settings(redis, ReflexSettings(allowed_scripts=["bedtime"], daily_ask_cap=3))
+
+    updated, added = await add_allowed_scripts(redis, ["movie_night", " bedtime ", "movie_night"])
+
+    assert added == ["movie_night"]
+    assert updated.allowed_scripts == ["bedtime", "movie_night"]
+    stored = await load_settings(redis)
+    assert stored == updated
+    assert stored.daily_ask_cap == 3  # the rest of the document is kept
+
+
+async def test_add_allowed_scripts_with_nothing_new_writes_nothing() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    document = b'{"allowed_scripts":["target.a"]}'
+    await redis.set(REFLEX_SETTINGS_KEY, document)
+
+    updated, added = await add_allowed_scripts(redis, ["target.a"])
+
+    assert added == []
+    assert updated.allowed_scripts == ["target.a"]
+    assert await redis.get(REFLEX_SETTINGS_KEY) == document
+
+
+async def test_add_allowed_scripts_will_not_write_over_an_unusable_document() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    await redis.set(REFLEX_SETTINGS_KEY, b'{"mode": "act"}')
+
+    with pytest.raises(SettingsUnusableError) as raised:
+        await add_allowed_scripts(redis, ["target.a"])
+
+    assert "mode" in raised.value.problems
+    assert await redis.get(REFLEX_SETTINGS_KEY) == b'{"mode": "act"}'
+
+
+async def test_add_allowed_scripts_refuses_what_would_make_the_document_invalid() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    full = [f"script_{n}" for n in range(MAX_LIST_ITEMS)]
+    await save_settings(redis, ReflexSettings(allowed_scripts=full))
+
+    with pytest.raises(ValueError, match="allowed_scripts"):
+        await add_allowed_scripts(redis, ["one_too_many"])
+
+    assert (await load_settings(redis)).allowed_scripts == full

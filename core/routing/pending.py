@@ -196,8 +196,10 @@ async def _answer_ask(
     """Record the owner's decision on a claimed Reflex ask; republish it confirmed on a yes.
 
     False, and nothing runs, when no open ask names the action: it was settled elsewhere (it
-    expired, or another answer was recorded first and cleared the key). The action is
-    republished only when this call recorded the answer, so a yes that lost the race to
+    expired, or another answer was recorded first and cleared the key). The same when the ask's
+    deadline has passed although its pending record has not lapsed (the record's TTL is counted
+    from a later write): the ask is settled as expired, and a late yes runs nothing. The action
+    is republished only when this call recorded the answer, so a yes that lost the race to
     another answer runs nothing.
     """
     ask = await read_open_ask(redis)
@@ -207,6 +209,14 @@ async def _answer_ask(
             action.request_id,
             action.tool_name,
         )
+        return False
+    if ask.deadline <= now:
+        logger.info(
+            "Pending action {} was decided after its ask's deadline → dropped '{}'",
+            action.request_id,
+            action.tool_name,
+        )
+        await settle_expired(redis, now=now)
         return False
     recorded = await record_answer(
         redis, ask, "yes" if decision == "approve" else "no", at=now, channel=channel

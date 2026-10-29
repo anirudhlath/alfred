@@ -15,22 +15,25 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final, Literal
 
 from loguru import logger
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, field_validator
 
-from core.reflex.settings import ReflexSettings, save_settings
+from core.reflex.settings import add_allowed_scripts
 from shared.streams import (
     REFLEX_ANSWERED_PREFIX,
     REFLEX_ANSWERS_MAXLEN,
     REFLEX_ANSWERS_STREAM,
     REFLEX_ASK_OPEN_KEY,
-    REFLEX_SETTINGS_KEY,
 )
 
 if TYPE_CHECKING:
     from shared.types import AioRedis
 
+# Every action Reflex proposes carries a source that starts with this. The router refuses such an
+# action unless it is benign, and the conscious process sends no "Done" for one that succeeded.
+REFLEX_SOURCE_PREFIX: Final = "reflex"
+
 # The source of an action Reflex proposed (and so of the pending action an ask parks).
-ASK_SOURCE: Final = "reflex-engine"
+ASK_SOURCE: Final = f"{REFLEX_SOURCE_PREFIX}-engine"
 
 # The channels a reply can answer an ask on: the ones an IMPORTANT notification reaches. Never
 # speech: a "yes" heard in a room has no way to be told apart from the room.
@@ -116,29 +119,26 @@ async def read_open_ask(redis: AioRedis) -> OpenAsk | None:
         return None
 
 
-async def _allow_scripts(redis: AioRedis, targets: list[str]) -> None:
-    """Add *targets* to the owner's ``allowed_scripts``, each once.
+def is_reflex_source(source: str) -> bool:
+    """Whether an action's *source* names Reflex (``ActionRequest.source``)."""
+    return source.startswith(REFLEX_SOURCE_PREFIX)
 
-    The owner said yes to running them, so Reflex may run them from now on. A document that is
-    stored but unusable is left alone (writing the defaults over it would lose what the owner
-    wrote), and so is one the addition would make invalid (a list past its cap): both are
-    warned about. The answer stands either way.
+
+async def _allow_scripts(redis: AioRedis, targets: list[str]) -> None:
+    """Add *targets* to the owner's ``allowed_scripts``, each once, as best effort.
+
+    The owner said yes to running them, so Reflex may run them from now on. A failure of any
+    kind (a Redis error, a stored document that is unusable, a list the addition would push
+    past its cap) is warned about and goes no further: the answer is recorded and the action
+    runs, and the script is simply not added.
     """
-    raw: bytes | str | None = await redis.get(REFLEX_SETTINGS_KEY)
     try:
-        current = ReflexSettings() if raw is None else ReflexSettings.model_validate_json(raw)
-        wanted = [target.strip() for target in targets if target.strip()]
-        added = [t for t in dict.fromkeys(wanted) if t not in current.allowed_scripts]
-        if not added:
-            return
-        updated = ReflexSettings.model_validate(
-            {**current.model_dump(), "allowed_scripts": [*current.allowed_scripts, *added]}
-        )
-    except ValidationError as e:
-        logger.warning("Reflex did not allow the script {}: the settings refused: {}", targets, e)
+        _, added = await add_allowed_scripts(redis, [t for t in targets if t.strip()])
+    except Exception as e:
+        logger.warning("Reflex did not allow the script {}: {}", targets, e)
         return
-    await save_settings(redis, updated)
-    logger.info("Reflex may now run {}", added)
+    if added:
+        logger.info("Reflex may now run {}", added)
 
 
 async def record_answer(

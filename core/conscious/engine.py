@@ -19,7 +19,8 @@ turn of its own (``resume_approval``), under the approval id, answered as a foll
 
 A reply that no parked run in its conversation takes may still answer the ask Reflex has open
 (``_answer_reflex_ask``): a yes or no is recorded and answered with a short fixed reply, and
-no model runs.
+no model runs, before the turn's recall and prompts are built. It does not once Alfred has
+spoken in that conversation since the ask went out: a "yes" then answers Alfred.
 """
 
 from __future__ import annotations
@@ -55,11 +56,16 @@ from core.conscious.approvals import (
 )
 from core.conscious.deps import TurnDeps, TurnServices
 from core.conscious.effects import EffectLedger, ledger_reply
-from core.conscious.session import text_turn
+from core.conscious.session import spoke_since, text_turn
 from core.conscious.system2_prompts import fetch_system2_prompts
 from core.conscious.tools.integrations import fetch_integration_tools
 from core.identity.schemas import IdentityResult
-from core.reflex.answers import ASK_REPLY_CHANNELS, read_open_ask, settle_expired
+from core.reflex.answers import (
+    ASK_REPLY_CHANNELS,
+    ASK_SOURCE,
+    read_open_ask,
+    settle_expired,
+)
 from core.routing.pending import claim_pending, decide, read_pending
 from shared.config import DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
 from shared.otel import langfuse_attributes
@@ -324,6 +330,14 @@ class ConsciousEngine:
         session = await self._session_mgr.load(
             request.session_id, request.channel, identity.identity
         )
+        # A yes or no to Reflex's ask needs neither recall nor prompts, so it is answered before
+        # the turn's context is built, unless this session waits on a parked run: that run
+        # takes the reply first (``_resume_for``, below) and the ask only what it leaves.
+        ask_checked = session.pending_approval is None
+        if ask_checked:
+            ack = await self._answer_reflex_ask(request, identity.identity, session.messages)
+            if ack is not None:  # no model run, nothing parked, nothing stored in the session
+                return self._reply(request, ack, [])
         integration_tools = await self._integration_tools(identity.identity)
         prompts = await fetch_system2_prompts(
             self._prompts,
@@ -356,9 +370,9 @@ class ConsciousEngine:
         if resume is not None:
             history, results = resume.history, resume.results
             deps.approval_id = resume.approval_id
-        else:
-            ack = await self._answer_reflex_ask(request, identity.identity)
-            if ack is not None:  # a yes or no to Reflex's ask: no model run, nothing parked
+        elif not ask_checked:
+            ack = await self._answer_reflex_ask(request, identity.identity, session.messages)
+            if ack is not None:
                 return self._reply(request, ack, [])
 
         usage = RunUsage()
@@ -540,17 +554,23 @@ class ConsciousEngine:
         logger.info("Reply decides approval %s: %s", approval_id, decision)
         return _Resume(approval_id, history, results_for(run, decision))
 
-    async def _answer_reflex_ask(self, request: UserRequest, who: str) -> str | None:
+    async def _answer_reflex_ask(
+        self, request: UserRequest, who: str, history: list[ModelMessage]
+    ) -> str | None:
         """The reply to *request* when it answers the ask Reflex has open, else ``None``.
 
         Runs only when no parked run in this conversation took the reply (``_resume_for``).
         Only the owner answers, on a channel an ask's notification reaches
         (``ASK_REPLY_CHANNELS``, never speech), and only with a classifier: without one every
-        reply moves on. An ask past its deadline is settled first. The parked action is read,
-        not claimed, and the reply classified against it; ``decide`` then claims it, so a Door
-        tap and a reply can never both answer. ``None`` is a normal turn: no open ask, a pending
-        record that no longer reads, a reply that is neither yes nor no, or an answer that lost
-        to another.
+        reply moves on. An ask past its deadline is settled first. A reply answers the ask only
+        while Alfred has not spoken in this conversation since the ask went out: after that, a
+        "yes" answers whatever Alfred said, not Reflex (*history* is the conversation's, and
+        each response in it carries the time it was received). A conversation Alfred has not
+        spoken in since, or none at all, still counts: the ask reached the owner elsewhere.
+        The parked action is read, not claimed, and the reply classified against it; ``decide``
+        then claims it, so a Door tap and a reply can never both answer. ``None`` is a normal
+        turn: no open ask, Alfred spoke since, a pending record that no longer reads or is not
+        a Reflex ask, a reply that is neither yes nor no, or an answer that lost to another.
         """
         if who != "sir" or request.channel not in ASK_REPLY_CHANNELS or self._approval is None:
             return None
@@ -558,12 +578,20 @@ class ConsciousEngine:
         ask = await read_open_ask(self._redis)
         if ask is None:
             return None
+        if spoke_since(history, ask.asked_at):
+            logger.info(
+                "Reply is not read against Reflex ask %s: Alfred spoke in this conversation since",
+                ask.ask_id,
+            )
+            return None
         try:
             record = await read_pending(self._redis, ask.ask_id)
         except ValueError:
             logger.warning("Reflex ask %s holds a record that no longer reads", ask.ask_id)
             return None
-        if not isinstance(record, ParkedAction):
+        # Only a Reflex ask is answered in words: a critical action the router held for another
+        # source is approved at the Door alone, never by free text.
+        if not isinstance(record, ParkedAction) or record.action.source != ASK_SOURCE:
             return None
         action = record.action
         call = ParkedCall(

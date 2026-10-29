@@ -40,6 +40,7 @@ from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
 from core.notifications.publisher import NotificationPublisher
 from core.notifications.schema import Urgency
+from core.reflex.answers import is_reflex_source
 from core.reflex.context_reader import ContextReader
 from core.reflex.runner import ensure_consumer_group
 from core.reflex.tool_registry import ToolRegistry
@@ -78,9 +79,6 @@ _INTERNAL_HANDLERS: dict[str, Any] = {}
 
 # The source of a confirmed action's outcome: its notification, or a failure result.
 OUTCOME_SOURCE = "conscious-engine"
-
-# An action whose source starts with this was proposed by Reflex.
-REFLEX_SOURCE_PREFIX: Final = "reflex"
 
 # The streams the conscious loop answers, each with the runner function for its entries:
 # a user's request, and the owner's decision from the Door on a parked run.
@@ -129,7 +127,7 @@ async def _report_outcome(
         await publish_action_result(redis, result)
     except Exception as e:
         log.error("Could not publish the result of confirmed action '{}': {}", action.tool_name, e)
-    if result.status != "error" and action.source.startswith(REFLEX_SOURCE_PREFIX):
+    if result.status != "error" and is_reflex_source(action.source):
         return
     try:
         await notifier.publish(

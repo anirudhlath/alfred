@@ -3,7 +3,7 @@
 Also the dispatch-layer enforcement point for tiered autonomy (defense in
 depth — the Reflex prompt filter is the first layer):
 
-1. ActionRequests from Reflex (``source`` starts with "reflex") targeting a
+1. ActionRequests from Reflex (``is_reflex_source``: ``source`` starts with "reflex") targeting a
    tool with risk above "benign" are rejected and recorded as a
    ReflexObservation — a hallucinated tool name cannot actuate a lock.
 2. Unconfirmed requests targeting a ``risk == "critical"`` tool are parked in
@@ -24,6 +24,7 @@ from loguru import logger
 from bus.schemas.events import ActionRequest, ActionResult
 from core.attribution.log import record_call
 from core.notifications.schema import Urgency
+from core.reflex.answers import is_reflex_source
 from core.reflex.runner import publish_observation
 from core.routing.pending import (
     CONFIRMATION_TITLE,
@@ -144,7 +145,7 @@ class DomainRouter:
 
         if self._redis is not None:
             risk = await tool_risk(self._redis, action.target_service, action.tool_name)
-            if action.source.startswith("reflex") and risk != "benign":
+            if is_reflex_source(action.source) and risk != "benign":
                 return await self._reject_reflex_action(self._redis, action, risk)
             if risk == "critical" and not action.confirmed:
                 return await self._intercept_critical(self._redis, action)

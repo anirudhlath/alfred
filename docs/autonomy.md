@@ -235,9 +235,11 @@ noticed:
 - **Silence is settled lazily.** Nothing watches the clock. `settle_expired` records an ask
   whose deadline has passed when something next looks: the ask gate, a reply, or a Door
   decision that finds nothing to claim. A Door tap after the deadline therefore gets a 404 and
-  records the expiry, once. An ask that was parked but never announced (a crash in `open_ask`
-  between the two) settles as `expired` like any other, and is only ever answered by the Door
-  if the owner finds it there.
+  records the expiry, once; so does one that arrives after the deadline but before the pending
+  record's own TTL has run out (the two are counted from different writes), and it runs
+  nothing. An ask that was parked but never announced (a crash in `open_ask` between the two)
+  settles as `expired` like any other; until then the owner can answer it at the Door or with a
+  reply, like any open ask.
 - **One answer.** `alfred:reflex:answered:<ask id>` (`SET NX`, kept 2 days) arbitrates, on top
   of the `GETDEL` claim every path makes. A decision that arrives when no open ask names its
   record (settled elsewhere) runs nothing and gets a 404; so does the loser of a Door tap and a
@@ -247,17 +249,24 @@ noticed:
   `web_pwa`, `ios` or `signal`, the channels an `important` notification reaches, never on
   speech (`voice`, `satellite`); the approval classifier must be configured; and no parked
   System 2 run in the same conversation may take the reply first (that run is resumed, and the
-  ask stays open). A reply in another conversation does answer it. The classifier reads the
-  reply against the parked action as a single call. `approve` and `deny` answer with `Okay.`
-  and `Okay, I'll leave it.`, with no model run, nothing parked and nothing added to the
-  session; `other`, a guest, a missing record, or a Door tap that got there first is a normal
-  turn.
+  ask stays open). Nor does it answer once Alfred has spoken in that conversation since the ask
+  went out (a response in the session's history stamped after the ask's `asked_at`): then a
+  "yes" answers whatever Alfred said, so the reply is a normal turn and the classifier is not
+  asked. A conversation Alfred has not spoken in since, or a new one, does answer it. The
+  classifier reads the reply against the parked action as a single call, and only a pending
+  record from Reflex (source `reflex-engine`) can be answered this way: an action the router
+  held for another source is approved at the Door alone. `approve` and `deny` answer with
+  `Okay.` and `Okay, I'll leave it.`, with no model run, nothing parked and nothing added to
+  the session; `other`, a guest, a missing record, or a Door tap that got there first is a
+  normal turn. A push-to-talk reply in the PWA reaches Alfred as text on `web_pwa`, so for now it
+  counts as a reply like a typed one.
 - **A yes to a script remembers it.** When the ask's tool is a script (its declared risk is
   `elevated`), a `yes` adds the ask's targets to `allowed_scripts` in the Reflex settings, each
-  once, as opaque ids. A no or silence adds nothing. If the addition would make the settings
-  invalid (the list is full), or the stored document is unusable, it is skipped with a warning
-  and the answer stands; the owner can add the id by hand
-  (`python -m core.reflex.settings allow-script <id>`).
+  once, as opaque ids, through the same `add_allowed_scripts` (`core/reflex/settings.py`) the
+  command line's `allow-script` uses. A no or silence adds nothing. The addition is best effort:
+  if it fails for any reason (the list is full, the stored document is unusable, Redis
+  hiccups) it is skipped with a warning, and the answer stands and the action runs; the owner can
+  add the id by hand (`python -m core.reflex.settings allow-script <id>`).
 
 ### The Door
 

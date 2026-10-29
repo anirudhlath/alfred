@@ -15,9 +15,12 @@ from loguru import logger
 
 from core.reflex.answers import (
     ASK_REPLY_CHANNELS,
+    ASK_SOURCE,
+    REFLEX_SOURCE_PREFIX,
     AnswerKind,
     OpenAsk,
     ReflexAnswer,
+    is_reflex_source,
     read_open_ask,
     record_answer,
     settle_expired,
@@ -399,3 +402,37 @@ async def test_an_unreadable_open_ask_reads_as_none_and_stays(
 
 def test_a_reply_answers_an_ask_on_the_channels_its_notification_reaches() -> None:
     assert frozenset({"web_pwa", "ios", "signal"}) == ASK_REPLY_CHANNELS
+
+
+async def test_a_failure_to_allow_the_script_never_undoes_the_answer(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    """Any error from the settings (a Redis error, here) is a warning, not a failed answer."""
+    warnings: list[str] = []
+    sink = logger.add(lambda message: warnings.append(str(message)), level="WARNING")
+    try:
+        with patch(
+            "core.reflex.answers.add_allowed_scripts",
+            AsyncMock(side_effect=ConnectionError("down")),
+        ):
+            recorded = await record_answer(
+                redis, an_ask(NOW, script=True), "yes", at=NOW, channel="door"
+            )
+    finally:
+        logger.remove(sink)
+
+    assert recorded is True
+    assert [a.answer for a in await answers(redis)] == ["yes"]
+    assert await redis.exists(REFLEX_ASK_OPEN_KEY) == 0
+    assert any("did not allow" in line and "down" in line for line in warnings)
+
+
+# --- the source Reflex acts under ---------------------------------------------------------
+
+
+def test_every_source_that_starts_with_reflex_is_reflex() -> None:
+    assert ASK_SOURCE.startswith(REFLEX_SOURCE_PREFIX)
+    assert is_reflex_source(ASK_SOURCE)
+    assert is_reflex_source("reflex-trigger")
+    assert not is_reflex_source("conscious-engine")
+    assert not is_reflex_source("admin-api")

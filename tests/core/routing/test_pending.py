@@ -554,3 +554,57 @@ async def test_an_action_from_another_source_is_not_an_ask(
     assert await _answers(redis) == []
     assert await redis.exists(REFLEX_ASK_OPEN_KEY) == 1
     assert await redis.exists(f"{REFLEX_ANSWERED_PREFIX}ask-1") == 0
+
+
+async def test_a_confirm_after_the_deadline_runs_nothing_though_the_record_has_not_lapsed(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    """The pending record's TTL is counted from a later write than the ask's deadline: it can
+    outlive the deadline, and a yes in that gap is late."""
+    deadline = NOW - timedelta(seconds=30)
+    action = await _ask(redis, deadline=deadline)  # the record is still there, with its TTL
+
+    assert await decide(redis, action.request_id, "approve", now=NOW) is False
+
+    (answer,) = await _answers(redis)
+    assert (answer.answer, answer.time, answer.channel) == ("expired", deadline, None)
+    assert await _stream(redis, ACTIONS_STREAM) == []
+    assert await redis.exists(REFLEX_ASK_OPEN_KEY) == 0
+    assert await redis.exists(pending_key(action.request_id)) == 0  # claimed, and dropped
+
+
+async def test_a_confirm_at_the_deadline_is_late_too(redis: fakeredis.FakeAsyncRedis) -> None:
+    action = await _ask(redis, deadline=NOW)
+
+    assert await decide(redis, action.request_id, "approve", now=NOW) is False
+
+    assert [a.answer for a in await _answers(redis)] == ["expired"]
+    assert await _stream(redis, ACTIONS_STREAM) == []
+
+
+async def test_a_deny_after_the_deadline_is_recorded_as_silence(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    action = await _ask(redis, deadline=NOW - timedelta(seconds=1))
+
+    assert await decide(redis, action.request_id, "deny", now=NOW) is False
+
+    assert [a.answer for a in await _answers(redis)] == ["expired"]
+
+
+async def test_a_yes_to_a_script_ask_still_runs_when_the_script_cannot_be_allowed(
+    redis: fakeredis.FakeAsyncRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The allow is best effort: a settings failure must not cancel the republish."""
+    action = await _ask(redis, script=True)
+
+    async def refuse(*_args: object) -> None:
+        raise ConnectionError("settings are down")
+
+    monkeypatch.setattr("core.reflex.answers.add_allowed_scripts", refuse)
+
+    assert await decide(redis, action.request_id, "approve", now=NOW) is True
+
+    assert [a.answer for a in await _answers(redis)] == ["yes"]
+    (fields,) = await _stream(redis, ACTIONS_STREAM)
+    assert ActionRequest.model_validate_json(fields[b"event"]).confirmed is True
