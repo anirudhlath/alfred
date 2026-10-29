@@ -751,6 +751,9 @@ interface MatchAllOptions {
   includeUncontrolled?: boolean;
 }
 
+/** The values of the `ClientType` enum: any other `type` makes `matchAll()` reject. */
+const CLIENT_TYPES: readonly string[] = ["window", "worker", "sharedworker", "all"];
+
 /** The slice of a `WindowClient` the fake `matchAll()` hands out. */
 interface FakeWindowClient {
   url: string;
@@ -1047,9 +1050,15 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
           return true;
         });
       },
-      // Copied at the call, shown a macrotask later: see `Harness.shown`.
+      // Copied at the call, shown a macrotask later: see `Harness.shown`. Options
+      // it cannot copy reject the promise, as a real one's do, rather than throw.
       showNotification: (title: string, options: NotificationOptions = {}) => {
-        const copy = structuredClone(options);
+        let copy: NotificationOptions;
+        try {
+          copy = structuredClone(options);
+        } catch (error) {
+          return Promise.reject(error as Error);
+        }
         return settled(() => void harness.shown.push({ title, options: copy }));
       },
     },
@@ -1076,11 +1085,17 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       // worker that reloads "the open pages" must tell apart, because the page
       // that registered it is one of the open pages, and reloading that one
       // registers it again. Every page here is a window, so "window" (the
-      // default) and "all" list them and "worker" and "sharedworker" none; the
+      // default) and "all" list them and "worker" and "sharedworker" none; a
+      // type outside ClientType is a TypeError, as a real one's is. The
       // options are recorded, see `Harness.matchAllOptions`.
       matchAll: (options?: MatchAllOptions) => {
         harness.matchAllOptions.push(options === undefined ? undefined : { ...options });
         const type = options?.type ?? "window";
+        if (!CLIENT_TYPES.includes(type)) {
+          return Promise.reject(
+            new TypeError(`Failed to execute 'matchAll' on 'Clients': '${type}' is not a valid ClientType.`),
+          );
+        }
         const windows = type === "window" || type === "all";
         return Promise.resolve(
           windows

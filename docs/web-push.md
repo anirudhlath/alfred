@@ -255,9 +255,9 @@ inside `waitUntil`, takes the first window `matchAll({type: "window",
 includeUncontrolled: true})` lists on its own origin: it focuses it — a refused focus is
 ignored — and then posts it `{type: "OPEN_PATH", path}`, which `onOpenPath` in
 `web/src/lib/push.ts` hears and filters and `NotificationOpen` in
-`web/src/shell/PushKeeper.tsx` routes. With no such window it opens one at `path`. A `path` it would not have built
-becomes `/`, because a notification can be tapped long after the worker that showed it
-was replaced.
+`web/src/shell/PushKeeper.tsx` routes. With no such window it opens one at `path`. A
+`path` it would not have built becomes `/`, because a notification can be tapped long
+after the worker that showed it was replaced.
 
 A change to a field changes both sides in one branch: `build_payload()` and the worker's
 `push` listener. Any byte change to `sw.js` installs a new worker on every phone

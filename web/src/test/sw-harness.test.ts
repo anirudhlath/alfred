@@ -996,6 +996,27 @@ describe("the fake push and notifications", () => {
     expect(worker.shown).toEqual([{ title: "t", options: { body: "b", data: { path: "/actions/7" } } }]);
   });
 
+  it("rejects a showNotification() whose options it cannot copy, as a real one does", async () => {
+    // A real one cannot structured-clone a function in `data`, and says so by
+    // rejecting the promise it returns, not by throwing at the call: a worker
+    // that catches the rejection would never meet a throw on a phone.
+    const worker = loadWorker(`
+      self.addEventListener("push", (event) => {
+        let called;
+        try {
+          called = self.registration.showNotification("t", { data: { f: () => {} } });
+        } catch (error) {
+          called = Promise.resolve("threw " + error.name);
+        }
+        event.waitUntil(called.then(
+          (outcome) => self.registration.showNotification(outcome ?? "shown"),
+          (error) => self.registration.showNotification("rejected " + error.name)));
+      });
+    `);
+    await worker.push();
+    expect(worker.shown.map(({ title }) => title)).toEqual(["rejected DataCloneError"]);
+  });
+
   it("lists only windows, and records what each matchAll() asked for", async () => {
     // Every client the fake has is a window, so "window" — the default — and
     // "all" list them, and "worker" and "sharedworker" list nothing. The
@@ -1017,6 +1038,21 @@ describe("the fake push and notifications", () => {
     expect(worker.matchAllOptions).toEqual(
       [undefined, "window", "all", "worker", "sharedworker"].map((type) => ({ type, includeUncontrolled: true })),
     );
+  });
+
+  it("rejects a matchAll() type outside ClientType with a TypeError, as a real one does", async () => {
+    // "windows" is no ClientType, and a real matchAll() rejects it rather than
+    // listing nothing: a fake that answered [] would let a worker with a typo
+    // in it open a second copy of the app on every tap and pass.
+    const worker = loadWorker(`
+      self.addEventListener("push", (event) => {
+        event.waitUntil(self.clients.matchAll({ type: "windows" }).then(
+          (clients) => self.registration.showNotification("listed " + clients.length),
+          (error) => self.registration.showNotification("rejected " + error.name)));
+      });
+    `);
+    await worker.push();
+    expect(worker.shown.map(({ title }) => title)).toEqual(["rejected TypeError"]);
   });
 });
 
