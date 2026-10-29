@@ -175,7 +175,7 @@ def decode_device(value: bytes | str) -> dict[str, Any] | None:
 
 def is_web_push(row: dict[str, Any] | None) -> bool:
     """Whether a decoded device row is a Web Push subscription."""
-    return row is not None and row.get("platform") == WEB_PUSH_PLATFORM
+    return device_family(row) == "web_push"
 
 
 def push_host(endpoint: str) -> str:
@@ -184,10 +184,16 @@ def push_host(endpoint: str) -> str:
 
 
 def device_family(row: dict[str, Any] | None) -> DeviceFamily | None:
-    """Which family a decoded device row belongs to, or ``None`` for a row of neither."""
+    """Which family a decoded device row belongs to, or ``None`` for a row of neither.
+
+    A ``platform`` that is not a string (a list or an object, which an outside writer could
+    store) names no family: it is never hashed, so it cannot raise.
+    """
     if row is None:
         return None
     platform = row.get("platform")
+    if not isinstance(platform, str):
+        return None
     if platform == WEB_PUSH_PLATFORM:
         return "web_push"
     return "apns" if platform in APNS_PLATFORMS else None

@@ -149,6 +149,25 @@ async def test_skips_web_push_rows(mock_redis: AsyncMock, notification: Notifica
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("platform", [["web_push"], ["ios"], {"a": 1}])
+async def test_a_row_whose_platform_is_not_a_string_stops_nothing(
+    mock_redis: AsyncMock, notification: Notification, platform: object
+) -> None:
+    """An outside writer's corrupt row does not stop delivery to the good token beside it."""
+    good = await mock_redis.hgetall()
+    mock_redis.hgetall = AsyncMock(
+        return_value={**good, b"corrupt": json.dumps({"platform": platform}).encode()}
+    )
+    adapter, mock_client = _make_adapter(mock_redis)
+
+    with patch.object(adapter, "_get_auth_token", return_value="mock-jwt"):
+        await adapter.deliver(notification)
+
+    urls = [call.args[0] for call in mock_client.post.call_args_list]
+    assert any(url.endswith("/3/device/abc123") for url in urls)
+
+
+@pytest.mark.asyncio
 async def test_apns_adapter_sends_expiration_and_collapse_headers(
     mock_redis: AsyncMock, notification: Notification
 ) -> None:

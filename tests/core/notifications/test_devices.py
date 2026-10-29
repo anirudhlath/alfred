@@ -174,6 +174,15 @@ def test_is_web_push() -> None:
     assert not is_web_push(None)
 
 
+# A platform an outside writer stored as something other than a string.
+NOT_A_STRING: list[Any] = [["ios"], ["web_push"], {"a": 1}, 1, None]
+
+
+@pytest.mark.parametrize("platform", NOT_A_STRING)
+def test_is_web_push_refuses_a_platform_that_is_not_a_string(platform: Any) -> None:
+    assert not is_web_push({"platform": platform})
+
+
 # --- The storage policy: one cap per family, kept in one transaction -------------------
 
 MAX = MAX_DEVICES_PER_FAMILY
@@ -217,6 +226,11 @@ FAMILIES: tuple[DeviceFamily, ...] = ("web_push", "apns")
 )
 def test_device_family(row: dict[str, Any] | None, family: DeviceFamily | None) -> None:
     assert device_family(row) == family
+
+
+@pytest.mark.parametrize("platform", NOT_A_STRING)
+def test_a_platform_that_is_not_a_string_is_no_family(platform: Any) -> None:
+    assert device_family({"platform": platform}) is None
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -294,7 +308,15 @@ def test_a_row_without_a_stamp_reads_as_the_oldest() -> None:
 
 
 @pytest.mark.parametrize(
-    "corrupt", [b"not json", b"[1, 2]", b'"text"', b'{"identity": "sir"}', b"\xff"]
+    "corrupt",
+    [
+        b"not json",
+        b"[1, 2]",
+        b'"text"',
+        b'{"identity": "sir"}',
+        b"\xff",
+        *(json.dumps({"platform": platform}).encode() for platform in NOT_A_STRING),
+    ],
 )
 @pytest.mark.parametrize("family", FAMILIES)
 def test_a_corrupt_row_neither_counts_nor_goes(corrupt: bytes, family: DeviceFamily) -> None:

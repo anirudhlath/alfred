@@ -454,7 +454,9 @@ def test_an_apple_burst_never_evicts_a_browser(
     assert stored.hlen(DEVICE_TOKENS_KEY) == 1 + MAX_DEVICES_PER_FAMILY
 
 
-@pytest.mark.parametrize("corrupt", ["not json", "[1, 2]"])
+@pytest.mark.parametrize(
+    "corrupt", ["not json", "[1, 2]", '{"platform": ["ios"]}', '{"platform": {"a": 1}}']
+)
 @pytest.mark.parametrize("family", ["web_push", "apns"])
 def test_a_corrupt_row_neither_counts_nor_goes(
     push_client: TestClient, stored: fakeredis.FakeRedis, corrupt: str, family: DeviceFamily

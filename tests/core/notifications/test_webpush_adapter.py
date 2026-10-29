@@ -311,6 +311,22 @@ async def test_skips_apns_and_unreadable_rows(redis: fakeredis.FakeAsyncRedis) -
     assert service.requests == []
 
 
+@pytest.mark.parametrize("platform", [["web_push"], ["ios"], {"a": 1}])
+async def test_a_row_whose_platform_is_not_a_string_stops_nothing(
+    redis: fakeredis.FakeAsyncRedis, platform: Any
+) -> None:
+    """An outside writer's corrupt row is skipped; the good row beside it still gets its push."""
+    browser = Browser(APPLE)
+    await _store(redis, browser)
+    await redis.hset(DEVICE_TOKENS_KEY, "corrupt", json.dumps({"platform": platform}))
+    service = PushService()
+
+    await _deliver(redis, service, _notification())
+
+    assert [str(request.url) for request in service.requests] == [APPLE]
+    assert browser.payload(service.to(APPLE)[0])["title"] == "Front door"
+
+
 async def test_never_logs_the_endpoint_or_keys(
     redis: fakeredis.FakeAsyncRedis, logs: list[str]
 ) -> None:

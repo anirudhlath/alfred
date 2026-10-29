@@ -173,7 +173,9 @@ already stored as the same family replaces its own row and evicts nothing. A fie
 as the other family counts as new: a 64-hex `endpoint_field()` is also a valid APNs token,
 so an APNs body can name a Web Push row's field (or a browser hash an APNs token's), and the
 write pays the newcomer's cap while the other family loses that row. A row that is not a
-JSON object, or names neither family, is neither counted nor evicted.
+JSON object, or names neither family (its `platform` missing, unknown, or not a string), is
+neither counted nor evicted. The Web Push adapter skips it, and the APNs adapter tries it
+as a token, as it does a row that is not JSON; neither stops delivery to the good rows.
 
 A Web Push eviction logs INFO `Evicted the oldest web push subscription (<field prefix>…)`;
 an APNs one logs INFO `Evicted the oldest APNs device token`, with no part of the token.
