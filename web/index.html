@@ -14,7 +14,13 @@
     />
     <meta name="theme-color" content="#25221F" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- No apple-mobile-web-app-status-bar-style, on purpose. With black-translucent,
+         iOS 27 draws the installed app from the top of the screen, under the status
+         bar, but lays it out a status bar short (894 of 956 pt) and paints nothing
+         of the page in the strip left at the bottom. Without it the app starts below
+         an opaque bar coloured by theme-color and fills the screen to the bottom.
+         iOS reads the style only when the app is added to the Home Screen, so an
+         install made before this change keeps the strip until it is re-added. -->
     <meta name="apple-mobile-web-app-title" content="Alfred" />
     <meta name="format-detection" content="telephone=no" />
     <!-- iOS ignores SVG for the home-screen tile and ignores the manifest's

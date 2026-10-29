@@ -1137,7 +1137,7 @@ questions jsdom cannot answer at all, such as whether VoiceOver re-announces an
 `2026-09-16-pwa-phase4-ios-checklist.md` for the install, the offline launch, the update
 and the kill switch, none of which jsdom can run at all.
 
-Two of them bite hardest:
+Three of them bite hardest:
 
 - **`100vh` is wrong in Safari, and so is the window.** `installViewportVars()` writes
   `--app-height` and `--viewport-top` from `visualViewport`'s own height and offset —
@@ -1157,6 +1157,20 @@ Two of them bite hardest:
   moves when the keyboard opens at all — iOS slides the webview itself, invisibly to JS.
   What the composer still owes is the home indicator, and that is a question about its
   own field's focus, which is what `Composer.tsx` asks.
+- **No translucent status bar.** `index.html` sets no `apple-mobile-web-app-status-bar-style`.
+  With `black-translucent`, iOS 27 on an iPhone 18 Pro Max (956 pt, from the Home Screen)
+  drew the app from the top of the screen, under the status bar
+  (`env(safe-area-inset-top)` 62), but laid it out 894 pt tall: `innerHeight`,
+  `visualViewport.height`, `clientHeight`, `100dvh` and `100svh` all read 894, while
+  `100lvh` and `100vh` read 956. Every screen ended 62 pt short over an empty strip, and
+  sizing the shell to `100lvh` does not reach it: the shell was laid out to 956 and
+  iOS painted nothing of it below 894, which cut the bottom of each screen off instead.
+  Without the style the app starts below an opaque bar coloured by `theme-color`, and
+  the layout reaches the bottom of the screen. iOS reads the style only when the app is
+  added to the Home Screen, so an older install keeps the strip until it is re-added.
+  The headers are unaffected by which side of the bar the app starts on: the Workshop
+  pads by `env(safe-area-inset-top)`, and the Room's literal was set against an app
+  that started below the bar.
 - **Audio needs a gesture.** `installAudioUnlock()` runs in `main.tsx`, before the first
   tap. iOS will not retroactively allow a sound requested before a gesture resumed a
   context, so a fresh `new Audio()` is silently dropped.
