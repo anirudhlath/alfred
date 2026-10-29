@@ -233,14 +233,15 @@ trade-off, not the end state — see
 
 `require_trusted_network` in `core/channels/web_server.py` gates the endpoints that can
 mint or widen credentials — WebAuthn **registration**, credential writes, voice
-enrolment. Push device registration is session-only, so a phone away from home can turn on
-notifications ([`web-push.md`](web-push.md#registration)). Registration alone has a second way through: an `X-Pairing-Code`
-header carrying a 6-digit code minted by an already-signed-in device
-([`webauthn.md` → Sessions, passkeys and pairing](webauthn.md)), which passes from any
-network. Its ten-guess budget is charged per client address — a single IPv4 address or
-an IPv6 /64 — so `FORWARDED_ALLOW_IPS` matters twice over: unlisted, the proxy's own address is the only one Alfred ever sees,
-and every internet caller shares one budget. The admin API (reads *and* controls) and the two integration reads are **not**
-network-gated; they need only a signed-in passkey session. See
+enrolment. Push device registration is session-only, so a phone away from home can turn
+on notifications ([`web-push.md`](web-push.md#registration)). Registration alone has a
+second way through: an `X-Pairing-Code` header carrying a 6-digit code minted by an
+already-signed-in device ([`webauthn.md` → Sessions, passkeys and pairing](webauthn.md)),
+which passes from any network. Its ten-guess budget is charged per client address — a
+single IPv4 address or an IPv6 /64 — so `FORWARDED_ALLOW_IPS` matters twice over:
+unlisted, the proxy's own address is the only one Alfred ever sees, and every internet
+caller shares one budget. The admin API (reads *and* controls) and the two integration
+reads are **not** network-gated; they need only a signed-in passkey session. See
 [`admin-api.md` → Auth Model](admin-api.md#auth-model) for the full split.
 
 The default trusted set is loopback + private LAN (RFC1918) + Tailscale CGNAT

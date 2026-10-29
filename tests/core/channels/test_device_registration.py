@@ -14,12 +14,15 @@ from fastapi.testclient import TestClient
 from loguru import logger
 
 from core.channels.web_server import _init_webpush_adapter, create_app
-from core.identity.auth_routes import _MAX_USER_AGENT_LEN
+from core.identity.auth_routes import MAX_USER_AGENT_LEN
+from core.notifications import devices
 from core.notifications.adapters.webpush import WebPushChannelAdapter
 from core.notifications.channels import ChannelRegistry
 from core.notifications.devices import (
-    MAX_WEB_PUSH_SUBSCRIPTIONS,
+    MAX_DEVICES_PER_FAMILY,
+    STORE_ATTEMPTS,
     WEB_PUSH_PLATFORM,
+    DeviceFamily,
     endpoint_field,
 )
 from core.notifications.vapid import VAPID_SUBJECT_ENV, ensure_vapid_keys
@@ -121,8 +124,8 @@ def test_unregister_device_requires_session(anon_client, mock_redis) -> None:
     mock_redis.hdel.assert_not_called()
 
 
-def test_register_device_stores_token(client, mock_redis) -> None:
-    resp = client.post(
+def test_register_device_stores_token(push_client: TestClient, stored: fakeredis.FakeRedis) -> None:
+    resp = push_client.post(
         "/api/devices/register",
         json={
             "device_token": "aabbccdd11223344aabbccdd11223344",
@@ -132,14 +135,11 @@ def test_register_device_stores_token(client, mock_redis) -> None:
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
-    mock_redis.hset.assert_called_once()
-    call_args = mock_redis.hset.call_args
-    assert call_args[0][0] == "alfred:push:devices"
-    assert call_args[0][1] == "aabbccdd11223344aabbccdd11223344"
-    stored = json.loads(call_args[0][2])
-    assert stored["platform"] == "ios"
-    assert stored["identity"] == "sir"
-    assert "registered_at" in stored
+    assert stored.hkeys("alfred:push:devices") == ["aabbccdd11223344aabbccdd11223344"]
+    row = json.loads(stored.hget("alfred:push:devices", "aabbccdd11223344aabbccdd11223344") or "")
+    assert row["platform"] == "ios"
+    assert row["identity"] == "sir"
+    assert "registered_at" in row
 
 
 def test_unregister_device_removes_token(client, mock_redis) -> None:
@@ -271,11 +271,29 @@ def _stored_row(stored: fakeredis.FakeRedis, endpoint: str = APPLE) -> dict[str,
     return row
 
 
+def _stamp(n: int) -> str:
+    return f"2026-10-{n + 1:02d}T00:00:00+00:00"
+
+
 def _seed(stored: fakeredis.FakeRedis, numbers: Iterable[int]) -> None:
     """Store Web Push rows for ``_endpoint(n)``, registered on day ``n + 1`` of the month."""
     for n in numbers:
-        stamp = f"2026-10-{n + 1:02d}T00:00:00+00:00"
-        stored.hset(DEVICE_TOKENS_KEY, endpoint_field(_endpoint(n)), _row(_endpoint(n), stamp))
+        stored.hset(DEVICE_TOKENS_KEY, endpoint_field(_endpoint(n)), _row(_endpoint(n), _stamp(n)))
+
+
+def _token(n: int) -> str:
+    return f"{n:02d}" * 16
+
+
+def _apple(token: str = "aa" * 16) -> dict[str, str]:
+    return {"device_token": token, "platform": "ios", "identity": "sir"}
+
+
+def _seed_apple(stored: fakeredis.FakeRedis, numbers: Iterable[int]) -> None:
+    """Store APNs rows for ``_token(n)``, registered on day ``n + 1`` of the month."""
+    for n in numbers:
+        row = {"platform": "ios", "identity": "sir", "registered_at": _stamp(n)}
+        stored.hset(DEVICE_TOKENS_KEY, _token(n), json.dumps(row))
 
 
 def test_registers_a_web_push_subscription(
@@ -316,7 +334,7 @@ def test_bounds_the_user_agent(push_client: TestClient, stored: fakeredis.FakeRe
     assert resp.status_code == 200
     row = _stored_row(stored)
     assert row is not None
-    assert row["user_agent"] == "x" * _MAX_USER_AGENT_LEN
+    assert row["user_agent"] == "x" * MAX_USER_AGENT_LEN
 
 
 def test_re_registering_replaces_the_row(
@@ -350,11 +368,11 @@ def test_web_push_needs_a_session(push_app: Any, stored: fakeredis.FakeRedis) ->
 
 def test_evicts_the_oldest_past_ten(push_client: TestClient, stored: fakeredis.FakeRedis) -> None:
     # Stored out of order, so the eviction cannot be riding the hash's insertion order.
-    _seed(stored, reversed(range(MAX_WEB_PUSH_SUBSCRIPTIONS)))
+    _seed(stored, reversed(range(MAX_DEVICES_PER_FAMILY)))
 
     assert push_client.post(REGISTER, json=_web_push()).status_code == 200
 
-    assert stored.hlen(DEVICE_TOKENS_KEY) == MAX_WEB_PUSH_SUBSCRIPTIONS
+    assert stored.hlen(DEVICE_TOKENS_KEY) == MAX_DEVICES_PER_FAMILY
     assert _stored_row(stored, _endpoint(0)) is None  # the oldest
     assert _stored_row(stored, _endpoint(1)) is not None
     assert _stored_row(stored) is not None
@@ -364,11 +382,11 @@ def test_re_registering_at_the_cap_evicts_nothing(
     push_client: TestClient, stored: fakeredis.FakeRedis
 ) -> None:
     """The cap makes room for a new browser; one already counted needs none."""
-    _seed(stored, range(MAX_WEB_PUSH_SUBSCRIPTIONS))
+    _seed(stored, range(MAX_DEVICES_PER_FAMILY))
 
     assert push_client.post(REGISTER, json=_web_push(_endpoint(5))).status_code == 200
 
-    assert stored.hlen(DEVICE_TOKENS_KEY) == MAX_WEB_PUSH_SUBSCRIPTIONS
+    assert stored.hlen(DEVICE_TOKENS_KEY) == MAX_DEVICES_PER_FAMILY
     assert _stored_row(stored, _endpoint(0)) is not None
 
 
@@ -378,13 +396,114 @@ def test_apns_rows_do_not_count_toward_the_cap(
     apns = [f"{n:02d}" * 16 for n in range(5)]
     for token in apns:
         stored.hset(DEVICE_TOKENS_KEY, token, json.dumps({"platform": "ios", "identity": "sir"}))
-    _seed(stored, range(MAX_WEB_PUSH_SUBSCRIPTIONS - 1))
+    _seed(stored, range(MAX_DEVICES_PER_FAMILY - 1))
 
     assert push_client.post(REGISTER, json=_web_push()).status_code == 200
 
-    assert stored.hlen(DEVICE_TOKENS_KEY) == len(apns) + MAX_WEB_PUSH_SUBSCRIPTIONS
+    assert stored.hlen(DEVICE_TOKENS_KEY) == len(apns) + MAX_DEVICES_PER_FAMILY
     assert all(stored.hexists(DEVICE_TOKENS_KEY, token) for token in apns)
     assert _stored_row(stored, _endpoint(0)) is not None
+
+
+def test_caps_apple_devices_too(push_client: TestClient, stored: fakeredis.FakeRedis) -> None:
+    """Apple answers a made-up token 400, which prunes nothing, so the cap is the bound."""
+    _seed_apple(stored, reversed(range(MAX_DEVICES_PER_FAMILY)))
+
+    assert push_client.post(REGISTER, json=_apple()).status_code == 200
+
+    assert stored.hlen(DEVICE_TOKENS_KEY) == MAX_DEVICES_PER_FAMILY
+    assert not stored.hexists(DEVICE_TOKENS_KEY, _token(0))  # the oldest
+    assert stored.hexists(DEVICE_TOKENS_KEY, _token(1))
+    assert stored.hexists(DEVICE_TOKENS_KEY, "aa" * 16)
+
+
+def test_re_registering_an_apple_device_at_the_cap_evicts_nothing(
+    push_client: TestClient, stored: fakeredis.FakeRedis
+) -> None:
+    _seed_apple(stored, range(MAX_DEVICES_PER_FAMILY))
+
+    assert push_client.post(REGISTER, json=_apple(_token(5))).status_code == 200
+
+    assert stored.hlen(DEVICE_TOKENS_KEY) == MAX_DEVICES_PER_FAMILY
+    assert stored.hexists(DEVICE_TOKENS_KEY, _token(0))
+    row = json.loads(stored.hget(DEVICE_TOKENS_KEY, _token(5)) or "{}")
+    assert row["registered_at"] != _stamp(5)  # replaced, not kept
+
+
+def test_a_web_push_burst_never_evicts_an_iphone(
+    push_client: TestClient, stored: fakeredis.FakeRedis
+) -> None:
+    _seed_apple(stored, [0])  # older than every browser
+
+    for n in range(2 * MAX_DEVICES_PER_FAMILY):
+        assert push_client.post(REGISTER, json=_web_push(_endpoint(n))).status_code == 200
+
+    assert stored.hexists(DEVICE_TOKENS_KEY, _token(0))
+    assert stored.hlen(DEVICE_TOKENS_KEY) == 1 + MAX_DEVICES_PER_FAMILY
+
+
+def test_an_apple_burst_never_evicts_a_browser(
+    push_client: TestClient, stored: fakeredis.FakeRedis
+) -> None:
+    _seed(stored, [0])  # older than every iPhone
+
+    for n in range(2 * MAX_DEVICES_PER_FAMILY):
+        assert push_client.post(REGISTER, json=_apple(_token(n + 1))).status_code == 200
+
+    assert _stored_row(stored, _endpoint(0)) is not None
+    assert stored.hlen(DEVICE_TOKENS_KEY) == 1 + MAX_DEVICES_PER_FAMILY
+
+
+@pytest.mark.parametrize("corrupt", ["not json", "[1, 2]"])
+@pytest.mark.parametrize("family", ["web_push", "apns"])
+def test_a_corrupt_row_neither_counts_nor_goes(
+    push_client: TestClient, stored: fakeredis.FakeRedis, corrupt: str, family: DeviceFamily
+) -> None:
+    seed, body = (_seed, _web_push()) if family == "web_push" else (_seed_apple, _apple())
+    stored.hset(DEVICE_TOKENS_KEY, "corrupt", corrupt)
+    seed(stored, range(MAX_DEVICES_PER_FAMILY - 1))
+
+    assert push_client.post(REGISTER, json=body).status_code == 200  # nothing to evict
+    assert stored.hlen(DEVICE_TOKENS_KEY) == 1 + MAX_DEVICES_PER_FAMILY
+
+    seed(stored, [MAX_DEVICES_PER_FAMILY])  # one past the cap: the oldest goes, not the corrupt
+    body = _web_push(_endpoint(99)) if family == "web_push" else _apple(_token(99))
+    assert push_client.post(REGISTER, json=body).status_code == 200
+    assert stored.hget(DEVICE_TOKENS_KEY, "corrupt") == corrupt
+    assert stored.hlen(DEVICE_TOKENS_KEY) == 1 + MAX_DEVICES_PER_FAMILY
+
+
+@pytest.mark.parametrize("family", ["web_push", "apns"])
+def test_a_contended_store_answers_503(
+    push_client: TestClient,
+    stored: fakeredis.FakeRedis,
+    monkeypatch: pytest.MonkeyPatch,
+    logs: list[str],
+    family: DeviceFamily,
+) -> None:
+    """Every attempt raced: the row is not written, and the client is told so."""
+    real = devices.evictions
+    racers = iter(range(STORE_ATTEMPTS + 1))
+
+    def always_racing(
+        rows: dict[bytes | str, bytes | str],
+        field: str,
+        family: DeviceFamily,
+        cap: int = MAX_DEVICES_PER_FAMILY,
+    ) -> list[str]:
+        stored.hset(DEVICE_TOKENS_KEY, f"racer-{next(racers)}", "x")
+        return real(rows, field, family, cap)
+
+    monkeypatch.setattr(devices, "evictions", always_racing)
+    body = _web_push() if family == "web_push" else _apple()
+
+    resp = push_client.post(REGISTER, json=body)
+
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "Device store busy"}
+    assert _stored_row(stored) is None
+    assert not stored.hexists(DEVICE_TOKENS_KEY, "aa" * 16)
+    assert any("Device registration gave up" in line for line in logs)
 
 
 def test_unregisters_by_endpoint(push_client: TestClient, stored: fakeredis.FakeRedis) -> None:
@@ -409,7 +528,15 @@ def test_unregistering_an_unknown_endpoint_is_ok(
     assert resp.json() == {"status": "ok"}
 
 
-@pytest.mark.parametrize("body", [{}, {"device_token": "aa" * 16, "endpoint": APPLE}])
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"device_token": "aa" * 16, "endpoint": APPLE},
+        {"endpoint": ""},
+        {"device_token": "aa" * 16, "endpoint": ""},
+    ],
+)
 def test_unregister_needs_exactly_one(push_client: TestClient, body: dict[str, str]) -> None:
     assert push_client.request("DELETE", REGISTER, json=body).status_code == 422
 
@@ -494,7 +621,7 @@ def test_startup_registers_the_adapter_and_shutdown_closes_it(
 def test_a_failed_start_leaves_the_channel_up(
     monkeypatch: pytest.MonkeyPatch, registry: None, data_dir: None, logs: list[str]
 ) -> None:
-    """An unreadable keyring costs Web Push alone, and never generates a key over it."""
+    """An unreadable keyring costs Web Push alone: the channel stays up, no adapter registers."""
     monkeypatch.setenv(VAPID_SUBJECT_ENV, SUBJECT)
     ChannelRegistry._instances.pop("webpush", None)
     monkeypatch.setattr(

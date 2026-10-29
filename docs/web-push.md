@@ -14,7 +14,7 @@ ciphertext it cannot read, so Apple's relay never sees a notification's text.
 
 | Piece | Where | What it does |
 |---|---|---|
-| Device vocabulary | `core/notifications/devices.py` | `WebPushSubscription` (the endpoint allowlist and key checks), `endpoint_field()`, `decode_device()`, `is_web_push()`, `push_host()`, `MAX_WEB_PUSH_SUBSCRIPTIONS` |
+| Device vocabulary | `core/notifications/devices.py` | `WebPushSubscription` (the endpoint allowlist and key checks), `endpoint_field()`, `decode_device()`, `is_web_push()`, `push_host()`, and the storage policy: `evictions()` and `store_device()` (the per-family cap, in one transaction), `MAX_DEVICES_PER_FAMILY` |
 | VAPID key | `core/notifications/vapid.py` | `vapid_subject()`, `ensure_vapid_keys()`, `VapidKeys.authorization()` (RFC 8292) |
 | Adapter | `core/notifications/adapters/webpush.py` | `WebPushChannelAdapter`: payload, encryption, headers, delivery, pruning |
 | Routes | `core/channels/web_server.py` | `POST`/`DELETE /api/devices/register`, `GET /api/push/public-key`, `_init_webpush_adapter()` |
@@ -39,7 +39,7 @@ sequenceDiagram
     Web-->>Phone: {"public_key": "B…"} (404 when unconfigured)
     Phone->>Phone: pushManager.subscribe(applicationServerKey)
     Phone->>Web: POST /api/devices/register<br/>{"platform": "web_push", "subscription": {...}}
-    Web->>Hash: HSET sha256(endpoint) → row (oldest evicted past 10)
+    Web->>Hash: one transaction: HSET sha256(endpoint) → row,<br/>HDEL the oldest Web Push row past 10
     Disp->>Stream: XADD (IMPORTANT or URGENT)
     Stream->>Adapter: XREADGROUP channels-delivery
     Adapter->>Hash: HGETALL (web_push rows only)
@@ -95,8 +95,8 @@ Back up the data dir, which holds the keyring, as for every other credential
 
 | Method | Path | Gate | Answers |
 |---|---|---|---|
-| `POST` | `/api/devices/register` | session | `{"status": "ok"}`; 422 for a body that does not validate |
-| `DELETE` | `/api/devices/register` | session | `{"status": "ok"}` whether or not the row existed; 422 unless exactly one of `device_token` and `endpoint` |
+| `POST` | `/api/devices/register` | session | `{"status": "ok"}`; 422 for a body that does not validate; 503 `{"detail": "Device store busy"}` when the write lost its transaction five times |
+| `DELETE` | `/api/devices/register` | session | `{"status": "ok"}` whether or not the row existed; 422 unless exactly one of `device_token` and `endpoint`, and that one non-empty |
 | `GET` | `/api/push/public-key` | none | `{"public_key": "B…"}`, or 404 `{"detail": "Web Push not configured"}` |
 
 `POST` takes a body discriminated on `platform`:
@@ -120,8 +120,12 @@ device routes take `require_authenticated` and not `require_trusted_network`, so
 away from home can enable notifications right after it installs the app. The route is
 shared, so the APNs payload moved with it. The accepted trade: a stolen session cookie can
 register a stranger's endpoint and receive the text of important and urgent notifications.
-The allowlist and the cap below bound what it buys, and the row outlives the session, so
-the owner looks for unknown rows in `GET /api/admin/devices` (see Operations).
+The allowlist and the caps below bound what it buys: at most 10 Web Push rows and 10 APNs
+rows, each family capped on its own. The APNs cap is the only bound on APNs rows, because
+Apple answers a made-up token with 400 `BadDeviceToken` and the APNs adapter prunes only on
+410, so a fake token is never pruned; the cap evicts it once 10 newer ones arrive. The rows
+outlive the session, so the owner looks for unknown rows in `GET /api/admin/devices` (see
+Operations).
 
 The public key needs no session: it is a public key, and the client fetches it before it
 subscribes (spec §6.1).
@@ -139,7 +143,7 @@ browser that registers again replaces its own row. The value is JSON:
 | `keys` | `{"p256dh", "auth"}`, base64url without padding |
 | `identity` | `"sir"`: only a signed-in session reaches the route, as with the WebSocket handler |
 | `registered_at` | ISO 8601 in UTC, set on every registration |
-| `user_agent` | the request's `User-Agent`, cut to 200 characters (`_MAX_USER_AGENT_LEN`) |
+| `user_agent` | the request's `User-Agent`, cut to 200 characters (`MAX_USER_AGENT_LEN`) |
 
 ### The allowlist (R2)
 
@@ -159,13 +163,24 @@ list cannot register until its host is added to `PUSH_SERVICE_HOSTS`.
 
 ### The cap (R3)
 
-At most 10 Web Push rows (`MAX_WEB_PUSH_SUBSCRIPTIONS`). Registering a new endpoint while 10
-are stored deletes the oldest by `registered_at` first (INFO `Evicted the oldest web push
-subscription (<field prefix>…)`), so a reinstalled phone is never locked out behind its own
-dead rows, and a stolen cookie cannot buy an unbounded fan-out. Re-registering an endpoint
-already stored evicts nothing, and APNs rows never count. The read and the writes are not
-one transaction: two registrations at once can leave 11 rows, and the next new one evicts
-back down to 10.
+At most 10 rows of each family (`MAX_DEVICES_PER_FAMILY`): 10 Web Push subscriptions and
+10 APNs tokens (`ios`, `ipados` and `macos` together), counted apart. Registering a new
+field while its family holds 10 deletes that family's oldest by `registered_at` first, so a
+reinstalled phone is never locked out behind its own dead rows, and a stolen cookie cannot
+buy an unbounded fan-out of either kind. Each family evicts only its own: a burst of
+browser registrations never evicts an iPhone, nor the reverse. Re-registering a field
+already stored replaces its own row and evicts nothing, in both families. A row that is not
+a JSON object, or names neither family, is neither counted nor evicted.
+
+A Web Push eviction logs INFO `Evicted the oldest web push subscription (<field prefix>…)`;
+an APNs one logs INFO `Evicted the oldest APNs device token`, with no part of the token.
+
+The read, the evictions and the write are one Redis transaction (`store_device()`): it
+`WATCH`es the hash, reads it with `HGETALL`, then `HDEL`s the evictions and `HSET`s the row
+in one `MULTI`/`EXEC`. Any write to the hash in between aborts the `EXEC`, and the next
+attempt reads and counts it, so two registrations at once cannot overrun the cap. After 5
+aborted attempts (`STORE_ATTEMPTS`) it writes nothing and logs WARNING `Device registration
+gave up after 5 contended attempts`, and the route answers 503 `Device store busy`.
 
 ### Validation errors
 
@@ -276,6 +291,7 @@ docker exec <alfred-container> redis-cli HDEL alfred:push:devices <the full fiel
 |---|---|
 | `/api/push/public-key` is 404 and Reach says Web Push is not set up | `WEBPUSH_VAPID_SUBJECT` is unset or has another scheme (look for `Web Push not configured` or the warning naming the variable), or startup failed (`Web Push adapter init failed`) |
 | Registration answers 422 | the endpoint's host is not on `PUSH_SERVICE_HOSTS`, or the keys are malformed |
+| Registration answers 503 `Device store busy` | the hash was written to during each of five attempts (`Device registration gave up after 5 contended attempts`); nothing was stored, so register again |
 | Every push logs `Web push delivery failed … 403` | the key changed under live subscriptions: each phone heals at its next launch |
 | `Pruned stale web push subscription` | the browser dropped the subscription; the PWA registers a new one at its next launch |
 | An INFORMATIONAL notification never arrives | by design: it stays in the app and on Signal |

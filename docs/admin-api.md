@@ -47,7 +47,7 @@ does not reach it.
 Device registration (`POST/DELETE /api/devices/register`) is **session-only** too, by
 spec §6.2 and the owner's decision of 2026-10-29: a phone away from home must be able to
 turn on notifications as soon as it installs the app. The trade, and what bounds it (the
-push-service allowlist and a cap of 10 Web Push rows), is in
+push-service allowlist, and a cap of 10 rows for each family, Web Push and APNs), is in
 [`web-push.md`](web-push.md#registration).
 
 Minting the code that makes the second row's alternative possible

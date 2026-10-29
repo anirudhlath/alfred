@@ -13,11 +13,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import fakeredis
 import pytest
 from fastapi.testclient import TestClient
 
 from core.channels.web_server import create_app
-from tests.core.channels.conftest import _TEST_SESSION_ID, make_session_redis
+from shared.streams import AUTH_SESSION_PREFIX
+from tests.core.channels.conftest import _TEST_SESSION_ID
 
 _UNTRUSTED = ("203.0.113.9", 12345)  # TEST-NET-3 — never RFC1918, CGNAT or loopback
 
@@ -39,12 +41,20 @@ _CREDENTIALS = "/api/integrations/home-service/credentials"
 
 @pytest.fixture
 def app(monkeypatch: pytest.MonkeyPatch) -> Any:
-    """The real app, with a Redis fake that recognises exactly one session."""
+    """The real app, with an in-memory Redis that holds exactly one session.
+
+    In memory rather than a mock: a device registration writes through a transaction.
+    """
     monkeypatch.delenv("ALFRED_TRUSTED_NETWORKS", raising=False)
     monkeypatch.delenv("ALFRED_TRUSTED_NETWORKS_STRICT", raising=False)
 
+    server = fakeredis.FakeServer()
+    fakeredis.FakeRedis(server=server).hset(
+        f"{AUTH_SESSION_PREFIX}{_TEST_SESSION_ID}",
+        mapping={"authenticated": "1", "credential_id": "test-cred"},
+    )
     app = create_app(redis_url="redis://localhost:6379")
-    app.state.redis = make_session_redis()
+    app.state.redis = fakeredis.FakeAsyncRedis(server=server)
     return app
 
 

@@ -115,13 +115,14 @@ discriminated on `platform`:
 | `web_push` | `{"platform": "web_push", "subscription": <PushSubscription.toJSON()>}` | the SHA-256 hex of the endpoint |
 
 Any other `platform` is a 422. `DELETE` takes exactly one of `{"device_token"}` and
-`{"endpoint"}`, and answers `{"status": "ok"}` whether or not the row existed.
+`{"endpoint"}`, non-empty, and answers `{"status": "ok"}` whether or not the row existed.
 
 Both routes are **session-only** (`require_authenticated`), from any network (spec §6.2,
 the owner's decision of 2026-10-29): a phone away from home can turn on notifications as
 soon as it installs the app. A client with no valid `alfred_auth` passkey session cookie
 gets 401, never a registration. A Web Push endpoint must be on a known push service, and
-at most 10 subscriptions are kept; the allowlist, the cap and the row are in
+at most 10 devices of each family are kept, 10 Web Push subscriptions and 10 APNs tokens,
+each family evicting only its own oldest; the allowlist, the caps and the row are in
 [`web-push.md`](web-push.md#registration).
 
 ### Adding a New Channel Adapter

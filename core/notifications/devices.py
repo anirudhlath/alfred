@@ -10,7 +10,14 @@ A Web Push endpoint is a URL the browser hands us and we later POST to, so it is
 against the known push services before it is stored: an endpoint anywhere else would make
 Alfred send requests wherever a client pointed it. The endpoint, ``p256dh`` and ``auth``
 are credentials — anyone holding them can push to the device — so nothing here logs them,
-and a ``ValidationError``'s message never quotes them (``hide_input_in_errors``).
+and a ``ValidationError``'s message never quotes them (``hide_input_in_errors``). An APNs
+device token is one too, and nothing here logs any of it.
+
+The hash holds at most ``MAX_DEVICES_PER_FAMILY`` rows of each family, APNs and Web Push,
+counted apart: ``store_device()`` evicts the oldest of the newcomer's own family, so a
+burst of browsers never costs an iPhone, nor the reverse. The cap is what bounds a stolen
+session's writes, since neither push service tells us a made-up device is fake in a way
+the adapters prune on (Apple answers 400, and the APNs adapter prunes only on 410).
 """
 
 from __future__ import annotations
@@ -20,14 +27,27 @@ import binascii
 import hashlib
 import json
 import re
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal, get_args
 from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives.asymmetric import ec
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, field_validator
+from redis.exceptions import WatchError
+
+from shared.streams import DEVICE_TOKENS_KEY, decode_stream_value
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from shared.types import AioRedis
 
 WEB_PUSH_PLATFORM: Final = "web_push"
-APNS_PLATFORMS: Final = frozenset({"ios", "ipados", "macos"})
+ApnsPlatform = Literal["ios", "ipados", "macos"]
+APNS_PLATFORMS: Final = frozenset(get_args(ApnsPlatform))
+
+# The two kinds of push device the hash holds; each is capped on its own.
+DeviceFamily = Literal["apns", "web_push"]
 
 # The browsers' push services. A host matches when it equals one or ends with "." + one,
 # so the match is on a label boundary: push.apple.com covers web.push.apple.com, never
@@ -40,7 +60,10 @@ PUSH_SERVICE_HOSTS: Final = (
 )
 
 MAX_ENDPOINT_LEN: Final = 2048
-MAX_WEB_PUSH_SUBSCRIPTIONS: Final = 10
+# Rows kept per family; the eleventh of a family evicts that family's oldest.
+MAX_DEVICES_PER_FAMILY: Final = 10
+# Transactions ``store_device()`` tries before it gives up on a contended hash.
+STORE_ATTEMPTS: Final = 5
 
 _P256_POINT_LEN: Final = 65  # X9.62 uncompressed: 0x04 || X (32) || Y (32)
 _AUTH_LEN: Final = 16
@@ -158,3 +181,75 @@ def is_web_push(row: dict[str, Any] | None) -> bool:
 def push_host(endpoint: str) -> str:
     """The endpoint's hostname — safe to log, unlike the endpoint itself."""
     return urlsplit(endpoint).hostname or ""
+
+
+def device_family(row: dict[str, Any] | None) -> DeviceFamily | None:
+    """Which family a decoded device row belongs to, or ``None`` for a row of neither."""
+    if row is None:
+        return None
+    platform = row.get("platform")
+    if platform == WEB_PUSH_PLATFORM:
+        return "web_push"
+    return "apns" if platform in APNS_PLATFORMS else None
+
+
+def evictions(
+    rows: Mapping[bytes | str, bytes | str],
+    field: str,
+    family: DeviceFamily,
+    cap: int = MAX_DEVICES_PER_FAMILY,
+) -> list[str]:
+    """The fields to delete so that ``field`` fits its family's cap, oldest first.
+
+    Empty when ``field`` is already stored: re-registering replaces its own row. Only rows
+    of ``family`` count, and a row of neither family (not JSON, not an object, no known
+    platform) is neither counted nor evicted. More than one only when the family is
+    already over the cap, which this then heals.
+    """
+    stamped: list[tuple[str, str]] = []
+    for raw_name, value in rows.items():
+        name = decode_stream_value(raw_name)
+        if name == field:
+            return []
+        row = decode_device(value)
+        if row is not None and device_family(row) == family:
+            # isoformat() in UTC sorts as text; a row with no stamp reads as the oldest.
+            stamp = row.get("registered_at")
+            stamped.append((stamp if isinstance(stamp, str) else "", name))
+    excess = len(stamped) - cap + 1
+    return [name for _, name in sorted(stamped)[:excess]] if excess > 0 else []
+
+
+class DeviceStoreBusyError(RuntimeError):
+    """Every attempt to store a device lost its transaction to a concurrent write."""
+
+
+async def store_device(redis: AioRedis, field: str, value: str, family: DeviceFamily) -> list[str]:
+    """Write one device row and evict its family's oldest past the cap, atomically.
+
+    One transaction per attempt: WATCH the hash, read it, then MULTI the evictions and the
+    write and EXEC. A write to the hash in between aborts the EXEC, and the next attempt
+    reads and counts it, so concurrent registrations cannot overrun the cap. After
+    ``STORE_ATTEMPTS`` aborted attempts this raises ``DeviceStoreBusyError``, nothing
+    written. Returns the evicted fields.
+    """
+    for _ in range(STORE_ATTEMPTS):
+        async with redis.pipeline(transaction=True) as pipe:
+            await pipe.watch(DEVICE_TOKENS_KEY)
+            evicted = evictions(await pipe.hgetall(DEVICE_TOKENS_KEY), field, family)
+            pipe.multi()  # type: ignore[no-untyped-call]  # unannotated in redis-py
+            if evicted:
+                pipe.hdel(DEVICE_TOKENS_KEY, *evicted)
+            pipe.hset(DEVICE_TOKENS_KEY, field, value)
+            try:
+                await pipe.execute()
+            except WatchError:
+                continue
+        for name in evicted:
+            if family == "web_push":
+                logger.info("Evicted the oldest web push subscription ({}…)", name[:12])
+            else:  # a device token is a credential: not even a prefix of it
+                logger.info("Evicted the oldest APNs device token")
+        return evicted
+    logger.warning("Device registration gave up after {} contended attempts", STORE_ATTEMPTS)
+    raise DeviceStoreBusyError(f"device store contended {STORE_ATTEMPTS} times")

@@ -54,20 +54,20 @@ from core.channels.voice_models import (  # re-exported for tests (see __all__)
     transcribe_async,
 )
 from core.identity.auth_middleware import AuthCookieMiddleware
-from core.identity.auth_routes import _MAX_USER_AGENT_LEN, create_auth_router
+from core.identity.auth_routes import MAX_USER_AGENT_LEN, create_auth_router
 from core.identity.credentials import CredentialStore
 from core.identity.ws_auth import require_ws_auth
 from core.notifications.adapters.satellite import SatelliteChannelAdapter
 from core.notifications.channels import ChannelRegistry
 from core.notifications.devices import (
     MAX_ENDPOINT_LEN,
-    MAX_WEB_PUSH_SUBSCRIPTIONS,
     WEB_PUSH_PLATFORM,
+    ApnsPlatform,
+    DeviceStoreBusyError,
     WebPushSubscription,
-    decode_device,
     endpoint_field,
-    is_web_push,
     push_host,
+    store_device,
 )
 from core.notifications.dispatcher import NotificationDispatcher
 from core.notifications.dnd import DNDChecker
@@ -85,7 +85,7 @@ from core.shutdown import teardown
 from core.warmup import start_warmup
 from shared.env import is_truthy_flag
 from shared.redis_streams import create_redis
-from shared.streams import DEVICE_TOKENS_KEY, decode_stream_value
+from shared.streams import DEVICE_TOKENS_KEY
 from shared.usertime import is_valid_timezone
 
 # mypy --strict (no_implicit_reexport): mark the voice_models re-imports above as
@@ -301,7 +301,7 @@ class DeviceRegistration(BaseModel):
     """APNs device token registration."""
 
     device_token: str = Field(min_length=32, max_length=200, pattern=_DEVICE_TOKEN_PATTERN)
-    platform: Literal["ios", "ipados", "macos"]
+    platform: ApnsPlatform
     identity: str
 
 
@@ -322,7 +322,7 @@ class DeviceUnregistration(BaseModel):
     device_token: str | None = Field(
         default=None, min_length=32, max_length=200, pattern=_DEVICE_TOKEN_PATTERN
     )
-    endpoint: str | None = Field(default=None, max_length=MAX_ENDPOINT_LEN)
+    endpoint: str | None = Field(default=None, min_length=1, max_length=MAX_ENDPOINT_LEN)
 
     @model_validator(mode="after")
     def _exactly_one(self) -> Self:
@@ -331,42 +331,9 @@ class DeviceUnregistration(BaseModel):
         return self
 
 
-def _evictions(rows: dict[bytes | str, bytes | str], field: str) -> list[str]:
-    """The Web Push fields to delete so that ``field`` fits under the cap, oldest first.
-
-    None when ``field`` is already stored: re-registering replaces its own row. APNs rows
-    never count. More than one only when concurrent registrations have already overrun
-    the cap, which this then heals.
-    """
-    stamped: list[tuple[str, str]] = []
-    for raw_field, value in rows.items():
-        name = decode_stream_value(raw_field)
-        if name == field:
-            return []
-        row = decode_device(value)
-        if row is not None and is_web_push(row):
-            # isoformat() in UTC sorts as text; a row with no stamp reads as the oldest.
-            stamp = row.get("registered_at")
-            stamped.append((stamp if isinstance(stamp, str) else "", name))
-    excess = len(stamped) - MAX_WEB_PUSH_SUBSCRIPTIONS + 1
-    return [name for _, name in sorted(stamped)[:excess]] if excess > 0 else []
-
-
-async def _register_web_push(
-    r: AioRedis, subscription: WebPushSubscription, user_agent: str
-) -> None:
-    """Store a subscription under its endpoint's hash, evicting the oldest past the cap (R3).
-
-    The endpoint and keys are credentials: the log line names the field's first 12
-    characters and the push host, never either of them.
-    """
-    field = endpoint_field(subscription.endpoint)
-    evicted = _evictions(await r.hgetall(DEVICE_TOKENS_KEY), field)
-    if evicted:
-        await r.hdel(DEVICE_TOKENS_KEY, *evicted)
-        for name in evicted:
-            logger.info("Evicted the oldest web push subscription ({}…)", name[:12])
-    value = json.dumps(
+def _web_push_row(subscription: WebPushSubscription, user_agent: str) -> str:
+    """The stored row for a subscription: credentials, so never logged or returned."""
+    return json.dumps(
         {
             "platform": WEB_PUSH_PLATFORM,
             "endpoint": subscription.endpoint,
@@ -374,14 +341,18 @@ async def _register_web_push(
             # Only a signed-in session reaches the route, as with the WebSocket handler.
             "identity": "sir",
             "registered_at": datetime.now(UTC).isoformat(),
-            "user_agent": user_agent[:_MAX_USER_AGENT_LEN],
+            "user_agent": user_agent[:MAX_USER_AGENT_LEN],
         }
     )
-    await r.hset(DEVICE_TOKENS_KEY, field, value)
-    logger.info(
-        "Registered web push subscription ({}…, host={})",
-        field[:12],
-        push_host(subscription.endpoint),
+
+
+def _apns_row(registration: DeviceRegistration) -> str:
+    return json.dumps(
+        {
+            "platform": registration.platform,
+            "identity": registration.identity,
+            "registered_at": datetime.now(UTC).isoformat(),
+        }
     )
 
 
@@ -1236,18 +1207,23 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     async def register_device(payload: DevicePayload, request: Request) -> dict[str, str]:
         """Register a device for push: an APNs token, or a browser's Web Push subscription."""
         r: aioredis.Redis = app.state.redis
-        if isinstance(payload, WebPushRegistration):
-            await _register_web_push(r, payload.subscription, request.headers.get("user-agent", ""))
-            return {"status": "ok"}
-        value = json.dumps(
-            {
-                "platform": payload.platform,
-                "identity": payload.identity,
-                "registered_at": datetime.now(UTC).isoformat(),
-            }
-        )
-        await r.hset(DEVICE_TOKENS_KEY, payload.device_token, value)
-        logger.info("Registered device token (platform={})", payload.platform)
+        try:
+            if isinstance(payload, WebPushRegistration):
+                subscription = payload.subscription
+                field = endpoint_field(subscription.endpoint)
+                user_agent = request.headers.get("user-agent", "")
+                await store_device(r, field, _web_push_row(subscription, user_agent), "web_push")
+                logger.info(
+                    "Registered web push subscription ({}…, host={})",
+                    field[:12],
+                    push_host(subscription.endpoint),
+                )
+            else:
+                await store_device(r, payload.device_token, _apns_row(payload), "apns")
+                logger.info("Registered device token (platform={})", payload.platform)
+        except DeviceStoreBusyError:
+            # store_device() has logged the give-up; nothing was written.
+            raise HTTPException(status_code=503, detail="Device store busy") from None
         return {"status": "ok"}
 
     @app.delete(

@@ -145,8 +145,9 @@ including on the 503 path, so the PWA is never left holding a session id that ha
 been deleted.
 
 Note the gate: removing a passkey needs **only the session**, unlike
-`DELETE /api/integrations/{name}/credentials`, which also requires a trusted network. Removal neither mints nor widens a credential, so
-the rule that reserves the network gate does not reach it.
+`DELETE /api/integrations/{name}/credentials`, which also requires a trusted network.
+Removal neither mints nor widens a credential, so the rule that reserves the network gate
+does not reach it.
 
 **Outages.** Every store failure on the sessions, passkeys, pairing and logout routes
 answers **503** `{"detail": "Session store unavailable"}` — one vocabulary, so a client

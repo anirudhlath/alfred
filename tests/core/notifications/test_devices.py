@@ -2,21 +2,36 @@
 
 import base64
 import hashlib
+import itertools
+import json
 import os
+from collections.abc import Iterable, Iterator
+from typing import Any
 
+import fakeredis
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from loguru import logger
 from pydantic import ValidationError
 
+from core.notifications import devices
 from core.notifications.devices import (
+    MAX_DEVICES_PER_FAMILY,
+    STORE_ATTEMPTS,
+    DeviceFamily,
+    DeviceStoreBusyError,
     WebPushKeys,
     WebPushSubscription,
     decode_device,
+    device_family,
     endpoint_field,
+    evictions,
     is_web_push,
     push_host,
+    store_device,
 )
+from shared.streams import DEVICE_TOKENS_KEY
 
 
 def _b64url(raw: bytes) -> str:
@@ -157,3 +172,238 @@ def test_is_web_push() -> None:
     assert not is_web_push({"platform": "ios"})
     assert not is_web_push({})
     assert not is_web_push(None)
+
+
+# --- The storage policy: one cap per family, kept in one transaction -------------------
+
+MAX = MAX_DEVICES_PER_FAMILY
+
+
+def _stamp(n: int) -> str:
+    return f"2026-10-{n + 1:02d}T00:00:00+00:00"
+
+
+def _web(n: int) -> tuple[str, str]:
+    """A Web Push row, registered on day ``n + 1``, under its endpoint's field."""
+    row = {"platform": "web_push", "endpoint": f"{APPLE}-{n:02d}", "registered_at": _stamp(n)}
+    return endpoint_field(f"{APPLE}-{n:02d}"), json.dumps(row)
+
+
+def _apple(n: int, platform: str = "ios") -> tuple[str, str]:
+    """An APNs row, registered on day ``n + 1``, under its device token."""
+    row = {"platform": platform, "identity": "sir", "registered_at": _stamp(n)}
+    return f"{n:02d}" * 16, json.dumps(row)
+
+
+def _rows(*groups: Iterable[tuple[str, str]]) -> dict[bytes | str, bytes | str]:
+    return {name: value for group in groups for name, value in group}
+
+
+_MAKE = {"web_push": _web, "apns": _apple}
+FAMILIES: tuple[DeviceFamily, ...] = ("web_push", "apns")
+
+
+@pytest.mark.parametrize(
+    ("row", "family"),
+    [
+        ({"platform": "web_push"}, "web_push"),
+        ({"platform": "ios"}, "apns"),
+        ({"platform": "ipados"}, "apns"),
+        ({"platform": "macos"}, "apns"),
+        ({"platform": "android"}, None),
+        ({}, None),
+        (None, None),
+    ],
+)
+def test_device_family(row: dict[str, Any] | None, family: DeviceFamily | None) -> None:
+    assert device_family(row) == family
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_evicts_nothing_below_the_cap(family: DeviceFamily) -> None:
+    rows = _rows(_MAKE[family](n) for n in range(MAX - 1))
+
+    assert evictions(rows, "newcomer", family) == []
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_evicts_the_oldest_of_its_family(family: DeviceFamily) -> None:
+    # Stored newest first, so the answer cannot be riding the hash's order.
+    rows = _rows(_MAKE[family](n) for n in reversed(range(MAX)))
+
+    assert evictions(rows, "newcomer", family) == [_MAKE[family](0)[0]]
+
+
+def test_a_family_never_evicts_the_other() -> None:
+    rows = _rows((_web(n) for n in range(MAX)), (_apple(n) for n in range(MAX)))
+
+    assert evictions(rows, "newcomer", "web_push") == [_web(0)[0]]
+    assert evictions(rows, "newcomer", "apns") == [_apple(0)[0]]
+
+
+def test_every_apple_platform_is_one_family() -> None:
+    platforms = ("ios", "ipados", "macos")
+    rows = _rows(_apple(n, platforms[n % 3]) for n in range(MAX))
+
+    assert evictions(rows, "newcomer", "apns") == [_apple(0)[0]]
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_re_registering_at_the_cap_evicts_nothing(family: DeviceFamily) -> None:
+    rows = _rows(_MAKE[family](n) for n in range(MAX))
+
+    assert evictions(rows, _MAKE[family](5)[0], family) == []
+
+
+def test_heals_an_overrun_cap() -> None:
+    rows = _rows(_web(n) for n in range(MAX + 2))
+
+    assert evictions(rows, "newcomer", "web_push") == [_web(n)[0] for n in range(3)]
+
+
+def test_a_row_without_a_stamp_reads_as_the_oldest() -> None:
+    rows = _rows(_web(n) for n in range(1, MAX))
+    rows["unstamped"] = json.dumps({"platform": "web_push"})
+
+    assert evictions(rows, "newcomer", "web_push") == ["unstamped"]
+
+
+@pytest.mark.parametrize(
+    "corrupt", [b"not json", b"[1, 2]", b'"text"', b'{"identity": "sir"}', b"\xff"]
+)
+@pytest.mark.parametrize("family", FAMILIES)
+def test_a_corrupt_row_neither_counts_nor_goes(corrupt: bytes, family: DeviceFamily) -> None:
+    below = _rows(_MAKE[family](n) for n in range(MAX - 1))
+    below["corrupt"] = corrupt
+    assert evictions(below, "newcomer", family) == []
+
+    full = _rows(_MAKE[family](n) for n in range(MAX))
+    full["corrupt"] = corrupt
+    assert evictions(full, "newcomer", family) == [_MAKE[family](0)[0]]
+
+
+def test_reads_the_bytes_redis_returns() -> None:
+    rows: dict[bytes | str, bytes | str] = {
+        name.encode(): value.encode() for name, value in (_web(n) for n in range(MAX))
+    }
+
+    assert evictions(rows, "newcomer", "web_push") == [_web(0)[0]]
+
+
+@pytest.fixture
+def server() -> fakeredis.FakeServer:
+    return fakeredis.FakeServer()
+
+
+@pytest.fixture
+def redis(server: fakeredis.FakeServer) -> fakeredis.FakeAsyncRedis:
+    return fakeredis.FakeAsyncRedis(server=server)
+
+
+@pytest.fixture
+def other(server: fakeredis.FakeServer) -> fakeredis.FakeRedis:
+    """Another client on the same Redis: a second request, or the test looking in."""
+    return fakeredis.FakeRedis(server=server, decode_responses=True)
+
+
+@pytest.fixture
+def logs() -> Iterator[list[str]]:
+    messages: list[str] = []
+    sink_id = logger.add(lambda message: messages.append(str(message)), level="DEBUG")
+    yield messages
+    logger.remove(sink_id)
+
+
+def _seed(other: fakeredis.FakeRedis, rows: Iterable[tuple[str, str]]) -> None:
+    for name, value in rows:
+        other.hset(DEVICE_TOKENS_KEY, name, value)
+
+
+async def test_store_device_writes_the_row_and_evicts(
+    redis: fakeredis.FakeAsyncRedis, other: fakeredis.FakeRedis
+) -> None:
+    _seed(other, (_web(n) for n in range(MAX)))
+    name, value = _web(MAX)
+
+    assert await store_device(redis, name, value, "web_push") == [_web(0)[0]]
+
+    assert other.hget(DEVICE_TOKENS_KEY, name) == value
+    assert not other.hexists(DEVICE_TOKENS_KEY, _web(0)[0])
+    assert other.hlen(DEVICE_TOKENS_KEY) == MAX
+
+
+async def test_store_device_counts_a_registration_that_lands_mid_write(
+    redis: fakeredis.FakeAsyncRedis, other: fakeredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row written between the read and the write is seen on the retry, not overrun."""
+    _seed(other, (_web(n) for n in range(MAX - 1)))
+    real = devices.evictions
+    reads: list[int] = []
+
+    def racing(
+        rows: dict[bytes | str, bytes | str], field: str, family: DeviceFamily, cap: int = MAX
+    ) -> list[str]:
+        reads.append(len(rows))
+        if len(reads) == 1:
+            other.hset(DEVICE_TOKENS_KEY, *_web(MAX - 1))  # the tenth, from another request
+        return real(rows, field, family, cap)
+
+    monkeypatch.setattr(devices, "evictions", racing)
+    name, value = _web(MAX)
+
+    assert await store_device(redis, name, value, "web_push") == [_web(0)[0]]
+
+    assert reads == [MAX - 1, MAX]
+    assert other.hlen(DEVICE_TOKENS_KEY) == MAX
+    assert other.hexists(DEVICE_TOKENS_KEY, _web(MAX - 1)[0])
+    assert other.hexists(DEVICE_TOKENS_KEY, name)
+
+
+async def test_store_device_gives_up_loudly(
+    redis: fakeredis.FakeAsyncRedis, other: fakeredis.FakeRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = devices.evictions
+    racers = itertools.count()
+
+    def always_racing(
+        rows: dict[bytes | str, bytes | str], field: str, family: DeviceFamily, cap: int = MAX
+    ) -> list[str]:
+        other.hset(DEVICE_TOKENS_KEY, f"racer-{next(racers)}", "x")
+        return real(rows, field, family, cap)
+
+    monkeypatch.setattr(devices, "evictions", always_racing)
+    name, value = _web(0)
+
+    with pytest.raises(DeviceStoreBusyError):
+        await store_device(redis, name, value, "web_push")
+
+    assert next(racers) == STORE_ATTEMPTS
+    assert not other.hexists(DEVICE_TOKENS_KEY, name)
+
+
+async def test_store_device_logs_a_web_push_eviction_by_its_prefix(
+    redis: fakeredis.FakeAsyncRedis, other: fakeredis.FakeRedis, logs: list[str]
+) -> None:
+    _seed(other, (_web(n) for n in range(MAX)))
+    evicted = _web(0)[0]
+
+    await store_device(redis, *_web(MAX), "web_push")
+
+    joined = "\n".join(logs)
+    assert f"Evicted the oldest web push subscription ({evicted[:12]}…)" in joined
+    assert evicted[12:] not in joined
+
+
+async def test_store_device_never_logs_an_apple_token(
+    redis: fakeredis.FakeAsyncRedis, other: fakeredis.FakeRedis, logs: list[str]
+) -> None:
+    _seed(other, (_apple(n) for n in range(MAX)))
+    name, value = _apple(MAX)
+
+    evicted = await store_device(redis, name, value, "apns")
+
+    joined = "\n".join(logs)
+    assert evicted == [_apple(0)[0]]
+    assert "Evicted the oldest APNs device token" in joined
+    for token in (*evicted, name):
+        assert token[:12] not in joined
