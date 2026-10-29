@@ -189,8 +189,15 @@ The driver reads and acts on the eval container through `evals/harness/bus.py`.
   - sets do-not-disturb through `POST /api/admin/dnd`, with an admin session minted for
     that one call;
   - sets the stored user timezone (`clock`);
+  - changes Reflex's settings through `GET` and `PUT /api/admin/reflex/settings`, with an admin
+    session minted for each call, as the owner does (`set_reflex_settings`: it reads the
+    document, lays the step's change over it and writes the whole document back), and puts the
+    first document it found back when the sample ends (`restore_reflex_settings`);
   - clears Reflex's record of who last changed each entity (`clear_person_changes`), so one
     sample's switch does not put an entity on the next sample's Leave alone line;
+  - clears Reflex's asks (`clear_reflex_asks`): the open ask, the repeat and day-count keys and
+    the answered markers, found with `SCAN`, never `KEYS`. One golden's open ask would hold the
+    next golden's, and its repeat key would hold it for hours. The answers stream stays;
   - confirms or denies a pending action with `POST /api/actions/{id}/confirm` or `/deny`, with
     an admin session minted for that one call, as the Door does (`decide_pending`). It returns
     the status when it is one of the product's answers (`DOOR_ANSWERS`: 200, 400, 404, 500,
@@ -212,8 +219,8 @@ Every bus call is bounded, so a container frozen with its socket open fails the 
 
 | Call | Bound |
 |---|---|
-| A read or an act (and each Redis step of `set_dnd`) | `timeout_s`, 10 s |
-| `set_dnd`'s HTTP request | `timeout_s` |
+| A read or an act (and each Redis step of `set_dnd` and `set_reflex_settings`) | `timeout_s`, 10 s |
+| `set_dnd`'s and `set_reflex_settings`' HTTP requests | `timeout_s` |
 | The blocking wait for a fire | its own wait plus `timeout_s` |
 | `decide_pending`'s HTTP request | `timeout_s` |
 | The wait for a follow-up | its own wait plus `timeout_s` |
@@ -263,7 +270,8 @@ sequenceDiagram
     T->>T: scorer: deterministic checks, then judge rubrics
 ```
 
-A golden with a reflex check (`reflex_decision`, `reflex_not_proposed` or `reflex_outcome`), a
+A golden with a reflex check (`reflex_decision`, `reflex_not_proposed`, `reflex_outcome` or
+`reflex_ask_parked`), a
 `reflex_ms` latency, or a `prompt_contains` or `prompt_not_contains` on `system1` **watches Reflex**.
 After each `ha_event` the driver waits for System 1's answer to that change, not for an HA call.
 
@@ -577,7 +585,7 @@ uv run inspect view --log-dir evals/logs/<run>
 Each sample shows:
 
 - **Messages:** the transcript — user turns, Alfred's replies, and `[home event]` turns for
-  `ha_event`, `clock`, `advance_trigger` and `dnd` steps.
+  `ha_event`, `clock`, `advance_trigger`, `dnd` and `reflex_settings` steps.
 - **Score explanation:** one line per check, `PASS`, `FAIL` or `ERROR`, then the check's
   name and reason. A `*` after the status (`FAIL*`) marks a check that did not count: a
   judge check in an untrusted category, whose reason also reads `[<category>, untrusted]`.
@@ -639,6 +647,7 @@ expect:
 | `advance_trigger: {name: …}` | `settle: <seconds>` | Makes the newest one-time trigger (one with a `run_at`) the sample created due now, optionally narrowed by `name`, a case-insensitive part of its name. Then waits up to 15 s (`settle`) for it to fire, as a TriggerFired or, for a trigger with an action, its `ActionRequest`, and 2 s more once it has. With no such trigger, the transcript says so and the checks score it. `advance_trigger: {}` takes the newest |
 | `door: confirm` / `door: deny` | `pending_action: {at_step, tool}` (required); `settle: <seconds>` (default 3) | The owner decides on the Door, the PWA's confirm sheet: POSTs the decision for the selected pending action through the web channel, then waits (up to the reply timeout) for the follow-up the resumed run publishes to the request that parked it, which is this step's reply. Records `door confirm → 200` in the transcript. Any other answer of the product's (400, 404, 500, 503), or no follow-up, records no reply and fails no run: the checks score the evidence. Then it waits for any HA call a check still wants, and settles |
 | `dnd: on` / `dnd: off` | `settle: <seconds>` | Sets do-not-disturb through the admin API, then settles 3 s (`settle` replaces it). Turning it off drains what it held; the drain runs in the conscious process, so give `settle` time for it |
+| `reflex_settings: {mode, ask_tools}` | — (no settle: Reflex reads the settings document on every decision) | The owner changes Reflex's settings, through the admin API. `mode` is `shadow` or `ask`; `ask_tools` is a list of fnmatch patterns over tool names (`["home.light_*"]`), the tools Reflex may ask about. A step names at least one, and a field it does not name keeps its value. Both are checked at load against the bounds the settings document keeps, and nothing else in the document can be changed by a step. The sample restores the document the **first** such step found, whole, when it ends; a failed sample leaves that to the stack restart, as `dnd` does. Records `reflex settings changed: {…}` in the transcript. Put it before the first `ha_event`: a change takes effect from the next decision |
 
 **`clock` and `user` steps.** Conscious stores the zone a request carries (the actor's `tz`)
 before it answers (`process_request` in `core/conscious/engine.py`), so a `user` step whose
@@ -853,7 +862,8 @@ scored separately. Params are validated at load and unknown keys are rejected.
 | `reply_not_contains` | as `reply_contains` | No needle hits the chosen replies. No reply at that step fails |
 | `latency` | `metric` (required: `reply_ms`, `reflex_ms` or `reminder_fire_ms`), `max` (required; ms, > 0); `step` (int, default `-1`) for `reply_ms`; `at_step` for the other two | `reply_ms`: the reply at `step` arrived within `max` ms of its request. `reflex_ms`: the earliest System 1 call about the `ha_event` step's change was answered within `max` ms of the step's start (any wait for one of the proxy's upstream slots included). With no such call it errors, as a reflex check does: no judgment, nothing to time. `reminder_fire_ms`: the notification of that trigger's fire was dispatched within `max` ms of the `advance_trigger` making it due |
 | `reflex_decision` | `decision` (required: `act`, `ask`, `none`, `invalid`, or a list of them); `tool` (one, or a list of which any will do); `target`; `at_step`; `uncalled_ok` (default `false`) | Every System 1 call about the step's change has a decision in the set, and, for act/ask, one of the `tool`s and the `target` (entity or area id) given. With no such call it errors (no judgment to score), unless `uncalled_ok` is set and `none` is in the set: then it passes |
-| `reflex_outcome` | `outcome` (required: `none`, `invalid`, `would_reverse`, `shadow`, `asked`, `held`, or a list of them); `target` (entity or area id); `at_step` | Reflex's decision log holds a record about the step's change (same entity, same new state, logged at or after the step's start), and every such record's outcome is in the set. With a `target`, only the records whose proposal resolves to it are judged (as `reflex_decision` resolves one), and none proposing it is a pass. No record is an error: a log with nothing about the change has no outcome to judge. A record with no outcome (one written before outcomes existed) is an error too. The records have no upper time bound: a later step that pushes the same entity to the same state is judged for this step too |
+| `reflex_outcome` | `outcome` (required: `none`, `invalid`, `would_reverse`, `shadow`, `asked`, `held`, or a list of them); `reason` (`tool_off`, `quiet_hours`, `dnd`, `ask_open`, `asked_recently`, `daily_cap`, or a list of them; only with a `held` or `shadow` outcome in the set); `target` (entity or area id); `at_step` | Reflex's decision log holds a record about the step's change (same entity, same new state, logged at or after the step's start), and every such record's outcome is in the set. With a `reason`, a record whose outcome carries one (a `held` ask, or a `shadow` one that names the limit it would have hit) has a wanted reason; a record whose outcome has none, such as `none`, satisfies `{outcome: [held, none], reason: dnd}`. With a `target`, only the records whose proposal resolves to it are judged (as `reflex_decision` resolves one), and none proposing it is a pass. No record is an error: a log with nothing about the change has no outcome to judge. A record with no outcome (one written before outcomes existed) is an error too. The records have no upper time bound: a later step that pushes the same entity to the same state is judged for this step too |
+| `reflex_ask_parked` | `at_step` (optional) | Every ask the decision log holds about the `ha_event` step's change (an `asked` outcome) is a pending action from `reflex-engine` for the same tool in the sample's **last** pending snapshot, which is why a golden ends on a `wait` step: Reflex parks the ask just after the model answers, which can be after the `ha_event` step's own snapshot. A change nothing was asked about is a pass (there is nothing to park), so a golden that expects `[asked, none]` pairs this check with `reflex_outcome`. No record in the log is an error, as for `reflex_outcome` |
 | `reflex_not_proposed` | `tool` (required); `target`; `decision` (default `[act, ask]`); `at_step`; `uncalled_ok` (default `false`) | No call about the step's change proposes that tool (on that target). With no such call it errors, unless `uncalled_ok` is set |
 | `prompt_contains` | exactly one of `text`, `any`, `regex`; `role` (default `system2`) | Some string leaf or mapping key in a full recorded request body for the role contains the needle, matched as `prompt_not_contains` matches (case-insensitive; older evidence falls back to messages). Fails when the role was never called. On `system1` it watches Reflex, so the driver waits for System 1's answer to each `ha_event` |
 | `prompt_not_contains` | exactly one of `text`, `any`, `regex`; `role` (default `system2`) | No string leaf or mapping key in any full recorded request body for the role contains the needle (messages, tool descriptions/schemas and extra fields included); older evidence falls back to messages. Fails when the role was never called |
@@ -882,7 +892,7 @@ is Reflex's own request refused, such as a prompt too long.
 
 `reflex_outcome` judges what Reflex did with a decision, which the replies alone do not show
 (a proposal it turned into `would_reverse` reads as an `act` in `reflex_decision`). The driver
-reads Reflex's decision log for a golden that has one, after the last step: it waits, up to
+reads Reflex's decision log for a golden that has a `reflex_outcome` or a `reflex_ask_parked`, after the last step: it waits, up to
 10 s with a blocking read, until the log holds as many decisions as System 1 answered calls,
 then keeps the records of state changes. A missing record is not a harness error: the check
 reports it. The log has one record per answered call, written just after the proxy records the
@@ -1161,7 +1171,7 @@ goldens are public. Everything about it is fake or fenced.
 | `evals/harness/display.py` | `--display` choices and how Inspect's display is pinned |
 | `evals/harness/coverage.py` | PRD parsing and `coverage_problems()` |
 | `evals/suites/<suite>/` | Goldens |
-| `evals/suites/reflex/` | System 1's judgment on house events, its prompt (who caused a change, the weather), its latency, and whether it leaves a person's change alone (`never_reverse_*`) |
+| `evals/suites/reflex/` | System 1's judgment on house events, its prompt (who caused a change, the weather), its latency, whether it leaves a person's change alone (`never_reverse_*`), and, in ask mode, whether it asks and holds its asks (`asks_*`) |
 | `evals/suites/triggers/` | Reminders and rules System 2 sets: relative, timezone, recurring, sensor and fast |
 | `evals/suites/notifications/` | Reminder urgency, do-not-disturb and its release |
 | `evals/suites/guest_boundary/` | Web/Signal identity, sir controls, personal-data requests and a sir-to-guest session transition; policy enforcement remains pending |
@@ -1179,6 +1189,13 @@ goldens are public. Everything about it is fake or fenced.
 
 ## Known gaps
 
+- **The ask goldens stop at the parked ask.** `asks_ask_mode_asks` shows that Reflex put the
+  proposal to the owner and parked it as a pending action from `reflex-engine`, and
+  `asks_dnd_holds` that do-not-disturb held it. The owner's answer (a yes, a no, a lapse) and
+  what follows it are covered by `tests/core/reflex/test_answers.py`,
+  `tests/core/reflex/test_runner_asks.py` and `tests/core/conscious/test_engine_reflex_asks.py`,
+  not by a golden. Both goldens also pass when the model says nothing, because ask mode
+  changes what the code does with a proposal and not what the model proposes.
 - **Timed do-not-disturb windows are not exercised.** The `dnd` step is on/off only, so
   neither a window's `until` nor the drain trigger the dispatcher creates for it is tested.
 - **A trigger record can go stale.** The harness records a trigger from its TriggerCreated,

@@ -7,17 +7,20 @@ as unattributed, never judged.
 
 ``reflex_outcome`` reads Reflex's decision log instead: what the code made of the model's
 decision (a proposal that would undo what a person just changed is ``would_reverse``).
+``reflex_ask_parked`` reads the log and the sample's last pending snapshot: an ask the log says
+was made is a pending action Reflex parked.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Any, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, Self
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
+from core.reflex.answers import ASK_SOURCE
 from evals.harness.checks.llm import same_tool
 from evals.harness.checks.result import CheckResult, failed, passed
-from evals.harness.evidence import Decision, Outcome
+from evals.harness.evidence import Decision, Outcome, Reason
 
 if TYPE_CHECKING:
     from evals.harness.evidence import Evidence, LoggedDecision, ReflexCall
@@ -30,6 +33,11 @@ def _as_list(value: Any) -> Any:
 Decisions = Annotated[list[Decision], BeforeValidator(_as_list), Field(min_length=1)]
 Tools = Annotated[list[str], BeforeValidator(_as_list), Field(min_length=1)]  # any of them
 Outcomes = Annotated[list[Outcome], BeforeValidator(_as_list), Field(min_length=1)]
+Reasons = Annotated[list[Reason], BeforeValidator(_as_list), Field(min_length=1)]
+
+# The outcomes that can carry a reason: a held ask says why it was held, and a shadow one
+# says which limit would have held it.
+REASONED: frozenset[Outcome] = frozenset({"held", "shadow"})
 
 
 PROPOSALS: tuple[Decision, ...] = ("act", "ask")  # the decisions that propose a tool call
@@ -62,8 +70,25 @@ class ReflexNotProposedParams(_AtStep):
 class ReflexOutcomeParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
     outcome: Outcomes
+    # Why it was held. Checked only on a decision whose outcome carries a reason: a ``none``
+    # has none to be wrong about, so it satisfies ``{outcome: [held, none], reason: dnd}``.
+    reason: Reasons | None = None
     target: str | None = None  # an entity id or an area id
     at_step: int | None = None
+
+    @model_validator(mode="after")
+    def _a_reason_needs_an_outcome_that_carries_one(self) -> Self:
+        if self.reason is not None and not REASONED.intersection(self.outcome):
+            raise ValueError(
+                f"reason applies to {' or '.join(sorted(REASONED))} outcomes only; "
+                f"the outcome set is {'/'.join(self.outcome)}"
+            )
+        return self
+
+
+class ReflexAskParkedParams(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    at_step: int | None = None  # the ha_event step whose decisions are judged
 
 
 def _clock_problem(evidence: Evidence, step: int, calls: list[ReflexCall]) -> str | None:
@@ -223,12 +248,32 @@ def _describe_logged(d: LoggedDecision) -> str:
     named = [t for t in d.targets if "." in t] or d.targets
     if named:
         what += f" on {', '.join(named)}"
-    return f"{what} → {d.outcome}"
+    why = "" if d.reason is None else f" ({d.reason})"
+    return f"{what} → {d.outcome}{why}"
+
+
+def _unlogged(name: str, window: _Window) -> CheckResult:
+    """The ``error`` for a change the decision log holds nothing about."""
+    called = "System 1 was called" if window.calls else "System 1 was not called"
+    return CheckResult(
+        name=name,
+        status="error",
+        reason=(
+            f"Reflex's decision log holds no decision about step {window.step}'s change "
+            f"({called}): no outcome to judge" + window.note()
+        ),
+    )
+
+
+def _reason_fits(d: LoggedDecision, p: ReflexOutcomeParams) -> bool:
+    """Whether *d* is within the reason the golden wants: a decision with no reason always is."""
+    return p.reason is None or d.reason is None or d.reason in p.reason
 
 
 def reflex_outcome(evidence: Evidence, p: ReflexOutcomeParams) -> CheckResult:
     """Every decision in Reflex's log about the step's change (and, with a ``target``, every
-    one that proposes it) came to an outcome in the set.
+    one that proposes it) came to an outcome in the set, and, with a ``reason``, a decision
+    that carries one (a held ask) carries a wanted one.
 
     A decision that proposes nothing there has nothing to reverse, so none proposing the
     target is a pass. No decision in the log at all is an ``error``: the change was lost, or
@@ -240,15 +285,7 @@ def reflex_outcome(evidence: Evidence, p: ReflexOutcomeParams) -> CheckResult:
         return window
     logged = evidence.decisions_about(window.step)
     if not logged:
-        called = "System 1 was called" if window.calls else "System 1 was not called"
-        return CheckResult(
-            name=name,
-            status="error",
-            reason=(
-                f"Reflex's decision log holds no decision about step {window.step}'s change "
-                f"({called}): no outcome to judge" + window.note()
-            ),
-        )
+        return _unlogged(name, window)
     seen = "; ".join(_describe_logged(d) for d in logged)
     judged = logged if p.target is None else [d for d in logged if p.target in d.targets]
     if not judged:
@@ -262,13 +299,62 @@ def reflex_outcome(evidence: Evidence, p: ReflexOutcomeParams) -> CheckResult:
                 f"kept): {seen}{window.note()}"
             ),
         )
-    if all(d.outcome in p.outcome for d in judged):
+    if all(d.outcome in p.outcome and _reason_fits(d, p) for d in judged):
         return passed(name, "; ".join(_describe_logged(d) for d in judged) + window.note())
     on = "" if p.target is None else f" on {p.target}"
     wanted = "/".join(p.outcome)
+    if p.reason is not None:
+        wanted += f" (reason {'/'.join(p.reason)})"
     return failed(
         name,
         f"wanted outcome {wanted}{on}; Reflex decided "
         + "; ".join(_describe_logged(d) for d in judged)
         + window.note(),
+    )
+
+
+def reflex_ask_parked(evidence: Evidence, p: ReflexAskParkedParams) -> CheckResult:
+    """Every ask the decision log says Reflex made about the step's change is a pending action
+    from Reflex in the sample's last pending snapshot.
+
+    The ask is parked just after the model's reply, which can be after the ``ha_event``
+    step's own snapshot: the last one is what a golden's closing ``wait`` step settles. A
+    decision that came to anything but ``asked`` has nothing to park, so a change nothing asked
+    about is a pass. No decision in the log is an ``error``, as for ``reflex_outcome``.
+    """
+    name = "reflex_ask_parked"
+    window = _window(evidence, name, p.at_step)
+    if isinstance(window, CheckResult):
+        return window
+    logged = evidence.decisions_about(window.step)
+    if not logged:
+        return _unlogged(name, window)
+    asked = [d for d in logged if d.outcome == "asked"]
+    if not asked:
+        seen = "; ".join(_describe_logged(d) for d in logged)
+        return passed(
+            name, f"nothing was asked, so nothing to park (Reflex: {seen}){window.note()}"
+        )
+    snapshot = evidence.pending_at_step(-1) if evidence.pending else None
+    if snapshot is None:
+        return CheckResult(
+            name=name,
+            status="error",
+            reason="the sample has no pending snapshot: the harness recorded none to look in",
+        )
+    mine = [a for a in snapshot.actions if a.source == ASK_SOURCE]
+    missing = [
+        d for d in asked if d.tool is None or not any(same_tool(a.tool_name, d.tool) for a in mine)
+    ]
+    held = "; ".join(f"{a.source} {a.tool_name}" for a in snapshot.actions) or "none"
+    if missing:
+        wanted = ", ".join(d.tool or "?" for d in missing)
+        return failed(
+            name,
+            f"Reflex asked about {wanted}, but there is no pending action from {ASK_SOURCE} "
+            f"for it (pending after the last step: {held}){window.note()}",
+        )
+    return passed(
+        name,
+        f"asked {', '.join(d.tool or '?' for d in asked)}; parked by {ASK_SOURCE}{window.note()}",
     )

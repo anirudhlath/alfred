@@ -5,9 +5,11 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from bus.schemas.events import ActionRequest
 from evals.harness.checks import reads_decision_log, run_check, step_kind_needed, watches_reflex
 from evals.harness.checks.reflex import (
     PROPOSALS,
+    ReflexAskParkedParams,
     ReflexDecisionParams,
     ReflexNotProposedParams,
     ReflexOutcomeParams,
@@ -16,6 +18,7 @@ from evals.harness.evidence import (
     ClockSet,
     Evidence,
     LoggedDecision,
+    PendingSnapshot,
     ReflexCall,
     ReflexEvent,
     StepKind,
@@ -55,6 +58,7 @@ def ev(
     starts: tuple[float, ...] = (0.0,),
     clocks: tuple[ClockSet, ...] = (),
     decisions: tuple[LoggedDecision, ...] = (),
+    pending: tuple[PendingSnapshot, ...] = (),
 ) -> Evidence:
     return evidence(
         step_started=list(starts),
@@ -63,6 +67,7 @@ def ev(
         clocks=list(clocks),
         state_pushes=pushes(list(kinds)),
         decisions=list(decisions),
+        pending=list(pending),
     )
 
 
@@ -245,6 +250,7 @@ def logged(
     t: float = 1.0,
     entity_id: str = LAMP,
     state: str = LAMP_STATE,
+    reason: str | None = None,
 ) -> LoggedDecision:
     """One decision log entry about the step's push (``factories.pushes``), unless said."""
     return LoggedDecision(
@@ -253,6 +259,7 @@ def logged(
         state=state,
         decision=decision,
         outcome=outcome,
+        reason=reason,
         tool=tool,
         targets=list(targets),
     )
@@ -382,3 +389,153 @@ def test_the_outcome_check_reads_the_decision_log_and_an_ha_event_step() -> None
     assert reads_decision_log("reflex_outcome")
     assert not reads_decision_log("reflex_decision")
     assert not reads_decision_log("prompt_contains")
+
+
+# --- reflex_outcome's reason: checked only where the observed outcome carries one ----------
+
+
+def test_a_held_reason_in_the_set_passes_and_names_the_reason() -> None:
+    e = ev(decisions=(logged("held", targets=LIVING, reason="dnd"),))
+    status, reason = outcome(e, outcome=["held", "none"], reason="dnd")
+    assert status == "pass" and "→ held (dnd)" in reason
+
+
+def test_a_held_reason_outside_the_set_fails_and_says_which() -> None:
+    e = ev(decisions=(logged("held", targets=LIVING, reason="tool_off"),))
+    status, reason = outcome(e, outcome=["held", "none"], reason="dnd")
+    assert status == "fail"
+    assert "wanted outcome held/none (reason dnd)" in reason and "→ held (tool_off)" in reason
+    assert outcome(e, outcome="held", reason=["dnd", "tool_off"])[0] == "pass"
+
+
+def test_a_none_observation_satisfies_a_reason_it_cannot_carry() -> None:
+    """The model may let the event pass, and a none has no reason to be wrong about."""
+    e = ev(decisions=(logged("none", "none", None),))
+    assert outcome(e, outcome=["held", "none"], reason="dnd")[0] == "pass"
+    # The outcome set still decides: a none is not an ask.
+    assert outcome(e, outcome=["held"], reason="dnd")[0] == "fail"
+
+
+def test_a_shadow_outcome_carrying_a_reason_is_checked_and_one_without_is_not() -> None:
+    quiet = ev(decisions=(logged("shadow", targets=LIVING, reason="quiet_hours"),))
+    assert outcome(quiet, outcome=["shadow", "held"], reason="dnd")[0] == "fail"
+    assert outcome(quiet, outcome=["shadow", "held"], reason="quiet_hours")[0] == "pass"
+    plain = ev(decisions=(logged("shadow", targets=LIVING),))
+    assert outcome(plain, outcome=["shadow", "held"], reason="dnd")[0] == "pass"
+
+
+def test_every_decision_is_held_to_the_reason() -> None:
+    mixed = ev(
+        decisions=(
+            logged("held", targets=LIVING, reason="dnd"),
+            logged("held", targets=KITCHEN, reason="daily_cap", t=2.0),
+        )
+    )
+    assert outcome(mixed, outcome="held", reason="dnd")[0] == "fail"
+    assert outcome(mixed, outcome="held", reason=["dnd", "daily_cap"])[0] == "pass"
+
+
+def test_a_reason_is_a_held_reason_and_needs_an_outcome_that_can_carry_one() -> None:
+    assert ReflexOutcomeParams.model_validate({"outcome": "held", "reason": "dnd"}).reason == [
+        "dnd"
+    ]
+    assert ReflexOutcomeParams.model_validate({"outcome": "held"}).reason is None
+    for bad in (
+        {"outcome": "held", "reason": "busy"},
+        {"outcome": "held", "reason": []},
+        {"outcome": ["asked", "none"], "reason": "dnd"},  # neither can carry one
+    ):
+        with pytest.raises(ValidationError):
+            ReflexOutcomeParams.model_validate(bad)
+    assert ReflexOutcomeParams.model_validate({"outcome": ["asked", "shadow"], "reason": "dnd"})
+
+
+# --- reflex_ask_parked: an ask that was made is a pending action from Reflex ----------------
+
+
+def parked(tool: str = "home.light_turn_on", source: str = "reflex-engine") -> ActionRequest:
+    return ActionRequest(
+        request_id="ask-1",
+        source=source,
+        target_service="home-service",
+        tool_name=tool,
+        parameters={"target": "living_room"},
+    )
+
+
+def ask_parked(e: Evidence, **params: Any) -> tuple[str, str]:
+    r = run_check("reflex_ask_parked", ReflexAskParkedParams.model_validate(params), e)
+    return r.status, r.reason
+
+
+def with_pending(*per_step: list[ActionRequest], **kw: Any) -> Evidence:
+    """A sample of one ha_event step and then a wait per snapshot after the first."""
+    kinds: tuple[StepKind, ...] = ("ha_event", *("wait",) * (len(per_step) - 1))
+    snapshots = tuple(PendingSnapshot(step=i, actions=a) for i, a in enumerate(per_step))
+    return ev(
+        kinds=kinds,
+        starts=tuple(float(i) for i in range(len(kinds))),
+        pending=snapshots,
+        **kw,
+    )
+
+
+def test_an_ask_that_was_made_is_a_pending_action_from_reflex() -> None:
+    asked = (logged("asked", targets=LIVING),)
+    status, reason = ask_parked(with_pending([parked()], decisions=asked))
+    assert status == "pass" and "home.light_turn_on" in reason
+
+
+def test_the_pending_action_is_read_from_the_last_snapshot() -> None:
+    """An ask is parked just after the model answers, which can be after the ha_event step's own
+    snapshot: a step that waits afterwards is what shows it."""
+    asked = (logged("asked", targets=LIVING),)
+    assert ask_parked(with_pending([], [parked()], decisions=asked))[0] == "pass"
+    assert ask_parked(with_pending([parked()], [], decisions=asked))[0] == "fail"
+
+
+def test_an_ask_with_nothing_parked_fails_and_says_so() -> None:
+    asked = (logged("asked", targets=LIVING),)
+    status, reason = ask_parked(with_pending([], decisions=asked))
+    assert status == "fail" and "no pending action from reflex-engine" in reason
+    assert "home.light_turn_on" in reason
+
+
+def test_an_action_parked_by_another_source_or_for_another_tool_is_not_the_ask() -> None:
+    asked = (logged("asked", targets=LIVING),)
+    other_source = with_pending([parked(source="conscious-engine")], decisions=asked)
+    assert ask_parked(other_source)[0] == "fail"
+    other_tool = with_pending([parked(tool="home.light_turn_off")], decisions=asked)
+    assert ask_parked(other_tool)[0] == "fail"
+    assert (
+        ask_parked(with_pending([parked(tool="home_light_turn_on")], decisions=asked))[0] == "pass"
+    )
+
+
+def test_when_nothing_was_asked_there_is_nothing_to_park() -> None:
+    for outcomes in (("none",), ("held",), ("shadow",)):
+        decisions = tuple(logged(o, "none", None) for o in outcomes)
+        status, reason = ask_parked(with_pending([], decisions=decisions))
+        assert status == "pass" and "nothing was asked" in reason
+
+
+def test_no_logged_decision_is_an_error_not_a_pass() -> None:
+    status, reason = ask_parked(with_pending([], decisions=()))
+    assert status == "error" and "decision log holds no decision about step 0" in reason
+
+
+def test_a_sample_with_no_pending_snapshot_cannot_show_a_parked_ask() -> None:
+    asked = (logged("asked", targets=LIVING),)
+    status, reason = ask_parked(ev(decisions=asked))
+    assert status == "error" and "no pending snapshot" in reason
+    # Nothing asked needs no snapshot.
+    assert ask_parked(ev(decisions=(logged("none", "none", None),)))[0] == "pass"
+
+
+def test_the_ask_check_reads_the_decision_log_and_an_ha_event_step() -> None:
+    params = ReflexAskParkedParams()
+    assert step_kind_needed("reflex_ask_parked", params) == "ha_event"
+    assert watches_reflex("reflex_ask_parked", params)
+    assert reads_decision_log("reflex_ask_parked")
+    with pytest.raises(ValidationError):
+        ReflexAskParkedParams.model_validate({"outcome": "asked"})

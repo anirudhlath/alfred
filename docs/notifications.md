@@ -130,6 +130,29 @@ below; other notifications can carry other sources:
 | `conscious-engine` | the `Confirmation required` prompt of a System 2 run that parked its critical calls, and the `Done` / `That didn't work` outcome of an action the router held |
 | `domain-router` | the `Confirmation required` prompt for an action `DomainRouter` intercepted, not a parked run ([`autonomy.md`](autonomy.md#an-action-the-router-intercepts)) |
 | `channels` | a follow-up that found no socket, satellite bridge or TTS to carry it (below) |
+| `reflex-engine` | an ask: a proposal Reflex may not run on its own, put to the owner ([below](#reflex-asks)) |
+
+### Reflex asks
+
+In `ask` mode ([`reflex-anticipation.md`](reflex-anticipation.md#asks)) Reflex announces each ask
+with one notification, sent last, after the action is parked, so the owner hears of an ask at most
+once:
+
+- **Urgency** `IMPORTANT`, **source** `reflex-engine`. Do-not-disturb holds an ask before it is
+  made (the `dnd` limit), so an ask is not normally deferred.
+- **Title** `Shall I {words} {names}?` (`Shall I turn on Lamp?`), or `Shall I run
+  the script {names}?` for a script.
+- **Body** `{noticed} {reason} Reply yes or no.`, at most 300 characters, with a full stop added to
+  the first two parts where one is missing. It never carries more than the owner needs: what
+  Reflex noticed, why it proposes this, and how to answer.
+- **Metadata** the confirmation metadata every confirmable notification carries
+  (`pending_action_id`, `tool_name`, `parameters`, `reason`: the PWA raises the Door from
+  `pending_action_id`, see [`autonomy.md`](autonomy.md#the-door)), plus `kind: "reflex_ask"`, which
+  tells an ask from any other confirmation.
+
+The owner answers on the Door or in a reply; silence settles as `expired` after
+`ask_expiry_seconds`. The answers, and what a yes runs, are in
+[`autonomy.md`](autonomy.md#reflex-asks).
 
 ## Follow-ups: late answers and Door resumes
 

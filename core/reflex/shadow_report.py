@@ -4,29 +4,32 @@
 
 Prints Markdown for the owner's review: daily decision counts and daily outcome counts from
 ``alfred:reflex:decisions:<UTC date>``, the decisions that would have reversed a person (newest
-first, from the decision log), then every act, ask and invalid proposal in the window, oldest
+first, from the decision log), the asks (asked, held by reason, and the answers from
+``alfred:reflex:answers``), then every act, ask and invalid proposal in the window, oldest
 first, in the user's local time. The proposals name people, their comings and goings and what
 was playing, so the report is reviewed privately: only the counts and verdict tallies go to
-the public #285 thread.
+the public #285 thread. The Asks section is counts alone, with no target, name or noticed text.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, get_args
 
 from loguru import logger
 from pydantic import ValidationError
 
-from bus.schemas.events import OutcomeKind, ReflexObservation, StateChangedEvent
+from bus.schemas.events import HeldReason, OutcomeKind, ReflexObservation, StateChangedEvent
+from core.reflex.answers import AnswerKind, ReflexAnswer, settle_expired
 from core.reflex.decision_log import DecisionLog
 from core.reflex.prompt import render_event
 from core.reflex.runner import decisions_key
 from shared.config import AlfredConfig
-from shared.redis_streams import create_redis, revrange
-from shared.streams import REFLEX_OBSERVATIONS_STREAM, decode_stream_value
+from shared.redis_streams import create_redis, forward_range, revrange
+from shared.streams import REFLEX_ANSWERS_STREAM, REFLEX_OBSERVATIONS_STREAM, decode_stream_value
 from shared.usertime import get_user_timezone
 
 if TYPE_CHECKING:
@@ -40,6 +43,15 @@ DECISIONS: tuple[str, ...] = ("act", "ask", "none", "invalid")
 # What each decision came to, in the order ``OutcomeKind`` lists them; the daily hash counts
 # them as ``outcome:<kind>``.
 OUTCOMES: tuple[str, ...] = get_args(OutcomeKind)
+# How an ask ends, and why one was held: the columns of the Asks section.
+ANSWERS: tuple[str, ...] = get_args(AnswerKind)
+HELD_REASONS: tuple[str, ...] = get_args(HeldReason)
+# The Asks table's columns, each with the field of the daily hash it reads.
+ASK_FIELDS: dict[str, str] = {
+    "asked": "outcome:asked",
+    "held": "outcome:held",
+    **{reason: f"held:{reason}" for reason in HELD_REASONS},
+}
 # Upper bound on observations scanned. A week runs to a few thousand; past this the
 # report says it was truncated rather than silently dropping the oldest.
 MAX_SCAN = 20_000
@@ -86,13 +98,18 @@ def format_proposal(obs: ReflexObservation, tz: ZoneInfo) -> str:
 
 
 def _counts_table(
-    columns: tuple[str, ...], days: list[tuple[date, dict[str, str]]], *, prefix: str
+    columns: tuple[str, ...],
+    days: list[tuple[date, dict[str, str]]],
+    *,
+    prefix: str,
+    fields: dict[str, str] | None = None,
 ) -> list[str]:
-    """A Markdown table: a row per UTC day, a column per counted field (``prefix`` + its name).
+    """A Markdown table: a row per UTC day, a column per counted field.
 
-    With a ``prefix``, a day whose hash holds no field with it at all was written before those
-    fields were counted: every cell of that day is ``NOT_COUNTED``, not a zero nobody counted.
-    A day with at least one such field counts the kinds it lacks as ``0``.
+    A column reads the hash field of its name behind ``prefix``, or the one *fields* names for
+    it. With a ``prefix``, a day whose hash holds no field with it at all was written before
+    those fields were counted: every cell of that day is ``NOT_COUNTED``, not a zero nobody
+    counted. A day with at least one such field counts the kinds it lacks as ``0``.
     """
     lines = [
         f"| Day (UTC) | {' | '.join(columns)} |",
@@ -101,7 +118,8 @@ def _counts_table(
     for day, counts in days:
         counted = not prefix or any(field.startswith(prefix) for field in counts)
         cells = " | ".join(
-            counts.get(f"{prefix}{name}", "0") if counted else NOT_COUNTED for name in columns
+            counts.get((fields or {}).get(name, f"{prefix}{name}"), "0") if counted else NOT_COUNTED
+            for name in columns
         )
         lines.append(f"| {day.isoformat()} | {cells} |")
     return lines
@@ -137,9 +155,66 @@ async def _reversal_lines(
     return lines
 
 
+async def _answers_by_day(redis: AioRedis, *, start: datetime) -> dict[date, Counter[str]]:
+    """How many asks ended yes, no and expired on each UTC day, over the window.
+
+    A day is the one the answer was recorded on (its stream entry's time): an ask nobody
+    answered is recorded when it is settled, which is when something next looked. An entry
+    that cannot be read is skipped.
+    """
+    tallies: dict[date, Counter[str]] = {}
+    for entry_id, fields in await forward_range(
+        redis, REFLEX_ANSWERS_STREAM, min_id=str(int(start.timestamp() * 1000))
+    ):
+        raw = fields.get(b"event") or fields.get("event")
+        if raw is None:
+            continue
+        try:
+            answer = ReflexAnswer.model_validate_json(decode_stream_value(raw))
+        except ValueError:
+            continue
+        recorded = int(decode_stream_value(entry_id).split("-", 1)[0]) / 1000
+        day = datetime.fromtimestamp(recorded, UTC).date()
+        tallies.setdefault(day, Counter())[answer.answer] += 1
+    return tallies
+
+
+async def _ask_lines(
+    redis: AioRedis, *, days: list[tuple[date, dict[str, str]]], start: datetime, now: datetime
+) -> list[str]:
+    """The ``Asks`` section's lines: counts only, never a target, a name or what was noticed.
+
+    An ask whose deadline has passed is settled first, so a lapsed one counts as expired (a
+    settle that fails is warned about and costs nothing else). The answers come from
+    ``alfred:reflex:answers``; a stream that cannot be read costs the answers table only.
+    """
+    try:
+        await settle_expired(redis, now=now)
+    except Exception as e:
+        logger.warning("Shadow report could not settle the open ask: {}", e)
+    lines = [
+        "_Counts only. `held` is a proposal a limit stopped, under the limit that stopped it."
+        " An ask nobody answered counts as `expired` once it is settled, which this report"
+        " does first._",
+        "",
+        *_counts_table(tuple(ASK_FIELDS), days, prefix="outcome:", fields=ASK_FIELDS),
+        "",
+    ]
+    try:
+        tallies = await _answers_by_day(redis, start=start)
+    except Exception as e:
+        logger.warning("Shadow report could not read the answers: {}", e)
+        return [*lines, "The answers could not be read, so their table is unavailable."]
+    lines += [f"| Day (UTC) | {' | '.join(ANSWERS)} |", f"|---|{'---|' * len(ANSWERS)}"]
+    for day, _ in days:
+        cells = " | ".join(str(tallies.get(day, Counter())[answer]) for answer in ANSWERS)
+        lines.append(f"| {day.isoformat()} | {cells} |")
+    return lines
+
+
 async def build_report(redis: AioRedis, *, days: int, now: datetime, tz_name: str) -> str:
     """Markdown: per-day decision and outcome counts, the decisions that would have reversed a
-    person, then every non-none proposal in the window."""
+    person, the asks and their answers, then every non-none proposal in the window."""
     from zoneinfo import ZoneInfo
 
     tz = ZoneInfo(tz_name)
@@ -167,6 +242,10 @@ async def build_report(redis: AioRedis, *, days: int, now: datetime, tz_name: st
         "### Would have reversed",
         "",
         *await _reversal_lines(redis, start=start, now=now, tz=tz),
+        "",
+        "### Asks",
+        "",
+        *await _ask_lines(redis, days=days_counted, start=start, now=now),
     ]
 
     entries = await revrange(

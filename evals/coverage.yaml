@@ -50,7 +50,8 @@ rows:
   - {id: 4.4.reflex-judgment, section: "4.4", prd: "Reflex judgment calls", suites: [reflex]}
   - {id: 4.4.who-did-it, section: "4.4", prd: "Who did it", suites: [reflex], tests: [tests/core/attribution]}
   - {id: 4.4.never-reverse, section: "4.4", prd: "Never reverses a person", suites: [reflex], tests: [tests/core/reflex/test_reversal.py]}
-  - {id: 4.4.tiered-autonomy, section: "4.4", prd: "Tiered autonomy", pending_suites: [reflex]}
+  - {id: 4.4.tiered-autonomy, section: "4.4", prd: "Tiered autonomy", suites: [reflex], tests: [tests/core/reflex/test_asks.py, tests/core/reflex/test_answers.py, tests/core/reflex/test_runner_asks.py, tests/core/conscious/test_engine_reflex_asks.py, tests/core/reflex/test_shadow_report.py]}
+  - {id: 4.4.reflex-settings, section: "4.4", prd: "Reflex settings", not_llm: "a settings document, its admin API and command line", tests: [tests/core/reflex/test_settings.py, tests/core/channels/test_admin_reflex_settings.py]}
   # PRD status remains planned; goldens exercise the existing router/pending/confirmation code.
   - {id: 4.4.critical-confirmation, section: "4.4", prd: "Confirmation required for critical actions", suites: [critical_actions]}
   # §4.5 Integrations & credentials

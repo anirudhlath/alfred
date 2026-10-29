@@ -36,6 +36,7 @@ DETERMINISTIC: dict[str, tuple[type[BaseModel], DeterministicCheck]] = {
     "reflex_decision": (reflex.ReflexDecisionParams, reflex.reflex_decision),
     "reflex_not_proposed": (reflex.ReflexNotProposedParams, reflex.reflex_not_proposed),
     "reflex_outcome": (reflex.ReflexOutcomeParams, reflex.reflex_outcome),
+    "reflex_ask_parked": (reflex.ReflexAskParkedParams, reflex.reflex_ask_parked),
     "prompt_contains": (llm.PromptParams, llm.prompt_contains),
     "prompt_not_contains": (llm.PromptParams, llm.prompt_not_contains),
     "trigger_created": (triggers.TriggerCreatedParams, triggers.trigger_created),
@@ -60,7 +61,7 @@ def needs_reply(name: str, params: BaseModel) -> bool:
 
 def step_kind_needed(name: str, params: BaseModel) -> StepKind | None:
     """The kind of step the check reads (its ``at_step``, default the golden's last)."""
-    if name in ("reflex_decision", "reflex_not_proposed", "reflex_outcome"):
+    if name in ("reflex_decision", "reflex_not_proposed", "reflex_outcome", "reflex_ask_parked"):
         return "ha_event"
     if name == "latency":
         return latency.STEP_KIND_FOR_METRIC.get(str(getattr(params, "metric", "")))
@@ -76,7 +77,7 @@ def watches_reflex(name: str, params: BaseModel) -> bool:
 
 def reads_decision_log(name: str) -> bool:
     """Whether the check reads Reflex's decision log, so the driver waits for it."""
-    return name == "reflex_outcome"
+    return name in ("reflex_outcome", "reflex_ask_parked")
 
 
 def run_check(name: str, params: BaseModel, evidence: Evidence) -> CheckResult:

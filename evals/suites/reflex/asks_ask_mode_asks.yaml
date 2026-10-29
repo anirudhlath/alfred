@@ -1,0 +1,21 @@
+id: reflex.asks.ask_mode_asks
+prd: [4.4.tiered-autonomy]
+status: shipped
+tags: [asks, lights, media]
+steps:
+  # 21:00 is outside the default quiet hours (23:00 to 07:00), so only the ask limits are in play.
+  - clock: {hour: 21}
+  - reflex_settings: {mode: ask, ask_tools: ["home.light_*"]}
+  - ha_event: {entity_id: sun.sun, state: below_horizon}
+  - ha_event: {entity_id: media_player.living_room_tv, state: paused}
+  - wait: 6
+  - ha_event: {entity_id: media_player.living_room_tv, state: playing}
+  # The ask is parked just after the model answers: this step is the snapshot that shows it.
+  - wait: 3
+expect:
+  # In ask mode a light proposal is put to the owner, never run and never left as a shadow.
+  # Saying nothing is allowed, as in the dimming golden. An earlier event of this golden may
+  # have been asked about already: one ask is open at a time, so this one is then held for it.
+  - reflex_outcome: {outcome: [asked, none, held], reason: [ask_open, asked_recently]}
+  # When it asked, the ask is a pending action from Reflex, waiting for the owner's answer.
+  - reflex_ask_parked: {}

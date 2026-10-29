@@ -11,13 +11,16 @@ from typing import Any, Literal, Self, get_args
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from bus.schemas.events import ActionRequest, OutcomeKind, ReflexDecision, UrgencyLevel
+from bus.schemas.events import ActionRequest, HeldReason, OutcomeKind, ReflexDecision, UrgencyLevel
 
 Role = Literal["system1", "system2", "librarian", "approval", "unknown"]
 Decision = ReflexDecision
 Outcome = OutcomeKind
+Reason = HeldReason
 Urgency = UrgencyLevel
-StepKind = Literal["user", "ha_event", "wait", "clock", "advance_trigger", "dnd", "door"]
+StepKind = Literal[
+    "user", "ha_event", "wait", "clock", "advance_trigger", "dnd", "door", "reflex_settings"
+]
 STEP_KINDS: tuple[StepKind, ...] = get_args(StepKind)
 
 
@@ -155,6 +158,8 @@ class LoggedDecision(BaseModel):
     decision: Decision
     # None for a record written before outcomes were kept.
     outcome: Outcome | None = None
+    # Why a held ask (or a shadow one) was stopped; None for any outcome that has no reason.
+    reason: Reason | None = None
     tool: str | None = None
     # Entity and area ids the proposal names (``ReflexCall.targets``); empty for no proposal.
     targets: list[str] = Field(default_factory=list)

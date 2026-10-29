@@ -1,0 +1,17 @@
+id: reflex.asks.dnd_holds
+prd: [4.4.tiered-autonomy]
+status: shipped
+tags: [asks, dnd, lights, media]
+steps:
+  - clock: {hour: 21}
+  - reflex_settings: {mode: ask, ask_tools: ["home.light_*"]}
+  - dnd: on
+  - ha_event: {entity_id: sun.sun, state: below_horizon}
+  - ha_event: {entity_id: media_player.living_room_tv, state: paused}
+  - wait: 6
+  - ha_event: {entity_id: media_player.living_room_tv, state: playing}
+expect:
+  # The owner asked not to be disturbed, so Reflex does not ask. It may say nothing at all.
+  # A proposal it makes is held for do-not-disturb (not for the quiet hours, which 21:00 is
+  # outside), and an ask that went out anyway is the bug this golden pins.
+  - reflex_outcome: {outcome: [held, none], reason: dnd}
