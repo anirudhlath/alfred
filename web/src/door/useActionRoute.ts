@@ -6,7 +6,8 @@ import { ApiError } from "@/lib/api";
 import { shortId } from "@/lib/format";
 import type { TimelineItem } from "@/lib/history";
 
-const ACTION_PATH = /^\/actions\/([^/]+)$/;
+/** The route a push notification opens. `lib/push.ts` admits a tap's path by it too. */
+export const ACTION_PATH = /^\/actions\/([^/]+)$/;
 
 export interface ActionRouteValue {
   /** A tombstone for an id the house no longer holds — merge it into the thread. */

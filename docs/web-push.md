@@ -20,7 +20,7 @@ ciphertext it cannot read, so Apple's relay never sees a notification's text.
 | Routes | `core/channels/web_server.py` | `POST`/`DELETE /api/devices/register`, `GET /api/push/public-key`, `_init_webpush_adapter()` |
 | Admin read | `core/channels/admin_api.py` | `GET /api/admin/devices`, with Web Push rows redacted |
 | Worker | `web/public/sw.js` | the `push` and `notificationclick` listeners |
-| Client | `web/src/lib/push.ts` | subscribing, launch re-validation, sign-out ([`web-frontend.md`](web-frontend.md)) |
+| Client | `web/src/lib/push.ts` | subscribing, launch re-validation, sign-out, hearing a tap's `OPEN_PATH` ([`web-frontend.md`](web-frontend.md)) |
 
 ## Architecture
 
@@ -35,6 +35,7 @@ sequenceDiagram
     participant PS as Push service
     participant SW as sw.js
 
+    Phone->>Phone: Notification.requestPermission(), inside the tap
     Phone->>Web: GET /api/push/public-key
     Web-->>Phone: {"public_key": "B…"} (404 when unconfigured)
     Phone->>Phone: pushManager.subscribe(applicationServerKey)
@@ -86,10 +87,12 @@ with. If the keyring is lost or the key is regenerated, the push services refuse
 token for every stored subscription (RFC 8292 suggests a 403), the adapter logs a WARNING
 per push and keeps the rows (only 404 and 410 prune). At each phone's next launch, the
 PWA's re-validation (`syncSubscription()` in `web/src/lib/push.ts`) sees that its
-subscription's key differs from the house's, `DELETE`s its old row, unsubscribes and
-subscribes again. A phone that never relaunches keeps its dead row until the cap evicts it.
-Back up the data dir, which holds the keyring, as for every other credential
-([`secrets.md`](secrets.md)).
+subscription's key differs byte for byte from the house's, `DELETE`s its old row (best
+effort: a failed `DELETE` stops nothing), unsubscribes, subscribes with the house's key
+and registers the new subscription. A subscription whose key the browser does not report
+is kept and registered as it is. A phone that never relaunches keeps its dead row until
+the cap evicts it. Back up the data dir, which holds the keyring, as for every other
+credential ([`secrets.md`](secrets.md)).
 
 ## Registration
 
@@ -253,11 +256,12 @@ itself: `path` is `/actions/<action_id>` when `action_id` is a string matching
 names a URL the worker opens. On `notificationclick` it closes the notification and then,
 inside `waitUntil`, takes the first window `matchAll({type: "window",
 includeUncontrolled: true})` lists on its own origin: it focuses it — a refused focus is
-ignored — and then posts it `{type: "OPEN_PATH", path}`, which `onOpenPath` in
-`web/src/lib/push.ts` hears and filters and `NotificationOpen` in
-`web/src/shell/PushKeeper.tsx` routes. With no such window it opens one at `path`. A
-`path` it would not have built becomes `/`, because a notification can be tapped long
-after the worker that showed it was replaced.
+ignored — and then posts it `{type: "OPEN_PATH", path}`. `onOpenPath` in
+`web/src/lib/push.ts` hears it and passes on only `/` and a path the router's own
+`ACTION_PATH` (`web/src/door/useActionRoute.ts`) matches, and `NotificationOpen` in
+`web/src/shell/PushKeeper.tsx` routes it. With no such window the worker opens one at
+`path`. A `path` it would not have built becomes `/`, because a notification can be
+tapped long after the worker that showed it was replaced.
 
 A change to a field changes both sides in one branch: `build_payload()` and the worker's
 `push` listener. Any byte change to `sw.js` installs a new worker on every phone
