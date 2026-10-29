@@ -80,13 +80,14 @@ async def _first_hit(
     now: datetime,
     dnd: DNDChecker,
     *,
+    askable: bool,
     cheap_only: bool,
 ) -> HeldReason | None:
     """The first limit *tool_name* runs into, in the gate's order, or ``None``.
 
     *cheap_only* stops after the first three: the ones that read nothing of Reflex's own.
     """
-    if not any(fnmatchcase(tool_name, pattern) for pattern in settings.ask_tools):
+    if not askable or not any(fnmatchcase(tool_name, pattern) for pattern in settings.ask_tools):
         return "tool_off"
     if in_quiet_hours(local.time(), settings.quiet_hours_start, settings.quiet_hours_end):
         return "quiet_hours"
@@ -115,13 +116,16 @@ async def gate(
     tz_name: str,
     now: datetime,
     dnd: DNDChecker,
+    askable: bool = True,
 ) -> ReflexOutcome:
     """What the ask limits make of a proposal that stands (a ``shadow`` outcome).
 
     Any other outcome comes back unchanged. The limits are checked in this order, and the first
-    one hit is the reason: ``tool_off`` (no ``ask_tools`` pattern matches the tool),
-    ``quiet_hours`` (the owner's local time, in *tz_name*), ``dnd``, ``ask_open`` (after an
-    expired ask is settled), ``asked_recently`` and ``daily_cap`` (counted by local date).
+    one hit is the reason: ``tool_off`` (no ``ask_tools`` pattern matches the tool, or the tool
+    is not *askable*: the router refuses one whose declared risk is critical or unknown even
+    when it is confirmed, so a yes could only fail), ``quiet_hours`` (the owner's local time, in
+    *tz_name*), ``dnd``, ``ask_open`` (after an expired ask is settled), ``asked_recently`` and
+    ``daily_cap`` (counted by local date).
 
     In ``shadow`` mode only the first three are checked, and the result stays ``shadow``,
     carrying the reason or none. In ``ask`` mode a limit hit is ``held`` with its reason, and
@@ -134,7 +138,15 @@ async def gate(
     local = now.astimezone(ZoneInfo(tz_name))
     shadow = settings.mode == "shadow"
     reason = await _first_hit(
-        redis, settings, action.tool_name, targets, local, now, dnd, cheap_only=shadow
+        redis,
+        settings,
+        action.tool_name,
+        targets,
+        local,
+        now,
+        dnd,
+        askable=askable,
+        cheap_only=shadow,
     )
     if shadow:
         return ReflexOutcome(kind="shadow", reason=reason)
@@ -171,16 +183,17 @@ def ask_text(
     """The title and the body of an ask.
 
     The title is ``Shall I {words} {names}?``: *words* are *service* with underscores as spaces
-    or, with no service, the last dotted segment of *tool_name* the same way. For a script it is
-    ``Shall I run the script {names}?``. The body is ``{noticed}. {reason} Reply yes or no.``,
-    leaving out an empty reason and never doubling a full stop, and at most 300 characters: a
-    longer one has the front shortened with an ellipsis so the last line survives whole.
+    or, with no service (``None`` or empty), the last dotted segment of *tool_name* the same
+    way. For a script it is ``Shall I run the script {names}?``. The body is
+    ``{noticed}. {reason} Reply yes or no.``, leaving out an empty reason and never doubling a
+    full stop, and at most 300 characters: a longer one has the front shortened with an
+    ellipsis so the last line survives whole.
     """
     who = _joined(names)
     if script:
         action = "run the script"
     else:
-        words = service if service is not None else tool_name.rsplit(".", 1)[-1]
+        words = service or tool_name.rsplit(".", 1)[-1]
         action = words.replace("_", " ")
     title = f"Shall I {action}{f' {who}' if who else ''}?"
     front = " ".join(part for part in (_sentence(noticed), _sentence(reason)) if part)

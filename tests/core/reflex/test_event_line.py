@@ -16,6 +16,7 @@ from core.reflex.prompt import (
     build_trigger_prompt,
     parse_event,
     read_state_change,
+    render_change,
     render_event,
     state_change_line,
 )
@@ -80,6 +81,17 @@ def test_render_event_reads_back(
     event: StateChangedEvent, entities: dict[str, LiveEntity] | None, read: RenderedEvent
 ) -> None:
     assert parse_event(render_event(event, entities)) == read
+
+
+def test_render_change_is_the_head_of_the_event_line() -> None:
+    event = _change("media_player.tv", "paused", "playing", media_title="A Film", app_name="App")
+    entities = _live("media_player.tv", friendly_name="Living Room TV", area="Living Room")
+
+    assert render_change(event, entities) == "Living Room TV (Living Room): paused → playing"
+    assert render_event(event, entities).startswith(render_change(event, entities))
+    assert render_change(_change("binary_sensor.door", None, "on"), None) == (
+        "binary_sensor.door: (none) → on"
+    )
 
 
 def test_a_line_render_event_did_not_write_reads_as_none() -> None:

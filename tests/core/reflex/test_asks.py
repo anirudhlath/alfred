@@ -97,6 +97,7 @@ async def run_gate(
     outcome: ReflexOutcome | None = None,
     tool: str = TOOL,
     targets: tuple[str, ...] = (LAMP,),
+    askable: bool = True,
 ) -> ReflexOutcome:
     return await gate(
         redis,
@@ -107,6 +108,7 @@ async def run_gate(
         tz_name=NEW_YORK,
         now=now,
         dnd=dnd,
+        askable=askable,
     )
 
 
@@ -182,6 +184,34 @@ async def test_an_empty_ask_tools_list_turns_every_tool_off(
     result = await run_gate(redis, dnd, make_settings(ask_tools=[]))
 
     assert result == ReflexOutcome(kind="held", reason="tool_off")
+
+
+async def test_a_tool_the_router_would_refuse_is_off(
+    redis: fakeredis.FakeAsyncRedis, dnd: DNDChecker
+) -> None:
+    """A tool whose risk is critical or unknown is refused even when confirmed: not askable."""
+    result = await run_gate(redis, dnd, askable=False)
+
+    assert result == ReflexOutcome(kind="held", reason="tool_off")
+
+
+async def test_a_tool_that_is_not_askable_is_off_before_any_other_limit(
+    redis: fakeredis.FakeAsyncRedis, dnd: DNDChecker
+) -> None:
+    await turn_dnd_on(redis)
+    settings = make_settings(quiet_hours_start="23:00", quiet_hours_end="07:00")
+
+    result = await run_gate(redis, dnd, settings, now=at(2), askable=False)
+
+    assert result == ReflexOutcome(kind="held", reason="tool_off")
+
+
+async def test_a_tool_that_is_not_askable_is_off_in_shadow_mode_too(
+    redis: fakeredis.FakeAsyncRedis, dnd: DNDChecker
+) -> None:
+    result = await run_gate(redis, dnd, make_settings(mode="shadow"), askable=False)
+
+    assert result == ReflexOutcome(kind="shadow", reason="tool_off")
 
 
 async def test_quiet_hours_hold_an_ask(redis: fakeredis.FakeAsyncRedis, dnd: DNDChecker) -> None:
@@ -746,6 +776,20 @@ def test_ask_text_without_a_service_uses_the_end_of_the_tool_name() -> None:
         reason="r",
         names=["Den"],
         script=False,
+    )
+
+    assert title == "Shall I dim the screen Den?"
+
+
+def test_ask_text_with_an_empty_service_is_treated_as_none() -> None:
+    title, _ = ask_text(
+        "media.dim_the_screen",
+        {},
+        noticed="n",
+        reason="r",
+        names=["Den"],
+        script=False,
+        service="",
     )
 
     assert title == "Shall I dim the screen Den?"

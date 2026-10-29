@@ -10,7 +10,6 @@ import json
 import logging
 import signal
 import time
-from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -31,11 +30,13 @@ from core.reflex.prose import warm_prose
 from core.reflex.reversal import PersonChanges
 from core.reflex.runner import (
     already_decided,
+    ask_or_hold,
     ensure_consumer_group,
     mark_decided,
     process_stream_entry,
     publish_proposal,
     record_decision,
+    utc_now,
 )
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
@@ -59,6 +60,7 @@ from telemetry.collector import flush_to_csv
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
+    from datetime import datetime
 
     from pydantic_ai import Agent
 
@@ -144,6 +146,8 @@ async def _handle_trigger_fired(
     publisher: NotificationPublisher,
     *,
     decision_log: DecisionLog | None = None,
+    dnd: DNDChecker | None = None,
+    clock: Callable[[], datetime] = utc_now,
 ) -> None:
     """Handle a single TriggerFired event — notify + optional SLM reasoning.
 
@@ -153,10 +157,12 @@ async def _handle_trigger_fired(
     left pending it would be reclaimed for eternity. Two failures propagate,
     leaving the entry pending for the reclaim pass in ``_consume_trigger_fired``:
     the decided-check's Redis error (Redis cannot say whether the event was
-    decided) and a failure while *acting* on a valid TriggerFired.
+    decided) and a failure while *acting* on a valid TriggerFired, the ask step's included.
 
     In shadow mode (#285) ``agent`` is unused: Reflex's decision is recorded, never executed
-    (in *decision_log*, when given, and counted with its outcome).
+    (in *decision_log*, when given, and counted with its outcome). A proposal that stands is
+    put to the owner or held first (``ask_or_hold``, with *publisher* as the notifier), when
+    *dnd* is given; *clock* gives the moment the ask limits are read at.
     A trigger event is handled once: once its decision is counted and published it is marked
     decided, and a redelivery of its entry (same ``event_id``) does nothing.
     """
@@ -200,6 +206,10 @@ async def _handle_trigger_fired(
     except Exception as e:
         logger.error("SLM reasoning failed for trigger '%s': %s", trigger_event.trigger_name, e)
         return
+    # Outside the try: a failure here propagates and the entry is retried (fail closed).
+    decided = await ask_or_hold(
+        redis, publisher, dnd, "trigger_fired", trigger_event, decided, clock=clock
+    )
     proposal = decided.proposal
     await record_decision(redis, decision_log, "trigger_fired", trigger_event, decided)
     # A "none", and a proposal that would reverse a person's change, publish nothing here.
@@ -233,6 +243,8 @@ async def _consume_trigger_fired(
     agent: DomainRouter,
     publisher: NotificationPublisher,
     decision_log: DecisionLog | None = None,
+    dnd: DNDChecker | None = None,
+    clock: Callable[[], datetime] = utc_now,
 ) -> None:
     """Second event loop — TriggerFired events from alfred:events."""
     await ensure_consumer_group(redis, EVENTS_STREAM, EVENTS_GROUP)
@@ -280,6 +292,8 @@ async def _consume_trigger_fired(
                     redis,
                     publisher,
                     decision_log=decision_log,
+                    dnd=dnd,
+                    clock=clock,
                 )
                 # ACK only on success — a failure stays pending for the reclaim
                 # pass above to pick back up.
@@ -339,7 +353,8 @@ async def run(config: AlfredConfig, agent: Agent[list[ToolInfo], ReflexProposal]
     # The runner and the trigger handler record each decision; the engine reads what people
     # just changed, which the runner notes as their changes arrive.
     decision_log = DecisionLog(r)
-    person_changes = PersonChanges(r, clock=lambda: datetime.now(UTC))
+    clock = utc_now  # the one clock: the person changes' ages and the asks' limits both read it
+    person_changes = PersonChanges(r, clock=clock)
     engine = ReflexEngine(
         preferences_dir=str(preferences_dir()),
         tool_registry=registry,
@@ -363,7 +378,7 @@ async def run(config: AlfredConfig, agent: Agent[list[ToolInfo], ReflexProposal]
     # Background tasks
     telemetry_task = asyncio.create_task(flush_telemetry_periodically(config))
     trigger_fired_task = asyncio.create_task(
-        _consume_trigger_fired(r, engine, router, publisher, decision_log)
+        _consume_trigger_fired(r, engine, router, publisher, decision_log, dnd_checker, clock)
     )
     warmup_task = start_warmup("reflex", warmup_steps(prompts))
 
@@ -400,6 +415,9 @@ async def run(config: AlfredConfig, agent: Agent[list[ToolInfo], ReflexProposal]
                         attention=attention,
                         decision_log=decision_log,
                         person_changes=person_changes,
+                        notifier=publisher,
+                        dnd=dnd_checker,
+                        clock=clock,
                     )
                     # ACK only on success — retriable errors (the model is down) leave the
                     # entry pending for the reclaim pass above to pick back up.

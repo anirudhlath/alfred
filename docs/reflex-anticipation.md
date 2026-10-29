@@ -124,8 +124,8 @@ person just changed. It does not ask the model to remember.
   for the room, and an entity ID in another domain names nothing.
 - **One outcome per decision.** Every decision ends in a `ReflexOutcome`: `none`, `invalid`,
   `would_reverse` (the proposal would undo a person's change; it names the entities and is not
-  published as a proposal), `shadow` (published; nothing executes) and, for later slices,
-  `asked` and `held`. It is kept on the decision-log record and on a published proposal's
+  published as a proposal), `shadow` (published; nothing executes), `asked` (put to the owner) and
+  `held` (a limit stopped the ask). It is kept on the decision-log record and on a published proposal's
   observation (a `none` or `would_reverse` is observed passively, with no outcome), counted in
   `alfred:reflex:decisions:<UTC date>` as `outcome:<kind>` (and `<kind>:<reason>` when there is
   a reason), and printed as the Outcomes table of `python -m core.reflex.shadow_report`, with
@@ -141,14 +141,17 @@ person just changed. It does not ask the model to remember.
 
 ## Asks
 
-`core/reflex/asks.py` holds the limits that keep asks few and the asking itself; nothing in the
-runner calls it yet (the runner wiring and the answers are later tasks of this slice, and the
-full account of asks lands with them).
+`core/reflex/asks.py` holds the limits that keep asks few and the asking itself. The runner
+calls it for both origins, a state change and a fired trigger, through `ask_or_hold`
+(`core/reflex/runner.py`): between the engine and the record, only a `shadow` outcome is gated,
+and the answers are a later task of this slice (the full account of asks lands with them).
 
 `gate` reduces a standing (`shadow`) proposal to `asked` or `held`, naming the first limit it
 meets, in this order:
 
-1. `tool_off`: no `ask_tools` pattern matches the tool (an empty list turns every tool off);
+1. `tool_off`: no `ask_tools` pattern matches the tool (an empty list turns every tool off), or
+   the tool's declared risk is critical or unknown, which the router refuses even when the owner
+   says yes;
 2. `quiet_hours`: the owner's local time is in `quiet_hours_start` up to `quiet_hours_end`
    (a start later than the end wraps midnight; equal means none);
 3. `dnd`: Do Not Disturb is on;
@@ -166,7 +169,10 @@ lost claim returns `None` and writes nothing else. After the claim, in order: th
 parked as a pending action for `ask_expiry_seconds`; the repeat key is set for `repeat_hours`
 (skipped when that is 0); the day's count goes up by one (kept 2 days); and an `important`
 notification goes out, its metadata carrying `pending_action_id` and `kind: reflex_ask`. A
-failure in any step propagates, and the open key stays behind, so a redelivery finds `ask_open`.
+failure in any step propagates, and the open key stays behind, so a redelivery finds `ask_open`
+and the proposal is recorded as `held`, never asked twice. The notification goes last, so the
+owner hears of an ask at most once. A failure in the runner's ask step (the settings, the tool's
+risk, the gate or `open_ask`) propagates too: the event stays pending and is retried.
 
 ## The sun and the weather
 
