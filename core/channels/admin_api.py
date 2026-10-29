@@ -37,6 +37,7 @@ from core.reflex.attention import (
     attention_remove,
     attention_seen_list,
 )
+from core.reflex.settings import ReflexSettings, load_settings, save_settings
 from core.triggers.models import TRIGGER_ENGINE_SOURCE
 from shared.config import AlfredConfig
 from shared.redis_streams import revrange
@@ -86,6 +87,8 @@ _MAX_ENTITY_ID_LEN = 256
 _MAX_ENTITIES_PER_LIST = 200
 # One vocabulary for an unreachable attention store, shared by the GET and the PUT.
 _ATTENTION_STORE_DOWN = "Attention store unavailable"
+# And for the Reflex settings document, on its GET and its PUT.
+_REFLEX_SETTINGS_STORE_DOWN = "Reflex settings store unavailable"
 
 
 class AttentionUpdate(BaseModel):
@@ -727,6 +730,31 @@ def create_admin_router() -> APIRouter:
             len(body.ask),
         )
         return updated
+
+    @router.get("/reflex/settings")
+    async def reflex_settings(request: Request) -> dict[str, Any]:
+        """The settings document Reflex reads, or the defaults when it has none or a bad one."""
+        try:
+            return (await load_settings(_redis(request))).model_dump()
+        except Exception as exc:
+            logger.warning("Reflex settings read failed: {}", exc)
+            raise HTTPException(status_code=503, detail=_REFLEX_SETTINGS_STORE_DOWN) from exc
+
+    @router.put("/reflex/settings")
+    async def update_reflex_settings(request: Request, body: ReflexSettings) -> dict[str, Any]:
+        """Replace the whole settings document.
+
+        The body is validated as ``ReflexSettings`` before anything is written: a missing
+        field takes its default, and an unknown field or a bad value is a 422 that saves
+        nothing.
+        """
+        try:
+            await save_settings(_redis(request), body)
+        except Exception as exc:
+            logger.warning("Reflex settings write failed: {}", exc)
+            raise HTTPException(status_code=503, detail=_REFLEX_SETTINGS_STORE_DOWN) from exc
+        logger.info("Reflex settings updated via admin (mode {})", body.mode)
+        return body.model_dump()
 
     return router
 

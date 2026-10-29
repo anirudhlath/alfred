@@ -306,15 +306,20 @@ def _cause(event: StateChangedEvent, entities: Mapping[str, LiveEntity] | None) 
     return cause_words(context, name)
 
 
-def render_event(event: StateChangedEvent, entities: Mapping[str, LiveEntity] | None) -> str:
-    """One line: name (room): old → new, then who caused it and up to three details from
-    the event. ``parse_event`` reads it back."""
+def render_change(event: StateChangedEvent, entities: Mapping[str, LiveEntity] | None) -> str:
+    """The change itself, as ``render_event`` opens its line: ``name (room): old → new``."""
     known = entities.get(event.entity_id) if entities is not None else None
     # Live state names and places the entity; the event carries only HA's raw attributes.
     attributes = {**event.attributes, **(known.attributes if known is not None else {})}
     head = _head(event.entity_id, attributes)
     old = _clip(event.old_state) if event.old_state is not None else NO_OLD_STATE
-    line = f"{head}: {old}{_ARROW}{_clip(event.new_state)}"
+    return f"{head}: {old}{_ARROW}{_clip(event.new_state)}"
+
+
+def render_event(event: StateChangedEvent, entities: Mapping[str, LiveEntity] | None) -> str:
+    """One line: name (room): old → new, then who caused it and up to three details from
+    the event. ``parse_event`` reads it back."""
+    line = render_change(event, entities)
     details = [
         detail
         for key in EVENT_ATTRIBUTES

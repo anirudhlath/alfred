@@ -10,11 +10,12 @@ Two concerns:
 
 - **Read-only observability** — stream history with cursor pagination, memory snapshots
   (episodic, semantic, routines, scratchpad), trigger state, deferred notifications,
-  active sessions, registered devices, the Reflex attention set, and a combined system
-  overview.
+  active sessions, registered devices, the Reflex attention set, the Reflex settings, and a
+  combined system overview.
 - **Curated controls** — a small set of operations that mirror what the system already
   does internally (set DND, drain deferred notifications, run the Librarian, enable/disable
-  or manually fire a trigger, end a session, edit an attention domain).
+  or manually fire a trigger, end a session, edit an attention domain, replace the Reflex
+  settings).
 
 All routes share the `/api/admin` prefix and are served by the same `core.channels` process
 that handles chat WebSocket connections on port 8081.
@@ -370,6 +371,46 @@ to the next state change — no reload, no restart. See
 
 ---
 
+### Reflex settings
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/admin/reflex/settings` | The settings document Reflex reads, or the defaults |
+| `PUT` | `/api/admin/reflex/settings` | Replace the whole document |
+
+Both return the document as JSON, every field present:
+
+```json
+{
+  "mode": "shadow",
+  "ask_tools": [],
+  "allowed_scripts": [],
+  "reverse_window_minutes": 60,
+  "ask_expiry_seconds": 600,
+  "repeat_hours": 2.0,
+  "daily_ask_cap": 6,
+  "quiet_hours_start": "23:00",
+  "quiet_hours_end": "07:00"
+}
+```
+
+`GET` goes through the same `load_settings` Reflex uses, so a missing document **or an
+unusable one** reads as the defaults (the unusable one is warned about once in the log). `PUT`
+takes a whole document: the body is validated as `ReflexSettings` before anything is written, so
+a field it leaves out takes its default (it does not keep the stored value) and what it saves is
+exactly what the `GET` then returns. Fields, defaults and bounds are in
+[`reflex-anticipation.md` → Settings](reflex-anticipation.md#settings); the same document is
+editable from the command line (`python -m core.reflex.settings`).
+
+| Rejection | Status |
+|---|---|
+| An unknown field, a wrong type (the numbers are strict: `true` and `"60"` are refused), a value out of bounds, a `mode` other than `shadow` or `ask`, a blank or over-long (256 characters) `ask_tools` or `allowed_scripts` entry, more than 200 entries in either list, or a time that is not `HH:MM` (`PUT`) | **422**, nothing saved |
+| Redis failed (either method) | **503** `Reflex settings store unavailable` |
+
+Reflex reads the document on every decision, so an edit applies to the next one: no reload.
+
+---
+
 ### Controls
 
 | Method | Path | Purpose |
@@ -380,6 +421,7 @@ to the next state change — no reload, no restart. See
 | `POST` | `/api/admin/triggers/{trigger_id}/enabled` | Enable or disable a trigger |
 | `POST` | `/api/admin/triggers/{trigger_id}/fire` | Manually fire a trigger |
 | `PUT` | `/api/admin/attention/{domain}` | Edit one Reflex attention domain ([Attention](#attention)) |
+| `PUT` | `/api/admin/reflex/settings` | Replace the Reflex settings document ([Reflex settings](#reflex-settings)) |
 | `DELETE` | `/api/admin/sessions/{session_id}` | Terminate a session ([Sessions](#sessions)) |
 
 All control endpoints log at INFO when they execute.
@@ -598,6 +640,7 @@ cleanly before the handler returns.
 | Run Librarian | `XADD alfred:actions` (`run_librarian`) | Conscious process `_INTERNAL_HANDLERS` |
 | Fire trigger | `XADD alfred:actions` (`fire_trigger`, `target_service=trigger-engine`) | Triggers process (`triggers-internal` consumer → `TriggerEngine.fire`) |
 | Attention edit | Direct `SADD`/`SREM` on `alfred:attention:{domain}` + `:seen` | Admin API (channels process) |
+| Reflex settings | Direct `SET alfred:reflex:settings` (the whole document, validated first) | Admin API (channels process); Reflex reads it on every decision |
 
 Direct Redis writes take effect immediately. `XADD`-based controls are queued into
 `alfred:actions` and executed asynchronously by the owning process. The admin API returns

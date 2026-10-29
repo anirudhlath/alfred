@@ -19,7 +19,60 @@ is measured before the next starts.
 | 3. Learning | Answers stored with their situation; yes acts next time after three yeses, no stops it; undo | the design |
 | 4. Promotion | A learned habit becomes an automation, on the owner's say-so | the design |
 
-Nothing a proposal names is executed until the design says so: shadow mode stays.
+Reflex ships in `shadow` mode and stays there until the owner switches it ([Settings](#settings)):
+nothing a proposal names runs on Reflex's own say-so. In `ask` mode a proposal it may ask about is
+put to the owner, and an elevated one runs only on a yes ([Asks](#asks)).
+
+## Settings
+
+The owner's settings are one JSON document at `alfred:reflex:settings` (`core/reflex/settings.py`,
+`ReflexSettings`), read on every decision, so a change applies to the next one. A missing,
+unreadable or invalid document reads as the defaults, mode `shadow` included, and the
+unusable document is warned about once per process: a typo never stops Reflex. An unknown
+field is invalid, not ignored, and one bad field makes the whole document invalid. The numbers
+are strict: `true` or `"60"` is a wrong type, not 1 or 60 (a whole number such as `2` is a
+valid `repeat_hours`). Entries are stripped of surrounding whitespace.
+
+| Field | Default | Bounds | What it does |
+|---|---|---|---|
+| `mode` | `shadow` | `shadow` or `ask` | `shadow` records decisions and asks nothing; `ask` puts a proposal that matches `ask_tools` to the owner first |
+| `ask_tools` | `[]` | up to 200 non-empty strings, each at most 256 characters | fnmatch patterns over tool names: the tools Reflex may ask about. Matched against the tool registry's names, never parsed or listed in code |
+| `allowed_scripts` | `[]` | up to 200 non-empty strings, each at most 256 characters | target ids the owner has approved running through an ask. Opaque: compared, never parsed |
+| `reverse_window_minutes` | `60` | 1 to 1440 | how long after a person changes something Reflex will not propose moving it back ([above](#never-reverse-a-person)) |
+| `ask_expiry_seconds` | `600` | 60 to 3600 | how long an ask waits for an answer before it lapses |
+| `repeat_hours` | `2.0` | 0 to 168 | how long after asking about something Reflex will not ask about it again |
+| `daily_ask_cap` | `6` | 0 to 50 | the most asks in one local day; `0` means none |
+| `quiet_hours_start` | `23:00` | `HH:MM`, 00:00 to 23:59 | local time quiet hours begin: no ask in the window |
+| `quiet_hours_end` | `07:00` | `HH:MM`, 00:00 to 23:59 | local time they end; equal to the start means no quiet hours |
+
+`reverse_window_minutes` is read by the never-reverse rule and the rest by the ask gate
+([Asks](#asks)). `allowed_scripts` is read by nothing in Reflex yet: a yes to a script ask adds
+to it, the owner can add or remove an id by hand, and it records which scripts the owner has
+approved running through an ask.
+
+Two ways to edit the document, both validating the whole of it before they save a byte:
+
+- **Admin API.** `GET /api/admin/reflex/settings` returns the document, or the defaults;
+  `PUT` replaces it with the body (a missing field takes its default) and answers 422, saving
+  nothing, for an unknown field or a bad value. Session-gated like the other controls: see
+  [admin-api.md](admin-api.md#reflex-settings).
+- **Command line.** On the host that runs the container:
+
+  ```
+  docker exec alfred python -m core.reflex.settings show
+  docker exec alfred python -m core.reflex.settings set mode ask
+  docker exec alfred python -m core.reflex.settings set ask_tools '["<pattern>", "<tool>"]'
+  docker exec alfred python -m core.reflex.settings allow-script <id>
+  docker exec alfred python -m core.reflex.settings disallow-script <id>
+  ```
+
+  `set <field> <value>` reads the value as JSON when it parses (`3`, `0.5`, `'["a*"]'`) and
+  as a string otherwise (`ask`, `22:30`); an invalid result is refused with exit status 1 and
+  nothing is saved. `allow-script` and `disallow-script` are idempotent and keep the list's
+  order. `show` prints what Reflex would read, which is the defaults when the stored document
+  is unusable, and says so on stderr. The commands that change the document refuse to edit an
+  unusable stored one (exit status 1, nothing saved): replace it with the admin `PUT` first. A
+  missing document is edited from the defaults.
 
 ## A redelivered event is not decided again
 
@@ -32,6 +85,13 @@ marker. A `TriggerFired` uses its own `event_id`. This makes it unlikely that a 
 entry is inferred, counted and recorded twice; a crash between the decision and the marker can
 still record an event twice, so the replay drops duplicates (below), which would otherwise
 skew every count it prints.
+
+A fired trigger's own notification is sent at most once per event. The handler sets
+`alfred:reflex:notified:{event_id}` (same window, best-effort) after a successful send and skips
+the send when it is set; a failed send sets nothing and is retried. This matters because the ask
+step (below) can fail after the notification has gone out, which leaves the entry pending: the
+redelivery decides the event but does not notify again. A crash between the send and the marker
+can still repeat it once.
 
 ## Never reverse a person
 
@@ -75,8 +135,8 @@ person just changed. It does not ask the model to remember.
   for the room, and an entity ID in another domain names nothing.
 - **One outcome per decision.** Every decision ends in a `ReflexOutcome`: `none`, `invalid`,
   `would_reverse` (the proposal would undo a person's change; it names the entities and is not
-  published as a proposal), `shadow` (published; nothing executes) and, for later slices,
-  `asked` and `held`. It is kept on the decision-log record and on a published proposal's
+  published as a proposal), `shadow` (published; nothing executes), `asked` (put to the owner) and
+  `held` (a limit stopped the ask). It is kept on the decision-log record and on a published proposal's
   observation (a `none` or `would_reverse` is observed passively, with no outcome), counted in
   `alfred:reflex:decisions:<UTC date>` as `outcome:<kind>` (and `<kind>:<reason>` when there is
   a reason), and printed as the Outcomes table of `python -m core.reflex.shadow_report`, with
@@ -89,6 +149,132 @@ person just changed. It does not ask the model to remember.
   the model is asked: the entry stays pending and is retried rather than decided without
   knowing what a person did. Reading the records includes the prune, so a Redis error there
   fails the decision too. Noting a change is best-effort and never raises.
+
+## Asks
+
+`core/reflex/asks.py` holds the limits that keep asks few and the asking itself. The runner
+calls it for both origins, a state change and a fired trigger, through `ask_or_hold`
+(`core/reflex/runner.py`): between the engine and the record, only a `shadow` outcome is gated.
+The answers (the Door, a reply, or silence) are in
+[`autonomy.md`](autonomy.md#reflex-asks); this page keeps what it does not repeat.
+
+`gate` reduces a standing (`shadow`) proposal to `asked` or `held`, naming the first limit it
+meets. It first settles an ask whose deadline has passed (recorded as `expired` at its
+deadline), on every proposal it is given and in either mode, so a lapsed ask ends whatever limit
+the proposal then meets. A decision that never reaches the gate (`none`, `invalid`,
+`would_reverse`) settles nothing. The limits, in this order:
+
+1. `tool_off`: no `ask_tools` pattern matches the tool (an empty list turns every tool off), or
+   the tool's declared risk is critical or unknown, which the router refuses even when the owner
+   says yes;
+2. `quiet_hours`: the owner's local time is in `quiet_hours_start` up to `quiet_hours_end`
+   (a start later than the end wraps midnight; equal means none);
+3. `dnd`: Do Not Disturb is on (a check that fails, say on a stored value that does not parse,
+   counts as on: the decision is recorded as held, not retried);
+4. `ask_open`: an ask is already waiting;
+5. `asked_recently`: `alfred:reflex:asked:<tool>:<sorted targets>` exists;
+6. `daily_cap`: `alfred:reflex:asks:<local YYYY-MM-DD>` has reached `daily_ask_cap`.
+
+In `shadow` mode only the first three are checked and the outcome stays `shadow`, with the
+reason or none. The gate writes nothing, apart from settling an expired ask, in `shadow` mode
+too: that records the `expired` answer and deletes the open key (`settle_expired`,
+`core/reflex/answers.py`).
+
+`open_ask` claims `alfred:reflex:ask:open` first, with `SET NX` (the value is the `OpenAsk`
+JSON, kept for `ask_expiry_seconds` plus a day), because the state-change and trigger loops
+interleave at every await and the gate's read alone cannot promise one open ask at a time. A
+lost claim returns `None` and writes nothing else. After the claim, in order: the action is
+parked as a pending action for `ask_expiry_seconds`; the repeat key is set for `repeat_hours`
+(skipped when that is 0); the day's count goes up by one (kept 2 days); and an `important`
+notification goes out, its metadata carrying `pending_action_id` and `kind: reflex_ask`. A
+failure in any step propagates, and the open key stays behind, so a redelivery finds `ask_open`
+and the proposal is recorded as `held`, never asked twice. The notification goes last, so the
+owner hears of an ask at most once. A failure in the runner's ask step (the settings, the tool's
+risk, the gate or `open_ask`) propagates too: the event stays pending and is retried. The one
+exception is the Do Not Disturb check, which counts as on when it fails.
+
+### The words of an ask
+
+`ask_text` writes the notification: the title is `Shall I {words} {names}?`, where `words` are the
+service half of the tool's name with underscores as spaces (the tool's last dotted segment when
+the caller has no service) and `names` are the targets as the owner knows them; for a script it is
+`Shall I run the script {names}?`. The body is `{noticed} {reason} Reply yes or no.`: each of the
+first two parts is stripped and gets a full stop when it does not already end in one (`.`, `!` or
+`?`), so a reason that arrives without punctuation still reads as a sentence, and an empty part is
+left out. The body is at most 300 characters; a longer one has the front shortened with an
+ellipsis so the reply line survives whole. The notification, its source and its metadata are in
+[`notifications.md`](notifications.md#reflex-asks).
+
+### Answers and channels
+
+An ask ends once, as `yes`, `no` or `expired`, and `record_answer` writes it to
+`alfred:reflex:answers` (`ReflexAnswer`: the time, the channel, the tool, the targets and what
+Reflex had noticed; capped near 5,000 entries). Three roads lead there, all in
+[`autonomy.md`](autonomy.md#reflex-asks):
+
+- **The Door** (channel `door`): the PWA's confirm slide is a yes, its Don't button a no.
+- **A reply**, in words: the approval classifier reads it against the parked action. Only the
+  owner can answer this way, on `web_pwa`, `ios` or `signal` (the channels an `important`
+  notification reaches, never speech), and a reply does not answer once Alfred has spoken in that
+  conversation since 120 s before the ask went out (`ASK_LOOKBACK_SECONDS`): a "yes" there
+  answers whatever Alfred just said, so it is a normal turn and the ask stays open for the Door.
+- **Silence.** Nothing watches the clock: an ask past its deadline (`ask_expiry_seconds` after it
+  was made, 600 s by default) is recorded as `expired`, with no channel, the next time anything
+  looks. The ask gate looks first, on every proposal that reaches it and in `shadow` mode too,
+  before it checks `tool_off`, quiet hours or do-not-disturb, so a lapsed ask is settled even by
+  a proposal that one of them holds, and after the mode is flipped to `shadow`. A `none`,
+  `invalid` or `would_reverse` decision does not reach the gate and settles nothing. The shadow
+  report settles it too, before it counts.
+
+One answer per ask: `alfred:reflex:answered:<ask id>` arbitrates between a Door tap and a reply that
+arrive together, and the loser runs nothing and is told nothing (a reply is a normal turn, the Door
+gets a 404).
+
+Switching the mode to `shadow` stops new asks, but an ask already open can still be answered, by
+the Door or a reply, and a yes then runs.
+
+A yes runs the benign or elevated action asked about; a critical or unknown one is never asked
+about (`tool_off`), because the router refuses it even when confirmed. When the ask was for a
+script, the yes adds its targets to `allowed_scripts` in the settings, each once and as opaque
+ids, through the function the command line's `allow-script` uses. That addition is best effort: if it fails, the answer stands and the
+action runs, and the owner can add the id by hand.
+
+### The report
+
+`python -m core.reflex.shadow_report` has an **Asks** section after the would-reverse list. It
+settles a lapsed ask first, so a quiet house still shows it as `expired`, and then prints counts
+only:
+
+- a table by day of the asks made (`outcome:asked`) and the proposals held (`outcome:held`), then
+  one column per reason a hold can name (`tool_off`, `quiet_hours`, `dnd`, `ask_open`,
+  `asked_recently`, `daily_cap`), then one per reason shadow mode checks (`shadow:tool_off`,
+  `shadow:quiet_hours`, `shadow:dnd`): what an ask would have met while Reflex was in `shadow`
+  mode, to judge the switch to `ask` by. All from the same daily counters as the Outcomes
+  table;
+- a table by day of the answers, `yes`, `no` and `expired`, read from `alfred:reflex:answers` and
+  bucketed by the day the entry was written. An answer to an ask made the evening before counts on
+  the day it came.
+
+No target, name, tool or `noticed` text is printed, so the section can be posted. If the answers
+stream cannot be read, the report says so and prints the rest. A day with no counters shows `—`.
+
+### Testing asks
+
+`tests/core/reflex/test_asks.py`, `test_answers.py`, `test_runner_asks.py` and
+`tests/core/conscious/test_engine_reflex_asks.py` cover the gate, the answers and the runner. Two
+eval goldens in `evals/suites/reflex/` run the whole path against the real stack
+([`evals.md`](evals.md)): `reflex.asks.ask_mode_asks` switches to `ask` mode with the
+`reflex_settings` step and expects the proposal to be asked, as a pending action from
+`reflex-engine`, held for an ask already open, or nothing at all; `reflex.asks.dnd_holds` turns
+do-not-disturb on first and expects it to hold or to say nothing. Both run in the small hours,
+with the quiet hours moved off them so the ask gate is reached (the defaults are pinned by unit
+tests), and both switch the living room ceiling light on by an automation, because a light a person switched on is left
+alone. The step restores the owner's settings when the sample ends, and the harness clears the
+open ask and the repeat keys before the next golden (`clear_reflex_asks`).
+
+When the model says `none`, the ask golden passes without exercising the ask. The end-to-end ask
+path is pinned by `tests/core/reflex/test_runner_asks.py`, and the current System 1 model says
+`none` in the evening TV-dimming shape, which is why the goldens use a light instead.
 
 ## The sun and the weather
 

@@ -782,10 +782,12 @@ The `DomainRouter` maps `ActionRequest` events to the correct domain agent based
 `target_service` -- a registry-based lookup, not hardcoded agent dispatch. It is also the
 **dispatch-layer enforcement point** for tiered autonomy (defense-in-depth alongside the
 Reflex prompt filter, 3.2.1): every `route()` call looks up the tool's risk
-(`tool_risk()`, default `"benign"`); a Reflex-sourced request above benign risk is rejected
-and recorded as a `ReflexObservation`, and an unconfirmed `risk == "critical"` request is
-parked (not executed) via the **pending store** (`core/routing/pending.py`, Redis key
-`alfred:pending:{id}`, 5-minute TTL) while an URGENT notification asks the user to confirm.
+(`tool_risk()`, default `"benign"`). A Reflex-sourced request is rejected unless its tool is
+benign, or elevated and confirmed (an answered Reflex ask), and a rejection is recorded as a
+`ReflexObservation`. Any other source's unconfirmed `risk == "critical"` request is parked
+(not executed) via the **pending store** (`core/routing/pending.py`, Redis key
+`alfred:pending:{id}`, 5-minute TTL; an ask's record lives `ask_expiry_seconds`) while an URGENT
+notification asks the user to confirm.
 The store holds two kinds of record: a `ParkedAction` for an action the router itself
 intercepted, and a `ParkedRun` for a System 2 run that deferred its critical calls (3.8).
 Confirmation -- `POST /api/actions/{id}/confirm`, or for a parked run also a reply in the

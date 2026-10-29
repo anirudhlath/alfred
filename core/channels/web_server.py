@@ -1067,7 +1067,7 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
             raise HTTPException(status_code=400, detail="Invalid request id")
         r: aioredis.Redis[Any] = app.state.redis  # type: ignore[type-arg]
         try:
-            decided = await decide(r, request_id, decision)
+            decided = await decide(r, request_id, decision, channel="door")
         except Exception as e:
             logger.warning("Could not {} pending action {}: {}", decision, request_id, e)
             raise HTTPException(status_code=503, detail=_ACTION_STORE_DOWN) from e

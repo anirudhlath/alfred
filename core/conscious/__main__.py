@@ -40,6 +40,7 @@ from core.memory.significance import SignificanceScorer
 from core.memory.sqlite_vec_store import SqliteVecStore
 from core.notifications.publisher import NotificationPublisher
 from core.notifications.schema import Urgency
+from core.reflex.answers import is_reflex_source
 from core.reflex.context_reader import ContextReader
 from core.reflex.runner import ensure_consumer_group
 from core.reflex.tool_registry import ToolRegistry
@@ -102,7 +103,9 @@ async def _report_outcome(
 
     The result goes to the stream the PWA's Door waits on; the owner is notified either
     way, and a failure is logged at WARNING. Neither delivery can fail the consumer: the
-    action has already run, so its entry is acked regardless.
+    action has already run, so its entry is acked regardless. The one exception to "either
+    way": an action Reflex proposed and the owner said yes to is not announced when it
+    worked (the owner has just said so, and the house shows it); a failure still is.
     """
     if result.status == "error":
         log.warning(
@@ -124,6 +127,8 @@ async def _report_outcome(
         await publish_action_result(redis, result)
     except Exception as e:
         log.error("Could not publish the result of confirmed action '{}': {}", action.tool_name, e)
+    if result.status != "error" and is_reflex_source(action.source):
+        return
     try:
         await notifier.publish(
             title=title, body=body, source=OUTCOME_SOURCE, urgency=Urgency.IMPORTANT

@@ -107,6 +107,21 @@ def turn_count(messages: Sequence[ModelMessage]) -> int:
     )
 
 
+def spoke_since(messages: Sequence[ModelMessage], since: datetime) -> bool:
+    """Whether Alfred answered in *messages* after *since*: a response stamped later.
+
+    A response's timestamp is when it was received, in the session's own history, so it
+    round-trips with it. A stamp with no offset is read as UTC. A history read from the legacy
+    text format is stamped with the time it is read, so it counts as spoken-since: the safe
+    side, where a reply is a normal turn.
+    """
+    return any(
+        (m.timestamp if m.timestamp.tzinfo else m.timestamp.replace(tzinfo=UTC)) > since
+        for m in messages
+        if isinstance(m, ModelResponse)
+    )
+
+
 def _without_instructions(messages: Sequence[ModelMessage]) -> list[ModelMessage]:
     """*messages* with every request's instructions dropped: each run sends its own."""
     return [

@@ -6,6 +6,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from loguru import logger
 
 from bus.schemas.events import ActionRequest, ActionResult, ParkedAction
 from core.notifications.schema import Urgency
@@ -74,19 +75,6 @@ async def test_reflex_benign_dispatches() -> None:
     result = await router.route(_action("reflex-engine", "home.turn_on_lights"))
     assert result.status == "success"
     assert len(agent.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_reflex_elevated_rejected_with_observation() -> None:
-    router, agent, redis, _ = _router()
-    result = await router.route(_action("reflex-engine", "home.set_climate"))
-
-    assert result.status == "error"
-    assert result.error is not None and result.error.startswith("autonomy_violation")
-    assert agent.calls == []
-    # A ReflexObservation was published to the observations stream
-    streams = [call.args[0] for call in redis.xadd.await_args_list]
-    assert "alfred:reflex:observations" in streams
 
 
 @pytest.mark.asyncio
@@ -190,6 +178,66 @@ async def test_conscious_unregistered_tool_still_dispatches() -> None:
     """Fail-closed applies to reflex autonomy only — System 2 keeps full action rights."""
     router, agent, redis, notifier = _router()
     result = await router.route(_action("conscious-engine", "home.light_turn_on"))
+
+    assert result.status == "success"
+    assert len(agent.calls) == 1
+    redis.set.assert_not_called()
+    notifier.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reflex_elevated_confirmed_dispatches() -> None:
+    """An elevated Reflex action the owner answered yes to runs (the Reflex ask path)."""
+    router, agent, redis, notifier = _router()
+    result = await router.route(_action("reflex-engine", "home.set_climate", confirmed=True))
+
+    assert result.status == "success"
+    assert len(agent.calls) == 1
+    redis.set.assert_not_called()
+    notifier.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool", "confirmed"),
+    [
+        ("home.set_climate", False),  # elevated, never answered
+        ("home.unlock_door", True),  # critical: a yes does not let Reflex run it
+        ("home.light_turn_on", True),  # unknown risk: a yes does not let Reflex run it
+    ],
+)
+async def test_reflex_action_not_runnable_is_rejected(tool: str, confirmed: bool) -> None:
+    router, agent, redis, notifier = _router()
+    warnings: list[str] = []
+    sink = logger.add(lambda message: warnings.append(str(message)), level="WARNING")
+    try:
+        result = await router.route(_action("reflex-engine", tool, confirmed=confirmed))
+    finally:
+        logger.remove(sink)
+
+    assert result.status == "error"
+    assert result.error is not None and result.error.startswith("autonomy_violation")
+    assert agent.calls == []
+    redis.set.assert_not_called()
+    notifier.publish.assert_not_awaited()
+    # The violation is recorded as a ReflexObservation, and logged with whether it was confirmed
+    streams = [call.args[0] for call in redis.xadd.await_args_list]
+    assert "alfred:reflex:observations" in streams
+    assert any(f"confirmed={confirmed}" in line for line in warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool", "confirmed"),
+    [
+        ("home.set_climate", False),  # elevated, never answered
+        ("home.unlock_door", True),  # critical, answered yes
+    ],
+)
+async def test_conscious_action_ignores_reflex_rules(tool: str, confirmed: bool) -> None:
+    """System 2 keeps its action rights: the Reflex rules do not apply to it."""
+    router, agent, redis, notifier = _router()
+    result = await router.route(_action("conscious-engine", tool, confirmed=confirmed))
 
     assert result.status == "success"
     assert len(agent.calls) == 1

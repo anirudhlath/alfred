@@ -20,12 +20,14 @@ from pydantic import (
     Field,
     SerializeAsAny,
     StrictBool,
+    StringConstraints,
     Tag,
     ValidationError,
     field_validator,
     model_validator,
 )
 
+from core.reflex.settings import HHMM_PATTERN, MAX_ITEM_CHARS, MAX_LIST_ITEMS
 from evals.harness.checks import CHECK_PARAMS, needs_reply, reads_decision_log, step_kind_needed
 from evals.harness.checks import watches_reflex as _watches_reflex
 from evals.harness.checks.home import HaCalledParams
@@ -158,6 +160,43 @@ class DndStep(BaseModel):
     settle: float = Field(default=3.0, ge=0)
 
 
+# The same bounds the settings document keeps its tool patterns to, so a golden the admin API
+# would refuse fails at load.
+AskTool = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_ITEM_CHARS)
+]
+
+
+class ReflexSettingsChange(BaseModel):
+    """The settings a ``reflex_settings`` step changes; the others keep their value."""
+
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["shadow", "ask"] | None = None
+    # fnmatch patterns over tool names: the tools Reflex may ask about.
+    ask_tools: list[AskTool] | None = Field(default=None, max_length=MAX_LIST_ITEMS)
+    # The owner's local HH:MM, as the settings document keeps them: moving them lets a golden
+    # run at an hour the defaults would hold for.
+    quiet_hours_start: str | None = Field(default=None, pattern=HHMM_PATTERN)
+    quiet_hours_end: str | None = Field(default=None, pattern=HHMM_PATTERN)
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> Self:
+        if all(value is None for value in self.model_dump().values()):
+            raise ValueError(
+                "a reflex_settings step changes at least one of mode, ask_tools, "
+                "quiet_hours_start and quiet_hours_end"
+            )
+        return self
+
+
+class ReflexSettingsStep(BaseModel):
+    """The owner changes Reflex's settings, through the admin API as the owner does. The
+    driver puts the document it first found back when the sample ends."""
+
+    model_config = ConfigDict(extra="forbid")
+    reflex_settings: ReflexSettingsChange
+
+
 class DoorStep(BaseModel):
     """The owner decides a pending action on the Door, the PWA's confirm sheet: the
     harness POSTs the decision to the web channel, as the PWA does."""
@@ -196,7 +235,8 @@ Step = Annotated[
     | Annotated[ClockStep, Tag("clock")]
     | Annotated[AdvanceTriggerStep, Tag("advance_trigger")]
     | Annotated[DndStep, Tag("dnd")]
-    | Annotated[DoorStep, Tag("door")],
+    | Annotated[DoorStep, Tag("door")]
+    | Annotated[ReflexSettingsStep, Tag("reflex_settings")],
     Discriminator(
         step_kind,
         custom_error_type="step_kind",

@@ -882,6 +882,7 @@ Everything else is as today.
   - `asks_ask_mode_asks.yaml`: the tv_night_dims shape, at an hour outside the default quiet hours, with
     `ask_tools: ["home.light_*"]`. Expect `reflex_outcome: {outcome: [asked, none]}`. When asked, the
     harness sees a pending action from `reflex-engine` (`bus.pending_actions`).
+    Superseded during execution: the goldens switch a light that starts off, by an automation, at 02:00 with quiet hours moved, because the model answers `none` in this shape.
   - `asks_dnd_holds.yaml`: `dnd: on`, then the same events. `reflex_outcome` gains an optional `reason`;
     expect `{outcome: [held, none], reason: dnd}`.
 - Test: `tests/core/reflex/test_shadow_report.py`, `tests/evals/harness/test_driver_reflex_settings.py`,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import fakeredis
 import pytest
@@ -15,6 +15,8 @@ from bus.schemas.events import (
     ParkedCall,
     ParkedRun,
 )
+from core.reflex.answers import OpenAsk, ReflexAnswer, record_answer
+from core.reflex.settings import load_settings
 from core.routing.pending import (
     CONFIRMATION_TITLE,
     PENDING_TTL_SECONDS,
@@ -30,7 +32,14 @@ from core.routing.pending import (
     read_pending,
     store_pending_action,
 )
-from shared.streams import ACTIONS_STREAM, APPROVALS_STREAM, PENDING_PREFIX
+from shared.streams import (
+    ACTIONS_STREAM,
+    APPROVALS_STREAM,
+    PENDING_PREFIX,
+    REFLEX_ANSWERED_PREFIX,
+    REFLEX_ANSWERS_STREAM,
+    REFLEX_ASK_OPEN_KEY,
+)
 
 T0 = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
 
@@ -112,6 +121,27 @@ async def test_store_pending_action_writes_a_parked_action_with_a_ttl(
     assert isinstance(record, ParkedAction)
     assert record.action == action
     assert 0 < await redis.ttl(pending_key(action.request_id)) <= PENDING_TTL_SECONDS
+
+
+async def test_store_pending_action_keeps_five_minutes_by_default(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    action = _action()
+    await store_pending_action(redis, action)
+
+    ttl = await redis.ttl(pending_key(action.request_id))
+    assert PENDING_TTL_SECONDS == 300
+    assert 295 <= ttl <= 300
+
+
+async def test_store_pending_action_honours_a_longer_ttl(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    action = _action()
+    await store_pending_action(redis, action, ttl_seconds=600)
+
+    ttl = await redis.ttl(pending_key(action.request_id))
+    assert 595 <= ttl <= 600
 
 
 async def test_park_run_writes_once(redis: fakeredis.FakeAsyncRedis) -> None:
@@ -297,3 +327,284 @@ async def test_decide_on_an_unreadable_record_is_false_and_publishes_nothing(
 
     assert await decide(redis, "corrupt", "approve") is False
     assert await _stream(redis, ACTIONS_STREAM) == []
+
+
+# --- an action Reflex proposed is an ask --------------------------------------------------
+
+NOW = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
+
+
+def _ask_action(request_id: str = "ask-1", *, script: bool = False) -> ActionRequest:
+    return ActionRequest(
+        source="reflex-engine",
+        request_id=request_id,
+        timestamp=NOW - timedelta(minutes=5),
+        target_service="home-service",
+        tool_name="home.script_run" if script else "home.light_turn_on",
+        parameters={"target": "movie_night" if script else "light.lamp"},
+        reason="It is getting dark.",
+    )
+
+
+def _open_ask(action: ActionRequest, *, deadline: datetime, script: bool = False) -> OpenAsk:
+    return OpenAsk(
+        ask_id=action.request_id,
+        tool_name=action.tool_name,
+        targets=["movie_night"] if script else ["light.lamp"],
+        origin="state_change",
+        asked_at=deadline - timedelta(minutes=10),
+        deadline=deadline,
+        noticed="The lamp went off",
+        script=script,
+    )
+
+
+async def _ask(
+    redis: fakeredis.FakeAsyncRedis,
+    *,
+    deadline: datetime = NOW + timedelta(minutes=5),
+    script: bool = False,
+    parked: bool = True,
+) -> ActionRequest:
+    """An open ask and, unless *parked* is False, the pending action it parked."""
+    action = _ask_action(script=script)
+    ask = _open_ask(action, deadline=deadline, script=script)
+    await redis.set(REFLEX_ASK_OPEN_KEY, ask.model_dump_json())
+    if parked:
+        await store_pending_action(redis, action, ttl_seconds=600)
+    return action
+
+
+async def _answers(redis: fakeredis.FakeAsyncRedis) -> list[ReflexAnswer]:
+    return [
+        ReflexAnswer.model_validate_json(fields[b"event"])
+        for fields in await _stream(redis, REFLEX_ANSWERS_STREAM)
+    ]
+
+
+async def test_a_door_confirm_on_an_open_ask_is_a_yes_and_runs_the_action(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    action = await _ask(redis)
+
+    assert await decide(redis, action.request_id, "approve", now=NOW) is True
+
+    (answer,) = await _answers(redis)
+    assert (answer.ask_id, answer.answer, answer.channel, answer.time) == (
+        "ask-1",
+        "yes",
+        "door",
+        NOW,
+    )
+    (fields,) = await _stream(redis, ACTIONS_STREAM)
+    republished = ActionRequest.model_validate_json(fields[b"event"])
+    assert republished.confirmed is True
+    assert republished.model_copy(update={"confirmed": False}) == action
+    assert await redis.exists(REFLEX_ASK_OPEN_KEY) == 0
+    assert await redis.exists(pending_key(action.request_id)) == 0
+    assert await _stream(redis, APPROVALS_STREAM) == []
+
+
+async def test_a_door_deny_on_an_open_ask_is_a_no_and_runs_nothing(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    action = await _ask(redis)
+
+    assert await decide(redis, action.request_id, "deny", now=NOW) is True
+
+    (answer,) = await _answers(redis)
+    assert (answer.answer, answer.channel) == ("no", "door")
+    assert await _stream(redis, ACTIONS_STREAM) == []
+    assert await redis.exists(REFLEX_ASK_OPEN_KEY) == 0
+    assert await redis.exists(pending_key(action.request_id)) == 0
+
+
+async def test_the_channel_a_decision_came_on_is_recorded(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    action = await _ask(redis)
+
+    await decide(redis, action.request_id, "approve", channel="signal", now=NOW)
+
+    (answer,) = await _answers(redis)
+    assert answer.channel == "signal"
+
+
+async def test_a_second_decision_on_an_answered_ask_finds_nothing(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    action = await _ask(redis)
+    assert await decide(redis, action.request_id, "approve", now=NOW) is True
+
+    assert await decide(redis, action.request_id, "deny", now=NOW) is False
+    assert await decide(redis, action.request_id, "approve", now=NOW) is False
+
+    assert len(await _answers(redis)) == 1
+    assert len(await _stream(redis, ACTIONS_STREAM)) == 1
+
+
+async def test_a_door_confirm_after_the_ask_lapsed_is_false_and_records_the_expiry_once(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    deadline = NOW - timedelta(minutes=2)
+    action = await _ask(redis, deadline=deadline, parked=False)  # the pending record's TTL ran out
+
+    assert await decide(redis, action.request_id, "approve", now=NOW) is False
+    assert await decide(redis, action.request_id, "approve", now=NOW) is False
+
+    (answer,) = await _answers(redis)
+    assert (answer.answer, answer.time, answer.channel) == ("expired", deadline, None)
+    assert await _stream(redis, ACTIONS_STREAM) == []
+    assert await redis.exists(REFLEX_ASK_OPEN_KEY) == 0
+
+
+async def test_a_decision_with_nothing_to_claim_leaves_an_ask_still_waiting(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    await _ask(redis)
+
+    assert await decide(redis, "ghost", "approve", now=NOW) is False
+
+    assert await _answers(redis) == []
+    assert await redis.exists(REFLEX_ASK_OPEN_KEY) == 1
+
+
+async def test_an_unreadable_record_settles_a_lapsed_ask_too(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    action = await _ask(redis, deadline=NOW - timedelta(seconds=1), parked=False)
+    await redis.set(pending_key(action.request_id), b"{not json", ex=60)
+
+    assert await decide(redis, action.request_id, "approve", now=NOW) is False
+
+    assert [a.answer for a in await _answers(redis)] == ["expired"]
+
+
+@pytest.mark.parametrize("decision", ["approve", "deny"])
+async def test_a_decision_after_the_ask_was_settled_elsewhere_runs_nothing(
+    redis: fakeredis.FakeAsyncRedis, decision: str
+) -> None:
+    """The record is still there but no open ask names it: nothing may run."""
+    action = _ask_action()
+    await store_pending_action(redis, action, ttl_seconds=600)
+
+    assert await decide(redis, action.request_id, decision, now=NOW) is False  # type: ignore[arg-type]
+
+    assert await _stream(redis, ACTIONS_STREAM) == []
+    assert await _answers(redis) == []
+    assert await redis.exists(pending_key(action.request_id)) == 0  # claimed, and dropped
+
+
+async def test_a_decision_on_an_ask_another_ask_replaced_runs_nothing(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    old = _ask_action("old")
+    await store_pending_action(redis, old, ttl_seconds=600)
+    newer = _open_ask(_ask_action("new"), deadline=NOW + timedelta(minutes=5))
+    await redis.set(REFLEX_ASK_OPEN_KEY, newer.model_dump_json())
+
+    assert await decide(redis, "old", "approve", now=NOW) is False
+
+    assert await _stream(redis, ACTIONS_STREAM) == []
+    assert await redis.exists(REFLEX_ASK_OPEN_KEY) == 1  # the newer ask is untouched
+
+
+async def test_a_yes_that_lost_the_race_to_another_answer_runs_nothing(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    """The ask was answered a moment ago (its marker is set, its pending record not yet
+    gone): the decision is not recorded, so it does not run and is not reported as made."""
+    action = await _ask(redis)
+    ask = _open_ask(action, deadline=NOW + timedelta(minutes=5))
+    assert await record_answer(redis, ask, "expired", at=NOW, channel=None) is True
+    await redis.set(REFLEX_ASK_OPEN_KEY, ask.model_dump_json())  # a straggler's view of it
+
+    assert await decide(redis, action.request_id, "approve", now=NOW) is False
+
+    assert [a.answer for a in await _answers(redis)] == ["expired"]
+    assert await _stream(redis, ACTIONS_STREAM) == []
+
+
+async def test_a_yes_to_a_script_ask_allows_the_script(redis: fakeredis.FakeAsyncRedis) -> None:
+    action = await _ask(redis, script=True)
+
+    await decide(redis, action.request_id, "approve", now=NOW)
+
+    assert (await load_settings(redis)).allowed_scripts == ["movie_night"]
+
+
+async def test_a_no_to_a_script_ask_allows_nothing(redis: fakeredis.FakeAsyncRedis) -> None:
+    action = await _ask(redis, script=True)
+
+    await decide(redis, action.request_id, "deny", now=NOW)
+
+    assert (await load_settings(redis)).allowed_scripts == []
+
+
+async def test_an_action_from_another_source_is_not_an_ask(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    await _ask(redis)  # an ask is open, but this action is not it
+    action = _action("other-1")
+    await store_pending_action(redis, action)
+
+    assert await decide(redis, action.request_id, "approve", now=NOW) is True
+
+    assert len(await _stream(redis, ACTIONS_STREAM)) == 1
+    assert await _answers(redis) == []
+    assert await redis.exists(REFLEX_ASK_OPEN_KEY) == 1
+    assert await redis.exists(f"{REFLEX_ANSWERED_PREFIX}ask-1") == 0
+
+
+async def test_a_confirm_after_the_deadline_runs_nothing_though_the_record_has_not_lapsed(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    """The pending record's TTL is counted from a later write than the ask's deadline: it can
+    outlive the deadline, and a yes in that gap is late."""
+    deadline = NOW - timedelta(seconds=30)
+    action = await _ask(redis, deadline=deadline)  # the record is still there, with its TTL
+
+    assert await decide(redis, action.request_id, "approve", now=NOW) is False
+
+    (answer,) = await _answers(redis)
+    assert (answer.answer, answer.time, answer.channel) == ("expired", deadline, None)
+    assert await _stream(redis, ACTIONS_STREAM) == []
+    assert await redis.exists(REFLEX_ASK_OPEN_KEY) == 0
+    assert await redis.exists(pending_key(action.request_id)) == 0  # claimed, and dropped
+
+
+async def test_a_confirm_at_the_deadline_is_late_too(redis: fakeredis.FakeAsyncRedis) -> None:
+    action = await _ask(redis, deadline=NOW)
+
+    assert await decide(redis, action.request_id, "approve", now=NOW) is False
+
+    assert [a.answer for a in await _answers(redis)] == ["expired"]
+    assert await _stream(redis, ACTIONS_STREAM) == []
+
+
+async def test_a_deny_after_the_deadline_is_recorded_as_silence(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    action = await _ask(redis, deadline=NOW - timedelta(seconds=1))
+
+    assert await decide(redis, action.request_id, "deny", now=NOW) is False
+
+    assert [a.answer for a in await _answers(redis)] == ["expired"]
+
+
+async def test_a_yes_to_a_script_ask_still_runs_when_the_script_cannot_be_allowed(
+    redis: fakeredis.FakeAsyncRedis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The allow is best effort: a settings failure must not cancel the republish."""
+    action = await _ask(redis, script=True)
+
+    async def refuse(*_args: object) -> None:
+        raise ConnectionError("settings are down")
+
+    monkeypatch.setattr("core.reflex.answers.add_allowed_scripts", refuse)
+
+    assert await decide(redis, action.request_id, "approve", now=NOW) is True
+
+    assert [a.answer for a in await _answers(redis)] == ["yes"]
+    (fields,) = await _stream(redis, ACTIONS_STREAM)
+    assert ActionRequest.model_validate_json(fields[b"event"]).confirmed is True

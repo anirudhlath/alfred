@@ -1,0 +1,28 @@
+id: reflex.asks.ask_mode_asks
+prd: [4.4.tiered-autonomy]
+status: shipped
+tags: [asks, lights]
+steps:
+  # The shape that can ask: a light switched on after dark in the small hours, which is a thing
+  # worth a question, not the evening TV that the model has no reason to act on. The quiet
+  # hours are moved so the ask gate is reached (02:00 is inside the defaults, 23:00 to 07:00,
+  # which unit tests pin); only the ask limits are in play.
+  - clock: {hour: 2}
+  - reflex_settings: {mode: ask, ask_tools: ["home.light_*"], quiet_hours_start: "04:00", quiet_hours_end: "05:00"}
+  - ha_event: {entity_id: sun.sun, state: below_horizon}
+  # The ceiling light starts off in this world, so this is a real transition (the lamp starts
+  # on, and an on-to-on update is dropped before Reflex sees it). By an automation, not a
+  # person: Reflex leaves alone what a person (or a switch nobody can name) just changed, so
+  # a light they lit would end as would_reverse, not as an ask.
+  - ha_event: {entity_id: light.living_room_ceiling, state: "on", by: automation}
+  # The ask is parked just after the model answers: this step is the snapshot that shows it.
+  - wait: 6
+expect:
+  # In ask mode a light proposal is put to the owner, never run and never left as a shadow.
+  # Saying nothing is allowed, as in the other single-event goldens. A second judgment of the
+  # same change can find the first one's ask still open (one at a time, with a repeat window),
+  # and is then held for it. When the model says none this golden passes without exercising
+  # the ask: the end-to-end ask path is pinned by tests/core/reflex/test_runner_asks.py.
+  - reflex_outcome: {outcome: [asked, none, held], reason: [ask_open, asked_recently]}
+  # Every ask made in the sample is a pending action from Reflex, waiting for the owner's answer.
+  - reflex_ask_parked: {}

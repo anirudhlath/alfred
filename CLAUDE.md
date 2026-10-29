@@ -81,7 +81,7 @@ You are both **Lead Engineer** and **Background Research Scientist** on this pro
 - `core/identity/auth_middleware.py` — `AuthCookieMiddleware` (cookie → Redis session lookup)
 - `core/identity/ws_auth.py` — `require_ws_auth()` (accept → cookie auth → close 4001) wrapping `authenticate_ws_cookie()`; shared by `/ws` + `/ws/telemetry`
 - `core/channels/web_server.py` — `create_app()` web channel FastAPI app (chat WS, auth, SPA, admin); run via `python -m core.channels`
-- `core/channels/admin_api.py` — `create_admin_router()` (`/api/admin/*` — 12 reads + 7 controls, session-cookie gated; the trusted-network gate is NOT applied here, see docs/admin-api.md "Auth Model")
+- `core/channels/admin_api.py` — `create_admin_router()` (`/api/admin/*` — 13 reads + 8 controls, session-cookie gated; the trusted-network gate is NOT applied here, see docs/admin-api.md "Auth Model")
 - `core/channels/telemetry_ws.py` — `/ws/telemetry` live stream fan-out (cookie-authed)
 - `core/channels/stream_catalog.py` — Redis stream catalog + defensive entry decoding for admin reads
 - `core/channels/spa.py` — `mount_spa()` (serves `web/dist/`: real assets + index.html fallback for client-side routes)

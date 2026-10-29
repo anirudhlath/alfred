@@ -429,10 +429,10 @@ async def test_record_decision_logs_then_counts_the_decision_then_the_outcome(
     log = AsyncMock()
     log.record.side_effect = lambda *_: order.append("log")
     monkeypatch.setattr(
-        runner, "count_decision", AsyncMock(side_effect=lambda *_: order.append("decision"))
+        runner, "count_decision", AsyncMock(side_effect=lambda *_, **__: order.append("decision"))
     )
     monkeypatch.setattr(
-        runner, "count_outcome", AsyncMock(side_effect=lambda *_: order.append("outcome"))
+        runner, "count_outcome", AsyncMock(side_effect=lambda *_, **__: order.append("outcome"))
     )
     event = _change(LAMP, "on", "off")
     result = decided(ReflexProposal(decision="none"))
@@ -441,6 +441,24 @@ async def test_record_decision_logs_then_counts_the_decision_then_the_outcome(
 
     assert order == ["log", "decision", "outcome"]
     log.record.assert_awaited_once_with("state_change", event, result)
+
+
+async def test_record_decision_counts_under_the_day_it_is_given() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    day = datetime(2020, 1, 15, 23, 30, tzinfo=UTC)
+
+    await record_decision(
+        redis,
+        None,
+        "state_change",
+        _change(LAMP, "on", "off"),
+        decided(ReflexProposal(decision="none")),
+        now=day,
+    )
+
+    counted = await redis.hgetall(decisions_key(day.date()))
+    assert {k.decode(): int(v) for k, v in counted.items()} == {"none": 1, "outcome:none": 1}
+    assert not await redis.exists(decisions_key(datetime.now(UTC).date()))
 
 
 async def test_record_decision_without_a_log_still_counts() -> None:

@@ -198,6 +198,7 @@ def logged_decisions(
                 state=state,
                 decision=record.proposal.decision,
                 outcome=None if record.outcome is None else record.outcome.kind,
+                reason=None if record.outcome is None else record.outcome.reason,
                 tool=tool,
                 targets=targets(world, tool, parameters),
             )

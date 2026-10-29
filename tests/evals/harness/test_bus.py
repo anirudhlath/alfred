@@ -36,8 +36,14 @@ from shared.streams import (
     EVENTS_STREAM,
     NOTIFICATION_DISPATCH_STREAM,
     PENDING_PREFIX,
+    REFLEX_ANSWERED_PREFIX,
+    REFLEX_ANSWERS_STREAM,
+    REFLEX_ASK_OPEN_KEY,
+    REFLEX_ASKED_PREFIX,
+    REFLEX_ASKS_PREFIX,
     REFLEX_DECISION_LOG_STREAM,
     REFLEX_PERSON_CHANGES_KEY,
+    REFLEX_SETTINGS_KEY,
     TRIGGERS_CHANGED_CHANNEL,
     TRIGGERS_KEY,
     USER_RESPONSES_STREAM,
@@ -323,6 +329,153 @@ async def test_clear_dnd_drops_the_state_and_what_it_held(
     assert await redis.exists(DND_STATE_KEY, DEFERRED_NOTIFICATIONS_KEY) == 0
 
 
+FOUND = {"mode": "shadow", "ask_tools": ["home.cover_*"], "daily_ask_cap": 3}
+
+
+class SettingsApi:
+    """The admin API's settings route: a GET answers the stored document, a PUT replaces it,
+    and each call is made with a live session."""
+
+    def __init__(self, redis: fakeredis.FakeAsyncRedis, *, put_status: int = 200) -> None:
+        self.redis, self.put_status = redis, put_status
+        self.document = dict(FOUND)
+        self.calls: list[tuple[str, str, object, bytes | None]] = []
+
+    async def __call__(self, request: httpx.Request) -> httpx.Response:
+        session_id = request.headers["cookie"].removeprefix("alfred_auth=")
+        session = await self.redis.hgetall(f"{AUTH_SESSION_PREFIX}{session_id}")
+        body = json.loads(request.content) if request.content else None
+        self.calls.append((request.method, request.url.path, body, session.get(b"authenticated")))
+        if request.method == "PUT":
+            if self.put_status != 200:
+                return httpx.Response(self.put_status, json={"detail": "refused"})
+            self.document = body
+        return httpx.Response(200, json=self.document)
+
+
+async def test_set_reflex_settings_lays_the_change_over_the_document_it_found(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    api = SettingsApi(redis)
+    found = await bus(redis, api).set_reflex_settings(
+        {"mode": "ask", "ask_tools": ["home.light_*"]}
+    )
+    assert found == FOUND
+    path = "/api/admin/reflex/settings"
+    assert api.calls == [
+        ("GET", path, None, b"1"),
+        ("PUT", path, {**FOUND, "mode": "ask", "ask_tools": ["home.light_*"]}, b"1"),
+    ]
+    assert await redis.keys(f"{AUTH_SESSION_PREFIX}*") == []  # each session lived for its call
+
+
+async def test_a_field_the_change_does_not_name_keeps_its_value(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    api = SettingsApi(redis)
+    await bus(redis, api).set_reflex_settings({"mode": "ask"})
+    assert api.document == {**FOUND, "mode": "ask"}
+
+
+async def test_a_quiet_hours_change_goes_out_in_the_put_beside_the_rest_of_the_document(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    api = SettingsApi(redis)
+    await bus(redis, api).set_reflex_settings(
+        {"mode": "ask", "quiet_hours_start": "04:00", "quiet_hours_end": "05:00"}
+    )
+    assert api.document == {
+        **FOUND,
+        "mode": "ask",
+        "quiet_hours_start": "04:00",
+        "quiet_hours_end": "05:00",
+    }
+
+
+@pytest.mark.parametrize("method", ["GET", "PUT"])
+async def test_an_unreachable_settings_route_names_the_method_that_failed(
+    redis: fakeredis.FakeAsyncRedis, method: str
+) -> None:
+    api = SettingsApi(redis)
+
+    async def unreachable(request: httpx.Request) -> httpx.Response:
+        if request.method != method:
+            return await api(request)
+        raise httpx.ConnectError("connection refused", request=request)
+
+    with pytest.raises(BusError, match=f"{method} /api/admin/reflex/settings failed: connection"):
+        await bus(redis, unreachable).set_reflex_settings({"mode": "ask"})
+    assert await redis.keys(f"{AUTH_SESSION_PREFIX}*") == []
+
+
+async def test_restore_reflex_settings_puts_the_whole_document_back(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    api = SettingsApi(redis)
+    await bus(redis, api).restore_reflex_settings(FOUND)
+    assert api.calls == [("PUT", "/api/admin/reflex/settings", FOUND, b"1")]
+
+
+@pytest.mark.parametrize("status", [401, 422, 503])
+async def test_a_refused_settings_call_is_a_bus_error_and_leaves_no_session(
+    redis: fakeredis.FakeAsyncRedis, status: int
+) -> None:
+    with pytest.raises(BusError, match=f"PUT /api/admin/reflex/settings answered {status}"):
+        await bus(redis, SettingsApi(redis, put_status=status)).set_reflex_settings({"mode": "ask"})
+    assert await redis.keys(f"{AUTH_SESSION_PREFIX}*") == []
+
+
+@pytest.mark.parametrize("body", ["not json", "[1]"])
+async def test_a_settings_reply_that_is_not_a_document_is_a_bus_error(
+    redis: fakeredis.FakeAsyncRedis, body: str
+) -> None:
+    async def odd(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    with pytest.raises(BusError, match="GET /api/admin/reflex/settings answered"):
+        await bus(redis, odd).set_reflex_settings({"mode": "ask"})
+
+
+async def test_the_settings_document_is_not_written_by_the_harness_directly(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    """The change goes through the admin API, which validates it, never to the key."""
+    await bus(redis, SettingsApi(redis)).set_reflex_settings({"mode": "ask"})
+    assert not await redis.exists(REFLEX_SETTINGS_KEY)
+
+
+class NoKeys(fakeredis.FakeAsyncRedis):
+    """KEYS blocks a real Redis while it walks every key: the harness must SCAN."""
+
+    async def keys(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("KEYS must not be used")
+
+
+async def test_clearing_reflex_asks_drops_the_asking_state_and_nothing_else() -> None:
+    redis = NoKeys()
+    await redis.set(REFLEX_ASK_OPEN_KEY, "{}")
+    for prefix in (REFLEX_ASKED_PREFIX, REFLEX_ASKS_PREFIX, REFLEX_ANSWERED_PREFIX):
+        await redis.set(f"{prefix}a", "1")
+        await redis.set(f"{prefix}b", "1")
+    await redis.xadd(REFLEX_ANSWERS_STREAM, {"answer": "yes"})
+    await redis.set(REFLEX_SETTINGS_KEY, "{}")
+    await redis.set("alfred:reflex:unrelated", "kept")
+    await bus(redis).clear_reflex_asks()
+    left = [k.decode() async for k in redis.scan_iter(match="*")]
+    assert sorted(left) == sorted(
+        [REFLEX_ANSWERS_STREAM, REFLEX_SETTINGS_KEY, "alfred:reflex:unrelated"]
+    )
+    await bus(redis).clear_reflex_asks()  # nothing to clear is fine
+
+
+async def test_clearing_reflex_asks_reaches_past_one_scan_page() -> None:
+    redis = NoKeys()
+    for i in range(350):
+        await redis.set(f"{REFLEX_ASKED_PREFIX}{i}", "1")
+    await bus(redis).clear_reflex_asks()
+    assert [k async for k in redis.scan_iter(match=f"{REFLEX_ASKED_PREFIX}*")] == []
+
+
 async def test_reflex_tools_are_the_registrys_reflex_audience(
     redis: fakeredis.FakeAsyncRedis,
 ) -> None:
@@ -368,6 +521,9 @@ FROZEN_CALLS: dict[str, Callable[[ContainerBus], Awaitable[object]]] = {
     "clear_user_timezone": lambda b: b.set_user_timezone(None),
     "set_dnd": lambda b: b.set_dnd(True),
     "clear_dnd": lambda b: b.clear_dnd(),
+    "set_reflex_settings": lambda b: b.set_reflex_settings({"mode": "ask"}),
+    "restore_reflex_settings": lambda b: b.restore_reflex_settings({"mode": "shadow"}),
+    "clear_reflex_asks": lambda b: b.clear_reflex_asks(),
     "wait_for_event": lambda b: b.wait_for_event(time.time(), 0.2, lambda e: True),
     "decision_records": lambda b: b.decision_records(at(12)),
     "wait_for_decisions": lambda b: b.wait_for_decisions(at(12), 0.2, lambda records: True),

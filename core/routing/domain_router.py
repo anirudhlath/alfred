@@ -3,9 +3,10 @@
 Also the dispatch-layer enforcement point for tiered autonomy (defense in
 depth — the Reflex prompt filter is the first layer):
 
-1. ActionRequests from Reflex (``source`` starts with "reflex") targeting a
-   tool with risk above "benign" are rejected and recorded as a
-   ReflexObservation — a hallucinated tool name cannot actuate a lock.
+1. ActionRequests from Reflex (``is_reflex_source``: ``source`` starts with "reflex") may run only
+   a "benign" tool, or an "elevated" one the owner has confirmed (an answered yes to a Reflex
+   ask). Anything else is rejected and recorded as a ReflexObservation — a hallucinated tool name
+   cannot actuate a lock, and a critical tool never runs from Reflex, confirmed or not.
 2. Unconfirmed requests targeting a ``risk == "critical"`` tool are parked in
    ``alfred:pending:{request_id}`` (TTL 5 min) and an URGENT notification asks
    the user to confirm. Confirmed requests (``confirmed=True``) pass through
@@ -24,6 +25,7 @@ from loguru import logger
 from bus.schemas.events import ActionRequest, ActionResult
 from core.attribution.log import record_call
 from core.notifications.schema import Urgency
+from core.reflex.answers import is_reflex_source
 from core.reflex.runner import publish_observation
 from core.routing.pending import (
     CONFIRMATION_TITLE,
@@ -88,16 +90,18 @@ class DomainRouter:
     async def _reject_reflex_action(
         self, redis: AioRedis, action: ActionRequest, risk: str
     ) -> ActionResult:
-        """Reflex may only execute benign tools — reject, log, observe."""
+        """Reflex may run benign tools, and elevated ones once confirmed — reject, log, observe."""
         result = self._error_result(
             action,
             f"autonomy_violation: reflex may not execute '{action.tool_name}' (risk={risk})",
         )
         logger.warning(
-            "Rejected Reflex ActionRequest '{}' targeting '{}' — risk '{}' exceeds benign",
+            "Rejected Reflex ActionRequest '{}' targeting '{}' (risk '{}', confirmed={}):"
+            " Reflex may run a benign tool, or an elevated one that is confirmed",
             action.tool_name,
             action.target_service,
             risk,
+            action.confirmed,
         )
         # Record for System 2 awareness. publish_observation's trigger_event
         # slot carries the rejected request itself (the router has no
@@ -144,7 +148,9 @@ class DomainRouter:
 
         if self._redis is not None:
             risk = await tool_risk(self._redis, action.target_service, action.tool_name)
-            if action.source.startswith("reflex") and risk != "benign":
+            # Reflex: benign always; elevated only when the owner answered yes to the ask.
+            reflex_may_run = risk == "benign" or (risk == "elevated" and action.confirmed)
+            if is_reflex_source(action.source) and not reflex_may_run:
                 return await self._reject_reflex_action(self._redis, action, risk)
             if risk == "critical" and not action.confirmed:
                 return await self._intercept_critical(self._redis, action)

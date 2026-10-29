@@ -35,9 +35,9 @@ visibility). Tier 2: only attention-set members fire the Reflex SLM.
    tools default to `"conscious"`).
 2. **Dispatch layer:** `DomainRouter.route()` looks up the tool's risk
    (`core/routing/risk.py: tool_risk()`). An ActionRequest whose `source`
-   starts with `"reflex"` targeting anything other than `"benign"` is
-   rejected (`autonomy_violation:`), logged, and recorded as a
-   `ReflexObservation`.
+   starts with `"reflex"` is rejected (`autonomy_violation:`), logged, and
+   recorded as a `ReflexObservation`, unless its tool is `"benign"`, or
+   `"elevated"` and confirmed (see [Reflex asks](#reflex-asks)).
 
 ### The dispatch layer fails closed
 
@@ -45,7 +45,7 @@ visibility). Tier 2: only attention-set members fire the Reflex SLM.
 
 | Registry state | Risk | Reflex may execute |
 |---|---|---|
-| Tool declared with a `risk` field | that value | only if `benign` |
+| Tool declared with a `risk` field | that value | `benign` always; `elevated` only once confirmed; `critical` never |
 | Tool declared, no `risk` field | `benign` | yes (legacy manifests predate risk tagging) |
 | Tool **not** declared, service absent, or manifest unparseable | `unknown` | no |
 
@@ -70,10 +70,12 @@ one record shape per door (`core/routing/pending.py`, `bus/schemas/events.py`):
 | Record | Written by | Holds | Resolved by |
 |---|---|---|---|
 | `ParkedRun` (`kind="parked_run"`) | the conscious engine, when a System 2 run defers its critical calls | the run's message history, every deferred call (tool, service, parameters, reason), the identity it ran as, the request that started it | a reply in the conversation, or the Door; the **run resumes** |
-| `ParkedAction` (`kind="action"`) | `DomainRouter._intercept_critical`, for a critical `ActionRequest` that reaches the router unconfirmed (a trigger, or any caller that is not a parked run) | the `ActionRequest` itself | the Door only; the **action is republished** with `confirmed=True` |
+| `ParkedAction` (`kind="action"`) | `DomainRouter._intercept_critical`, for a critical `ActionRequest` that reaches the router unconfirmed (a trigger, or any caller that is not a parked run) | the `ActionRequest` itself | the Door only; the **action is republished** with `confirmed=True`. An action Reflex parked as an ask is also answered by a reply ([Reflex asks](#reflex-asks)) |
 
-Both live at `alfred:pending:{id}` with a 300 s TTL (`PENDING_TTL_SECONDS`) and are
-read back through one discriminated union, `PENDING_RECORD`. Every path that answers one
+Both live at `alfred:pending:{id}` with a 300 s TTL (`PENDING_TTL_SECONDS`), except the record
+of an action Reflex parked as an ask, which lives `ask_expiry_seconds` (600 s by default) and
+whose end is recorded as `expired`, not left silent. They are read back through one
+discriminated union, `PENDING_RECORD`. Every path that answers one
 claims it with an atomic `GETDEL`, so two answers to the same approval can never both
 act: the second finds nothing. This is what keeps a door lock from running twice.
 
@@ -215,6 +217,67 @@ an `ActionResult` on `home_action_results` and a `Done` / `That didn't work`
 notification (source `conscious-engine`, `IMPORTANT`); a failure is also logged at
 WARNING. That notification is how the owner learns the outcome of an action nobody was
 waiting on ([#306](https://github.com/anirudhlath/alfred/issues/306)).
+
+### Reflex asks
+
+When Reflex runs in `ask` mode, a proposal it may not run on its own is put to the owner
+([`reflex-anticipation.md`](reflex-anticipation.md#asks)): the action is parked as a
+`ParkedAction` (source `reflex-engine`) for `ask_expiry_seconds`, `alfred:reflex:ask:open` names
+it, and an `important` notification goes out. An ask ends once, in one of three answers.
+`record_answer` (`core/reflex/answers.py`) writes it to `alfred:reflex:answers` (capped near
+5,000 entries) with the time, the channel it came on, the tool, the targets and what Reflex had
+noticed:
+
+| Answer | How it comes | What happens |
+|---|---|---|
+| `yes` | the Door's confirm (channel `door`), or a reply that says yes | the action is republished with `confirmed=True` and runs as any confirmed action does; a success is not announced (the owner has just said yes), a failure is (`That didn't work`) |
+| `no` | the Door's deny, or a reply that says no | nothing runs |
+| `expired` | nobody answers before the ask's deadline | nothing runs; recorded at the deadline, with no channel |
+
+- **What a yes can run.** An elevated Reflex action runs only when confirmed, which happens only
+  when the owner answers yes to an ask. A critical one never runs from Reflex, confirmed or not:
+  the router refuses it, and its ask is never made.
+- **Silence is settled lazily.** Nothing watches the clock. `settle_expired` records an ask
+  whose deadline has passed when something next looks: the ask gate (first, on every decision
+  it is asked about and in `shadow` mode too, so a lapsed ask ends as `expired` even when that
+  decision then stops at `tool_off`, quiet hours or do-not-disturb), a reply, or a Door
+  decision that finds nothing to claim. A Door tap after the deadline therefore gets a 404 and
+  records the expiry, once; so does one that arrives after the deadline but before the pending
+  record's own TTL has run out (the two are counted from different writes), and it runs
+  nothing. An ask that was parked but never announced (a crash in `open_ask` between the two)
+  settles as `expired` like any other; until then the owner can answer it at the Door or with a
+  reply, like any open ask.
+- **One answer.** `alfred:reflex:answered:<ask id>` (`SET NX`, kept 2 days) arbitrates, on top
+  of the `GETDEL` claim every path makes. A decision that arrives when no open ask names its
+  record (settled elsewhere) runs nothing and gets a 404; so does the loser of a Door tap and a
+  reply. The open key is deleted only while it still names the answered ask, so a newer ask
+  keeps its claim.
+- **A reply answers only when it can be trusted to.** It must come from the owner (sir), on
+  `web_pwa`, `ios` or `signal`, the channels an `important` notification reaches, never on
+  speech (`voice`, `satellite`); the approval classifier must be configured; and no parked
+  System 2 run in the same conversation may take the reply first (that run is resumed, and the
+  ask stays open). Nor does it answer once Alfred has spoken in that conversation since 120 s
+  before the ask went out (`ASK_LOOKBACK_SECONDS`; a response in the session's history stamped
+  after the ask's `asked_at` less that): then a "yes" answers whatever Alfred said, a question
+  of its own just before the ask included, so the reply is a normal turn and the classifier is
+  not asked. A conversation Alfred has not spoken in since, or a new one, does answer it. The
+  classifier reads the reply against the parked action as a single call, and only a pending
+  record from Reflex (source `reflex-engine`) can be answered this way: an action the router
+  held for another source is approved at the Door alone. `approve` and `deny` answer with
+  `Okay.` and `Okay, I'll leave it.`, with no model run, nothing parked and nothing added to
+  the session; `other`, a guest, a missing record, or a Door tap that got there first is a
+  normal turn. A push-to-talk reply in the PWA reaches Alfred as text on `web_pwa`, so for now it
+  counts as a reply like a typed one.
+- **`shadow` stops new asks, not the open one.** Switching the mode to `shadow` makes the gate
+  stop asking, but an ask already open can still be answered, at the Door or with a reply, and a
+  yes then runs its action. It ends as `expired` at its deadline like any other.
+- **A yes to a script remembers it.** When the ask's tool is a script (its declared risk is
+  `elevated`), a `yes` adds the ask's targets to `allowed_scripts` in the Reflex settings, each
+  once, as opaque ids, through the same `add_allowed_scripts` (`core/reflex/settings.py`) the
+  command line's `allow-script` uses. A no or silence adds nothing. The addition is best effort:
+  if it fails for any reason (the list is full, the stored document is unusable, Redis
+  hiccups) it is skipped with a warning, and the answer stands and the action runs; the owner can
+  add the id by hand (`python -m core.reflex.settings allow-script <id>`).
 
 ### The Door
 

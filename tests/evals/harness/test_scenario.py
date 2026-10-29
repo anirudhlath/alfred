@@ -14,6 +14,7 @@ from evals.harness.scenario import (
     DndStep,
     DoorStep,
     HaEventStep,
+    ReflexSettingsStep,
     Scenario,
     ScenarioError,
     UserStep,
@@ -600,3 +601,72 @@ def test_an_invalid_door_step_fails_before_play(steps: list[dict[str, Any]]) -> 
 def test_a_door_step_may_name_a_user_step_with_others_in_between() -> None:
     s = golden([UNLOCK, WAIT, {"user": "Yes."}, DOOR], [EXPECT])
     assert [step_kind(step) for step in s.steps] == ["user", "wait", "user", "door"]
+
+
+def test_a_reflex_settings_step_loads_with_the_settings_it_changes() -> None:
+    both = {"reflex_settings": {"mode": "ask", "ask_tools": ["home.light_*", " home.switch_* "]}}
+    s = golden([both, {"reflex_settings": {"mode": "shadow"}}, EVENT], [{"ha_not_called": {}}])
+    assert [step_kind(step) for step in s.steps] == [
+        "reflex_settings",
+        "reflex_settings",
+        "ha_event",
+    ]
+    first, second, _ = s.steps
+    assert isinstance(first, ReflexSettingsStep) and isinstance(second, ReflexSettingsStep)
+    assert first.reflex_settings.model_dump(exclude_none=True) == {
+        "mode": "ask",
+        "ask_tools": ["home.light_*", "home.switch_*"],  # stripped, as the settings document does
+    }
+    # What a step does not name it does not change.
+    assert second.reflex_settings.model_dump(exclude_none=True) == {"mode": "shadow"}
+
+
+def test_a_reflex_settings_step_may_move_the_quiet_hours_alone_or_with_the_rest() -> None:
+    hours = {"reflex_settings": {"quiet_hours_start": "04:00", "quiet_hours_end": "05:00"}}
+    one = {"reflex_settings": {"quiet_hours_end": "23:59"}}
+    both = {"reflex_settings": {"mode": "ask", "quiet_hours_start": "00:00"}}
+    s = golden([hours, one, both, EVENT], [{"ha_not_called": {}}])
+    changes = [
+        step.reflex_settings.model_dump(exclude_none=True)
+        for step in s.steps
+        if isinstance(step, ReflexSettingsStep)
+    ]
+    assert changes == [
+        {"quiet_hours_start": "04:00", "quiet_hours_end": "05:00"},
+        {"quiet_hours_end": "23:59"},
+        {"mode": "ask", "quiet_hours_start": "00:00"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {},  # changes nothing
+        {"quiet_hours_start": None, "quiet_hours_end": None},  # names two, changes none
+        {"mode": None},
+        {"quiet_hours_start": "25:00"},
+        {"quiet_hours_start": "24:00"},
+        {"quiet_hours_end": "4:00"},
+        {"quiet_hours_end": "04:60"},
+        {"quiet_hours_start": "0400"},
+        {"quiet_hours_start": "04:00 "},
+        {"quiet_hours_end": 400},
+        {"quiet_hours_end": True},
+        {"mode": "act"},  # not a mode
+        {"mode": True},
+        {"ask_tools": "home.light_*"},  # a list, not a string
+        {"ask_tools": [""]},
+        {"ask_tools": ["   "]},
+        {"ask_tools": ["x" * 257]},
+        {"ask_tools": ["home.light_*"] * 201},
+        {"mode": "ask", "daily_ask_cap": 3},  # only mode and ask_tools are steps' to change
+    ],
+)
+def test_a_malformed_reflex_settings_step_fails_to_load(change: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError):
+        golden([{"reflex_settings": change}, EVENT], [{"ha_not_called": {}}])
+
+
+def test_a_reflex_settings_step_has_no_other_keys() -> None:
+    with pytest.raises(ValidationError):
+        golden([{"reflex_settings": {"mode": "ask"}, "settle": 3}, EVENT], [{"ha_not_called": {}}])

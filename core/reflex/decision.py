@@ -14,6 +14,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from bus.schemas.events import ActionRequest, ReflexProposal
+from core.reflex.answers import ASK_SOURCE
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -68,7 +69,7 @@ def parse_decision(raw: str, tools: Sequence[ToolInfo]) -> ReflexProposal:
         decision=decision,
         reason=reason,
         action=ActionRequest(
-            source="reflex-engine",
+            source=ASK_SOURCE,
             target_service=tool.target_service,
             tool_name=tool.name,
             parameters=parameters,

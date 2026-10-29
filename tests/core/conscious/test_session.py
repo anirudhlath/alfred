@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 
 import fakeredis
 import pytest
@@ -25,6 +26,7 @@ from core.conscious.session import (
     PENDING_APPROVAL_FIELD,
     SessionManager,
     legacy_messages,
+    spoke_since,
     stored_messages,
     text_turn,
     turn_count,
@@ -296,3 +298,63 @@ def test_stored_messages_reads_str_or_bytes_fields() -> None:
     assert len(stored_messages({MESSAGES_FIELD: payload})) == 2
     assert len(stored_messages({MESSAGES_FIELD.encode(): payload.encode()})) == 2
     assert stored_messages({}) == []
+
+
+# --- spoke_since: has Alfred answered in this history after a moment -------------------------
+
+_T = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
+
+
+def _reply_at(stamp: datetime) -> ModelResponse:
+    return ModelResponse(parts=[TextPart("Certainly, sir.")], timestamp=stamp)
+
+
+def test_spoke_since_is_true_for_a_response_stamped_after_the_moment() -> None:
+    history = [ModelRequest(parts=[UserPromptPart("hi")]), _reply_at(_T + timedelta(seconds=1))]
+
+    assert spoke_since(history, _T) is True
+
+
+def test_spoke_since_is_false_at_or_before_the_moment_and_for_nothing() -> None:
+    assert spoke_since([_reply_at(_T)], _T) is False
+    assert spoke_since([_reply_at(_T - timedelta(minutes=3))], _T) is False
+    assert spoke_since([], _T) is False
+
+
+def test_spoke_since_ignores_what_the_user_said() -> None:
+    late_request = ModelRequest(parts=[UserPromptPart("yes please", timestamp=_T + timedelta(1))])
+
+    assert spoke_since([late_request, _reply_at(_T - timedelta(minutes=1))], _T) is False
+
+
+def test_spoke_since_reads_a_stamp_with_no_offset_as_utc() -> None:
+    naive_later = _reply_at((_T + timedelta(minutes=1)).replace(tzinfo=None))
+    naive_earlier = _reply_at((_T - timedelta(minutes=1)).replace(tzinfo=None))
+
+    assert spoke_since([naive_later], _T) is True
+    assert spoke_since([naive_earlier], _T) is False
+
+
+async def test_a_responses_stamp_survives_the_session_store(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    sessions = SessionManager(redis)
+    messages = [ModelRequest(parts=[UserPromptPart("hi")]), _reply_at(_T)]
+    await sessions.store_run("sess-1", messages, "sir")
+
+    loaded = (await sessions.load("sess-1", "web_pwa", "sir")).messages
+
+    assert spoke_since(loaded, _T - timedelta(seconds=1)) is True
+    assert spoke_since(loaded, _T) is False
+
+
+async def test_a_turn_stored_as_text_is_stamped_when_it_was_stored(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    sessions = SessionManager(redis)
+    before = datetime.now(UTC)
+
+    await sessions.append_text_turn("sess-1", "sir", "hello", "Hello, sir.")
+
+    loaded = (await sessions.load("sess-1", "web_pwa", "sir")).messages
+    assert spoke_since(loaded, before) is True

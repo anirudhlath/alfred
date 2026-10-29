@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from http import HTTPStatus
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING, Any, assert_never
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -44,6 +44,7 @@ from evals.harness.scenario import (
     DndStep,
     DoorStep,
     HaEventStep,
+    ReflexSettingsStep,
     ScenarioVariant,
     UserStep,
     WaitStep,
@@ -330,13 +331,19 @@ async def _collect(
 
 
 async def _clean_up(
-    ctx: PlayContext, created: list[str], touched_dnd: bool, tz_before: str | None
+    ctx: PlayContext,
+    created: list[str],
+    touched_dnd: bool,
+    tz_before: str | None,
+    settings_before: dict[str, Any] | None,
 ) -> None:
     """Leave the container as the sample found it, for the next sample in it."""
     if created:
         await ctx.bus.delete_triggers(created)
     if touched_dnd:
         await ctx.bus.clear_dnd()
+    if settings_before is not None:
+        await ctx.bus.restore_reflex_settings(settings_before)
     if await ctx.bus.user_timezone() != tz_before:  # a clock step, or an actor's tz
         await ctx.bus.set_user_timezone(tz_before)
 
@@ -479,6 +486,9 @@ async def _play(
         # The restore's changes are ``outside``, which Reflex notes as a person's: the golden
         # would open with them on its Leave alone line. It also drops what the last golden left.
         await ctx.bus.clear_person_changes()
+        # An ask the last golden left open would hold this one's, and its repeat key would
+        # hold it for hours.
+        await ctx.bus.clear_reflex_asks()
     elif restored:
         await asyncio.sleep(ctx.restore_settle_s)
     session_id = session_id_for(variant.sample_id, epoch)
@@ -494,6 +504,7 @@ async def _play(
     )
     tz_before = await ctx.bus.user_timezone()
     touched_dnd = False
+    settings_before: dict[str, Any] | None = None  # what the first reflex_settings step found
     request_ids: dict[int, str] = {}  # the event_id of each user step's request
     for index, step in enumerate(variant.steps):
         ev.step_started.append(time.monotonic())
@@ -576,6 +587,14 @@ async def _play(
                 state = "on" if step.dnd else "off"
                 ev.transcript.append(TranscriptTurn(role="event", text=f"do not disturb {state}"))
                 await asyncio.sleep(step.settle)
+            case ReflexSettingsStep():
+                change = step.reflex_settings.model_dump(exclude_none=True)
+                found = await ctx.bus.set_reflex_settings(change)
+                if settings_before is None:  # restore what the first change found, not a later
+                    settings_before = found
+                ev.transcript.append(
+                    TranscriptTurn(role="event", text=f"reflex settings changed: {change}")
+                )
             case DoorStep():
                 await _door(ctx, ev, scenario, index, step, request_ids)
             case _:
@@ -606,5 +625,5 @@ async def _play(
     # Trigger/DND/timezone cleanup remains on success only; an error restarts the dirty
     # stack (tasks.reset_or_recover). Pending IDs are cleaned on every exit by play().
     created = await _collect(ctx, ev, started_wall, reads_outcomes=scenario.reads_outcomes)
-    await _clean_up(ctx, created, touched_dnd, tz_before)
+    await _clean_up(ctx, created, touched_dnd, tz_before, settings_before)
     return ev

@@ -166,6 +166,39 @@ async def test_an_act_reply_becomes_a_proposal_with_its_action() -> None:
     assert decided.recent == {}
 
 
+async def test_the_decision_carries_the_live_state_the_model_saw() -> None:
+    engine, _ = _engine(_snapshot(), _reply(ACT))
+
+    decided = await engine.process_event(TV_PLAYS)
+
+    assert sorted(decided.snapshot) == [
+        "light.tv_lamp",
+        "media_player.living_room_tv",
+        "person.a",
+        "sun.sun",
+    ]
+    lamp = decided.snapshot["light.tv_lamp"]
+    assert (lamp.domain, lamp.attributes["friendly_name"]) == ("light", "TV Lamp")
+
+
+async def test_a_trigger_decision_carries_the_live_state_too() -> None:
+    engine, _ = _engine(_snapshot(), _reply(ACT))
+
+    decided = await engine.process_trigger_fired(
+        TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time")
+    )
+
+    assert "light.tv_lamp" in decided.snapshot
+
+
+async def test_a_decision_without_live_state_carries_an_empty_snapshot() -> None:
+    engine, _ = _engine(None, _reply(ACT), live=False)
+
+    decided = await engine.process_event(TV_PLAYS)
+
+    assert dict(decided.snapshot) == {}
+
+
 async def test_the_prompt_shows_now_the_house_and_the_change() -> None:
     engine, script = _engine(_snapshot(), NONE)
 

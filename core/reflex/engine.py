@@ -69,7 +69,7 @@ def _decided(
     recent: dict[str, PersonChange],
     entities: Mapping[str, LiveEntity] | None,
 ) -> Decided:
-    """The proposal, its outcome and what it was decided from.
+    """The proposal, its outcome and what it was decided from, live state included.
 
     With no live state there is nothing to resolve a target against, so nothing is reversed:
     Reflex sees no House then either, and executes nothing.
@@ -80,7 +80,11 @@ def _decided(
         else reversed_entities(proposal.action, recent, entities or {})
     )
     return Decided(
-        proposal=proposal, outcome=first_outcome(proposal, reversed_), prompt=prompt, recent=recent
+        proposal=proposal,
+        outcome=first_outcome(proposal, reversed_),
+        prompt=prompt,
+        recent=recent,
+        snapshot=entities or {},
     )
 
 

@@ -129,6 +129,9 @@ class FakeBus:
         self.decision_log: list[DecisionRecord] = []  # Reflex's decision log
         self.decisions_waited: list[float] = []  # each wait_for_decisions' timeout
         self.person_changes_cleared = 0
+        self.asks_cleared = 0
+        self.reflex_settings: dict[str, Any] = {"mode": "shadow", "ask_tools": []}
+        self.settings_log: list[tuple[str, dict[str, Any]]] = []  # ("set" | "restore", document)
         self.advanced: list[str] = []
         self.deleted: list[str] = []
         self.responses: list[AlfredResponse] = []  # the user responses stream
@@ -277,6 +280,19 @@ class FakeBus:
 
     async def clear_dnd(self) -> None:
         self.cleared += 1
+
+    async def set_reflex_settings(self, change: dict[str, Any]) -> dict[str, Any]:
+        found = dict(self.reflex_settings)
+        self.reflex_settings = {**found, **change}
+        self.settings_log.append(("set", dict(self.reflex_settings)))
+        return found
+
+    async def restore_reflex_settings(self, document: dict[str, Any]) -> None:
+        self.reflex_settings = dict(document)
+        self.settings_log.append(("restore", dict(document)))
+
+    async def clear_reflex_asks(self) -> None:
+        self.asks_cleared += 1
 
     async def decide_pending(self, request_id: str, decision: Literal["confirm", "deny"]) -> int:
         """Like the web channel: 200 and the record gone, or 404 for an id that is not

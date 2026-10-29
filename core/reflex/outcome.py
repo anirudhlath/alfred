@@ -7,20 +7,22 @@ executes nothing.
 
 ``first_outcome`` is the first reduction: the model's own ``none`` and ``invalid``, a
 proposal that would undo what a person just changed (``core/reflex/reversal.py``), and
-every other proposal, which stands as ``shadow``.
+every other proposal, which stands as ``shadow``. The runner then puts a standing proposal to
+the owner or holds it (``ask_or_hold``), which makes it ``asked`` or ``held``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final
 
 from bus.schemas.events import ReflexOutcome
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from bus.schemas.events import OutcomeKind, ReflexProposal
+    from core.reflex.prompt import LiveEntity
     from core.reflex.reversal import PersonChange
 
 # The outcomes that are observed passively, not published as a proposal: nothing was proposed
@@ -36,6 +38,9 @@ class Decided:
     outcome: ReflexOutcome
     prompt: str  # exactly what the model saw
     recent: dict[str, PersonChange]  # what people had just changed, by entity id
+    # The live state the model saw, by entity id: what the runner resolves a target against when
+    # it asks. Empty when the engine had none.
+    snapshot: Mapping[str, LiveEntity] = field(default_factory=dict)
 
 
 def first_outcome(proposal: ReflexProposal, reversed: Sequence[str]) -> ReflexOutcome:  # noqa: A002

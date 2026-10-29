@@ -32,6 +32,9 @@ REFLEX_DECISIONS_PREFIX = "alfred:reflex:decisions:"
 # decision, so a redelivery of its entry (an un-ACKed entry the reclaim pass replays) does not
 # ask the model again. Set after the decision, so a crash before it decides again.
 REFLEX_DECIDED_PREFIX = "alfred:reflex:decided:"
+# + event_id -> "1" (the same TTL): a fired trigger's own notification went out, so a redelivery
+# of its entry (the ask step failed after it) does not send it again. Set after a successful send.
+REFLEX_NOTIFIED_PREFIX = "alfred:reflex:notified:"
 
 # Who caused each home state change. Private logs, each kept ATTRIBUTION_MAX_AGE: an append
 # (shared.redis_streams.append_capped) trims everything older, and the MAXLEN caps bound a
@@ -56,6 +59,19 @@ REFLEX_SETTINGS_KEY = "alfred:reflex:settings"
 # What a person last changed, per entity: a hash of entity ID -> PersonChange JSON, read back by
 # core.reflex.reversal.PersonChanges so Reflex never reverses a change a person just made.
 REFLEX_PERSON_CHANGES_KEY = "alfred:reflex:person_changes"
+# The one open ask (core.reflex.answers.OpenAsk JSON), claimed with SET NX so only one ask is
+# ever open; kept for a day past its deadline so a late settlement still finds it.
+REFLEX_ASK_OPEN_KEY = "alfred:reflex:ask:open"
+# + tool + ":" + sorted targets -> "1" (EX repeat_hours): Reflex asked about this lately.
+REFLEX_ASKED_PREFIX = "alfred:reflex:asked:"
+# + local YYYY-MM-DD -> the number of asks that day (EX 2 days), read against daily_ask_cap.
+REFLEX_ASKS_PREFIX = "alfred:reflex:asks:"
+# + ask id -> "1" (short TTL): the ask is answered and recorded, so a redelivery does not
+# record it twice. For the answers (core.reflex.answers).
+REFLEX_ANSWERED_PREFIX = "alfred:reflex:answered:"
+# What the owner answered each ask, one entry per ask. For the answers.
+REFLEX_ANSWERS_STREAM = "alfred:reflex:answers"
+REFLEX_ANSWERS_MAXLEN: Final = 5_000
 
 # Phase 3: Conscious Engine
 USER_REQUESTS_STREAM = "alfred:user:requests"
