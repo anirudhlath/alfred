@@ -54,7 +54,7 @@ _VISIBLE_ASCII: Final = re.compile(r"[\x21-\x7e]+")
 _DNS_NAME: Final = re.compile(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*")
 
 
-def _decode_b64url(value: str, name: str) -> tuple[str, bytes]:
+def decode_b64url(value: str, name: str) -> tuple[str, bytes]:
     """Return ``value`` unpadded and its bytes; padding is accepted, anything else refused."""
     stripped = value.rstrip("=")
     if not _B64URL.fullmatch(stripped):
@@ -81,7 +81,7 @@ class WebPushKeys(BaseModel):
     @field_validator("p256dh")
     @classmethod
     def _check_p256dh(cls, value: str) -> str:
-        stripped, raw = _decode_b64url(value, "p256dh")
+        stripped, raw = decode_b64url(value, "p256dh")
         # from_encoded_point also takes a compressed point; RFC 8291 sends the uncompressed one.
         if len(raw) != _P256_POINT_LEN or raw[0] != 0x04:
             raise ValueError("p256dh must be an uncompressed P-256 point")
@@ -94,7 +94,7 @@ class WebPushKeys(BaseModel):
     @field_validator("auth")
     @classmethod
     def _check_auth(cls, value: str) -> str:
-        stripped, raw = _decode_b64url(value, "auth")
+        stripped, raw = decode_b64url(value, "auth")
         if len(raw) != _AUTH_LEN:
             raise ValueError(f"auth must be {_AUTH_LEN} bytes")
         return stripped

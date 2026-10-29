@@ -167,6 +167,10 @@ module = "jwt.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = ["http_ece.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = ["av.*", "speechbrain.*"]
 ignore_missing_imports = true
 
