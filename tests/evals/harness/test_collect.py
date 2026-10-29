@@ -380,6 +380,14 @@ def den(*entities: dict[str, object]) -> World:
     )
 
 
+def test_targets_skip_a_name_and_room_two_entities_share() -> None:
+    world = den(
+        {"entity_id": "light.lamp_a", "name": "Lamp", "area_id": "den", "state": "on"},
+        {"entity_id": "light.lamp_b", "name": "Lamp", "area_id": "den", "state": "off"},
+    )
+    assert targets(world, "home.light_turn_on", {"target": "Lamp (Den)"}) == []
+
+
 def test_targets_prefer_a_room_to_a_same_named_entity_and_skip_disabled_ones() -> None:
     world = den(
         {"entity_id": "light.den_lamp", "name": "Den Lamp", "area_id": "den", "state": "on"},

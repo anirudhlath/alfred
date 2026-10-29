@@ -126,8 +126,8 @@ set, and a "repeat" or a new brightness passed as not reversing anything.
   every decision, so a change applies to the next one. A missing, unreadable or invalid
   document reads as the defaults, and a typo never stops Reflex.
 - **What the model sees.** The `## Now` section ends with a `Leave alone, a person just
-  changed:` line naming those entities as the House block names them (`Name (Area)`, or just
-  `Name`; sorted; an entity the snapshot lacks is named by its id). It is there so the model
+  changed:` line naming those entities as the What changed line names them (`Name (Area)`, or
+  just `Name`; sorted; an entity the snapshot lacks is named by its id). It is there so the model
   does not waste a proposal; the rule below does not depend on it.
 - **The rule.** `overridden_entities` takes the proposed action, those records and the live
   snapshot, and names the entities the action would act on that have a record. Any one makes
@@ -146,6 +146,9 @@ set, and a "repeat" or a new brightness passed as not reversing anything.
   checked against what a person changed. It is kept as the model wrote it. Every Reflex tool
   today is a home tool; a tool whose targets are not house entities would need its own
   resolution before Reflex could propose it.
+- **What it cannot see into.** A scene or a script is resolved as itself, not as the entities
+  it would set: the live state does not list a scene's members. A proposal to turn on a scene
+  is not held back by a person's change to a light in it.
 - **One outcome per decision.** Every decision ends in a `ReflexOutcome`: `none`, `invalid` (the
   model's reply was unusable, or its target names nothing; the proposal's `decision` says which),
   `would_reverse` (the proposal would act on what a person just changed; it names the entities

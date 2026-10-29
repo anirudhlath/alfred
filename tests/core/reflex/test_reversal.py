@@ -481,8 +481,8 @@ def test_a_target_home_service_resolves_stands_as_written(target: str) -> None:
     ids=["as-written", "case-and-space"],
 )
 def test_the_prompts_name_for_one_entity_becomes_its_id(target: str) -> None:
-    """The House, What changed and Leave alone lines name an entity ``Name (Room)``; the model
-    copies that, and home-service does not read it. It is sent as the entity's ID."""
+    """The What changed and Leave alone lines name an entity ``Name (Room)``; the model copies
+    that, and home-service does not read it. It is sent as the entity's ID."""
     resolved = resolved_action(_action("home.light_turn_on", target, brightness_pct=30), _SNAPSHOT)
 
     assert resolved is not None

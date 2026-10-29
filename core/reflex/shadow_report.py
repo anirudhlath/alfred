@@ -89,6 +89,9 @@ def format_proposal(obs: ReflexObservation, tz: ZoneInfo) -> str:
         raise ValueError("format_proposal needs an observation that carries a proposal")
     when = _local(obs.timestamp, tz)
     head = f"- {when} · **{proposal.decision}** · {_describe(obs)}"
+    if obs.outcome is not None and obs.outcome.kind == "invalid" and proposal.decision != "invalid":
+        # The model answered, but its target names nothing Reflex can check: never run.
+        head = f"- {when} · **{proposal.decision}** → **invalid** · {_describe(obs)}"
     if proposal.decision == "invalid":
         raw = " ".join((proposal.raw or "").split()).replace("`", "'")[:MAX_RAW_CHARS]
         return f"{head} — problem: {proposal.problem} · raw: `{raw}`"

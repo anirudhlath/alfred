@@ -1070,7 +1070,7 @@ def test_arrive_after_dark_turns_the_lights_off_by_automation_and_never_reverse_
     ]
 
 
-def test_no_reflex_golden_expects_a_proposal_to_undo_what_a_person_just_changed() -> None:
+def test_no_reflex_golden_expects_a_proposal_on_what_a_person_just_changed() -> None:
     """Reflex leaves alone what a person, or something outside the house, just changed (the
     Leave alone line, and ``would_reverse`` behind it). A golden that expects a proposal on
     such a device would pass or fail on the model's luck: its earlier changes must come from
@@ -1349,7 +1349,8 @@ def test_the_ask_golden_expects_an_ask_or_nothing_and_finds_the_ask_it_made() ->
     outcome, parked = s.expect
     assert outcome.name == "reflex_outcome"
     assert outcome.params.model_dump(exclude_none=True) == {
-        "outcome": ["asked", "none", "held"],
+        # A target that names nothing is invalid and never reaches the gate, so it asks nothing.
+        "outcome": ["asked", "none", "held", "invalid"],
         # Held only for an ask that is already open or was just made; no other limit.
         "reason": ["ask_open", "asked_recently"],
     }
@@ -1367,7 +1368,7 @@ def test_the_dnd_golden_turns_do_not_disturb_on_before_the_events_and_expects_it
     [outcome] = s.expect
     assert outcome.name == "reflex_outcome"
     assert outcome.params.model_dump(exclude_none=True) == {
-        "outcome": ["held", "none"],
+        "outcome": ["held", "none", "invalid"],
         "reason": ["dnd"],
     }
 
@@ -1385,6 +1386,7 @@ def test_neither_ask_golden_can_pass_on_an_ask_that_went_out_or_a_hold_for_anoth
 
     for outcome, reason, dnd, ask in (
         ("none", None, "pass", "pass"),
+        ("invalid", None, "pass", "pass"),
         ("held", "dnd", "pass", "fail"),
         ("held", "quiet_hours", "fail", "fail"),
         ("held", "ask_open", "fail", "pass"),

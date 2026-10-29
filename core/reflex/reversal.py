@@ -237,8 +237,8 @@ def resolved_action(
     """*action* as home-service would act on it, or ``None`` when it names nothing to act on.
 
     A target home-service resolves (``resolve_targets``) stands as written. One that names a
-    single entity of the tool's domain the way the prompt does (``Name (Room)``, as the House,
-    What changed and Leave alone lines write it) is rewritten to that entity's ID, since
+    single entity of the tool's domain the way the prompt does (``Name (Room)``, as the What
+    changed and Leave alone lines write it) is rewritten to that entity's ID, since
     home-service does not read that form. Anything else is ``None``: no string target, a tool of
     no domain in the snapshot (with no live state, every tool), a target that names nothing in
     the tool's domain, or a ``Name (Room)`` two entities share. What a proposal would act on

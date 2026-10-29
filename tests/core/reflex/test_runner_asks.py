@@ -685,7 +685,10 @@ async def test_an_entity_with_no_friendly_name_is_named_by_its_id(rig: Rig) -> N
     assert rig.asks_sent()[0].args[0] == "Shall I turn on light.lamp?"
 
 
-@pytest.mark.parametrize("parameters", [{}, {"target": ""}, {"target": 3}, {"target": ["Den"]}])
+@pytest.mark.parametrize(
+    "parameters",
+    [{}, {"target": ""}, {"target": 3}, {"target": ["Den"]}, {"target": "Garage"}],
+)
 async def test_a_proposal_with_no_usable_target_asks_about_none(
     rig: Rig, parameters: dict[str, Any]
 ) -> None:
