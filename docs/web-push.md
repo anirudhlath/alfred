@@ -21,6 +21,7 @@ ciphertext it cannot read, so Apple's relay never sees a notification's text.
 | Admin read | `core/channels/admin_api.py` | `GET /api/admin/devices`, with Web Push rows redacted |
 | Worker | `web/public/sw.js` | the `push` and `notificationclick` listeners |
 | Client | `web/src/lib/push.ts` | subscribing, launch re-validation, sign-out, hearing a tap's `OPEN_PATH` ([`web-frontend.md`](web-frontend.md)) |
+| Client wiring | `web/src/shell/usePush.ts`, `web/src/shell/PushKeeper.tsx` | `usePush()`: the Reach state and `Enable`; `PushKeeper` (inside `AuthGate`): the re-validation once a launch and again after each sign-in, when installed with permission granted; `NotificationOpen`: routes a tap's `OPEN_PATH`. Sign-out (`useSystem`) forgets the subscription before it ends the session |
 
 ## Architecture
 
