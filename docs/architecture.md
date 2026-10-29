@@ -733,8 +733,8 @@ pipeline.
 Read-only observability endpoints plus curated controls, all under `/api/admin/`. Requires
 a valid `alfred_auth` session cookie and nothing else — the trusted-network gate is reserved
 for the endpoints that can mint or widen credentials (passkey registration, credential
-writes, device tokens, voice enrolment). See [docs/admin-api.md](admin-api.md) for full
-details.
+writes, voice enrolment). Device registration is session-only, so a phone away from home
+can turn on notifications. See [docs/admin-api.md](admin-api.md) for full details.
 
 **Telemetry WebSocket** (`core/channels/telemetry_ws.py`):
 
@@ -838,6 +838,7 @@ graph LR
     CR --> Signal[Signal]
     CR --> WS[WebSocket]
     CR --> APNs[APNs]
+    CR --> WP[Web Push]
     CR --> Sat[Voice satellites]
     Defer -->|drain trigger| Disp
 ```
@@ -846,6 +847,12 @@ The notification system is deterministic — no LLM calls. The Dispatcher checks
 defers non-urgent notifications during DND, and routes to auto-discovered channel adapters
 by urgency level. URGENT notifications always bypass DND. Which adapter takes which urgency,
 and which surfaces speak, is listed in [docs/notifications.md](notifications.md).
+
+APNs reaches the native iOS app; Web Push (`core/notifications/adapters/webpush.py`)
+reaches the installed PWA when it is closed, for IMPORTANT and URGENT notifications,
+encrypted end to end so the browser's push service relays only ciphertext. Both read the
+one hash of push devices, `alfred:push:devices`, and each skips the other's rows. See
+[docs/web-push.md](web-push.md).
 
 ## 4.5 Authentication (WebAuthn)
 

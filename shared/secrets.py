@@ -258,6 +258,8 @@ def get_or_create_secret(
     read "absent" each create one and the last write wins. The backend's own get and set
     re-enter that lock instead of deadlocking on it (``_keyring_lock``). A read that
     raises propagates and nothing is created; an empty stored value counts as none.
+    ``create()`` runs under that lock, which every process's keyring call waits on, so it
+    must be fast and do no I/O.
     """
     with _keyring_lock(_lock_path()):
         value = get_secret(integration, field)

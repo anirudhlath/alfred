@@ -146,7 +146,9 @@ One Pydantic AI agent per request (`agent.py`); see `docs/llm.md`.
 - `dnd.py` — DNDChecker (manual Redis key + calendar meeting detection)
 - `channels.py` — `ChannelAdapter` ABC + `ChannelRegistry` (decorator-based registration)
 - `publisher.py` — Public API (thin facade over dispatcher)
-- `adapters/` — Signal, WebSocket, APNs, Satellite concrete adapters. There is no voice adapter: URGENT TTS rides inside the WebSocket adapter's single `notification` frame — a second adapter pushing audio to the same sessions would speak it twice (#56). Both TTS-speaking adapters synthesise via `synthesize_async` (`channels/voice_models.py`), never on the loop. `SatelliteChannelAdapter` (`adapters/satellite.py`) is URGENT-only, registered only when `config/satellites.yaml` has entries, and broadcasts TTS-synthesized speech to every currently-connected satellite via `SatelliteBridge.play_wav_all()`
+- `devices.py` — the push-device vocabulary shared by both push adapters and the routes: `WebPushSubscription` (the push-service allowlist, P-256/auth key checks, `hide_input_in_errors`), `endpoint_field()` (SHA-256 hex), `decode_device()`, `is_web_push()`, `push_host()`, `MAX_WEB_PUSH_SUBSCRIPTIONS`
+- `vapid.py` — `vapid_subject()` (`WEBPUSH_VAPID_SUBJECT`), `ensure_vapid_keys()` (keyring, generated once under the keyring lock), `VapidKeys.authorization()` (RFC 8292 ES256 token)
+- `adapters/` — Signal, WebSocket, APNs, Web Push, Satellite concrete adapters. `WebPushChannelAdapter` (`adapters/webpush.py`) is IMPORTANT + URGENT, registered by the web channel's lifespan only when `WEBPUSH_VAPID_SUBJECT` is set, encrypts each payload (`aes128gcm`) to every subscription and prunes on 404/410 (see `docs/web-push.md`). There is no voice adapter: URGENT TTS rides inside the WebSocket adapter's single `notification` frame — a second adapter pushing audio to the same sessions would speak it twice (#56). Both TTS-speaking adapters synthesise via `synthesize_async` (`channels/voice_models.py`), never on the loop. `SatelliteChannelAdapter` (`adapters/satellite.py`) is URGENT-only, registered only when `config/satellites.yaml` has entries, and broadcasts TTS-synthesized speech to every currently-connected satellite via `SatelliteBridge.play_wav_all()`
 
 ### Notification Data Flow
 
@@ -157,7 +159,7 @@ graph LR
     DND -->|defer| List[Redis List]
     DND -->|deliver| Stream[Redis Stream]
     Stream --> CG1[conscious-delivery → Signal]
-    Stream --> CG2[channels-delivery → WS + APNs]
+    Stream --> CG2[channels-delivery → WS + APNs + Web Push]
     List -->|drain trigger| Disp
 ```
 

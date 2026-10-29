@@ -232,8 +232,9 @@ trade-off, not the end state — see
 ## 7. Trusted networks
 
 `require_trusted_network` in `core/channels/web_server.py` gates the endpoints that can
-mint or widen credentials — WebAuthn **registration**, credential writes, device-token
-writes, voice enrolment. Registration alone has a second way through: an `X-Pairing-Code`
+mint or widen credentials — WebAuthn **registration**, credential writes, voice
+enrolment. Push device registration is session-only, so a phone away from home can turn on
+notifications ([`web-push.md`](web-push.md#registration)). Registration alone has a second way through: an `X-Pairing-Code`
 header carrying a 6-digit code minted by an already-signed-in device
 ([`webauthn.md` → Sessions, passkeys and pairing](webauthn.md)), which passes from any
 network. Its ten-guess budget is charged per client address — a single IPv4 address or
