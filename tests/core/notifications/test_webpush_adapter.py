@@ -24,7 +24,8 @@ from shared.streams import DEVICE_TOKENS_KEY
 
 SUBJECT = "mailto:you@example.com"
 APPLE = "https://web.push.apple.com/QGuQyavXutnMH8"
-FCM = "https://fcm.googleapis.com/fcm/send/dQw4w9WgXcQ"
+FCM_ORIGIN = "https://fcm.googleapis.com"
+FCM = f"{FCM_ORIGIN}/fcm/send/dQw4w9WgXcQ"
 MOZILLA = "https://updates.push.services.mozilla.com/wpush/v2/gAAAAABnZ"
 WINDOWS = "https://wns2-par02p.notify.windows.com/w/?token=BQYAAAB"
 
@@ -132,6 +133,21 @@ async def _deliver(
         await adapter.close()
 
 
+def _vapid_claims(request: httpx.Request, audience: str) -> dict[str, Any]:
+    """The push's VAPID claims, the JWT verified against KEYS and ``audience``."""
+    scheme, _, credentials = request.headers["Authorization"].partition(" ")
+    assert scheme == "vapid"
+    params = dict(part.split("=", 1) for part in credentials.split(", "))
+    assert params["k"] == KEYS.public_key
+    public = ec.EllipticCurvePublicKey.from_encoded_point(
+        ec.SECP256R1(), _b64url_decode(KEYS.public_key)
+    )
+    claims: dict[str, Any] = jwt.decode(
+        params["t"], public, algorithms=["ES256"], audience=audience
+    )
+    return claims
+
+
 def _notification(urgency: Urgency = Urgency.URGENT, **kwargs: Any) -> Notification:
     fields: dict[str, Any] = {"title": "Front door", "body": "It is open", "source": "test"}
     fields.update(kwargs)
@@ -154,19 +170,7 @@ async def test_delivers_an_urgent_notification(redis: fakeredis.FakeAsyncRedis) 
     assert request.headers["TTL"] == "3600"
     assert request.headers["Content-Encoding"] == "aes128gcm"
     assert request.headers["Content-Type"] == "application/octet-stream"
-
-    scheme, _, credentials = request.headers["Authorization"].partition(" ")
-    assert scheme == "vapid"
-    params = dict(part.split("=", 1) for part in credentials.split(", "))
-    assert params["k"] == KEYS.public_key
-    public = ec.EllipticCurvePublicKey.from_encoded_point(
-        ec.SECP256R1(), _b64url_decode(KEYS.public_key)
-    )
-    claims = jwt.decode(
-        params["t"], public, algorithms=["ES256"], audience="https://web.push.apple.com"
-    )
-    assert claims["sub"] == SUBJECT
-
+    assert _vapid_claims(request, "https://web.push.apple.com")["sub"] == SUBJECT
     assert browser.payload(request) == {
         "title": "Front door",
         "body": "It is open",
@@ -189,8 +193,19 @@ async def test_important_is_normal_for_a_day(redis: fakeredis.FakeAsyncRedis) ->
     assert browser.payload(request)["urgency"] == "important"
 
 
-def test_informational_is_not_supported() -> None:
-    adapter = WebPushChannelAdapter.__new__(WebPushChannelAdapter)
+async def test_signs_each_push_for_its_own_service(redis: fakeredis.FakeAsyncRedis) -> None:
+    await _store(redis, Browser(APPLE), Browser(FCM))
+    service = PushService()
+
+    await _deliver(redis, service, _notification())
+
+    for endpoint, origin in ((APPLE, "https://web.push.apple.com"), (FCM, FCM_ORIGIN)):
+        (request,) = service.to(endpoint)
+        assert _vapid_claims(request, origin)["aud"] == origin
+
+
+async def test_informational_is_not_supported(redis: fakeredis.FakeAsyncRedis) -> None:
+    adapter = WebPushChannelAdapter(redis=redis, keys=KEYS, subject=SUBJECT)
     assert not adapter.supports_urgency(Urgency.INFORMATIONAL)
     assert adapter.supports_urgency(Urgency.IMPORTANT)
     assert adapter.supports_urgency(Urgency.URGENT)
@@ -232,6 +247,22 @@ async def test_trims_a_long_body_to_fit_the_push_service(
     body = json.loads(plaintext)["body"]
     assert body.endswith("…")
     assert body[:-1] == char * (len(body) - 1)
+
+
+async def test_trims_a_long_title_once_the_body_is_cut(redis: fakeredis.FakeAsyncRedis) -> None:
+    browser = Browser(APPLE)
+    await _store(redis, browser)
+    service = PushService()
+
+    await _deliver(redis, service, _notification(title="x" * 10_000))
+
+    plaintext = browser.plaintext(service.requests[0])
+    assert len(plaintext) <= MAX_PAYLOAD_BYTES
+    assert len(plaintext) > MAX_PAYLOAD_BYTES - 8
+    payload = json.loads(plaintext)
+    assert payload["body"] == "…"  # the body gives way first
+    assert payload["title"].endswith("…")
+    assert payload["title"][:-1] == "x" * (len(payload["title"]) - 1)
 
 
 @pytest.mark.parametrize("status", [404, 410])

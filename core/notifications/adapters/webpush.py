@@ -50,10 +50,35 @@ def _encode(fields: dict[str, str | None]) -> bytes:
     return json.dumps(fields, ensure_ascii=False, separators=(",", ":")).encode()
 
 
+def _cut(fields: dict[str, str | None], key: str) -> dict[str, str | None]:
+    """``fields`` with ``fields[key]`` cut to the longest prefix that fits, plus an ellipsis.
+
+    Called only when ``fields`` does not fit whole, so the whole value never does. When even
+    an empty prefix does not fit, the value is the ellipsis alone.
+    """
+    text = fields[key] or ""
+
+    def shortened(keep: int) -> dict[str, str | None]:
+        return {**fields, key: text[:keep] + _ELLIPSIS}
+
+    # Characters encode to one byte or several (UTF-8, JSON escapes), so search for the
+    # longest prefix that fits rather than counting bytes.
+    fits, too_long = 0, len(text)
+    while too_long - fits > 1:
+        middle = (fits + too_long) // 2
+        if len(_encode(shortened(middle))) <= MAX_PAYLOAD_BYTES:
+            fits = middle
+        else:
+            too_long = middle
+    return shortened(fits)
+
+
 def build_payload(notification: Notification) -> bytes:
     """The push's plaintext: compact JSON the service worker reads, at most MAX_PAYLOAD_BYTES.
 
-    A body too long to fit is cut to the longest prefix that does and ends in an ellipsis.
+    Too long to fit, the body is cut to the longest prefix that does, ending in an ellipsis;
+    if the title still overflows, it is cut the same way. The ids are never cut: a cut id
+    names nothing.
     """
     action_id = notification.metadata.get("pending_action_id")
     fields: dict[str, str | None] = {
@@ -64,22 +89,12 @@ def build_payload(notification: Notification) -> bytes:
         "action_id": action_id if isinstance(action_id, str) else None,
     }
     encoded = _encode(fields)
-    if len(encoded) <= MAX_PAYLOAD_BYTES:
-        return encoded
-
-    def shortened(keep: int) -> bytes:
-        return _encode({**fields, "body": notification.body[:keep] + _ELLIPSIS})
-
-    # Characters encode to one byte or several (UTF-8, JSON escapes), so search for the
-    # longest prefix that fits rather than counting bytes. The whole body does not fit.
-    fits, too_long = 0, len(notification.body)
-    while too_long - fits > 1:
-        middle = (fits + too_long) // 2
-        if len(shortened(middle)) <= MAX_PAYLOAD_BYTES:
-            fits = middle
-        else:
-            too_long = middle
-    return shortened(fits)
+    for key in ("body", "title"):
+        if len(encoded) <= MAX_PAYLOAD_BYTES:
+            break
+        fields = _cut(fields, key)
+        encoded = _encode(fields)
+    return encoded
 
 
 def encrypt(plaintext: bytes, p256dh: str, auth: str) -> bytes:
