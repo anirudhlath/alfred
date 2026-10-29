@@ -139,6 +139,35 @@ person just changed. It does not ask the model to remember.
   knowing what a person did. Reading the records includes the prune, so a Redis error there
   fails the decision too. Noting a change is best-effort and never raises.
 
+## Asks
+
+`core/reflex/asks.py` holds the limits that keep asks few and the asking itself; nothing in the
+runner calls it yet (the runner wiring and the answers are later tasks of this slice, and the
+full account of asks lands with them).
+
+`gate` reduces a standing (`shadow`) proposal to `asked` or `held`, naming the first limit it
+meets, in this order:
+
+1. `tool_off`: no `ask_tools` pattern matches the tool (an empty list turns every tool off);
+2. `quiet_hours`: the owner's local time is in `quiet_hours_start` up to `quiet_hours_end`
+   (a start later than the end wraps midnight; equal means none);
+3. `dnd`: Do Not Disturb is on;
+4. `ask_open`: an ask is already waiting (an expired one is settled first);
+5. `asked_recently`: `alfred:reflex:asked:<tool>:<sorted targets>` exists;
+6. `daily_cap`: `alfred:reflex:asks:<local YYYY-MM-DD>` has reached `daily_ask_cap`.
+
+In `shadow` mode only the first three are checked and the outcome stays `shadow`, with the
+reason or none. The gate writes nothing, apart from settling an expired ask.
+
+`open_ask` claims `alfred:reflex:ask:open` first, with `SET NX` (the value is the `OpenAsk`
+JSON, kept for `ask_expiry_seconds` plus a day), because the state-change and trigger loops
+interleave at every await and the gate's read alone cannot promise one open ask at a time. A
+lost claim returns `None` and writes nothing else. After the claim, in order: the action is
+parked as a pending action for `ask_expiry_seconds`; the repeat key is set for `repeat_hours`
+(skipped when that is 0); the day's count goes up by one (kept 2 days); and an `important`
+notification goes out, its metadata carrying `pending_action_id` and `kind: reflex_ask`. A
+failure in any step propagates, and the open key stays behind, so a redelivery finds `ask_open`.
+
 ## The sun and the weather
 
 Reflex attends to the sun and the weather: `sun` and `weather` are in the attention seed

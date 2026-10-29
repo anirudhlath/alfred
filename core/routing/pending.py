@@ -63,12 +63,18 @@ def _parse(raw: bytes | str) -> PendingRecord:
     return PENDING_RECORD.validate_json(decode_stream_value(raw))
 
 
-async def store_pending_action(redis: AioRedis, action: ActionRequest) -> None:
-    """Park an unconfirmed critical action with a 5-minute TTL."""
+async def store_pending_action(
+    redis: AioRedis, action: ActionRequest, *, ttl_seconds: int = PENDING_TTL_SECONDS
+) -> None:
+    """Park an unconfirmed critical action, by default with a 5-minute TTL.
+
+    Reflex's asks pass their own ``ttl_seconds``: an ask waits as long as the owner's
+    ``ask_expiry_seconds``.
+    """
     await redis.set(
         pending_key(action.request_id),
         ParkedAction(action=action).model_dump_json(),
-        ex=PENDING_TTL_SECONDS,
+        ex=ttl_seconds,
     )
 
 

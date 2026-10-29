@@ -114,6 +114,27 @@ async def test_store_pending_action_writes_a_parked_action_with_a_ttl(
     assert 0 < await redis.ttl(pending_key(action.request_id)) <= PENDING_TTL_SECONDS
 
 
+async def test_store_pending_action_keeps_five_minutes_by_default(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    action = _action()
+    await store_pending_action(redis, action)
+
+    ttl = await redis.ttl(pending_key(action.request_id))
+    assert PENDING_TTL_SECONDS == 300
+    assert 295 <= ttl <= 300
+
+
+async def test_store_pending_action_honours_a_longer_ttl(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    action = _action()
+    await store_pending_action(redis, action, ttl_seconds=600)
+
+    ttl = await redis.ttl(pending_key(action.request_id))
+    assert 595 <= ttl <= 600
+
+
 async def test_park_run_writes_once(redis: fakeredis.FakeAsyncRedis) -> None:
     run = _run()
 
