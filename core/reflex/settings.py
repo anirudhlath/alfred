@@ -3,22 +3,46 @@
 A missing, unreadable or invalid document reads as the defaults, so a typo in a setting can
 never stop Reflex. Each distinct bad value is warned about once for the life of the process:
 the document is read for every decision, and the same warning on each would bury the log.
+
+The owner edits the document through the admin API (``PUT /api/admin/reflex/settings``) or
+this module's command line:
+
+    docker exec alfred python -m core.reflex.settings show
+    docker exec alfred python -m core.reflex.settings set mode ask
+    docker exec alfred python -m core.reflex.settings allow-script <id>
+
+Both validate the whole document before they save it, so what they store is what Reflex reads.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import argparse
+import asyncio
+import json
+import sys
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
+from shared.config import AlfredConfig
+from shared.redis_streams import create_redis
 from shared.streams import REFLEX_SETTINGS_KEY
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from shared.types import AioRedis
 
 # The bad documents already warned about (raw, as read), so a repeat read is silent.
 _warned: set[bytes | str] = set()
+
+# A clock time of day, 00:00 to 23:59. Part of the model, so a bad time fails the document.
+_HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
+
+# Opaque text the settings only store and compare: never parsed here.
+_Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class ReflexSettings(BaseModel):
@@ -26,8 +50,24 @@ class ReflexSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # "shadow": decisions are recorded and nothing is asked or executed. "ask": a proposal
+    # that matches ``ask_tools`` is put to the owner first.
+    mode: Literal["shadow", "ask"] = "shadow"
+    # fnmatch patterns over tool names: the tools Reflex may ask about. Never parsed here.
+    ask_tools: list[_Text] = Field(default_factory=list)
+    # Target ids Reflex may run an approved ask through. Opaque to Reflex: never parsed here.
+    allowed_scripts: list[_Text] = Field(default_factory=list)
     # How long after a person changes something Reflex will not propose moving it back.
     reverse_window_minutes: int = Field(60, ge=1, le=1440)
+    # How long an ask waits for an answer before it lapses.
+    ask_expiry_seconds: int = Field(600, ge=60, le=3600)
+    # How long after asking about something Reflex will not ask about it again.
+    repeat_hours: float = Field(2.0, ge=0, le=168)
+    # The most asks in one local day.
+    daily_ask_cap: int = Field(6, ge=0, le=50)
+    # Quiet hours, local time: no ask in this window. Equal start and end means none.
+    quiet_hours_start: str = Field("23:00", pattern=_HHMM)
+    quiet_hours_end: str = Field("07:00", pattern=_HHMM)
 
 
 def _problems(error: ValidationError) -> str:
@@ -57,3 +97,113 @@ async def load_settings(redis: AioRedis) -> ReflexSettings:
 async def save_settings(redis: AioRedis, settings: ReflexSettings) -> None:
     """Store *settings* as the document ``load_settings`` reads."""
     await redis.set(REFLEX_SETTINGS_KEY, settings.model_dump_json())
+
+
+# --- the command line ---------------------------------------------------------------------
+
+_PROG = "python -m core.reflex.settings"
+Command = Literal["show", "set", "allow-script", "disallow-script"]
+
+
+@dataclass(frozen=True)
+class Args:
+    """One command: ``set`` carries a field and a value, the script commands an id."""
+
+    command: Command
+    field: str = ""
+    value: str = ""
+
+
+def parse_args(argv: Sequence[str] | None = None) -> Args:
+    """The command line, or a usage error (exit status 2)."""
+    parser = argparse.ArgumentParser(prog=_PROG, description="Show or change Reflex's settings.")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("show", help="print the settings Reflex reads")
+    setter = commands.add_parser(
+        "set",
+        help="change one field",
+        description=(
+            "Change one field. The value is read as JSON when it parses (3, 0.5, "
+            '\'["a*", "b"]\'), else as a string (ask, 22:30). The whole document is '
+            "checked first: an invalid one is refused and nothing is saved."
+        ),
+    )
+    setter.add_argument("field", help="one of: " + ", ".join(ReflexSettings.model_fields))
+    setter.add_argument("value")
+    for name, text in (
+        ("allow-script", "add an id to allowed_scripts (no change if it is there)"),
+        ("disallow-script", "remove an id from allowed_scripts (no change if it is not there)"),
+    ):
+        commands.add_parser(name, help=text).add_argument("entity_id")
+    ns = parser.parse_args(argv)
+    match ns.command:
+        case "set":
+            return Args("set", ns.field, ns.value)
+        case "allow-script" | "disallow-script":
+            return Args(ns.command, value=ns.entity_id)
+        case _:
+            return Args("show")
+
+
+def _read_value(text: str) -> object:
+    """*text* as JSON when it parses, else as the string it is."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def _refuse(what: str, error: ValidationError) -> int:
+    print(f"{_PROG}: {what} refused, nothing saved: {_problems(error)}", file=sys.stderr)
+    return 1
+
+
+async def _store(redis: AioRedis, current: ReflexSettings, **changes: object) -> int:
+    """Validate *current* with *changes* applied, then save it: the one road a change takes."""
+    try:
+        updated = ReflexSettings.model_validate({**current.model_dump(), **changes})
+    except ValidationError as e:
+        return _refuse(", ".join(changes), e)
+    await save_settings(redis, updated)
+    print(updated.model_dump_json(indent=2))
+    return 0
+
+
+async def execute(redis: AioRedis, args: Args) -> int:
+    """Run one command against *redis*; the exit status (0 done, 1 refused)."""
+    current = await load_settings(redis)
+    match args.command:
+        case "show":
+            print(current.model_dump_json(indent=2))
+            return 0
+        case "set":
+            return await _store(redis, current, **{args.field: _read_value(args.value)})
+        case "allow-script":
+            wanted = args.value.strip()
+            if wanted in current.allowed_scripts:
+                print(f"{wanted} is already in allowed_scripts; nothing to do")
+                return 0
+            return await _store(redis, current, allowed_scripts=[*current.allowed_scripts, wanted])
+        case "disallow-script":
+            wanted = args.value.strip()
+            if wanted not in current.allowed_scripts:
+                print(f"{wanted} is not in allowed_scripts; nothing to do")
+                return 0
+            kept = [script for script in current.allowed_scripts if script != wanted]
+            return await _store(redis, current, allowed_scripts=kept)
+
+
+async def _main(args: Args) -> int:
+    redis = create_redis(AlfredConfig.from_env().redis_url)
+    try:
+        return await execute(redis, args)
+    finally:
+        await redis.aclose()
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    raise SystemExit(asyncio.run(_main(parse_args(argv))))
+
+
+if __name__ == "__main__":
+    main()

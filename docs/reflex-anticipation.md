@@ -21,6 +21,51 @@ is measured before the next starts.
 
 Nothing a proposal names is executed until the design says so: shadow mode stays.
 
+## Settings
+
+The owner's settings are one JSON document at `alfred:reflex:settings` (`core/reflex/settings.py`,
+`ReflexSettings`), read on every decision, so a change applies to the next one. A missing,
+unreadable or invalid document reads as the defaults, mode `shadow` included, and the
+unusable document is warned about once per process: a typo never stops Reflex. An unknown
+field is invalid, not ignored, and one bad field makes the whole document invalid.
+
+| Field | Default | Bounds | What it does |
+|---|---|---|---|
+| `mode` | `shadow` | `shadow` or `ask` | `shadow` records decisions and asks nothing; `ask` puts a proposal that matches `ask_tools` to the owner first |
+| `ask_tools` | `[]` | non-empty strings | fnmatch patterns over tool names: the tools Reflex may ask about. Matched against the tool registry's names, never parsed or listed in code |
+| `allowed_scripts` | `[]` | non-empty strings | target ids the owner has approved running through an ask. Opaque: compared, never parsed |
+| `reverse_window_minutes` | `60` | 1 to 1440 | how long after a person changes something Reflex will not propose moving it back ([above](#never-reverse-a-person)) |
+| `ask_expiry_seconds` | `600` | 60 to 3600 | how long an ask waits for an answer before it lapses |
+| `repeat_hours` | `2.0` | 0 to 168 | how long after asking about something Reflex will not ask about it again |
+| `daily_ask_cap` | `6` | 0 to 50 | the most asks in one local day; `0` means none |
+| `quiet_hours_start` | `23:00` | `HH:MM`, 00:00 to 23:59 | local time quiet hours begin: no ask in the window |
+| `quiet_hours_end` | `07:00` | `HH:MM`, 00:00 to 23:59 | local time they end; equal to the start means no quiet hours |
+
+The fields beyond `reverse_window_minutes` are for the ask gate, which later tasks of this
+slice add: until it lands they are stored and shown, and nothing reads them.
+
+Two ways to edit the document, both validating the whole of it before they save a byte:
+
+- **Admin API.** `GET /api/admin/reflex/settings` returns the document, or the defaults;
+  `PUT` replaces it with the body (a missing field takes its default) and answers 422, saving
+  nothing, for an unknown field or a bad value. Session-gated like the other controls: see
+  [admin-api.md](admin-api.md#reflex-settings).
+- **Command line.** On the host that runs the container:
+
+  ```
+  docker exec alfred python -m core.reflex.settings show
+  docker exec alfred python -m core.reflex.settings set mode ask
+  docker exec alfred python -m core.reflex.settings set ask_tools '["<pattern>", "<tool>"]'
+  docker exec alfred python -m core.reflex.settings allow-script <id>
+  docker exec alfred python -m core.reflex.settings disallow-script <id>
+  ```
+
+  `set <field> <value>` reads the value as JSON when it parses (`3`, `0.5`, `'["a*"]'`) and
+  as a string otherwise (`ask`, `22:30`); an invalid result is refused with exit status 1 and
+  nothing is saved. `allow-script` and `disallow-script` are idempotent and keep the list's
+  order. `show` prints what Reflex would read, which is the defaults when the stored document
+  is unusable.
+
 ## A redelivered event is not decided again
 
 A redelivered event is not inferred again. The runner (`core/reflex/runner.py`) checks
