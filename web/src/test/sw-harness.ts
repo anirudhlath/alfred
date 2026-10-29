@@ -539,7 +539,9 @@ export interface Harness {
   notificationClick(data: unknown): Promise<void>;
   /**
    * Every notification `self.registration.showNotification()` showed, in order,
-   * with the options as the worker passed them. Recorded a macrotask after the
+   * with a copy of the options the worker passed, taken at the call — a real
+   * one copies them, `data` by structured clone, so a worker that changes them
+   * afterwards changes nothing it showed. Recorded a macrotask after the
    * call, when the promise it hands back settles: a real one is a round trip to
    * the browser, so a worker that does not extend its push event with it has
    * shown nothing by the time the event ends — the failure iOS answers by
@@ -552,9 +554,10 @@ export interface Harness {
   /**
    * The absolute URL of every window `self.clients.openWindow()` opened, in
    * order, resolved against the worker's own location as a browser resolves
-   * it. Recorded, and resolved with null, a macrotask after the call. Null is
-   * what a browser gives for a window it opened on another origin; the fake
-   * makes no page for it, so a worker cannot lean on a client it never made.
+   * it. Recorded, and resolved with null, a macrotask after the call. A real
+   * browser resolves a `WindowClient` for a window it opens on this origin;
+   * the fake always resolves null, so that no worker can lean on a client the
+   * fake never made.
    */
   opened: string[];
   /**
@@ -564,6 +567,19 @@ export interface Harness {
   focused: string[];
   /** Everything a window client's `postMessage()` was handed, by the page's URL, in order. */
   posted: { url: string; data: unknown }[];
+  /**
+   * Every focus and every post, in the one order they landed — `focus <url>`
+   * when a focus lands, `post <url>` at a post — because `focused` and
+   * `posted` each keep only their own order, and which came first is a
+   * worker's to get right.
+   */
+  events: string[];
+  /**
+   * The options of every `self.clients.matchAll()` call, in order, as copies.
+   * Recorded because the fake's clients are all windows: "all" lists what
+   * "window" does here, where a worker client would tell them apart.
+   */
+  matchAllOptions: (MatchAllOptions | undefined)[];
   /**
    * Program a page's `focus()` to reject with InvalidAccessError, which is what
    * a browser answers a worker it will not let take focus with. A path, as
@@ -729,6 +745,12 @@ interface OpenPage {
   controller: "older" | "this" | null;
 }
 
+/** A `ClientQueryOptions`, which the DOM library this compiles against does not declare. */
+interface MatchAllOptions {
+  type?: string;
+  includeUncontrolled?: boolean;
+}
+
 /** The slice of a `WindowClient` the fake `matchAll()` hands out. */
 interface FakeWindowClient {
   url: string;
@@ -839,6 +861,8 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     opened: string[];
     focused: string[];
     posted: Harness["posted"];
+    events: string[];
+    matchAllOptions: Harness["matchAllOptions"];
   } = {
     fetched: [],
     reloaded: [],
@@ -853,6 +877,8 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     opened: [],
     focused: [],
     posted: [],
+    events: [],
+    matchAllOptions: [],
   };
   let deadlinesCleared = 0;
   let closedNotifications = 0;
@@ -961,6 +987,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
    * as a browser's do. A focus lands a macrotask after the call, in `focused`,
    * or rejects for a page `refuseFocus()` names; a message is recorded in
    * `posted` at the call, structured-cloned, since a real one is a copy too.
+   * Each lands in `events` when it lands in its own record.
    */
   const windowClient = (page: OpenPage): FakeWindowClient => {
     const client: FakeWindowClient = {
@@ -985,9 +1012,13 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
             throw new DOMException("Not allowed to focus a window.", "InvalidAccessError");
           }
           harness.focused.push(page.url);
+          harness.events.push(`focus ${page.url}`);
           return client;
         }),
-      postMessage: (data: unknown) => void harness.posted.push({ url: page.url, data: structuredClone(data) }),
+      postMessage: (data: unknown) => {
+        harness.posted.push({ url: page.url, data: structuredClone(data) });
+        harness.events.push(`post ${page.url}`);
+      },
     };
     return client;
   };
@@ -1016,9 +1047,11 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
           return true;
         });
       },
-      // Shown a macrotask later: see `Harness.shown`.
-      showNotification: (title: string, options: NotificationOptions = {}) =>
-        settled(() => void harness.shown.push({ title, options })),
+      // Copied at the call, shown a macrotask later: see `Harness.shown`.
+      showNotification: (title: string, options: NotificationOptions = {}) => {
+        const copy = structuredClone(options);
+        return settled(() => void harness.shown.push({ title, options: copy }));
+      },
     },
     // A URL stands in for a WorkerLocation: it has every field one has.
     location: workerLocation,
@@ -1042,11 +1075,19 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       // `activate` below — and never a page no worker controlled: the pair a
       // worker that reloads "the open pages" must tell apart, because the page
       // that registered it is one of the open pages, and reloading that one
-      // registers it again.
-      matchAll: (options?: { includeUncontrolled?: boolean }) =>
-        Promise.resolve(
-          pages.filter((page) => options?.includeUncontrolled || page.controller === "this").map(windowClient),
-        ),
+      // registers it again. Every page here is a window, so "window" (the
+      // default) and "all" list them and "worker" and "sharedworker" none; the
+      // options are recorded, see `Harness.matchAllOptions`.
+      matchAll: (options?: MatchAllOptions) => {
+        harness.matchAllOptions.push(options === undefined ? undefined : { ...options });
+        const type = options?.type ?? "window";
+        const windows = type === "window" || type === "all";
+        return Promise.resolve(
+          windows
+            ? pages.filter((page) => options?.includeUncontrolled || page.controller === "this").map(windowClient)
+            : [],
+        );
+      },
       // Opened a macrotask later: see `Harness.opened`.
       openWindow: (url: string) =>
         settled(() => {
@@ -1385,6 +1426,8 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     opened: harness.opened,
     focused: harness.focused,
     posted: harness.posted,
+    events: harness.events,
+    matchAllOptions: harness.matchAllOptions,
     refuseFocus: (url) => void focusRefusals.add(new URL(url, origin).href),
     get skipWaitingCalls() {
       return skipWaitingCalls;

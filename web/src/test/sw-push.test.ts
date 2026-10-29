@@ -78,8 +78,10 @@ describe.skipIf(FIRED)("push", () => {
     // The worker builds the link and the payload only names an id, so nothing
     // the server sends — or a relay that tampered with it could — names a URL
     // this origin opens. Each is a way past a check that only looked for a
-    // slash, or only at the length, or at what a number coerces to.
-    for (const actionId of ["../x", "a/b", "x".repeat(129), "", "abc 123", 123, ["abc"], { id: "abc" }]) {
+    // slash, or only at the length, or at what a number coerces to — or at
+    // letters outside ASCII, or a pattern whose `$` let a trailing newline by.
+    const refused = ["../x", "a/b", "x".repeat(129), "", "abc 123", "abç", "abc\n", 123, ["abc"], { id: "abc" }];
+    for (const actionId of refused) {
       const worker = loadWorker(source);
       await worker.push({ ...APPROVAL, action_id: actionId });
       expect(pathOf(worker.shown), String(actionId)).toBe("/");
@@ -167,6 +169,22 @@ describe.skipIf(FIRED)("notificationclick", () => {
     expect(worker.opened).toEqual([]);
   });
 
+  it("focuses the window before it posts the path", async () => {
+    // A browser lets a worker focus a window only in answer to a tap, so the
+    // focus goes first, and the path arrives in a window already in front.
+    const worker = loadWorker(source);
+    await worker.notificationClick(TAPPED);
+    expect(worker.events).toEqual([`focus ${ORIGIN}/`, `post ${ORIGIN}/`]);
+  });
+
+  it("asks matchAll() for windows, the uncontrolled ones included", async () => {
+    // Windows, because "all" lists worker clients too, which have no focus():
+    // the first client on this origin could be one.
+    const worker = loadWorker(source);
+    await worker.notificationClick(TAPPED);
+    expect(worker.matchAllOptions).toEqual([{ type: "window", includeUncontrolled: true }]);
+  });
+
   it("posts the path to an uncontrolled window", async () => {
     // The page that registered this worker is controlled by no worker until it
     // reloads, and it is the app all the same: matchAll() lists it only with
@@ -220,6 +238,8 @@ describe.skipIf(FIRED)("notificationclick", () => {
       { path: "/actions/../api/push/public-key" },
       { path: "/actions/a/b" },
       { path: `/actions/${"x".repeat(129)}` },
+      { path: "/actions/abç" },
+      { path: "/actions/abc\n" },
       { path: 7 },
       "/actions/abc-123",
       null,

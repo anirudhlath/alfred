@@ -960,6 +960,64 @@ describe("the fake push and notifications", () => {
     await worker.push();
     expect(worker.shown.map(({ title }) => title)).toEqual(["http://localhost:8081 http://localhost:8081/sw.js"]);
   });
+
+  it("logs each focus and each post in the order they landed", async () => {
+    // One log for both, because `focused` and `posted` each keep their own
+    // order and neither says which came first. A focus is logged when it
+    // lands, so one the worker did not wait for lands after a post made
+    // straight after it, as it would on a phone.
+    const worker = loadWorker(`
+      self.addEventListener("notificationclick", (event) => {
+        event.waitUntil((async () => {
+          const [client] = await self.clients.matchAll({ includeUncontrolled: true });
+          client.focus();
+          client.postMessage("before");
+          await client.focus();
+          client.postMessage("after");
+        })());
+      });
+    `);
+    await worker.notificationClick(null);
+    expect(worker.events).toEqual([`post ${ORIGIN}/`, `focus ${ORIGIN}/`, `focus ${ORIGIN}/`, `post ${ORIGIN}/`]);
+  });
+
+  it("keeps a copy of the options showNotification() was handed, as a real one does", async () => {
+    // A browser copies the options at the call — `data` by structured clone —
+    // so a worker that changes them afterwards changes nothing it showed.
+    const worker = loadWorker(`
+      self.addEventListener("push", (event) => {
+        const options = { body: "b", data: { path: "/actions/7" } };
+        event.waitUntil(self.registration.showNotification("t", options));
+        options.body = "changed";
+        options.data.path = "/";
+      });
+    `);
+    await worker.push();
+    expect(worker.shown).toEqual([{ title: "t", options: { body: "b", data: { path: "/actions/7" } } }]);
+  });
+
+  it("lists only windows, and records what each matchAll() asked for", async () => {
+    // Every client the fake has is a window, so "window" — the default — and
+    // "all" list them, and "worker" and "sharedworker" list nothing. The
+    // options are recorded because "all" and "window" list the same pages
+    // here, where a house with a worker client would tell them apart.
+    const worker = loadWorker(`
+      self.addEventListener("push", (event) => {
+        event.waitUntil((async () => {
+          const counts = [];
+          for (const type of [undefined, "window", "all", "worker", "sharedworker"]) {
+            counts.push((await self.clients.matchAll({ type, includeUncontrolled: true })).length);
+          }
+          await self.registration.showNotification(counts.join(" "));
+        })());
+      });
+    `);
+    await worker.push();
+    expect(worker.shown.map(({ title }) => title)).toEqual(["1 1 1 0 0"]);
+    expect(worker.matchAllOptions).toEqual(
+      [undefined, "window", "all", "worker", "sharedworker"].map((type) => ({ type, includeUncontrolled: true })),
+    );
+  });
 });
 
 describe("the seams the harness depends on", () => {

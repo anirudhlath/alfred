@@ -253,8 +253,9 @@ itself: `path` is `/actions/<action_id>` when `action_id` is a string matching
 names a URL the worker opens. On `notificationclick` it closes the notification and then,
 inside `waitUntil`, takes the first window `matchAll({type: "window",
 includeUncontrolled: true})` lists on its own origin: it focuses it — a refused focus is
-ignored — and then posts it `{type: "OPEN_PATH", path}`, which `web/src/lib/push.ts`
-routes. With no such window it opens one at `path`. A `path` it would not have built
+ignored — and then posts it `{type: "OPEN_PATH", path}`, which `onOpenPath` in
+`web/src/lib/push.ts` hears and filters and `NotificationOpen` in
+`web/src/shell/PushKeeper.tsx` routes. With no such window it opens one at `path`. A `path` it would not have built
 becomes `/`, because a notification can be tapped long after the worker that showed it
 was replaced.
 
