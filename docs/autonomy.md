@@ -35,9 +35,9 @@ visibility). Tier 2: only attention-set members fire the Reflex SLM.
    tools default to `"conscious"`).
 2. **Dispatch layer:** `DomainRouter.route()` looks up the tool's risk
    (`core/routing/risk.py: tool_risk()`). An ActionRequest whose `source`
-   starts with `"reflex"` targeting anything other than `"benign"` is
-   rejected (`autonomy_violation:`), logged, and recorded as a
-   `ReflexObservation`.
+   starts with `"reflex"` is rejected (`autonomy_violation:`), logged, and
+   recorded as a `ReflexObservation`, unless its tool is `"benign"`, or
+   `"elevated"` and confirmed (see [Reflex asks](#reflex-asks)).
 
 ### The dispatch layer fails closed
 
@@ -45,7 +45,7 @@ visibility). Tier 2: only attention-set members fire the Reflex SLM.
 
 | Registry state | Risk | Reflex may execute |
 |---|---|---|
-| Tool declared with a `risk` field | that value | only if `benign` |
+| Tool declared with a `risk` field | that value | `benign` always; `elevated` only once confirmed; `critical` never |
 | Tool declared, no `risk` field | `benign` | yes (legacy manifests predate risk tagging) |
 | Tool **not** declared, service absent, or manifest unparseable | `unknown` | no |
 
@@ -232,6 +232,9 @@ noticed:
 | `no` | the Door's deny, or a reply that says no | nothing runs |
 | `expired` | nobody answers before the ask's deadline | nothing runs; recorded at the deadline, with no channel |
 
+- **What a yes can run.** An elevated Reflex action runs only when confirmed, which happens only
+  when the owner answers yes to an ask. A critical one never runs from Reflex, confirmed or not:
+  the router refuses it, and its ask is never made.
 - **Silence is settled lazily.** Nothing watches the clock. `settle_expired` records an ask
   whose deadline has passed when something next looks: the ask gate, a reply, or a Door
   decision that finds nothing to claim. A Door tap after the deadline therefore gets a 404 and
