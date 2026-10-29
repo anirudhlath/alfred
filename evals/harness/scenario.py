@@ -26,7 +26,7 @@ from pydantic import (
     model_validator,
 )
 
-from evals.harness.checks import CHECK_PARAMS, needs_reply, step_kind_needed
+from evals.harness.checks import CHECK_PARAMS, needs_reply, reads_decision_log, step_kind_needed
 from evals.harness.checks import watches_reflex as _watches_reflex
 from evals.harness.checks.home import HaCalledParams
 from evals.harness.evidence import STEP_KINDS
@@ -261,6 +261,12 @@ class Scenario(BaseModel):
         """Whether a check reads System 1's calls: the driver then waits for them after an
         ha_event, and out the attention cooldown after a restore."""
         return any(_watches_reflex(c.name, c.params) for c in self.expect)
+
+    @property
+    def reads_outcomes(self) -> bool:
+        """Whether a check reads Reflex's decision log: the driver then reads it, once Reflex
+        has written the decisions System 1's calls came to."""
+        return any(reads_decision_log(c.name) for c in self.expect)
 
     def ha_called_counting(self, index: int) -> list[HaCalledParams]:
         """The ``ha_called`` checks that could count a call made during step *index*: those

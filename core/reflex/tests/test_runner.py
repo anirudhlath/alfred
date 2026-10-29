@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, call
 import pytest
 
 from bus.schemas.events import ActionRequest, ReflexProposal, StateChangedEvent
+from core.reflex.tests.fakes import decided
 from shared.streams import OBSERVED_ENTITY_PREFIX, REFLEX_DECISIONS_PREFIX
 
 
@@ -55,7 +56,7 @@ async def test_an_act_proposal_is_recorded_not_executed() -> None:
     from bus.schemas.events import ReflexObservation
 
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=_act_proposal())
+    engine.process_event = AsyncMock(return_value=decided(_act_proposal()))
     agent = AsyncMock()
     redis = AsyncMock()
 
@@ -93,7 +94,7 @@ async def test_ask_and_invalid_are_recorded_too(proposal: ReflexProposal) -> Non
     from bus.schemas.events import ReflexObservation
 
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=proposal)
+    engine.process_event = AsyncMock(return_value=decided(proposal))
     redis = AsyncMock()
 
     assert await _run(engine, redis) is False
@@ -110,7 +111,7 @@ async def test_every_decision_is_counted(decision: str) -> None:
 
     engine = AsyncMock()
     engine.process_event = AsyncMock(
-        return_value=ReflexProposal.model_validate({"decision": decision})
+        return_value=decided(ReflexProposal.model_validate({"decision": decision}))
     )
     redis = AsyncMock()
     redis.set = AsyncMock(return_value=True)
@@ -121,11 +122,13 @@ async def test_every_decision_is_counted(decision: str) -> None:
     counts = [
         c for c in redis.hincrby.await_args_list if c.args[0].startswith(REFLEX_DECISIONS_PREFIX)
     ]
-    (count,) = counts
-    key, field, amount = count.args
-    assert (field, amount) == (decision, 1)
+    # The decision, then its outcome: act and ask are shadow, none and invalid are their own.
+    outcome = "shadow" if decision in ("act", "ask") else decision
+    assert [c.args[1:] for c in counts] == [(decision, 1), (f"outcome:{outcome}", 1)]
+    key = counts[0].args[0]
     expiries = [c for c in redis.expire.await_args_list if c.args[0] == key]
-    assert expiries == [call(key, DECISION_COUNT_TTL_SECONDS)]
+    # Each count refreshes the same day's expiry.
+    assert expiries == [call(key, DECISION_COUNT_TTL_SECONDS)] * 2
 
 
 @pytest.mark.asyncio
@@ -146,7 +149,7 @@ async def test_count_decision_keys_by_utc_date() -> None:
 @pytest.mark.asyncio
 async def test_a_failed_count_does_not_block_the_ack() -> None:
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=_act_proposal())
+    engine.process_event = AsyncMock(return_value=decided(_act_proposal()))
     redis = AsyncMock()
     redis.hincrby = AsyncMock(side_effect=Exception("OOM command not allowed"))
 
@@ -177,7 +180,7 @@ async def test_process_stream_entry_no_action_records_an_observation() -> None:
     )
 
     mock_engine = AsyncMock()
-    mock_engine.process_event.return_value = ReflexProposal(decision="none")
+    mock_engine.process_event.return_value = decided(ReflexProposal(decision="none"))
 
     mock_agent = AsyncMock()
     mock_redis = AsyncMock()
@@ -269,7 +272,7 @@ async def test_process_stream_entry_handles_bytes_keys() -> None:
     )
 
     mock_engine = AsyncMock()
-    mock_engine.process_event.return_value = ReflexProposal(decision="none")
+    mock_engine.process_event.return_value = decided(ReflexProposal(decision="none"))
     mock_agent = AsyncMock()
     mock_redis = AsyncMock()
     mock_redis.set = AsyncMock(return_value=True)  # NX succeeds — see the sibling test

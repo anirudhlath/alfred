@@ -57,7 +57,8 @@ sequenceDiagram
         Rt->>R: XADD alfred:attribution:changes
     end
     Rt->>E: event (cause in the prompt line)
-    E->>R: XADD alfred:reflex:decision_log (prompt, cause, proposal)
+    E-->>Rt: Decided (proposal, outcome, the exact prompt)
+    Rt->>R: XADD alfred:reflex:decision_log (prompt, cause, proposal, outcome)
     D->>HS: ActionRequest (executed, through HomeAgent)
     HS-->>D: ActionResult (context_id)
     D->>R: XADD alfred:attribution:calls
@@ -159,6 +160,8 @@ changes the cause.
 | `cause` | `Cause \| None` | Who caused a state change; `None` for a trigger or an event with no context |
 | `prompt` | `str` | The exact prompt the model saw |
 | `proposal` | `ReflexProposal` | What Reflex proposed |
+| `outcome` | `ReflexOutcome \| None` | How the decision ended (`none`, `invalid`, `would_reverse`, `shadow`, ...); `None` on a record written before outcomes |
+| `recent` | `dict[str, PersonChange]` | What people had just changed, by entity ID, when Reflex decided; `{}` when nothing, and on an older record |
 
 ## What is kept
 
@@ -172,7 +175,7 @@ changes a decision and never blocks an ACK.
 | `alfred:attribution:changes` | Stream | One `AttributedChange` per state change whose cause is `person`, `alfred` or `automation`, with its whole context | up to 30 days or 50,000 entries, whichever comes first |
 | `alfred:attribution:causes:<UTC date>` | Hash | One counter per cause (`person`, `alfred`, `automation`, `outside`) plus `unknown`, for every change that day that passes the availability bridge | 30 days (TTL) |
 | `alfred:attribution:counted:{entry_id}` | String | A marker that a `alfred:home:state_changed` entry has been counted | twice the replay window (`REPLAY_MARKER_TTL_SECONDS`, 10 minutes) |
-| `alfred:reflex:decision_log` | Stream | One `DecisionRecord` per decision that reached the model: the event, its cause, the exact prompt and the proposal | up to 30 days or 10,000 entries, whichever comes first |
+| `alfred:reflex:decision_log` | Stream | One `DecisionRecord` per decision that reached the model: the event, its cause, the exact prompt, the proposal, its outcome and what people had just changed | up to 30 days or 10,000 entries, whichever comes first |
 | `alfred:reflex:decided:{event_id}` | String | A marker that Reflex has decided an event, so a redelivered one is not inferred again (`SET NX EX`) | twice the replay window (`REPLAY_MARKER_TTL_SECONDS`, 10 minutes) |
 
 - A change from a switch, an app or a device (`outside`) is counted but not kept in the changes

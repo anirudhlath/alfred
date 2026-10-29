@@ -1,7 +1,8 @@
 """The Reflex decision log: every decision that reached the model, kept with its prompt.
 
 Slice 2 builds Reflex's evals from real decisions, so each one is kept whole: the event, who
-caused it, the exact prompt the model saw and what Reflex proposed. It is private bookkeeping
+caused it, the exact prompt the model saw, what Reflex proposed, what that came to (its outcome)
+and what people had just changed when it decided. It is private bookkeeping
 on ``alfred:reflex:decision_log``, kept ``ATTRIBUTION_MAX_AGE``. Nothing here is an effect on
 the house: shadow mode still executes nothing.
 
@@ -17,8 +18,9 @@ from typing import TYPE_CHECKING, Any, Final, Literal
 from loguru import logger
 from pydantic import BaseModel
 
-from bus.schemas.events import ReflexProposal, StateChangedEvent
+from bus.schemas.events import ReflexOutcome, ReflexProposal, StateChangedEvent
 from core.attribution.cause import Cause, cause_of
+from core.reflex.reversal import PersonChange  # noqa: TC001  # pydantic field type
 from shared.redis_streams import append_capped, forward_range
 from shared.streams import (
     ATTRIBUTION_MAX_AGE,
@@ -31,6 +33,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from bus.schemas.events import TriggerFired
+    from core.reflex.outcome import Decided
     from shared.types import AioRedis
 
 _FIELD = "decision"
@@ -51,7 +54,10 @@ def _ms(moment: datetime) -> int:
 
 
 class DecisionRecord(BaseModel):
-    """One decision: the event Reflex was asked about, its cause, the prompt and the proposal."""
+    """One decision: the event Reflex was asked about, its cause, the prompt and the proposal.
+
+    ``outcome`` and ``recent`` came later: a record written before them has neither.
+    """
 
     time: datetime
     origin: Literal["state_change", "trigger_fired"]
@@ -59,6 +65,8 @@ class DecisionRecord(BaseModel):
     cause: Cause | None  # who caused a state change; None for a trigger or an unattributed event
     prompt: str
     proposal: ReflexProposal
+    outcome: ReflexOutcome | None = None  # what the proposal came to
+    recent: dict[str, PersonChange] = {}  # what people had just changed, by entity id
 
 
 class DecisionLog:
@@ -72,8 +80,7 @@ class DecisionLog:
         self,
         origin: Literal["state_change", "trigger_fired"],
         event: StateChangedEvent | TriggerFired,
-        prompt: str,
-        proposal: ReflexProposal,
+        decided: Decided,
     ) -> None:
         """Keep one decision. Best-effort: never raises."""
         try:
@@ -83,8 +90,10 @@ class DecisionLog:
                 origin=origin,
                 event=event.model_dump(mode="json"),
                 cause=cause_of(event.context) if isinstance(event, StateChangedEvent) else None,
-                prompt=prompt,
-                proposal=proposal,
+                prompt=decided.prompt,
+                proposal=decided.proposal,
+                outcome=decided.outcome,
+                recent=decided.recent,
             )
             await append_capped(
                 self._redis,

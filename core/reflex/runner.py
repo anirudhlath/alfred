@@ -1,8 +1,10 @@
 """Reflex Runner — orchestration loop for the System 1 pipeline.
 
 Reads events from Redis Streams (consumer group), runs the Reflex Engine, and records its
-decisions. Shadow mode (#285): nothing executes — act, ask and invalid proposals are
-published as observations, and every decision is counted.
+decisions. Shadow mode (#285): nothing executes — proposals that stand and invalid ones are
+published as observations, and every decision and its outcome are counted. Each decision is
+kept in the decision log, and each change a person makes to a device Reflex sees is noted, so
+the engine can see what a person just changed.
 """
 
 from __future__ import annotations
@@ -16,8 +18,11 @@ from typing import TYPE_CHECKING
 import redis.asyncio as aioredis
 
 from bus.schemas.events import ReflexObservation, StateChangedEvent
+from core.attribution.cause import cause_of
 from core.attribution.log import record_change
 from core.reflex.availability import bridge_availability
+from core.reflex.outcome import publishes
+from core.reflex.prompt import HOUSE_DOMAINS
 from shared.redis_streams import REPLAY_MARKER_TTL_SECONDS
 from shared.streams import (
     OBSERVED_ENTITY_PREFIX,
@@ -34,9 +39,12 @@ if TYPE_CHECKING:
 
     from pydantic import BaseModel
 
-    from bus.schemas.events import ActionRequest, ReflexProposal
+    from bus.schemas.events import ActionRequest, ReflexOutcome, ReflexProposal, TriggerFired
     from core.reflex.attention import AttentionSet
+    from core.reflex.decision_log import DecisionLog
     from core.reflex.engine import ReflexEngine
+    from core.reflex.outcome import Decided
+    from core.reflex.reversal import PersonChanges
     from core.routing.domain_router import DomainAgent
 
 logger = logging.getLogger(__name__)
@@ -118,6 +126,45 @@ async def count_decision(redis: AioRedis, decision: str, *, now: datetime | None
         logger.warning("Decision count failed (%s): %s", decision, e)
 
 
+async def count_outcome(
+    redis: AioRedis, outcome: ReflexOutcome, *, now: datetime | None = None
+) -> None:
+    """Count one outcome in its UTC day's hash. Best-effort: failures are logged, never raised.
+
+    The field is ``outcome:<kind>``, and ``<kind>:<reason>`` too when the outcome has a reason
+    (a held ask says why). They sit beside the decision counts: the model's own answer
+    (``act``, ``ask``, ``none``, ``invalid``) is still counted as it said it.
+    """
+    key = decisions_key((now or datetime.now(UTC)).astimezone(UTC).date())
+    fields = [f"outcome:{outcome.kind}"]
+    if outcome.reason is not None:
+        fields.append(f"{outcome.kind}:{outcome.reason}")
+    try:
+        for field in fields:
+            await redis.hincrby(key, field, 1)
+        await redis.expire(key, DECISION_COUNT_TTL_SECONDS)
+    except Exception as e:
+        logger.warning("Outcome count failed (%s): %s", outcome.kind, e)
+
+
+async def record_decision(
+    redis: AioRedis,
+    decision_log: DecisionLog | None,
+    origin: Literal["state_change", "trigger_fired"],
+    event: StateChangedEvent | TriggerFired,
+    decided: Decided,
+) -> None:
+    """Keep and count one decision: the decision log, the decision, then its outcome.
+
+    The one step both origins take, ahead of their own publish or passive observation and the
+    ``mark_decided`` that follows. Best-effort throughout: none of the three writes raises.
+    """
+    if decision_log is not None:
+        await decision_log.record(origin, event, decided)
+    await count_decision(redis, decided.proposal.decision)
+    await count_outcome(redis, decided.outcome)
+
+
 def decided_key(event_id: str) -> str:
     """The marker that Reflex has decided one event."""
     return f"{REFLEX_DECIDED_PREFIX}{event_id}"
@@ -152,13 +199,16 @@ async def publish_proposal(
     origin: Literal["state_change", "trigger_fired"],
     trigger_event: BaseModel,
     proposal: ReflexProposal,
+    *,
+    outcome: ReflexOutcome | None = None,
 ) -> None:
-    """Publish an observation carrying a proposal Reflex did not execute."""
+    """Publish an observation carrying a proposal Reflex did not execute, and what it came to."""
     observation = ReflexObservation(
         source="reflex-engine",
         origin=origin,
         trigger_event=trigger_event.model_dump(),
         proposal=proposal,
+        outcome=outcome,
     )
     await redis.xadd(stream, {"event": observation.model_dump_json()})
 
@@ -230,6 +280,9 @@ async def process_stream_entry(
     result_stream: str,
     observation_stream: str,
     attention: AttentionSet | None = None,
+    *,
+    decision_log: DecisionLog | None = None,
+    person_changes: PersonChanges | None = None,
 ) -> bool:
     """Process a single Redis Stream entry. Returns True if an action was taken — never,
     in shadow mode (#285); ``agent`` and ``result_stream`` wait for #286.
@@ -239,8 +292,13 @@ async def process_stream_entry(
     malformed events, availability blips (``core/reflex/availability.py``),
     attention-gated events, and events the engine chose not to act on. That
     last branch is not a no-op: it records a debounced passive observation,
-    best-effort, so a failed write never blocks the ACK.
-    Act, ask and invalid proposals are recorded too, undebounced and best-effort.
+    best-effort, so a failed write never blocks the ACK. So does a proposal that would
+    reverse a person's change (its outcome is ``would_reverse``). Every other proposal is
+    recorded too, undebounced and best-effort, with its outcome.
+
+    A change to a device Reflex sees is noted in *person_changes* (when given) ahead of the
+    gate, so Reflex knows what a person just did even where it did not decide. The decision,
+    once made, goes to *decision_log* (when given).
 
     A redelivery is not decided again: after the gate, an event already marked decided
     (``already_decided``) is skipped, and the event is marked once its decision is counted and
@@ -272,6 +330,14 @@ async def process_stream_entry(
     # Best-effort (record_change never raises): it never changes a decision or the ACK.
     await record_change(redis, event, entry_id=entry_id)
 
+    # Note what a person just changed, so Reflex never proposes undoing it. Only the devices
+    # Reflex sees and acts on (the House block's domains): every sensor update has the cause
+    # "outside", and noting those would fill the record with every sensor. Ahead of the gate,
+    # like the count above: a gated change is still the latest word on its device. Best-effort
+    # (note never raises), and idempotent for a redelivery.
+    if person_changes is not None and event.entity_id.partition(".")[0] in HOUSE_DOMAINS:
+        await person_changes.note(event, cause_of(event.context))
+
     # Attention gate — only attention-set members on real transitions reach
     # the SLM. Gated events stay fully visible to triggers and context
     # (they consume the stream independently / via home-service snapshots).
@@ -289,22 +355,24 @@ async def process_stream_entry(
 
     # engine.process_event() calls the model. If it is down this raises
     # (httpx.ConnectError, etc.) and the caller does NOT ACK — Redis redelivers.
-    proposal = await engine.process_event(event)
-    await count_decision(redis, proposal.decision)
-    await _record_outcome(redis, observation_stream, event, proposal)
+    decided = await engine.process_event(event)
+    await record_decision(redis, decision_log, "state_change", event, decided)
+    await _record_outcome(redis, observation_stream, event, decided)
     # Counted and published, so a redelivery stops here; a crash before this line decides again.
     await mark_decided(redis, event.event_id)
     return False
 
 
 async def _record_outcome(
-    redis: AioRedis, observation_stream: str, event: StateChangedEvent, proposal: ReflexProposal
+    redis: AioRedis, observation_stream: str, event: StateChangedEvent, decided: Decided
 ) -> None:
     """Record what Reflex decided about a state change. Best-effort: nothing here raises."""
-    if proposal.decision == "none":
+    proposal = decided.proposal
+    if not publishes(decided.outcome):
         # Record it rather than dropping it. Without this Alfred remembers
         # only what it did, never what it saw, and pattern detection has
-        # nothing to run over.
+        # nothing to run over. A proposal that would reverse a person's change lands here
+        # too: it becomes a "none" for everything downstream.
         #
         # Isolated — failures don't block ACK. Recording is bookkeeping for an
         # event the engine has already finished handling, and under Redis
@@ -319,12 +387,14 @@ async def _record_outcome(
         return
 
     # Shadow mode (#285): record what Reflex would do and execute nothing. Not
-    # debounced — act/ask/invalid are rare and are the evidence this slice collects.
+    # debounced — proposals are rare and are the evidence this slice collects.
     # Isolated like the passive path, for the same maxmemory reason.
     if proposal.decision == "invalid":
         logger.warning("Invalid Reflex output for %s: %s", event.entity_id, proposal.problem)
     try:
-        await publish_proposal(redis, observation_stream, "state_change", event, proposal)
+        await publish_proposal(
+            redis, observation_stream, "state_change", event, proposal, outcome=decided.outcome
+        )
     except Exception as e:
         logger.warning("Proposal observation failed for %s: %s", event.entity_id, e)
         return

@@ -1,0 +1,16 @@
+id: reflex.judgment.movie_any_player
+prd: [4.4.reflex-judgment]
+status: shipped
+tags: [judgment, media]
+steps:
+  - clock: {hour: 21}
+  - ha_event: {entity_id: sun.sun, state: below_horizon}
+  # An automation lit it, so it is not a person's to leave alone.
+  - ha_event: {entity_id: light.bedroom_lamp, state: "on", by: automation}
+  - ha_event: {entity_id: media_player.bedroom_tv, state: playing, by: person.sam}
+expect:
+  # Not the living room's TV: whichever player starts, the room it is in is the one to dim.
+  - reflex_decision:
+      decision: [act, ask]
+      tool: [home.light_turn_on, home.light_turn_off]
+      target: bedroom

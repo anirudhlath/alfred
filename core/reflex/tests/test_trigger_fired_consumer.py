@@ -10,6 +10,7 @@ import pytest
 
 from bus.schemas.events import ReflexProposal, TriggerFired
 from core.notifications.schema import Urgency
+from core.reflex.tests.fakes import decided
 from core.triggers.models import TRIGGER_ENGINE_SOURCE, TRIGGER_TITLE_PREFIX
 
 
@@ -23,7 +24,7 @@ def mock_publisher() -> AsyncMock:
 @pytest.fixture
 def mock_engine() -> AsyncMock:
     engine = AsyncMock()
-    engine.process_trigger_fired = AsyncMock(return_value=ReflexProposal(decision="none"))
+    engine.process_trigger_fired = AsyncMock(return_value=decided(ReflexProposal(decision="none")))
     return engine
 
 
@@ -293,16 +294,18 @@ async def test_a_trigger_proposal_is_recorded_not_executed(
 
     engine = AsyncMock()
     engine.process_trigger_fired = AsyncMock(
-        return_value=ReflexProposal(
-            decision="act",
-            reason="Bedtime",
-            action=ActionRequest(
-                source="reflex-engine",
-                target_service="home-service",
-                tool_name="home.light_turn_off",
-                parameters={"target": "Living Room"},
+        return_value=decided(
+            ReflexProposal(
+                decision="act",
                 reason="Bedtime",
-            ),
+                action=ActionRequest(
+                    source="reflex-engine",
+                    target_service="home-service",
+                    tool_name="home.light_turn_off",
+                    parameters={"target": "Living Room"},
+                    reason="Bedtime",
+                ),
+            )
         )
     )
     event = TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time")
@@ -354,7 +357,7 @@ async def test_an_invalid_trigger_proposal_is_logged_as_a_warning(
 
     engine = AsyncMock()
     engine.process_trigger_fired = AsyncMock(
-        return_value=ReflexProposal(decision="invalid", raw="Sure!", problem="not JSON")
+        return_value=decided(ReflexProposal(decision="invalid", raw="Sure!", problem="not JSON"))
     )
     event = TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time")
 
@@ -379,7 +382,7 @@ async def test_a_failed_proposal_write_is_not_blamed_on_the_model(
 
     engine = AsyncMock()
     engine.process_trigger_fired = AsyncMock(
-        return_value=ReflexProposal(decision="ask", reason="Lights off for the night?")
+        return_value=decided(ReflexProposal(decision="ask", reason="Lights off for the night?"))
     )
     event = TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time")
     redis = AsyncMock()

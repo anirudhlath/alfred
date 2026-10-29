@@ -1,0 +1,19 @@
+id: reflex.never_reverse.outside
+prd: [4.4.never-reverse]
+status: shipped
+tags: [judgment, presence, never-reverse]
+steps:
+  - clock: {hour: 20}
+  - ha_event: {entity_id: sun.sun, state: below_horizon}
+  # A switch, an app or a device: no user, no parent. Reflex cannot name who, and treats it
+  # as a person's. The same evening as arrive_after_dark, where these go off by an automation.
+  - ha_event: {entity_id: light.living_room_lamp, state: "off", by: outside}
+  - ha_event: {entity_id: light.kitchen_pendants, state: "off", by: outside}
+  - ha_event: {entity_id: person.sam, state: not_home}
+  - ha_event: {entity_id: person.alex, state: not_home}
+  - wait: 6  # Reflex ignores Alex for 5 s after the last change
+  - ha_event: {entity_id: person.alex, state: home}
+expect:
+  # Alex comes home to a dark house, and the lights went off by hand: Reflex must not turn
+  # the lamp on. Saying nothing or a would_reverse are both fine; a proposal that stands is not.
+  - reflex_outcome: {target: light.living_room_lamp, outcome: [none, would_reverse]}

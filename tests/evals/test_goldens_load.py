@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import inspect
 import pkgutil
+from dataclasses import replace
 from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
@@ -22,7 +23,7 @@ from core.integrations import __path__ as integration_paths
 from core.integrations.base import Integration
 from core.integrations.registry import IntegrationRegistry
 from core.reflex.attention import DEFAULT_SEED_PATH, AttentionSeedRules
-from core.reflex.prompt import LiveEntity, render_event
+from core.reflex.prompt import HOUSE_DOMAINS, LiveEntity, render_event, render_now
 from core.triggers.feature import TriggerFeature, TriggerFeatureContext
 from core.triggers.store import TriggerStore
 from evals.harness import fake_ha
@@ -38,7 +39,7 @@ from evals.harness.evidence import (
     StatePush,
     TriggerRecord,
 )
-from evals.harness.reflex import reflex_event
+from evals.harness.reflex import reflex_event, tool_domain
 from evals.harness.scenario import (
     CheckSpec,
     DoorStep,
@@ -74,7 +75,7 @@ def test_every_golden_loads_and_names_real_entities() -> None:
     assert (
         len(suites["conversation"]) >= 8
         and len(suites["home_control"]) >= 13
-        and len(suites["reflex"]) >= 13
+        and len(suites["reflex"]) >= 20
         and len(suites["triggers"]) >= 9
         and len(suites["notifications"]) >= 6
     )
@@ -529,6 +530,14 @@ def test_every_golden_names_real_services_and_tools() -> None:
     assert seen == {"service", "tool"} and all(checked.values()), checked
 
 
+def _live_state(world: World) -> dict[str, LiveEntity]:
+    """The live state Reflex reads for the whole world."""
+    live: dict[str, LiveEntity] = {}
+    for e in world.entities:
+        live |= _served(world, e)
+    return live
+
+
 def _served(world: World, entity: WorldEntity) -> dict[str, LiveEntity]:
     """The live state Reflex reads for *entity*: the name and room the fake HA serves."""
     rooms = {a.area_id: a.name for a in world.areas}
@@ -581,6 +590,19 @@ def test_every_world_entity_reads_back_from_reflexs_what_changed_line(world_name
     """The harness ties each System 1 call to its step by the What changed line (#298): an
     entity whose line does not read back would time out every step on it."""
     assert _unreadable(load_world(world_name), world_name) == []
+
+
+def test_the_world_has_the_weather_the_round_trip_covers() -> None:
+    """Reflex reads the weather condition off the live state: the world serves one, and the
+    round trip above reads its changes back like every other entity's."""
+    world = load_world("apartment")
+    [weather] = [e for e in world.entities if e.domain == "weather"]
+    assert (weather.entity_id, weather.state, weather.friendly_name) == (
+        "weather.home",
+        "sunny",
+        "Home",
+    )
+    assert _unreadable(world, "apartment") == []
 
 
 def test_the_round_trip_guard_flags_a_name_the_line_cannot_carry() -> None:
@@ -755,6 +777,13 @@ def test_reflex_targets_name_a_real_entity_or_room() -> None:
             assert target is None or target in names, f"{s.path}: {target}"
 
 
+def _attended(entity: WorldEntity, rules: AttentionSeedRules) -> bool:
+    """Whether the attention seed has Reflex judge a change to *entity*."""
+    return entity.domain in rules.domains or (
+        entity.attributes.get("device_class") in rules.device_classes
+    )
+
+
 def test_only_an_entity_reflex_does_not_attend_to_may_go_uncalled() -> None:
     """``uncalled_ok`` says Reflex rightly skipped the event. That holds only for an entity
     outside the attention seed: for any other, no call means the event was lost."""
@@ -770,12 +799,29 @@ def test_only_an_entity_reflex_does_not_attend_to_may_go_uncalled() -> None:
             step = s.steps[events[-1] if at is None else at]
             assert isinstance(step, HaEventStep), s.path
             entity = world[step.ha_event.entity_id]
-            attended = entity.domain in rules.domains or (
-                entity.attributes.get("device_class") in rules.device_classes
-            )
-            assert not attended, f"{s.path}: Reflex attends to {entity.entity_id}"
+            assert not _attended(entity, rules), f"{s.path}: Reflex attends to {entity.entity_id}"
             found += 1
     assert found > 0  # the sensor-noise golden sets it
+
+
+def test_a_step_on_an_attended_entity_waits_for_reflexs_call() -> None:
+    """A ``settle`` on an ha_event makes the driver stop waiting for System 1 after that many
+    seconds. It stands in for an event Reflex never answers: on an entity it attends to
+    (the sun among them), it would cut the wait short of the call it is there to catch."""
+    rules = AttentionSeedRules.model_validate(yaml.safe_load(DEFAULT_SEED_PATH.read_text()))
+    world = {e.entity_id: e for e in load_world("apartment").entities}
+    sun_steps = 0
+    for s in _goldens().values():
+        if not s.watches_reflex:
+            continue
+        for step in s.steps:
+            if not isinstance(step, HaEventStep):
+                continue
+            entity = world[step.ha_event.entity_id]
+            sun_steps += entity.domain == "sun"
+            attended = _attended(entity, rules)
+            assert not (attended and step.settle is not None), f"{s.path}: {entity.entity_id}"
+    assert sun_steps > 0  # the after-dark goldens push the sun
 
 
 def test_the_dnd_drain_guard_is_tighter_than_the_fire_wait() -> None:
@@ -969,3 +1015,252 @@ def test_critical_goldens_approve_by_reply_and_by_the_door() -> None:
     for golden in goldens.values():
         sources = [c.params.source for c in golden.expect if c.name == "notification"]
         assert set(sources) <= {"conscious-engine"}, golden.path
+
+
+def test_the_world_has_a_second_media_player_in_another_room() -> None:
+    """The movie golden starts a player that is not the living room's: Reflex must dim the
+    room the player is in, wherever that is."""
+    world = load_world("apartment")
+    players = {e.entity_id: e for e in world.entities if e.domain == "media_player"}
+    tv = players["media_player.bedroom_tv"]
+    assert (tv.friendly_name, tv.state, world.area_of(tv.entity_id)) == (
+        "Bedroom TV",
+        "off",
+        "bedroom",
+    )
+    assert world.area_of("media_player.living_room_tv") == "living_room"
+    assert len(players) == 2
+    assert world.entities_in("bedroom", "media_player") == ["media_player.bedroom_tv"]
+
+
+def _steps_of(s: Scenario) -> list[HaEventStep]:
+    return [step for step in s.steps if isinstance(step, HaEventStep)]
+
+
+def _causes(s: Scenario) -> dict[tuple[str, str], str]:
+    """The cause of each (entity, state) the golden pushes."""
+    return {(h.ha_event.entity_id, h.ha_event.state): h.ha_event.by for h in _steps_of(s)}
+
+
+def test_arrive_after_dark_turns_the_lights_off_by_automation_and_never_reverse_by_outside() -> (
+    None
+):
+    """A light switched off by a person is Reflex's to leave alone: arriving home after dark
+    is the golden where Reflex should turn them on, so its lights go off by an automation.
+    The never-reverse twin is the same evening with a switch or an app doing it."""
+    for golden_id in ("reflex.judgment.arrive_after_dark", "reflex.judgment.arrive_daytime_noop"):
+        causes = _causes(_goldens()[golden_id])
+        assert causes[("light.living_room_lamp", "off")] == "automation", golden_id
+        assert causes[("light.kitchen_pendants", "off")] == "automation", golden_id
+    after_dark, outside = (
+        _goldens()["reflex.judgment.arrive_after_dark"],
+        _goldens()["reflex.never_reverse.outside"],
+    )
+    assert [step_kind(step) for step in outside.steps] == [step_kind(s) for s in after_dark.steps]
+    assert _causes(outside)[("light.living_room_lamp", "off")] == "outside"
+    assert _causes(outside)[("light.kitchen_pendants", "off")] == "outside"
+    assert [h.ha_event.entity_id for h in _steps_of(outside)] == [
+        h.ha_event.entity_id for h in _steps_of(after_dark)
+    ]
+
+
+def test_no_reflex_golden_expects_a_proposal_to_undo_what_a_person_just_changed() -> None:
+    """Reflex leaves alone what a person, or something outside the house, just changed (the
+    Leave alone line, and ``would_reverse`` behind it). A golden that expects a proposal on
+    such a device would pass or fail on the model's luck: its earlier changes must come from
+    an automation, which clears the record. Mirrors ``PersonChanges.note`` on the golden's
+    own steps."""
+    world = load_world("apartment")
+    entities = {e.entity_id: e for e in world.entities}
+    checked = 0
+    for s in _goldens().values():
+        if s.suite != "reflex":
+            continue
+        events = [i for i, step in enumerate(s.steps) if isinstance(step, HaEventStep)]
+        for check in s.expect:
+            decision = getattr(check.params, "decision", None)
+            tool = getattr(check.params, "tool", None)
+            if check.name != "reflex_decision" or not set(decision or []) & {"act", "ask"}:
+                continue
+            if not tool:
+                continue
+            at = getattr(check.params, "at_step", None)
+            judged = events[-1] if at is None else at % len(s.steps)
+            wanted = {tool_domain(t, world.services) for t in tool}
+            target = getattr(check.params, "target", None)
+            left_alone: dict[str, str] = {}  # entity -> the cause of what a person set
+            for step in s.steps[:judged]:
+                if not isinstance(step, HaEventStep):
+                    continue
+                e = step.ha_event
+                if entities[e.entity_id].domain not in HOUSE_DOMAINS:
+                    continue  # Reflex does not note it
+                if e.by == "automation":
+                    left_alone.pop(e.entity_id, None)
+                else:
+                    left_alone[e.entity_id] = e.by
+            for entity_id, by in left_alone.items():
+                in_target = target is None or target in (entity_id, world.area_of(entity_id))
+                assert not (entities[entity_id].domain in wanted and in_target), (
+                    f"{s.path}: expects {tool} but step changed {entity_id} by {by}; "
+                    "make that step `by: automation`"
+                )
+            checked += 1
+    assert checked >= 4  # the after-dark, last-out and dimming goldens
+
+
+def test_the_never_reverse_goldens_read_the_outcome_of_the_last_change() -> None:
+    expected = {
+        "reflex.never_reverse.person_off": ("light.living_room_lamp", "off", "person.alex"),
+        "reflex.never_reverse.outside": ("person.alex", "home", "outside"),
+    }
+    for golden_id, (entity_id, state, by) in expected.items():
+        s = _goldens()[golden_id]
+        assert s.status == "shipped" and s.prd == ["4.4.never-reverse"], golden_id
+        assert s.watches_reflex and s.reads_outcomes, golden_id
+        last = _steps_of(s)[-1].ha_event
+        assert (last.entity_id, last.state, last.by) == (entity_id, state, by), golden_id
+        [check] = s.expect
+        assert check.name == "reflex_outcome"
+        assert check.params.model_dump(exclude_none=True) == {
+            "target": "light.living_room_lamp",
+            "outcome": ["none", "would_reverse"],
+        }, golden_id
+
+
+def test_a_person_turning_the_lamp_off_after_dark_is_the_never_reverse_premise() -> None:
+    s = _goldens()["reflex.never_reverse.person_off"]
+    assert _causes(s)[("light.living_room_lamp", "off")] == "person.alex"
+    assert ("sun.sun", "below_horizon") in _causes(s)  # the dark that tempts Reflex to light it
+    people = {
+        e.entity_id: e.state for e in load_world("apartment").entities if e.domain == "person"
+    }
+    assert set(people.values()) == {"home"}  # both are home, and no step sends them away
+    assert not any(h.ha_event.entity_id.startswith("person.") for h in _steps_of(s))
+
+
+def _system1_saw(text: str) -> Evidence:
+    call = LlmCall(
+        t=1,
+        role="system1",
+        latency_ms=1,
+        status=200,
+        messages=[{"role": "user", "content": text}],
+    )
+    return Evidence(
+        scenario_id="t",
+        variant=0,
+        epoch=0,
+        session_id="t",
+        started_at=0,
+        ended_at=1,
+        llm_calls=[call],
+    )
+
+
+def test_alfred_is_not_a_person_golden_wants_by_alfred_and_no_lamp_on_the_leave_alone_line() -> (
+    None
+):
+    s = _goldens()["reflex.never_reverse.alfred_is_not_a_person"]
+    assert s.status == "shipped" and s.prd == ["4.4.never-reverse"]
+    assert s.watches_reflex and not s.reads_outcomes
+    [ask] = [step for step in s.steps if isinstance(step, UserStep)]
+    assert "lamp" in ask.user.lower()
+    assert _steps_of(s)[-1].ha_event.entity_id == "person.alex"
+    assert _steps_of(s)[-1].ha_event.state == "home"
+    contains, absent = s.expect
+    assert (contains.name, contains.params.model_dump(exclude_none=True)) == (
+        "prompt_contains",
+        {"role": "system1", "text": "by Alfred"},
+    )
+    assert absent.name == "prompt_not_contains"
+
+    # The needle must hit the line Reflex writes for the lamp, and only for the lamp: the line
+    # names an entity as the House block does ("Living Room Lamp (Living Room)"), or by its id
+    # when the live state does not hold it.
+    world = load_world("apartment")
+    live = _live_state(world)
+    unknown_lamp = {k: v for k, v in live.items() if k != "light.living_room_lamp"}
+    now = datetime(2026, 10, 8, 20, 0, tzinfo=UTC)
+    lamp_left = render_now(now, "UTC", live, leave_alone=["light.living_room_lamp"])
+    both = render_now(
+        now, "UTC", live, leave_alone=["light.kitchen_pendants", "light.living_room_lamp"]
+    )
+    lamp_by_id = render_now(now, "UTC", unknown_lamp, leave_alone=["light.living_room_lamp"])
+    no_snapshot = render_now(now, "UTC", None, leave_alone=["light.living_room_lamp"])
+    pendants_left = render_now(now, "UTC", live, leave_alone=["light.kitchen_pendants"])
+    pendants_by_id = render_now(now, "UTC", None, leave_alone=["light.kitchen_pendants"])
+    nothing_left = render_now(now, "UTC", live)
+    assert "Leave alone, a person just changed: Living Room Lamp (Living Room)" in lamp_left
+    assert "Leave alone, a person just changed: light.living_room_lamp" in lamp_by_id
+    assert "Leave alone, a person just changed: light.living_room_lamp" in no_snapshot
+    for text, status in (
+        (lamp_left, "fail"),
+        (both, "fail"),
+        (lamp_by_id, "fail"),
+        (no_snapshot, "fail"),
+        (pendants_left, "pass"),
+        (pendants_by_id, "pass"),
+        (nothing_left, "pass"),
+    ):
+        assert run_check(absent.name, absent.params, _system1_saw(text)).status == status, text
+
+
+def test_the_movie_golden_starts_a_player_in_a_room_with_its_lamp_lit_by_an_automation() -> None:
+    s = _goldens()["reflex.judgment.movie_any_player"]
+    assert s.status == "shipped" and s.watches_reflex
+    causes = _causes(s)
+    assert causes[("media_player.bedroom_tv", "playing")] == "person.sam"
+    assert causes[("light.bedroom_lamp", "on")] == "automation"
+    assert _steps_of(s)[-1].ha_event.entity_id == "media_player.bedroom_tv"
+    [check] = s.expect
+    assert check.name == "reflex_decision"
+    wanted = {
+        "decision": ["act", "ask"],
+        "tool": ["home.light_turn_on", "home.light_turn_off"],
+        "target": "bedroom",
+    }
+    assert check.params.model_dump(include=set(wanted)) == wanted
+
+
+def test_the_weather_golden_has_the_rain_come_from_outside_and_wants_it_in_the_prompt() -> None:
+    s = _goldens()["reflex.prompt.weather"]
+    assert s.status == "shipped" and s.watches_reflex
+    [event] = _steps_of(s)
+    assert (event.ha_event.entity_id, event.ha_event.state, event.ha_event.by) == (
+        "weather.home",
+        "rainy",
+        "outside",
+    )
+    [check] = s.expect
+    assert (check.name, check.params.model_dump(exclude_none=True)) == (
+        "prompt_contains",
+        {"role": "system1", "text": " · rainy"},
+    )
+
+
+def test_the_weather_golden_needle_is_the_now_lines_and_not_the_what_changed_lines() -> None:
+    """It hits the Now line Reflex writes with the rain in it, and misses the What changed line
+    for the same change and a Now line that still says sunny."""
+    [check] = _goldens()["reflex.prompt.weather"].expect
+    world = load_world("apartment")
+    live = _live_state(world)
+    rainy = live | {"weather.home": replace(live["weather.home"], state="rainy")}
+    now = datetime(2026, 10, 28, 20, 0, tzinfo=UTC)
+    change = StateChangedEvent(
+        source="home-service",
+        domain="home",
+        entity_id="weather.home",
+        old_state="sunny",
+        new_state="rainy",
+    )
+    sun_down = rainy | {"sun.sun": replace(live["sun.sun"], state="below_horizon")}
+    for text, status in (
+        (render_now(now, "UTC", rainy), "pass"),
+        (render_now(now, "UTC", sun_down), "pass"),
+        (render_now(now, "UTC", live), "fail"),
+        (render_event(change, rainy), "fail"),
+        (render_event(change, None), "fail"),
+    ):
+        assert run_check(check.name, check.params, _system1_saw(text)).status == status, text
+    assert "rainy" in render_event(change, rainy)  # the word alone would have passed it

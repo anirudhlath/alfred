@@ -10,6 +10,7 @@ import pytest
 from redis import exceptions as redis_exceptions
 
 from bus.schemas.events import ChangeContext, ReflexProposal
+from core.reflex.tests.fakes import decided
 from shared.streams import ATTRIBUTION_CAUSES_PREFIX, ATTRIBUTION_CHANGES_STREAM
 
 if TYPE_CHECKING:
@@ -54,7 +55,7 @@ async def test_attended_event_reaches_engine(tv_on_event: StateChangedEvent) -> 
 
     engine = AsyncMock()
     engine.process_event = AsyncMock(
-        return_value=ReflexProposal(decision="none")
+        return_value=decided(ReflexProposal(decision="none"))
     )  # SLM decides "no action"
     attention = AsyncMock()
     attention.should_fire = AsyncMock(return_value=True)
@@ -80,7 +81,7 @@ async def test_no_attention_set_means_no_gating(tv_on_event: StateChangedEvent) 
     from core.reflex.runner import process_stream_entry
 
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
+    engine.process_event = AsyncMock(return_value=decided(ReflexProposal(decision="none")))
 
     await process_stream_entry(
         entry_id=b"1-0",
@@ -130,7 +131,7 @@ async def test_a_redelivered_entry_is_counted_once(tv_on_event: StateChangedEven
     event = tv_on_event.model_copy(update={"context": ChangeContext(id="c1", user_id="u1")})
     engine = AsyncMock()
     engine.process_event = AsyncMock(
-        side_effect=[ConnectionError("model down"), ReflexProposal(decision="none")]
+        side_effect=[ConnectionError("model down"), decided(ReflexProposal(decision="none"))]
     )
 
     async def deliver() -> bool:
@@ -164,7 +165,7 @@ async def test_a_failed_counter_write_changes_nothing_downstream(
     refusal = redis_exceptions.ResponseError("OOM command not allowed when used memory")
     monkeypatch.setattr(redis, "hincrby", AsyncMock(side_effect=refusal))
     engine = AsyncMock()
-    engine.process_event = AsyncMock(return_value=ReflexProposal(decision="none"))
+    engine.process_event = AsyncMock(return_value=decided(ReflexProposal(decision="none")))
 
     took_action = await process_stream_entry(
         entry_id=b"1-0",

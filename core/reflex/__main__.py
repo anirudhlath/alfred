@@ -10,6 +10,7 @@ import json
 import logging
 import signal
 import time
+from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -25,14 +26,16 @@ from core.reflex.attention import AttentionSet
 from core.reflex.context_reader import ContextReader
 from core.reflex.decision_log import DecisionLog
 from core.reflex.engine import ReflexEngine, build_notification_body
+from core.reflex.outcome import publishes
 from core.reflex.prose import warm_prose
+from core.reflex.reversal import PersonChanges
 from core.reflex.runner import (
     already_decided,
-    count_decision,
     ensure_consumer_group,
     mark_decided,
     process_stream_entry,
     publish_proposal,
+    record_decision,
 )
 from core.reflex.tool_registry import ToolRegistry
 from core.routing.domain_router import DomainRouter
@@ -139,6 +142,8 @@ async def _handle_trigger_fired(
     agent: DomainRouter,
     redis: AioRedis,
     publisher: NotificationPublisher,
+    *,
+    decision_log: DecisionLog | None = None,
 ) -> None:
     """Handle a single TriggerFired event — notify + optional SLM reasoning.
 
@@ -150,7 +155,8 @@ async def _handle_trigger_fired(
     the decided-check's Redis error (Redis cannot say whether the event was
     decided) and a failure while *acting* on a valid TriggerFired.
 
-    In shadow mode (#285) ``agent`` is unused: Reflex's decision is recorded, never executed.
+    In shadow mode (#285) ``agent`` is unused: Reflex's decision is recorded, never executed
+    (in *decision_log*, when given, and counted with its outcome).
     A trigger event is handled once: once its decision is counted and published it is marked
     decided, and a redelivery of its entry (same ``event_id``) does nothing.
     """
@@ -190,12 +196,14 @@ async def _handle_trigger_fired(
     # Path B: Reflex's decision, recorded in shadow (#285) — nothing executes.
     # Isolated: failures don't block ACK.
     try:
-        proposal = await engine.process_trigger_fired(trigger_event)
+        decided = await engine.process_trigger_fired(trigger_event)
     except Exception as e:
         logger.error("SLM reasoning failed for trigger '%s': %s", trigger_event.trigger_name, e)
         return
-    await count_decision(redis, proposal.decision)
-    if proposal.decision != "none":
+    proposal = decided.proposal
+    await record_decision(redis, decision_log, "trigger_fired", trigger_event, decided)
+    # A "none", and a proposal that would reverse a person's change, publish nothing here.
+    if publishes(decided.outcome):
         if proposal.decision == "invalid":
             logger.warning(
                 "Invalid Reflex output for trigger '%s': %s",
@@ -204,7 +212,12 @@ async def _handle_trigger_fired(
             )
         try:
             await publish_proposal(
-                redis, REFLEX_OBSERVATIONS_STREAM, "trigger_fired", trigger_event, proposal
+                redis,
+                REFLEX_OBSERVATIONS_STREAM,
+                "trigger_fired",
+                trigger_event,
+                proposal,
+                outcome=decided.outcome,
             )
         except Exception as e:
             logger.warning(
@@ -219,6 +232,7 @@ async def _consume_trigger_fired(
     engine: ReflexEngine,
     agent: DomainRouter,
     publisher: NotificationPublisher,
+    decision_log: DecisionLog | None = None,
 ) -> None:
     """Second event loop — TriggerFired events from alfred:events."""
     await ensure_consumer_group(redis, EVENTS_STREAM, EVENTS_GROUP)
@@ -265,6 +279,7 @@ async def _consume_trigger_fired(
                     agent,
                     redis,
                     publisher,
+                    decision_log=decision_log,
                 )
                 # ACK only on success — a failure stays pending for the reclaim
                 # pass above to pick back up.
@@ -321,14 +336,19 @@ async def run(config: AlfredConfig, agent: Agent[list[ToolInfo], ReflexProposal]
     )
     prompts = PromptStore.from_config(config, redis=r)
     logger.info("Prompts: %s", prompts.describe())
+    # The runner and the trigger handler record each decision; the engine reads what people
+    # just changed, which the runner notes as their changes arrive.
+    decision_log = DecisionLog(r)
+    person_changes = PersonChanges(r, clock=lambda: datetime.now(UTC))
     engine = ReflexEngine(
         preferences_dir=str(preferences_dir()),
         tool_registry=registry,
         context_reader=context_reader,
         memory_reader=memory_reader,
         agent=agent,
-        decision_log=DecisionLog(r),
         prompts=prompts,
+        redis=r,
+        person_changes=person_changes,
     )
     attention = AttentionSet(redis=r)
 
@@ -342,7 +362,9 @@ async def run(config: AlfredConfig, agent: Agent[list[ToolInfo], ReflexProposal]
 
     # Background tasks
     telemetry_task = asyncio.create_task(flush_telemetry_periodically(config))
-    trigger_fired_task = asyncio.create_task(_consume_trigger_fired(r, engine, router, publisher))
+    trigger_fired_task = asyncio.create_task(
+        _consume_trigger_fired(r, engine, router, publisher, decision_log)
+    )
     warmup_task = start_warmup("reflex", warmup_steps(prompts))
 
     logger.info("Reflex Runner started. Listening on stream '%s'...", STREAM)
@@ -376,6 +398,8 @@ async def run(config: AlfredConfig, agent: Agent[list[ToolInfo], ReflexProposal]
                         result_stream=RESULT_STREAM,
                         observation_stream=REFLEX_OBSERVATIONS_STREAM,
                         attention=attention,
+                        decision_log=decision_log,
+                        person_changes=person_changes,
                     )
                     # ACK only on success — retriable errors (the model is down) leave the
                     # entry pending for the reclaim pass above to pick back up.

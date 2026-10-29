@@ -118,6 +118,164 @@ def test_a_bad_timezone_falls_back_to_utc(tz_name: str) -> None:
     assert render_now(NIGHT_UTC, tz_name, None) == "Thu 8 Oct, 03:30 (night)"
 
 
+def _living_room() -> dict[str, LiveEntity]:
+    return _index(
+        _e("light.living_room_lamp", "off", friendly_name="Lamp", area="Living room"),
+        _e("media_player.living_room_tv", "off", friendly_name="TV", area="Living room"),
+        _e("light.hall", "on", friendly_name="Hall light"),
+        _e("person.a", "home", friendly_name="Person A"),
+    )
+
+
+def test_the_prompt_lists_what_to_leave_alone() -> None:
+    entities = _living_room()
+
+    now = render_now(
+        NIGHT_UTC,
+        "America/Chicago",
+        entities,
+        leave_alone=["media_player.living_room_tv", "light.living_room_lamp"],
+    )
+
+    assert now == (
+        "Wed 7 Oct, 22:30 (night)\nPeople: Person A home\n"
+        "Leave alone, a person just changed: Lamp (Living room), TV (Living room)"
+    )
+
+
+def test_what_to_leave_alone_is_named_as_the_house_names_it() -> None:
+    entities = _living_room()
+
+    now = render_now(NIGHT_UTC, "UTC", entities, leave_alone=["light.hall"])
+
+    # An entity with no room is just its name; the House block shows it as "Hall light on".
+    assert now.endswith("\nLeave alone, a person just changed: Hall light")
+
+
+def test_what_to_leave_alone_is_sorted_by_the_text_shown() -> None:
+    entities = _index(
+        _e("light.a_zed", "on", friendly_name="Amber", area="Study"),
+        _e("light.b_alpha", "on", friendly_name="Zinc", area="Attic"),
+        _e("light.c_mid", "on", friendly_name="Amber", area="Attic"),
+    )
+
+    now = render_now(
+        NIGHT_UTC, "UTC", entities, leave_alone=["light.a_zed", "light.b_alpha", "light.c_mid"]
+    )
+
+    assert now.endswith(
+        "Leave alone, a person just changed: Amber (Attic), Amber (Study), Zinc (Attic)"
+    )
+
+
+def test_an_entity_the_snapshot_lacks_is_named_by_its_id() -> None:
+    entities = _living_room()
+
+    now = render_now(
+        NIGHT_UTC, "UTC", entities, leave_alone=["light.gone", "light.living_room_lamp"]
+    )
+
+    assert now.endswith("Leave alone, a person just changed: Lamp (Living room), light.gone")
+
+
+def test_without_live_state_what_to_leave_alone_is_named_by_id() -> None:
+    now = render_now(NIGHT_UTC, "UTC", None, leave_alone=["light.living_room_lamp"])
+
+    assert now == (
+        "Thu 8 Oct, 03:30 (night)\nLeave alone, a person just changed: light.living_room_lamp"
+    )
+
+
+@pytest.mark.parametrize("leave_alone", [(), []])
+def test_with_nothing_to_leave_alone_the_now_section_is_unchanged(
+    leave_alone: list[str],
+) -> None:
+    entities = _living_room()
+
+    assert render_now(NIGHT_UTC, "UTC", entities, leave_alone) == render_now(
+        NIGHT_UTC, "UTC", entities
+    )
+    assert "Leave alone" not in render_now(NIGHT_UTC, "UTC", entities, leave_alone)
+
+
+def test_now_carries_the_weather() -> None:
+    def now(*entities: LiveEntity) -> str:
+        return render_now(NIGHT_UTC, "UTC", _index(*entities))
+
+    sun = _e("sun.sun", "below_horizon", controllable=False)
+    # The condition follows the sun, as HA names it.
+    assert now(sun, _e("weather.home", "partlycloudy", controllable=False)) == (
+        "Thu 8 Oct, 03:30 (night) · sun down · partlycloudy"
+    )
+    # HA hyphenates a condition's words; the model reads them with spaces.
+    assert now(sun, _e("weather.home", "clear-night", controllable=False)).endswith(
+        " · sun down · clear night"
+    )
+    # An unreachable forecast says nothing, and a house with none is as it was.
+    assert now(sun, _e("weather.home", "unavailable", controllable=False)) == (
+        "Thu 8 Oct, 03:30 (night) · sun down"
+    )
+    assert now(sun) == "Thu 8 Oct, 03:30 (night) · sun down"
+
+
+@pytest.mark.parametrize("state", ["unavailable", "unknown", "", "   "])
+def test_now_leaves_out_a_weather_that_says_nothing(state: str) -> None:
+    entities = _index(_e("weather.home", state, controllable=False))
+
+    assert render_now(NIGHT_UTC, "UTC", entities) == "Thu 8 Oct, 03:30 (night)"
+
+
+def test_now_names_the_weather_of_the_first_weather_entity_by_id() -> None:
+    entities = _index(
+        _e("weather.yard", "rainy", controllable=False),
+        _e("weather.forecast_home", "sunny", controllable=False),
+        _e("weather.garden", "fog", controllable=False),
+    )
+
+    assert render_now(NIGHT_UTC, "UTC", entities).endswith(" · sunny")
+
+
+def test_now_reads_the_first_weather_entity_even_when_it_is_unavailable() -> None:
+    # The first by id speaks for the house: a later one is not a stand-in for it.
+    entities = _index(
+        _e("weather.a_home", "unavailable", controllable=False),
+        _e("weather.b_home", "sunny", controllable=False),
+    )
+
+    assert render_now(NIGHT_UTC, "UTC", entities) == "Thu 8 Oct, 03:30 (night)"
+
+
+def test_now_without_a_sun_puts_the_weather_after_the_time() -> None:
+    entities = _index(_e("weather.home", "snowy-rainy", controllable=False))
+
+    assert render_now(NIGHT_UTC, "UTC", entities) == "Thu 8 Oct, 03:30 (night) · snowy rainy"
+
+
+def test_the_weather_ends_the_first_line_and_the_leave_alone_line_comes_last() -> None:
+    entities = _index(
+        _e("sun.sun", "above_horizon", controllable=False),
+        _e("weather.home", "cloudy", controllable=False),
+        _e("person.a", "home", friendly_name="Person A", controllable=False),
+        _e("light.hall", "on", friendly_name="Hall light"),
+    )
+
+    now = render_now(NIGHT_UTC, "UTC", entities, leave_alone=["light.hall"])
+
+    assert now == (
+        "Thu 8 Oct, 03:30 (night) · sun up · cloudy\n"
+        "People: Person A home\n"
+        "Leave alone, a person just changed: Hall light"
+    )
+
+
+def test_a_long_weather_condition_is_clipped() -> None:
+    entities = _index(_e("weather.home", "x" * (MAX_DETAIL_CHARS * 2), controllable=False))
+
+    first = render_now(NIGHT_UTC, "UTC", entities).split(" · ", 1)[1]
+
+    assert len(first) == MAX_DETAIL_CHARS and first.endswith("…")
+
+
 # --- House ---------------------------------------------------------------------
 
 

@@ -10,7 +10,14 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import pytest
 
-from bus.schemas.events import ActionRequest, AlfredResponse, UserRequest
+from bus.schemas.events import (
+    ActionRequest,
+    AlfredResponse,
+    ReflexOutcome,
+    ReflexProposal,
+    UserRequest,
+)
+from core.reflex.decision_log import DecisionRecord
 from evals.harness.checks import run_check
 from evals.harness.checks.triggers import TriggerFiredParams
 from evals.harness.driver import (
@@ -964,3 +971,102 @@ async def test_the_reflex_wait_counts_only_system1_calls_after_the_push() -> Non
         expect=[{"reflex_decision": {"decision": "none"}}],
     )
     assert ev.ended_at - ev.step_start(1) >= 0.3
+
+
+def decision_record(
+    outcome: str, entity_id: str = "light.living_room_ceiling", new_state: str = "on"
+) -> DecisionRecord:
+    """What Reflex logs for a decision made now."""
+    return DecisionRecord.model_validate(
+        {
+            "time": datetime.now(UTC),
+            "origin": "state_change",
+            "event": {"entity_id": entity_id, "new_state": new_state},
+            "cause": None,
+            "prompt": "the prompt",
+            "proposal": ReflexProposal(decision="none"),
+            "outcome": ReflexOutcome.model_validate({"kind": outcome}),
+        }
+    )
+
+
+OUTCOME_GOLDEN = {"steps": [LAMP_ON], "expect": [{"reflex_outcome": {"outcome": "would_reverse"}}]}
+
+
+async def test_an_outcome_golden_reads_the_decision_log_once_reflex_has_written_it() -> None:
+    """The proxy records System 1's call when its reply returns; Reflex writes the decision
+    to its log after that. The driver waits for the log to catch up with the calls."""
+    proxy, bus = LlmProxy("http://x"), FakeBus()
+
+    async def reflex_decides() -> None:
+        await asyncio.sleep(0.1)
+        proxy.record(system1(CEILING_ON))
+        await asyncio.sleep(0.3)
+        bus.log_decision(decision_record("would_reverse"))
+
+    deciding = asyncio.create_task(reflex_decides())
+    play_ctx = ctx(Recorder(), proxy=proxy, bus=bus, reflex_cooldown_s=0, reflex_timeout_s=5)
+    elapsed, ev = await timed_play(play_ctx, scenario(**OUTCOME_GOLDEN))
+    await deciding
+    assert elapsed >= 0.4
+    [decision] = ev.decisions
+    assert (decision.entity_id, decision.state, decision.outcome) == (
+        "light.living_room_ceiling",
+        "on",
+        "would_reverse",
+    )
+    # On the sample's clock, so the check can tell which step's change it was about. Reflex
+    # logs it after the last LLM call is recorded, so it may fall past the sample's end.
+    assert ev.step_started[0] <= decision.t <= time.monotonic()
+    assert [d.outcome for d in ev.decisions_about(0)] == ["would_reverse"]
+    assert bus.decisions_waited == [play_ctx.decision_log_timeout_s]
+
+
+async def test_a_decision_that_never_reaches_the_log_is_missing_evidence_not_a_harness_error() -> (
+    None
+):
+    proxy = LlmProxy("http://x")
+
+    async def system1_answers() -> None:
+        await asyncio.sleep(0.1)
+        proxy.record(system1(CEILING_ON))
+
+    answering = asyncio.create_task(system1_answers())
+    play_ctx = ctx(
+        Recorder(),
+        proxy=proxy,
+        reflex_cooldown_s=0,
+        reflex_timeout_s=5,
+        decision_log_timeout_s=0.3,
+    )
+    elapsed, ev = await timed_play(play_ctx, scenario(**OUTCOME_GOLDEN))
+    await answering
+    assert ev.decisions == [] and elapsed >= 0.4  # the check then errors: no outcome to judge
+    assert [(c.decision, c.reason) for c in ev.reflex] == [("none", "quiet")]
+
+
+async def test_with_no_system1_call_the_one_wait_for_the_log_comes_straight_back() -> None:
+    bus = FakeBus()
+    play_ctx = ctx(Recorder(), bus=bus, reflex_cooldown_s=0, reflex_timeout_s=0.1)
+    play_ctx.decision_log_timeout_s = 30.0
+    elapsed, ev = await timed_play(play_ctx, scenario(**OUTCOME_GOLDEN))
+    assert ev.decisions == [] and elapsed < 5
+    assert bus.decisions_waited == [30.0]  # asked once, and enough already: it came straight back
+
+
+async def test_only_a_golden_that_judges_the_outcome_reads_the_decision_log() -> None:
+    bus = FakeBus()
+    play_ctx = ctx(Recorder(), bus=bus, reflex_cooldown_s=0, reflex_timeout_s=0)
+    await timed_play(play_ctx, scenario(**WATCHES))
+    assert bus.decisions_waited == []
+
+
+async def test_a_reflex_golden_starts_with_no_person_changes_left_by_the_restore() -> None:
+    """The restore pushes its changes as ``outside``, which Reflex notes as a person's: a
+    golden that watches Reflex would find them on its Leave alone line."""
+    bus = FakeBus()
+    play_ctx = ctx(Recorder(), bus=bus, reflex_cooldown_s=0, reflex_timeout_s=0)
+    await timed_play(play_ctx, scenario(**WATCHES))
+    assert bus.person_changes_cleared == 1
+    await timed_play(play_ctx, scenario(steps=[LAMP_OFF]))  # it does not watch Reflex
+    assert bus.person_changes_cleared == 1

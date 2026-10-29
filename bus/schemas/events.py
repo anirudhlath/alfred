@@ -270,6 +270,28 @@ class ReflexProposal(BaseModel):
     problem: str | None = None
 
 
+# What Reflex's decision came to once the code had checked it (#285). ``none`` and ``invalid`` are
+# the model's own; ``would_reverse`` is a proposal that would have undone what a person just
+# changed; ``shadow`` is one that stands but is not executed; ``asked`` and ``held`` are what
+# the ask gate makes of one.
+OutcomeKind = Literal["none", "invalid", "would_reverse", "shadow", "asked", "held"]
+# Why a proposal was held back instead of asked.
+HeldReason = Literal["tool_off", "quiet_hours", "dnd", "ask_open", "asked_recently", "daily_cap"]
+
+
+class ReflexOutcome(BaseModel):
+    """The one outcome of a Reflex decision.
+
+    ``reversed`` names the entities a ``would_reverse`` proposal would have moved back;
+    ``reason`` is set for ``held``; ``ask_id`` for ``asked``.
+    """
+
+    kind: OutcomeKind
+    reason: HeldReason | None = None
+    reversed: list[str] = Field(default_factory=list)
+    ask_id: str | None = None
+
+
 class ReflexObservation(BaseEvent):
     """A structured observation of a Reflex Engine event for System 2 awareness.
 
@@ -294,6 +316,9 @@ class ReflexObservation(BaseEvent):
     # Reflex's decision when it was act, ask or invalid (#285). action/result above
     # mean "this happened"; a proposal only means "Reflex would have done this".
     proposal: ReflexProposal | None = None
+    # What the proposal came to (see ``ReflexOutcome``). None on an observation written before
+    # outcomes existed, and on a passive one: nothing was proposed.
+    outcome: ReflexOutcome | None = None
 
 
 class ServiceRegistered(BaseEvent):

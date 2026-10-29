@@ -93,12 +93,27 @@ async def _deliver(redis: AioRedis, engine: ReflexEngine, event: StateChangedEve
     )
 
 
-async def _decisions_today(redis: AioRedis) -> dict[str, int]:
+async def _counted_today(redis: AioRedis) -> dict[str, int]:
     from datetime import UTC, datetime
 
     today: date = datetime.now(UTC).date()
     counted = await redis.hgetall(decisions_key(today))
     return {k.decode(): int(v) for k, v in counted.items()}
+
+
+async def _decisions_today(redis: AioRedis) -> dict[str, int]:
+    """The decision counts only, not the ``outcome:`` fields that sit beside them."""
+    return {k: v for k, v in (await _counted_today(redis)).items() if ":" not in k}
+
+
+async def _outcomes_today(redis: AioRedis) -> dict[str, int]:
+    """The outcome counts, keyed by kind."""
+    prefix = "outcome:"
+    return {
+        k.removeprefix(prefix): v
+        for k, v in (await _counted_today(redis)).items()
+        if k.startswith(prefix)
+    }
 
 
 # --- the marker ---------------------------------------------------------------------------
@@ -209,6 +224,7 @@ async def test_a_proposal_is_marked_after_it_is_published() -> None:
 
     assert script.call_count == 1
     assert await _decisions_today(redis) == {"ask": 1}
+    assert await _outcomes_today(redis) == {"shadow": 1}  # counted once, like the decision
     assert await redis.xlen(REFLEX_OBSERVATIONS_STREAM) == 1
 
 

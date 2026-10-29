@@ -8,7 +8,8 @@ Reads:
 - the deferred list;
 - the registry's reflex-audience tools, which are what Reflex's prompt shows;
 - the stored user timezone;
-- the user responses stream: its tail, and the follow-up a resumed run publishes.
+- the user responses stream: its tail, and the follow-up a resumed run publishes;
+- Reflex's decision log, waiting on it with a blocking read.
 
 Acts:
 - pulls a time trigger's ``run_at`` to now;
@@ -16,7 +17,8 @@ Acts:
 - sets the user timezone, which is Reflex's clock;
 - sets do-not-disturb through the admin API, as the PWA does;
 - confirms or denies a pending action through the web channel's API, as the Door does;
-- clears do-not-disturb.
+- clears do-not-disturb;
+- clears Reflex's record of what people just changed.
 
 Entries come back raw; ``collect.py`` parses them. The Redis client is read through a
 callable, so a stack restart's new client needs nothing re-wired.
@@ -45,6 +47,7 @@ from redis.exceptions import RedisError
 
 from bus.schemas.events import PENDING_RECORD, ActionRequest, AlfredResponse
 from core.identity.auth_middleware import COOKIE_NAME
+from core.reflex.decision_log import DecisionLog
 from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolRegistry
 from shared import usertime
 from shared.redis_streams import forward_range, read, revrange
@@ -56,6 +59,8 @@ from shared.streams import (
     EVENTS_STREAM,
     NOTIFICATION_DISPATCH_STREAM,
     PENDING_PREFIX,
+    REFLEX_DECISION_LOG_STREAM,
+    REFLEX_PERSON_CHANGES_KEY,
     TRIGGER_SYNC_OP_DELETED,
     TRIGGER_SYNC_OP_SAVED,
     TRIGGER_SYNC_OP_TZ_CHANGED,
@@ -69,6 +74,7 @@ from shared.streams import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Coroutine
 
+    from core.reflex.decision_log import DecisionRecord
     from core.reflex.tool_registry import ToolInfo
     from shared.types import AioRedis
 
@@ -108,6 +114,14 @@ class Bus(Protocol):
         self, since_wall: float, timeout_s: float, wanted: Callable[[Entry], bool]
     ) -> bool: ...
     async def notifications(self, since_wall: float) -> list[Entry]: ...
+    async def decision_records(self, since: datetime) -> list[DecisionRecord]: ...
+    async def wait_for_decisions(
+        self,
+        since: datetime,
+        timeout_s: float,
+        enough: Callable[[list[DecisionRecord]], bool],
+    ) -> list[DecisionRecord]: ...
+    async def clear_person_changes(self) -> None: ...
     async def deferred(self) -> list[str]: ...
     async def reflex_tools(self) -> list[ToolInfo]: ...
     async def advance_trigger(self, trigger_id: str, now: datetime) -> bool: ...
@@ -330,6 +344,59 @@ class ContainerBus:
     @_bounded
     async def notifications(self, since_wall: float) -> list[Entry]:
         return await self._range(NOTIFICATION_DISPATCH_STREAM, since_wall)
+
+    @_bounded
+    async def decision_records(self, since: datetime) -> list[DecisionRecord]:
+        """Reflex's decisions logged at or after *since* (timezone-aware), oldest first."""
+        return await DecisionLog(self._redis()).read(since=since)
+
+    async def wait_for_decisions(
+        self,
+        since: datetime,
+        timeout_s: float,
+        enough: Callable[[list[DecisionRecord]], bool],
+    ) -> list[DecisionRecord]:
+        """Reflex's decisions logged at or after *since*, once *enough* accepts them, or what
+        the log holds after *timeout_s*.
+
+        Reflex logs a decision just after its model's reply returns, so a read made the
+        moment the proxy records the call can come first. Each wait blocks until an entry
+        lands on the log after the last one seen, so it wakes as the record is written, and
+        a record already there is seen at once. A container that answers no read within
+        *timeout_s* plus the bus's ``timeout_s`` is a ``BusError``.
+        """
+        async with self.answered("wait_for_decisions", wait_s=timeout_s):
+            return await self._wait_for_decisions(since, timeout_s, enough)
+
+    async def _wait_for_decisions(
+        self,
+        since: datetime,
+        timeout_s: float,
+        enough: Callable[[list[DecisionRecord]], bool],
+    ) -> list[DecisionRecord]:
+        r = self._redis()
+        log = DecisionLog(r)
+        # The tail first, then the read: a record written between the two is in the read, and
+        # one written after the read is after the tail, so the blocking read below sees it.
+        tail = await revrange(r, REFLEX_DECISION_LOG_STREAM, count=1)
+        last_id = decode_stream_value(tail[0][0]) if tail else "0-0"
+        deadline = time.monotonic() + timeout_s
+        while True:
+            records = await log.read(since=since)
+            remaining_ms = math.ceil((deadline - time.monotonic()) * 1000)
+            if enough(records) or remaining_ms <= 0:
+                return records
+            for _stream, entries in await read(
+                r, {REFLEX_DECISION_LOG_STREAM: last_id}, block=remaining_ms
+            ):
+                last_id = decode_stream_value(entries[-1][0])
+
+    @_bounded
+    async def clear_person_changes(self) -> None:
+        """Drop Reflex's record of what people just changed. The restore pushes every drifted
+        entity back as ``outside``, which Reflex notes as a person's change: left there, the
+        next sample's prompt would tell the model to leave those devices alone."""
+        await self._redis().delete(REFLEX_PERSON_CHANGES_KEY)
 
     @_bounded
     async def deferred(self) -> list[str]:

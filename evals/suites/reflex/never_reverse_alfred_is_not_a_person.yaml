@@ -1,0 +1,22 @@
+id: reflex.never_reverse.alfred_is_not_a_person
+prd: [4.4.never-reverse]
+status: shipped
+tags: [judgment, lights, never-reverse]
+steps:
+  - clock: {hour: 20}
+  - ha_event: {entity_id: sun.sun, state: below_horizon}
+  - ha_event: {entity_id: person.sam, state: not_home}
+  - ha_event: {entity_id: person.alex, state: not_home}
+  # Alfred's own change: Reflex may still judge the lamp, because it is not a person's.
+  - user: "Turn off the living room lamp."
+  - wait: 6  # Reflex ignores Alex for 5 s after the last change
+  - ha_event: {entity_id: person.alex, state: home}
+expect:
+  # The lamp's change is Alfred's ...
+  - prompt_contains: {role: system1, text: "by Alfred"}
+  # ... so no System 1 prompt tells the model to leave the lamp alone. The line names an entity
+  # as the House block does ("Living Room Lamp (Living Room)"), or by its id when the live state
+  # does not hold it, hence the regex.
+  - prompt_not_contains:
+      role: system1
+      regex: "Leave alone, a person just changed: .*(Living Room Lamp|light\\.living_room_lamp)"

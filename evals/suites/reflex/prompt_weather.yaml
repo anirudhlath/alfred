@@ -1,0 +1,11 @@
+id: reflex.prompt.weather
+prd: [4.4.reflex-judgment]
+status: shipped
+tags: [prompt]
+steps:
+  - ha_event: {entity_id: weather.home, state: rainy}
+expect:
+  # Reflex watches the weather: the change wakes the model, and the Now line reads the
+  # condition live. The " · " is the Now line's separator ("... · sun down · rainy"); the What
+  # changed line also says "rainy", but after an arrow, so only the Now line matches.
+  - prompt_contains: {role: system1, text: " · rainy"}

@@ -35,7 +35,7 @@ from evals.harness.evidence import (
     StatePush,
     TranscriptTurn,
 )
-from evals.harness.reflex import judges, reflex_calls
+from evals.harness.reflex import judges, logged_decisions, reflex_calls
 from evals.harness.scenario import (
     PENDING_ACTION_PLACEHOLDER,
     Actor,
@@ -105,6 +105,9 @@ class PlayContext:
     reflex_timeout_s: float = 15.0
     reflex_cooldown_s: float = 6.0
     reflex_settle_cap_s: float = 60.0
+    # A golden that judges Reflex's outcome: how long Reflex may take to write the decision
+    # log entries for the calls System 1 answered (it writes just after the reply returns).
+    decision_log_timeout_s: float = 10.0
     # How long a trigger brought forward may take to fire.
     fire_timeout_s: float = 15.0
     now: Callable[[], datetime] = _utc_now
@@ -291,8 +294,12 @@ async def _advance(
         await asyncio.sleep(ctx.settle_s)  # for what the fire sets off: a notification, a call
 
 
-async def _collect(ctx: PlayContext, ev: Evidence, started_wall: float) -> list[str]:
-    """Fill in the bus's evidence. Returns the ids of every trigger the sample created."""
+async def _collect(
+    ctx: PlayContext, ev: Evidence, started_wall: float, *, reads_outcomes: bool
+) -> list[str]:
+    """Fill in the bus's evidence. Returns the ids of every trigger the sample created.
+
+    Reflex's decision log is read only for a golden that judges an outcome."""
     created, fired = trigger_records(
         await ctx.bus.events(started_wall),
         ev.started_at,
@@ -304,9 +311,21 @@ async def _collect(ctx: PlayContext, ev: Evidence, started_wall: float) -> list[
         await ctx.bus.notifications(started_wall), ev.started_at, started_wall
     )
     ev.deferred = deferred_records(await ctx.bus.deferred())
-    if any(_is_system1(c) for c in ev.llm_calls):
+    system1_calls = sum(_is_system1(c) for c in ev.llm_calls)
+    if system1_calls:
         tools = await ctx.bus.reflex_tools()
         ev.reflex = reflex_calls(ev.llm_calls, tools, ctx.fake_ha.world)
+    if reads_outcomes:
+        # Each call System 1 answered ends in a log entry. One that never lands is missing
+        # evidence for the check to name, not a failure of the harness.
+        records = await ctx.bus.wait_for_decisions(
+            datetime.fromtimestamp(started_wall, UTC),
+            ctx.decision_log_timeout_s,
+            lambda logged: len(logged) >= system1_calls,
+        )
+        ev.decisions = logged_decisions(
+            records, ctx.fake_ha.world, started=ev.started_at, started_wall=started_wall
+        )
     return [r.trigger_id for r in created]
 
 
@@ -457,6 +476,9 @@ async def _play(
     restored = await ctx.fake_ha.restore_world()
     if scenario.watches_reflex:
         await _settle_reflex(ctx, before_restore, time.monotonic())
+        # The restore's changes are ``outside``, which Reflex notes as a person's: the golden
+        # would open with them on its Leave alone line. It also drops what the last golden left.
+        await ctx.bus.clear_person_changes()
     elif restored:
         await asyncio.sleep(ctx.restore_settle_s)
     session_id = session_id_for(variant.sample_id, epoch)
@@ -583,6 +605,6 @@ async def _play(
     ev.ha_states = ctx.fake_ha.states()
     # Trigger/DND/timezone cleanup remains on success only; an error restarts the dirty
     # stack (tasks.reset_or_recover). Pending IDs are cleaned on every exit by play().
-    created = await _collect(ctx, ev, started_wall)
+    created = await _collect(ctx, ev, started_wall, reads_outcomes=scenario.reads_outcomes)
     await _clean_up(ctx, created, touched_dnd, tz_before)
     return ev

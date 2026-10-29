@@ -5,7 +5,6 @@ tags: [judgment, media]
 steps:
   - clock: {hour: 22}
   - ha_event: {entity_id: sun.sun, state: below_horizon}
-    settle: 1  # Reflex does not attend to the sun
   - ha_event: {entity_id: media_player.living_room_tv, state: paused}
   - wait: 6
   - ha_event: {entity_id: media_player.living_room_tv, state: playing}

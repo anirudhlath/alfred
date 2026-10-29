@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
@@ -11,13 +12,17 @@ import pytest
 from redis import exceptions as redis_exceptions
 
 from bus.schemas.events import (
+    ActionRequest,
     ChangeContext,
+    ReflexOutcome,
     ReflexProposal,
     StateChangedEvent,
     TriggerFired,
 )
 from core.reflex import decision_log
 from core.reflex.decision_log import DecisionLog, DecisionRecord
+from core.reflex.reversal import PersonChange
+from core.reflex.tests.fakes import decided
 from shared.streams import REFLEX_DECISION_LOG_STREAM
 
 if TYPE_CHECKING:
@@ -51,7 +56,7 @@ async def test_record_stores_prompt_cause_and_proposal() -> None:
     log = DecisionLog(redis, clock=lambda: _NOW)
     event = _change(ChangeContext(user_id="u"))
 
-    await log.record("state_change", event, "the prompt", _PROPOSAL)
+    await log.record("state_change", event, decided(_PROPOSAL, prompt="the prompt"))
 
     records = await log.read(since=_EPOCH)
     assert records == [
@@ -62,16 +67,72 @@ async def test_record_stores_prompt_cause_and_proposal() -> None:
             cause="person",
             prompt="the prompt",
             proposal=_PROPOSAL,
+            outcome=ReflexOutcome(kind="none"),
         )
     ]
     assert records[0].event["entity_id"] == "light.bedroom_lamp"
+    assert records[0].recent == {}
+
+
+async def test_record_stores_the_outcome_and_what_people_just_changed() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    log = DecisionLog(redis, clock=lambda: _NOW)
+    proposal = ReflexProposal(
+        decision="act",
+        action=ActionRequest(
+            source="reflex-engine",
+            target_service="home-service",
+            tool_name="home.light_turn_on",
+            parameters={"target": "light.bedroom_lamp"},
+        ),
+    )
+    change = PersonChange(
+        time=_NOW - timedelta(minutes=2),
+        cause="person",
+        old_state="on",
+        new_state="off",
+        context_id="ctx-1",
+        attributes_only=False,
+    )
+    outcome = ReflexOutcome(kind="would_reverse", reversed=["light.bedroom_lamp"])
+
+    await log.record(
+        "state_change",
+        _change(ChangeContext(user_id="u")),
+        decided(proposal, outcome=outcome, recent={"light.bedroom_lamp": change}),
+    )
+
+    (record,) = await log.read(since=_EPOCH)
+    assert record.outcome == outcome
+    assert record.recent == {"light.bedroom_lamp": change}
+
+
+async def test_old_records_still_read() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    record = DecisionRecord(
+        time=_NOW,
+        origin="state_change",
+        event=_change(None).model_dump(mode="json"),
+        cause=None,
+        prompt="an old prompt",
+        proposal=_PROPOSAL,
+    )
+    written_before_outcomes = json.loads(record.model_dump_json())
+    del written_before_outcomes["outcome"], written_before_outcomes["recent"]
+    await redis.xadd(REFLEX_DECISION_LOG_STREAM, {"decision": json.dumps(written_before_outcomes)})
+
+    (read,) = await DecisionLog(redis).read(since=_EPOCH)
+
+    assert read.prompt == "an old prompt"
+    assert read.outcome is None
+    assert read.recent == {}
 
 
 async def test_trigger_decisions_have_no_cause() -> None:
     redis = fakeredis.FakeAsyncRedis()
     log = DecisionLog(redis, clock=lambda: _NOW)
 
-    await log.record("trigger_fired", _trigger(), "the prompt", _PROPOSAL)
+    await log.record("trigger_fired", _trigger(), decided(_PROPOSAL, prompt="the prompt"))
 
     (record,) = await log.read(since=_EPOCH)
     assert record.origin == "trigger_fired"
@@ -83,7 +144,7 @@ async def test_a_state_change_without_a_context_has_no_cause() -> None:
     redis = fakeredis.FakeAsyncRedis()
     log = DecisionLog(redis, clock=lambda: _NOW)
 
-    await log.record("state_change", _change(None), "the prompt", _PROPOSAL)
+    await log.record("state_change", _change(None), decided(_PROPOSAL, prompt="the prompt"))
 
     (record,) = await log.read(since=_EPOCH)
     assert record.cause is None
@@ -93,8 +154,8 @@ async def test_read_since_filters_on_the_records_own_time() -> None:
     redis = fakeredis.FakeAsyncRedis()
     older = DecisionLog(redis, clock=lambda: _NOW - timedelta(days=2))
     newer = DecisionLog(redis, clock=lambda: _NOW)
-    await older.record("state_change", _change(None), "old prompt", _PROPOSAL)
-    await newer.record("state_change", _change(None), "new prompt", _PROPOSAL)
+    await older.record("state_change", _change(None), decided(_PROPOSAL, prompt="old prompt"))
+    await newer.record("state_change", _change(None), decided(_PROPOSAL, prompt="new prompt"))
 
     records = await newer.read(since=_NOW - timedelta(days=1))
 
@@ -104,10 +165,10 @@ async def test_read_since_filters_on_the_records_own_time() -> None:
 async def test_read_skips_a_row_it_cannot_parse() -> None:
     redis = fakeredis.FakeAsyncRedis()
     log = DecisionLog(redis, clock=lambda: _NOW)
-    await log.record("state_change", _change(None), "first", _PROPOSAL)
+    await log.record("state_change", _change(None), decided(_PROPOSAL, prompt="first"))
     await redis.xadd(REFLEX_DECISION_LOG_STREAM, {"decision": "{not json"})
     await redis.xadd(REFLEX_DECISION_LOG_STREAM, {"other": "field"})
-    await log.record("state_change", _change(None), "last", _PROPOSAL)
+    await log.record("state_change", _change(None), decided(_PROPOSAL, prompt="last"))
 
     records = await log.read(since=_EPOCH)
 
@@ -121,7 +182,7 @@ async def test_record_keeps_the_stream_within_its_age_bound() -> None:
     await redis.xadd(REFLEX_DECISION_LOG_STREAM, {"decision": "{}"}, id=f"{stale_ms}-0")
     log = DecisionLog(redis, clock=lambda: _NOW)
 
-    await log.record("state_change", _change(None), "fresh", _PROPOSAL)
+    await log.record("state_change", _change(None), decided(_PROPOSAL, prompt="fresh"))
 
     assert await redis.xlen(REFLEX_DECISION_LOG_STREAM) == 1
 
@@ -135,8 +196,10 @@ async def test_record_never_raises_when_redis_refuses() -> None:
     redis.xadd = AsyncMock(side_effect=refusal)
     log = DecisionLog(redis, clock=lambda: _NOW)
 
-    await log.record("state_change", _change(ChangeContext(user_id="u")), "p", _PROPOSAL)
-    await log.record("trigger_fired", _trigger(), "p", _PROPOSAL)
+    await log.record(
+        "state_change", _change(ChangeContext(user_id="u")), decided(_PROPOSAL, prompt="p")
+    )
+    await log.record("trigger_fired", _trigger(), decided(_PROPOSAL, prompt="p"))
 
 
 def _ms(moment: datetime) -> int:
