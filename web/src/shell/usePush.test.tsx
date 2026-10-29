@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api";
 import {
   fetchPublicKey,
@@ -52,6 +52,14 @@ function deferred<T>() {
 }
 
 /**
+ * A deadline as a browser rejects with one: an Error named TimeoutError, which
+ * is all `timedOut` reads. Not `new DOMException(…)`, because jsdom's is not an
+ * Error, and `errorText` would then say less than a phone does.
+ */
+const deadline = (message: string): Error =>
+  Object.assign(new Error(message), { name: "TimeoutError" });
+
+/**
  * The owner answers the prompt with `answer`, and the browser's permission
  * follows — a tick after the ask, as it does when someone taps the prompt.
  */
@@ -85,6 +93,11 @@ beforeEach(() => {
   vi.mocked(fetchPublicKey).mockResolvedValue(HOUSE_KEY);
   vi.mocked(syncSubscription).mockResolvedValue(undefined);
   answers("granted");
+});
+
+afterEach(() => {
+  // `comeBack` shadows jsdom's getter with an own property; deleting it restores it.
+  Reflect.deleteProperty(document, "visibilityState");
 });
 
 describe("usePush", () => {
@@ -134,13 +147,15 @@ describe("usePush", () => {
   });
 
   it("is failed with the error when the sync fails, and retry refetches", async () => {
-    vi.mocked(syncSubscription).mockRejectedValue(new Error("no service worker"));
+    // `store_device()` gave up on a contended hash (decision 1): nothing was
+    // stored, so the phone is not registered, and the way on is to ask again.
+    vi.mocked(syncSubscription).mockRejectedValue(new ApiError(503, "Device store busy"));
     const { result } = renderPush();
 
     await waitFor(() =>
-      expect(result.current.reach).toEqual({ kind: "failed", detail: "no service worker" }),
+      expect(result.current.reach).toEqual({ kind: "failed", detail: "Device store busy" }),
     );
-    // The app's one retry, and no more until someone asks.
+    // The app's one retry for a 5xx, and no more until someone asks.
     expect(syncSubscription).toHaveBeenCalledTimes(2);
 
     vi.mocked(syncSubscription).mockResolvedValue(undefined);
@@ -149,18 +164,35 @@ describe("usePush", () => {
     expect(syncSubscription).toHaveBeenCalledTimes(3);
   });
 
-  it("is failed with the house's busy store, which retry asks again", async () => {
-    // `store_device()` gave up on a contended hash: nothing was stored, so the
-    // phone is not registered, and the way on is to ask again.
-    vi.mocked(syncSubscription).mockRejectedValue(new ApiError(503, "Device store busy"));
+  it("does not wait out a worker deadline twice", async () => {
+    vi.mocked(syncSubscription).mockRejectedValue(deadline("no service worker"));
     const { result } = renderPush();
 
+    await waitFor(() =>
+      expect(result.current.reach).toEqual({ kind: "failed", detail: "no service worker" }),
+    );
+    // A sync that has already waited ten seconds is not retried behind the
+    // owner's back: the next try is theirs, from the card.
+    expect(syncSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it("is checking while a retry is under way, even after an earlier success", async () => {
+    const { result, client } = renderPush();
+    await waitFor(() => expect(result.current.reach).toEqual({ kind: "on" }));
+
+    // A sign-in's re-sync fails: the error stands beside the old `on`.
+    vi.mocked(syncSubscription).mockRejectedValue(new ApiError(503, "Device store busy"));
+    await act(async () => client.invalidateQueries());
     await waitFor(() =>
       expect(result.current.reach).toEqual({ kind: "failed", detail: "Device store busy" }),
     );
 
-    vi.mocked(syncSubscription).mockResolvedValue(undefined);
+    const sync = deferred<undefined>();
+    vi.mocked(syncSubscription).mockReturnValue(sync.promise);
     act(() => result.current.retry());
+    await waitFor(() => expect(result.current.reach).toEqual({ kind: "checking" }));
+
+    await act(async () => sync.resolve(undefined));
     await waitFor(() => expect(result.current.reach).toEqual({ kind: "on" }));
   });
 
@@ -176,18 +208,28 @@ describe("usePush", () => {
     granted = "default";
     const asked = deferred<NotificationPermission>();
     vi.mocked(requestAndSubscribe).mockImplementation(() => asked.promise);
-    const { result } = renderPush();
+    const { result, rerender } = renderPush();
     expect(result.current.reach).toEqual({ kind: "ask" });
     expect(result.current.asking).toBe(false);
 
     act(() => result.current.enable());
     expect(result.current.asking).toBe(true);
 
+    // The owner has said yes and `requestAndSubscribe` is still registering. A
+    // render now reads the new permission, and must not start a second sync
+    // beside the one Enable is running.
     granted = "granted";
+    rerender();
+    await settle();
+    expect(syncSubscription).not.toHaveBeenCalled();
+
     await act(async () => asked.resolve("granted"));
     await waitFor(() => expect(result.current.reach).toEqual({ kind: "on" }));
     expect(result.current.asking).toBe(false);
-    expect(syncSubscription).toHaveBeenCalledWith(HOUSE_KEY);
+    // Enable's own registration is the only one: one register POST per tap.
+    expect(requestAndSubscribe).toHaveBeenCalledTimes(1);
+    expect(fetchPublicKey).not.toHaveBeenCalled();
+    expect(syncSubscription).not.toHaveBeenCalled();
   });
 
   it("enables without awaiting before the permission request", () => {
@@ -204,14 +246,28 @@ describe("usePush", () => {
 
   it("is unconfigured when enabling finds the house has no key", async () => {
     granted = "default";
-    vi.mocked(fetchPublicKey).mockResolvedValue(null);
+    // A key read after the 404 would fail: the 404 itself is the answer.
+    vi.mocked(fetchPublicKey).mockRejectedValue(new ApiError(502, "Bad Gateway"));
     answers("granted", new ApiError(404, "Web Push not configured"));
     const { result } = renderPush();
 
     act(() => result.current.enable());
     await waitFor(() => expect(result.current.asking).toBe(false));
-    await waitFor(() => expect(result.current.reach).toEqual({ kind: "unconfigured" }));
+    expect(result.current.reach).toEqual({ kind: "unconfigured" });
+    await settle();
+    expect(fetchPublicKey).not.toHaveBeenCalled();
     expect(syncSubscription).not.toHaveBeenCalled();
+  });
+
+  it("syncs once more when enabling fails another way", async () => {
+    granted = "default";
+    answers("granted", new ApiError(503, "Device store busy"));
+    const { result } = renderPush();
+
+    act(() => result.current.enable());
+    await waitFor(() => expect(result.current.reach).toEqual({ kind: "on" }));
+    expect(result.current.asking).toBe(false);
+    expect(syncSubscription).toHaveBeenCalledTimes(1);
   });
 
   it("re-reads the permission when the app comes back", async () => {
@@ -222,6 +278,23 @@ describe("usePush", () => {
     granted = "denied";
     comeBack();
     expect(result.current.reach).toEqual({ kind: "denied" });
+  });
+
+  it("syncs again when a permission taken away is given back", async () => {
+    const { result } = renderPush();
+    await waitFor(() => expect(result.current.reach).toEqual({ kind: "on" }));
+    expect(syncSubscription).toHaveBeenCalledTimes(1);
+
+    granted = "denied";
+    comeBack();
+    expect(result.current.reach).toEqual({ kind: "denied" });
+
+    // Back on in Settings. The browser deactivated the old subscription when the
+    // permission went, so the `on` held from before is no longer true.
+    granted = "granted";
+    comeBack();
+    await waitFor(() => expect(syncSubscription).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.reach).toEqual({ kind: "on" }));
   });
 
   it("syncs again after every sign-in", async () => {

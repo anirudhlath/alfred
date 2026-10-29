@@ -1,5 +1,5 @@
 import { ACTION_PATH } from "@/door/useActionRoute";
-import { api, ApiError, post } from "./api";
+import { api, ApiError } from "./api";
 import { b64urlToBuf, sessionChannel } from "./webauthn";
 
 /** The house's VAPID public key: `push_public_key` in core/channels/web_server.py. No session. */
@@ -8,6 +8,12 @@ export const PUSH_KEY_PATH = "/api/push/public-key";
 export const DEVICES_PATH = "/api/devices/register";
 /** How long a sync waits for a worker to be ready before it gives up. */
 export const READY_TIMEOUT_MS = 10_000;
+/**
+ * How long the key read and the registration may each take. `api()` sets no
+ * deadline, and a socket the house accepts and never answers would hold
+ * Enable's `asking`, or the launch sync's `checking`, until the browser gave up.
+ */
+export const REQUEST_TIMEOUT_MS = 10_000;
 /**
  * How long a best-effort DELETE may take. Its answer changes nothing, and a
  * stalled connection would otherwise hold sign-out until the browser gives up —
@@ -41,10 +47,29 @@ export function permission(): NotificationPermission {
   return "Notification" in window ? Notification.permission : "default";
 }
 
-/** The house's public key, or null when Web Push is not configured there (its 404). */
+/**
+ * `api`, given up after `REQUEST_TIMEOUT_MS`. It rejects with the deadline's own
+ * TimeoutError whatever fetch rejected with, as `fetchAuthStatus` does: an engine
+ * without abort reasons rejects with a plain AbortError, and the retry policy
+ * (`QUERY_DEFAULTS`, through `timedOut`) knows a deadline only by its name. A
+ * request that has already waited this long is not worth a second wait.
+ */
+async function bounded<T>(path: string, init?: RequestInit): Promise<T> {
+  const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  try {
+    return await api<T>(path, { ...init, signal: deadline });
+  } catch (error) {
+    throw deadline.aborted ? deadline.reason : error;
+  }
+}
+
+/**
+ * The house's public key, or null when Web Push is not configured there (its
+ * 404). Rejects after `REQUEST_TIMEOUT_MS` with a TimeoutError.
+ */
 export async function fetchPublicKey(): Promise<string | null> {
   try {
-    return (await api<{ public_key: string }>(PUSH_KEY_PATH)).public_key;
+    return (await bounded<{ public_key: string }>(PUSH_KEY_PATH)).public_key;
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) return null;
     throw error;
@@ -54,12 +79,17 @@ export async function fetchPublicKey(): Promise<string | null> {
 /**
  * The active worker's registration. `ready` never settles on a page with no
  * worker registered, so the wait has a deadline: a sync must fail, where the UI
- * can offer it again, rather than hang for the life of the page.
+ * can offer it again, rather than hang for the life of the page. It is named a
+ * TimeoutError, as `AbortSignal.timeout`'s are, so the retry policy does not
+ * wait it out a second time.
  */
 async function readyRegistration(): Promise<ServiceWorkerRegistration> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("no service worker")), READY_TIMEOUT_MS);
+    timer = setTimeout(
+      () => reject(new DOMException("no service worker", "TimeoutError")),
+      READY_TIMEOUT_MS,
+    );
   });
   try {
     return await Promise.race([navigator.serviceWorker.ready, deadline]);
@@ -103,8 +133,9 @@ async function forgetRow(endpoint: string): Promise<void> {
  * whose key the browser does not report is kept, since nothing says it is stale.
  *
  * Rejects when no worker is ready in time, when the browser refuses, or when
- * the registration does — the house's 503 `Device store busy` included, which
- * the caller retries like any other failure.
+ * the registration does or runs out of time. The two deadlines reject with a
+ * TimeoutError, which the query's retry policy never repeats; anything else —
+ * the house's 503 `Device store busy` included — it retries once.
  */
 export async function syncSubscription(publicKey: string): Promise<void> {
   const { pushManager } = await readyRegistration();
@@ -120,7 +151,10 @@ export async function syncSubscription(publicKey: string): Promise<void> {
     userVisibleOnly: true,
     applicationServerKey: key,
   });
-  await post(DEVICES_PATH, { platform: "web_push", subscription: subscription.toJSON() });
+  await bounded(DEVICES_PATH, {
+    method: "POST",
+    body: JSON.stringify({ platform: "web_push", subscription: subscription.toJSON() }),
+  });
 }
 
 /**

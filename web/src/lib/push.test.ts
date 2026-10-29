@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "./api";
+import { ApiError, timedOut } from "./api";
 import {
   DEVICES_PATH,
   fetchPublicKey,
@@ -8,6 +8,7 @@ import {
   permission,
   PUSH_KEY_PATH,
   reachContext,
+  REQUEST_TIMEOUT_MS,
   requestAndSubscribe,
   syncSubscription,
 } from "./push";
@@ -131,14 +132,20 @@ const reply = (status: number, body: unknown) => new Response(JSON.stringify(bod
 
 type Answer = (init?: RequestInit) => Promise<Response>;
 
-/** The house: its key (null when Web Push is not configured), and how a DELETE and a POST end. */
-function stubHouse(options: { key?: string | null; onDelete?: Answer; onPost?: Answer } = {}) {
+/**
+ * The house: its key (null when Web Push is not configured), and how the key
+ * read, a DELETE and a POST end. `onKey`, when given, answers the key read.
+ */
+function stubHouse(
+  options: { key?: string | null; onKey?: Answer; onDelete?: Answer; onPost?: Answer } = {},
+) {
   const ok: Answer = async () => reply(200, { status: "ok" });
-  const { key = HOUSE_KEY, onDelete = ok, onPost = ok } = options;
+  const { key = HOUSE_KEY, onKey, onDelete = ok, onPost = ok } = options;
   const mock = vi.fn<typeof fetch>(async (input, init) => {
     const method = init?.method ?? "GET";
     log.push(`${method} ${String(input)}`);
     if (String(input) === PUSH_KEY_PATH) {
+      if (onKey) return onKey(init);
       return key === null
         ? reply(404, { detail: "Web Push not configured" })
         : reply(200, { public_key: key });
@@ -275,6 +282,24 @@ describe("fetchPublicKey", () => {
     vi.stubGlobal("fetch", vi.fn(async () => reply(502, { detail: "Bad Gateway" })));
     await expect(fetchPublicKey()).rejects.toMatchObject({ status: 502 });
   });
+
+  it("gives up on a key read that never answers, with a deadline's name", async () => {
+    vi.useFakeTimers();
+    fakeDeadlines();
+    stubHouse({ onKey: stalled });
+    let settled = false;
+    const reading = fetchPublicKey().catch((caught: unknown) => {
+      settled = true;
+      return caught;
+    });
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const error = await reading;
+    // By name, which is all `timedOut` — and so the retry policy — reads.
+    expect(error).toMatchObject({ name: "TimeoutError" });
+    expect(timedOut(error)).toBe(true);
+  });
 });
 
 describe("syncSubscription", () => {
@@ -384,8 +409,30 @@ describe("syncSubscription", () => {
     await vi.advanceTimersByTimeAsync(9_999);
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
-    await expect(syncing).rejects.toThrow("no service worker");
+    const error = await syncing.catch((caught: unknown) => caught);
+    // A deadline by name, so the retry policy does not wait it out twice.
+    expect(error).toMatchObject({ name: "TimeoutError", message: "no service worker" });
+    expect(timedOut(error)).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("gives up on a registration that never answers, with a deadline's name", async () => {
+    vi.useFakeTimers();
+    fakeDeadlines();
+    registry();
+    stubHouse({ onPost: stalled });
+    let settled = false;
+    const syncing = syncSubscription(HOUSE_KEY).catch((caught: unknown) => {
+      settled = true;
+      return caught;
+    });
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const error = await syncing;
+    expect(error).toMatchObject({ name: "TimeoutError" });
+    expect(timedOut(error)).toBe(true);
+    expect(log).toEqual(["subscribe", `POST ${DEVICES_PATH}`]);
   });
 });
 

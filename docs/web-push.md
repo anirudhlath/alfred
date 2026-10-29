@@ -21,7 +21,7 @@ ciphertext it cannot read, so Apple's relay never sees a notification's text.
 | Admin read | `core/channels/admin_api.py` | `GET /api/admin/devices`, with Web Push rows redacted |
 | Worker | `web/public/sw.js` | the `push` and `notificationclick` listeners |
 | Client | `web/src/lib/push.ts` | subscribing, launch re-validation, sign-out, hearing a tap's `OPEN_PATH` ([`web-frontend.md`](web-frontend.md)) |
-| Client wiring | `web/src/shell/usePush.ts`, `web/src/shell/PushKeeper.tsx` | `usePush()`: the Reach state and `Enable`; `PushKeeper` (inside `AuthGate`): the re-validation once a launch and again after each sign-in, when installed with permission granted; `NotificationOpen`: routes a tap's `OPEN_PATH`. Sign-out (`useSystem`) forgets the subscription before it ends the session |
+| Client wiring | `web/src/shell/usePush.ts`, `web/src/shell/PushKeeper.tsx` | `usePush()`: the Reach state and `Enable`; `PushKeeper` (inside `AuthGate`): the re-validation once a launch, again after each sign-in and again when a permission taken away is given back, when installed with permission granted; `NotificationOpen`: routes a tap's `OPEN_PATH`. Sign-out (`useSystem`) forgets the subscription before it ends the session |
 
 ## Architecture
 
@@ -135,6 +135,31 @@ Operations).
 
 The public key needs no session: it is a public key, and the client fetches it before it
 subscribes (spec §6.1).
+
+### From the PWA
+
+`Enable`, on System › Reach, asks for permission inside the tap, then reads the key,
+subscribes and registers: one `POST` a tap, and a success is Reach's `on` with no second
+one. A 404 key read says Web Push is not set up, and nothing asks again; any other failure
+gets one try of the sync below once the tap is done, and Reach says what that sync found.
+
+The sync (`usePush`, kept running by `PushKeeper`) does the same without the prompt,
+subscribing only when the browser holds no subscription. It runs once a launch, again after
+each sign-in, and again when a permission turned off in Settings is turned back on, since
+the browser deactivates the subscription with the permission. It never runs on focus: the
+row does not lapse.
+
+Every wait has a deadline, so a house that accepts a socket and never answers still leaves
+Reach with something to offer:
+
+| Wait | Deadline | `web/src/lib/push.ts` |
+|---|---|---|
+| A ready service worker | 10 s | `READY_TIMEOUT_MS` |
+| The key read, and the registration, each | 10 s | `REQUEST_TIMEOUT_MS` |
+| Sign-out's `DELETE`, best effort | 5 s | `FORGET_TIMEOUT_MS` |
+
+The first two reject with a `TimeoutError`, which the query's retry policy never repeats:
+the next try is the owner's, from Reach. A 503 `Device store busy` is retried once.
 
 ### The row
 

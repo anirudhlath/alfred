@@ -1,6 +1,6 @@
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { errorText } from "@/lib/api";
+import { ApiError, errorText } from "@/lib/api";
 import { onVisible } from "@/lib/lifecycle";
 import {
   fetchPublicKey,
@@ -59,6 +59,8 @@ async function sync(): Promise<Synced> {
  * The phone's facts first, the sync's answer after: a sync only runs once they
  * all allow it. By status, not by `data` — a re-sync that fails after an
  * earlier one landed is `failed`, because the house may no longer hold the row.
+ * A failure being asked again is `checking`: react-query keeps the error, and
+ * the old data beside it, until the new answer lands.
  */
 function reachOf(
   context: ReachContext,
@@ -69,7 +71,9 @@ function reachOf(
   if (context === "unsupported") return { kind: "unavailable" };
   if (allowed === "denied") return { kind: "denied" };
   if (allowed === "default") return { kind: "ask" };
-  if (query.isPending) return { kind: "checking" };
+  if (query.isPending || (query.isError && query.fetchStatus === "fetching")) {
+    return { kind: "checking" };
+  }
   if (query.isError) return { kind: "failed", detail: errorText(query.error) };
   return { kind: query.data };
 }
@@ -90,7 +94,9 @@ export function usePush(): PushValue {
   const query = useQuery({
     queryKey: PUSH_QUERY_KEY,
     queryFn: sync,
-    enabled: context === "capable" && allowed === "granted",
+    // Off while Enable runs, which registers for itself: a render that reads
+    // the new permission mid-tap would otherwise start a second register.
+    enabled: context === "capable" && allowed === "granted" && !asking,
     // Once a launch and once a sign-in, never on focus: the house's row does
     // not lapse, and a register on every app switch would only rewrite it.
     staleTime: Infinity,
@@ -98,24 +104,40 @@ export function usePush(): PushValue {
   });
   const { refetch } = query;
 
+  // A permission taken away strands the sync's answer: given back, the query
+  // would still hold `on` for the subscription the browser deactivated, and
+  // under `staleTime: Infinity` never ask again. Marked stale here, with no
+  // fetch, it syncs the moment the permission returns.
+  useEffect(() => {
+    if (allowed === "granted") return;
+    void queryClient.invalidateQueries({ queryKey: PUSH_QUERY_KEY, refetchType: "none" });
+  }, [allowed, queryClient]);
+
   const enable = useCallback(() => {
     // First, before any await, state or effect: iOS shows the prompt only from
     // inside the gesture, and anything ahead of it can end the gesture.
     const answered = requestAndSubscribe();
     setAsking(true);
     void answered
-      .catch(() => {
-        // Nothing kept: the sync below asks the same house and says it for
-        // itself — the 404 of a house with no key as unconfigured, anything
-        // else as failed. A refused prompt leaves the sync off, and the
-        // permission says denied.
-      })
-      .finally(() => {
-        setAsking(false);
-        // Disabled until the render that reads the new permission, which then
-        // runs it; already enabled, it runs now.
-        void queryClient.invalidateQueries({ queryKey: PUSH_QUERY_KEY });
-      });
+      .then(
+        (answer) => {
+          // Subscribed and registered: that is the sync's answer, so the query
+          // takes it as its own rather than registering a second time. A
+          // refusal or a dismissed prompt needs nothing — the permission says it.
+          if (answer === "granted") queryClient.setQueryData(PUSH_QUERY_KEY, "on");
+        },
+        (error: unknown) => {
+          // The house has no key: said, and not asked again.
+          if (error instanceof ApiError && error.status === 404) {
+            queryClient.setQueryData(PUSH_QUERY_KEY, "unconfigured");
+            return;
+          }
+          // Anything else, a 503 `Device store busy` say, gets the sync's own
+          // try once the tap is done — and the sync's answer, whatever it is.
+          void queryClient.invalidateQueries({ queryKey: PUSH_QUERY_KEY });
+        },
+      )
+      .finally(() => setAsking(false));
   }, [queryClient]);
 
   const retry = useCallback(() => void refetch(), [refetch]);
