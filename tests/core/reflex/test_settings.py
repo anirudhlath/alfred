@@ -153,6 +153,19 @@ async def test_a_partial_document_takes_the_defaults_for_the_rest() -> None:
         {"allowed_scripts": [None]},
         {"allowed_scripts": [""]},
         {"reverse_window_minutes": 1441},
+        {"reverse_window_minutes": True},
+        {"reverse_window_minutes": "60"},
+        {"reverse_window_minutes": 60.0},
+        {"ask_expiry_seconds": True},
+        {"ask_expiry_seconds": "600"},
+        {"repeat_hours": True},
+        {"repeat_hours": "3"},
+        {"daily_ask_cap": True},
+        {"daily_ask_cap": "3"},
+        {"ask_tools": ["a"] * 201},
+        {"allowed_scripts": ["a"] * 201},
+        {"ask_tools": ["a" * 257]},
+        {"allowed_scripts": ["a" * 257]},
         {"ask_expiry_seconds": 59},
         {"ask_expiry_seconds": 3601},
         {"ask_expiry_seconds": "soon"},
@@ -191,6 +204,17 @@ async def test_one_bad_field_discards_the_whole_document(warnings: list[str]) ->
 
     assert await load_settings(redis) == ReflexSettings()
     assert len(warnings) == 1
+
+
+def test_a_whole_number_is_a_valid_repeat_interval() -> None:
+    assert ReflexSettings.model_validate_json('{"repeat_hours": 2}').repeat_hours == 2.0
+    assert ReflexSettings.model_validate({"repeat_hours": 0}).repeat_hours == 0.0
+
+
+def test_the_lists_hold_200_items_of_256_characters() -> None:
+    settings = ReflexSettings(ask_tools=["a" * 256] * 200, allowed_scripts=["b"] * 200)
+
+    assert len(settings.ask_tools) == len(settings.allowed_scripts) == 200
 
 
 @pytest.mark.parametrize(
@@ -245,6 +269,8 @@ async def test_set_reads_json_when_it_parses() -> None:
 
     assert await _run(redis, "set", "daily_ask_cap", "3") == 0
     assert await _run(redis, "set", "repeat_hours", "0.5") == 0
+    assert await _run(redis, "set", "repeat_hours", "2") == 0
+    assert await _run(redis, "set", "repeat_hours", "0.5") == 0
     assert await _run(redis, "set", "ask_tools", '["alpha_*", "beta_off"]') == 0
     assert await _run(redis, "set", "quiet_hours_start", "22:30") == 0
 
@@ -272,6 +298,15 @@ async def test_set_keeps_the_other_fields() -> None:
         ("mode", "act"),
         ("daily_ask_cap", "51"),
         ("daily_ask_cap", "many"),
+        ("daily_ask_cap", "true"),
+        ("daily_ask_cap", '"3"'),
+        ("reverse_window_minutes", "true"),
+        ("repeat_hours", "true"),
+        ("ask_tools", json.dumps(["a"] * 201)),
+        ("allowed_scripts", json.dumps(["a" * 257])),
+        ("redis", "1"),
+        ("current", "1"),
+        ("changes", "1"),
         ("quiet_hours_start", "7am"),
         ("quiet_hours_start", "2300"),
         ("ask_tools", "alpha_*"),
@@ -293,6 +328,66 @@ async def test_set_refuses_an_invalid_document_and_saves_nothing(
     assert captured.out == ""
     assert field in captured.err
     assert "nothing saved" in captured.err
+
+
+_UNUSABLE_DOCUMENTS = [b"{not json", b'{"mode": "act"}', b'{"daily_ask_cap": true}']
+
+
+@pytest.mark.parametrize("raw", _UNUSABLE_DOCUMENTS)
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("set", "mode", "ask"),
+        ("allow-script", "target.a"),
+        ("disallow-script", "target.a"),
+    ],
+)
+async def test_a_command_never_edits_over_an_unusable_stored_document(
+    raw: bytes, argv: tuple[str, ...], capsys: pytest.CaptureFixture[str]
+) -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    await redis.set(REFLEX_SETTINGS_KEY, raw)
+
+    assert await _run(redis, *argv) != 0
+
+    assert await redis.get(REFLEX_SETTINGS_KEY) == raw
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "unusable" in captured.err
+    assert "nothing saved" in captured.err
+    assert "PUT /api/admin/reflex/settings" in captured.err
+
+
+async def test_show_prints_the_defaults_and_says_the_stored_document_is_unusable(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    await redis.set(REFLEX_SETTINGS_KEY, b'{"mode": "act"}')
+
+    assert await _run(redis, "show") == 0
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == ReflexSettings().model_dump()
+    assert "unusable" in captured.err
+    assert "mode" in captured.err
+    assert await redis.get(REFLEX_SETTINGS_KEY) == b'{"mode": "act"}'
+
+
+async def test_a_missing_document_is_edited_from_the_defaults() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+
+    assert await _run(redis, "allow-script", "target.a") == 0
+
+    assert await _stored(redis) == ReflexSettings(allowed_scripts=["target.a"]).model_dump()
+
+
+def test_the_script_commands_take_an_id(capsys: pytest.CaptureFixture[str]) -> None:
+    for command in ("allow-script", "disallow-script"):
+        with pytest.raises(SystemExit):
+            parse_args([command, "--help"])
+        help_text = capsys.readouterr().out
+        assert " id" in help_text
+        assert "entity" not in help_text
 
 
 async def test_allow_script_adds_in_order_and_is_idempotent() -> None:

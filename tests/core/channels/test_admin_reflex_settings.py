@@ -78,6 +78,16 @@ def test_put_then_get_round_trips_the_whole_document(
     assert client.get(URL).json() == _FULL
 
 
+def test_put_accepts_a_whole_number_for_repeat_hours(
+    server: fakeredis.FakeServer, stored: fakeredis.FakeRedis
+) -> None:
+    resp = _client(server).put(URL, json={"repeat_hours": 2, "daily_ask_cap": 3})
+
+    assert resp.status_code == 200
+    assert resp.json()["repeat_hours"] == 2.0
+    assert json.loads(stored.get(REFLEX_SETTINGS_KEY))["daily_ask_cap"] == 3  # type: ignore[arg-type]
+
+
 def test_put_fills_a_missing_field_with_its_default(
     server: fakeredis.FakeServer, stored: fakeredis.FakeRedis
 ) -> None:
@@ -100,8 +110,17 @@ def test_put_fills_a_missing_field_with_its_default(
         {"ask_tools": "alpha_*"},
         {"ask_tools": [""]},
         {"allowed_scripts": [1]},
+        {"allowed_scripts": ["a"] * 201},
+        {"ask_tools": ["a"] * 201},
+        {"ask_tools": ["a" * 257]},
+        {"reverse_window_minutes": True},
+        {"reverse_window_minutes": "60"},
         {"ask_expiry_seconds": 59},
+        {"repeat_hours": True},
+        {"repeat_hours": "3"},
         {"repeat_hours": 169},
+        {"daily_ask_cap": True},
+        {"daily_ask_cap": "3"},
         {"daily_ask_cap": 51},
         {"quiet_hours_start": "24:00"},
         {"quiet_hours_end": "7am"},

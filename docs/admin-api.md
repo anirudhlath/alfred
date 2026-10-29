@@ -404,7 +404,7 @@ editable from the command line (`python -m core.reflex.settings`).
 
 | Rejection | Status |
 |---|---|
-| An unknown field, a wrong type, a value out of bounds, a `mode` other than `shadow` or `ask`, a blank `ask_tools` or `allowed_scripts` entry, or a time that is not `HH:MM` (`PUT`) | **422**, nothing saved |
+| An unknown field, a wrong type (the numbers are strict: `true` and `"60"` are refused), a value out of bounds, a `mode` other than `shadow` or `ask`, a blank or over-long (256 characters) `ask_tools` or `allowed_scripts` entry, more than 200 entries in either list, or a time that is not `HH:MM` (`PUT`) | **422**, nothing saved |
 | Redis failed (either method) | **503** `Reflex settings store unavailable` |
 
 Reflex reads the document on every decision, so an edit applies to the next one: no reload.

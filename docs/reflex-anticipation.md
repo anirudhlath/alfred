@@ -27,13 +27,15 @@ The owner's settings are one JSON document at `alfred:reflex:settings` (`core/re
 `ReflexSettings`), read on every decision, so a change applies to the next one. A missing,
 unreadable or invalid document reads as the defaults, mode `shadow` included, and the
 unusable document is warned about once per process: a typo never stops Reflex. An unknown
-field is invalid, not ignored, and one bad field makes the whole document invalid.
+field is invalid, not ignored, and one bad field makes the whole document invalid. The numbers
+are strict: `true` or `"60"` is a wrong type, not 1 or 60 (a whole number such as `2` is a
+valid `repeat_hours`). Entries are stripped of surrounding whitespace.
 
 | Field | Default | Bounds | What it does |
 |---|---|---|---|
 | `mode` | `shadow` | `shadow` or `ask` | `shadow` records decisions and asks nothing; `ask` puts a proposal that matches `ask_tools` to the owner first |
-| `ask_tools` | `[]` | non-empty strings | fnmatch patterns over tool names: the tools Reflex may ask about. Matched against the tool registry's names, never parsed or listed in code |
-| `allowed_scripts` | `[]` | non-empty strings | target ids the owner has approved running through an ask. Opaque: compared, never parsed |
+| `ask_tools` | `[]` | up to 200 non-empty strings, each at most 256 characters | fnmatch patterns over tool names: the tools Reflex may ask about. Matched against the tool registry's names, never parsed or listed in code |
+| `allowed_scripts` | `[]` | up to 200 non-empty strings, each at most 256 characters | target ids the owner has approved running through an ask. Opaque: compared, never parsed |
 | `reverse_window_minutes` | `60` | 1 to 1440 | how long after a person changes something Reflex will not propose moving it back ([above](#never-reverse-a-person)) |
 | `ask_expiry_seconds` | `600` | 60 to 3600 | how long an ask waits for an answer before it lapses |
 | `repeat_hours` | `2.0` | 0 to 168 | how long after asking about something Reflex will not ask about it again |
@@ -64,7 +66,9 @@ Two ways to edit the document, both validating the whole of it before they save 
   as a string otherwise (`ask`, `22:30`); an invalid result is refused with exit status 1 and
   nothing is saved. `allow-script` and `disallow-script` are idempotent and keep the list's
   order. `show` prints what Reflex would read, which is the defaults when the stored document
-  is unusable.
+  is unusable, and says so on stderr. The commands that change the document refuse to edit an
+  unusable stored one (exit status 1, nothing saved): replace it with the admin `PUT` first. A
+  missing document is edited from the defaults.
 
 ## A redelivered event is not decided again
 

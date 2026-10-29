@@ -41,8 +41,15 @@ _warned: set[bytes | str] = set()
 # A clock time of day, 00:00 to 23:59. Part of the model, so a bad time fails the document.
 _HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
 
+# The caps on the two lists, the same as the attention set's admin edit (``admin_api.py``,
+# which imports this module and so cannot be imported here).
+MAX_LIST_ITEMS = 200
+MAX_ITEM_CHARS = 256
+
 # Opaque text the settings only store and compare: never parsed here.
-_Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+_Text = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_ITEM_CHARS)
+]
 
 
 class ReflexSettings(BaseModel):
@@ -54,17 +61,19 @@ class ReflexSettings(BaseModel):
     # that matches ``ask_tools`` is put to the owner first.
     mode: Literal["shadow", "ask"] = "shadow"
     # fnmatch patterns over tool names: the tools Reflex may ask about. Never parsed here.
-    ask_tools: list[_Text] = Field(default_factory=list)
+    ask_tools: list[_Text] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
     # Target ids Reflex may run an approved ask through. Opaque to Reflex: never parsed here.
-    allowed_scripts: list[_Text] = Field(default_factory=list)
+    allowed_scripts: list[_Text] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
+    # The numbers are strict: ``true`` or ``"60"`` is a wrong type, not 1 or 60. A flag read as 1
+    # would shrink the never-reverse window to a minute. (A whole number is still a float.)
     # How long after a person changes something Reflex will not propose moving it back.
-    reverse_window_minutes: int = Field(60, ge=1, le=1440)
+    reverse_window_minutes: int = Field(60, ge=1, le=1440, strict=True)
     # How long an ask waits for an answer before it lapses.
-    ask_expiry_seconds: int = Field(600, ge=60, le=3600)
+    ask_expiry_seconds: int = Field(600, ge=60, le=3600, strict=True)
     # How long after asking about something Reflex will not ask about it again.
-    repeat_hours: float = Field(2.0, ge=0, le=168)
+    repeat_hours: float = Field(2.0, ge=0, le=168, strict=True)
     # The most asks in one local day.
-    daily_ask_cap: int = Field(6, ge=0, le=50)
+    daily_ask_cap: int = Field(6, ge=0, le=50, strict=True)
     # Quiet hours, local time: no ask in this window. Equal start and end means none.
     quiet_hours_start: str = Field("23:00", pattern=_HHMM)
     quiet_hours_end: str = Field("07:00", pattern=_HHMM)
@@ -102,6 +111,10 @@ async def save_settings(redis: AioRedis, settings: ReflexSettings) -> None:
 # --- the command line ---------------------------------------------------------------------
 
 _PROG = "python -m core.reflex.settings"
+_UNUSABLE = (
+    "the stored document is unusable ({}), so Reflex reads the defaults; replace it with"
+    " PUT /api/admin/reflex/settings, and use `show` to see what Reflex reads"
+)
 Command = Literal["show", "set", "allow-script", "disallow-script"]
 
 
@@ -134,13 +147,13 @@ def parse_args(argv: Sequence[str] | None = None) -> Args:
         ("allow-script", "add an id to allowed_scripts (no change if it is there)"),
         ("disallow-script", "remove an id from allowed_scripts (no change if it is not there)"),
     ):
-        commands.add_parser(name, help=text).add_argument("entity_id")
+        commands.add_parser(name, help=text).add_argument("id")
     ns = parser.parse_args(argv)
     match ns.command:
         case "set":
             return Args("set", ns.field, ns.value)
         case "allow-script" | "disallow-script":
-            return Args(ns.command, value=ns.entity_id)
+            return Args(ns.command, value=ns.id)
         case _:
             return Args("show")
 
@@ -158,7 +171,22 @@ def _refuse(what: str, error: ValidationError) -> int:
     return 1
 
 
-async def _store(redis: AioRedis, current: ReflexSettings, **changes: object) -> int:
+async def _stored(redis: AioRedis) -> tuple[ReflexSettings, str | None]:
+    """What Reflex reads and, when a document is stored but unusable, what is wrong with it.
+
+    A missing document is the defaults and no problem; an unusable one is the defaults too (as
+    ``load_settings`` has it) with its problems.
+    """
+    raw: bytes | str | None = await redis.get(REFLEX_SETTINGS_KEY)
+    if raw is None:
+        return ReflexSettings(), None
+    try:
+        return ReflexSettings.model_validate_json(raw), None
+    except ValidationError as e:
+        return ReflexSettings(), _problems(e)
+
+
+async def _store(redis: AioRedis, current: ReflexSettings, changes: dict[str, object]) -> int:
     """Validate *current* with *changes* applied, then save it: the one road a change takes."""
     try:
         updated = ReflexSettings.model_validate({**current.model_dump(), **changes})
@@ -170,27 +198,39 @@ async def _store(redis: AioRedis, current: ReflexSettings, **changes: object) ->
 
 
 async def execute(redis: AioRedis, args: Args) -> int:
-    """Run one command against *redis*; the exit status (0 done, 1 refused)."""
-    current = await load_settings(redis)
+    """Run one command against *redis*; the exit status (0 done, 1 refused).
+
+    ``show`` prints what Reflex reads. The commands that change the document refuse to edit one
+    that is stored but unusable: they would write the defaults over it with the change on top,
+    and the owner would lose what was there without seeing it.
+    """
+    current, problems = await _stored(redis)
+    if args.command == "show":
+        print(current.model_dump_json(indent=2))
+        if problems is not None:
+            print(f"{_PROG}: {_UNUSABLE.format(problems)}", file=sys.stderr)
+        return 0
+    if problems is not None:
+        print(f"{_PROG}: {_UNUSABLE.format(problems)}; nothing saved", file=sys.stderr)
+        return 1
     match args.command:
-        case "show":
-            print(current.model_dump_json(indent=2))
-            return 0
         case "set":
-            return await _store(redis, current, **{args.field: _read_value(args.value)})
+            return await _store(redis, current, {args.field: _read_value(args.value)})
         case "allow-script":
             wanted = args.value.strip()
             if wanted in current.allowed_scripts:
                 print(f"{wanted} is already in allowed_scripts; nothing to do")
                 return 0
-            return await _store(redis, current, allowed_scripts=[*current.allowed_scripts, wanted])
+            return await _store(
+                redis, current, {"allowed_scripts": [*current.allowed_scripts, wanted]}
+            )
         case "disallow-script":
             wanted = args.value.strip()
             if wanted not in current.allowed_scripts:
                 print(f"{wanted} is not in allowed_scripts; nothing to do")
                 return 0
             kept = [script for script in current.allowed_scripts if script != wanted]
-            return await _store(redis, current, allowed_scripts=kept)
+            return await _store(redis, current, {"allowed_scripts": kept})
 
 
 async def _main(args: Args) -> int:
