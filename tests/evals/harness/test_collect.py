@@ -359,6 +359,16 @@ def test_targets_resolve_like_home_service_and_add_the_room() -> None:
     assert targets(world, None, {}) == []
 
 
+def test_targets_read_the_name_reflexs_prompt_gives_an_entity() -> None:
+    """Reflex sends ``Name (Room)`` as the one entity it names, so a golden judges that entity."""
+    world = load_world("apartment")
+    assert targets(world, "home.light_turn_on", {"target": "bedroom lamp (Bedroom)"}) == [
+        "light.bedroom_lamp",
+        "bedroom",
+    ]
+    assert targets(world, "home.light_turn_on", {"target": "Bedroom Lamp (Kitchen)"}) == []
+
+
 def den(*entities: dict[str, object]) -> World:
     return World.model_validate(
         {

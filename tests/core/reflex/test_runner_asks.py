@@ -685,29 +685,6 @@ async def test_an_entity_with_no_friendly_name_is_named_by_its_id(rig: Rig) -> N
     assert rig.asks_sent()[0].args[0] == "Shall I turn on light.lamp?"
 
 
-async def test_a_tool_of_another_service_asks_about_the_target_as_written(rig: Rig) -> None:
-    """Nothing in the snapshot names that service's targets: the target stands for itself."""
-    await rig.redis.hset(
-        TOOL_REGISTRY_KEY,
-        "media-service",
-        json.dumps({"features": [{"tools": [{"name": MEDIA_TOOL, "risk": "benign"}]}]}),
-    )
-    await configure(rig.redis, ask_tools=["media.*"])
-    rig.engine.answer = decided(
-        proposal(tool=MEDIA_TOOL, service="media-service", parameters={"target": "Den"}),
-        snapshot=SNAPSHOT,
-    )
-
-    await rig.state_change()
-
-    [sent] = rig.asks_sent()
-    assert sent.args[0] == "Shall I play something Den?"
-    stored = await rig.redis.get(REFLEX_ASK_OPEN_KEY)
-    assert stored is not None
-    assert OpenAsk.model_validate_json(stored).targets == ["Den"]
-    assert await rig.redis.exists(asked_key(MEDIA_TOOL, ["Den"]))
-
-
 @pytest.mark.parametrize("parameters", [{}, {"target": ""}, {"target": 3}, {"target": ["Den"]}])
 async def test_a_proposal_with_no_usable_target_asks_about_none(
     rig: Rig, parameters: dict[str, Any]
@@ -730,20 +707,6 @@ async def test_a_proposal_with_no_usable_target_asks_about_none(
     stored = await rig.redis.get(REFLEX_ASK_OPEN_KEY)
     assert stored is not None
     assert OpenAsk.model_validate_json(stored).targets == []
-
-
-async def test_a_proposal_decided_without_live_state_asks_about_its_target_as_written(
-    rig: Rig,
-) -> None:
-    rig.engine.answer = decided(proposal())
-
-    await rig.state_change()
-
-    [sent] = rig.asks_sent()
-    assert sent.args[0] == "Shall I light turn on Lamp?"
-    stored = await rig.redis.get(REFLEX_ASK_OPEN_KEY)
-    assert stored is not None
-    assert OpenAsk.model_validate_json(stored).targets == ["Lamp"]
 
 
 # --- failures and redelivery --------------------------------------------------------------------

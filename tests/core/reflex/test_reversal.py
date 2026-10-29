@@ -1,4 +1,5 @@
-"""Never reverse a person: the record of what they just changed and the rule that reads it.
+"""Never reverse a person: the record of what they just changed, the hands-off rule that reads
+it, and how a proposal's target is resolved.
 
 Ids and names are the eval apartment world's (``evals/harness/worlds/apartment.yaml``). The tool
 names are test data; the code under test names no tool.
@@ -21,8 +22,9 @@ from core.reflex.prompt import LiveEntity
 from core.reflex.reversal import (
     PersonChange,
     PersonChanges,
+    overridden_entities,
     resolve_targets,
-    reversed_entities,
+    resolved_action,
 )
 from shared.streams import REFLEX_PERSON_CHANGES_KEY
 
@@ -121,13 +123,13 @@ def warnings() -> Iterator[list[str]]:
     logger.remove(sink_id)
 
 
-# --- the rule: each case of the table ---------------------------------------------------------
+# --- the rule: hands off what a person just changed ---------------------------------------------
 
 
 async def test_turning_on_what_a_person_turned_off_reverses_it() -> None:
     changes = await _noted(_event(LAMP, "on", "off"))
 
-    reversed_ = reversed_entities(_action("home.light_turn_on", LAMP), changes, _SNAPSHOT)
+    reversed_ = overridden_entities(_action("home.light_turn_on", LAMP), changes, _SNAPSHOT)
 
     assert reversed_ == [LAMP]
 
@@ -135,15 +137,23 @@ async def test_turning_on_what_a_person_turned_off_reverses_it() -> None:
 async def test_a_change_older_than_the_window_is_not_held() -> None:
     changes = await _noted(_event(LAMP, "on", "off", ago=timedelta(minutes=61)))
 
-    assert reversed_entities(_action("home.light_turn_on", LAMP), changes, _SNAPSHOT) == []
+    assert overridden_entities(_action("home.light_turn_on", LAMP), changes, _SNAPSHOT) == []
 
 
-async def test_dimming_what_a_person_turned_on_is_not_a_reversal() -> None:
+async def test_dimming_what_a_person_just_turned_on_is_hands_off() -> None:
     changes = await _noted(_event(LAMP, "off", "on"))
 
     action = _action("home.light_turn_on", LAMP, brightness_pct=30)
 
-    assert reversed_entities(action, changes, _SNAPSHOT) == []
+    assert overridden_entities(action, changes, _SNAPSHOT) == [LAMP]
+
+
+async def test_repeating_what_a_person_just_did_is_hands_off() -> None:
+    """Turning on a light a person just turned on changes nothing, and is still not Reflex's to
+    do: the entity is theirs for the window, whatever the action."""
+    changes = await _noted(_event(LAMP, "off", "on"))
+
+    assert overridden_entities(_action("home.light_turn_on", LAMP), changes, _SNAPSHOT) == [LAMP]
 
 
 async def test_changing_a_brightness_a_person_just_set_reverses_it() -> None:
@@ -151,13 +161,15 @@ async def test_changing_a_brightness_a_person_just_set_reverses_it() -> None:
 
     action = _action("home.light_turn_on", LAMP, brightness_pct=80)
 
-    assert reversed_entities(action, changes, _SNAPSHOT) == [LAMP]
+    assert overridden_entities(action, changes, _SNAPSHOT) == [LAMP]
 
 
 async def test_pausing_what_a_person_started_reverses_it() -> None:
     changes = await _noted(_event(TV, "off", "playing"))
 
-    reversed_ = reversed_entities(_action("home.media_player_media_pause", TV), changes, _SNAPSHOT)
+    reversed_ = overridden_entities(
+        _action("home.media_player_media_pause", TV), changes, _SNAPSHOT
+    )
 
     assert reversed_ == [TV]
 
@@ -165,7 +177,7 @@ async def test_pausing_what_a_person_started_reverses_it() -> None:
 async def test_resuming_what_a_person_paused_reverses_it() -> None:
     changes = await _noted(_event(TV, "playing", "paused"))
 
-    reversed_ = reversed_entities(_action("home.media_player_media_play", TV), changes, _SNAPSHOT)
+    reversed_ = overridden_entities(_action("home.media_player_media_play", TV), changes, _SNAPSHOT)
 
     assert reversed_ == [TV]
 
@@ -174,7 +186,7 @@ async def test_resuming_what_a_person_paused_reverses_it() -> None:
 async def test_a_change_nobody_can_name_counts_as_a_persons(context: ChangeContext | None) -> None:
     changes = await _noted(_event(LAMP, "on", "off", context=context))
 
-    assert reversed_entities(_action("home.light_turn_on", LAMP), changes, _SNAPSHOT) == [LAMP]
+    assert overridden_entities(_action("home.light_turn_on", LAMP), changes, _SNAPSHOT) == [LAMP]
 
 
 async def test_a_later_automation_change_clears_the_persons() -> None:
@@ -184,7 +196,7 @@ async def test_a_later_automation_change_clears_the_persons() -> None:
     )
 
     assert changes == {}
-    assert reversed_entities(_action("home.light_turn_off", LAMP), changes, _SNAPSHOT) == []
+    assert overridden_entities(_action("home.light_turn_off", LAMP), changes, _SNAPSHOT) == []
 
 
 async def test_a_later_alfred_change_clears_the_persons() -> None:
@@ -225,7 +237,9 @@ async def test_an_older_automation_event_does_not_clear_a_newer_record() -> None
 async def test_a_room_target_reverses_only_the_entities_a_person_changed() -> None:
     changes = await _noted(_event(LAMP, "on", "off"))
 
-    reversed_ = reversed_entities(_action("home.light_turn_on", "Living room"), changes, _SNAPSHOT)
+    reversed_ = overridden_entities(
+        _action("home.light_turn_on", "Living room"), changes, _SNAPSHOT
+    )
 
     assert reversed_ == [LAMP]
 
@@ -233,7 +247,7 @@ async def test_a_room_target_reverses_only_the_entities_a_person_changed() -> No
 async def test_a_friendly_name_target_reaches_the_entity() -> None:
     changes = await _noted(_event(LAMP, "on", "off"))
 
-    reversed_ = reversed_entities(
+    reversed_ = overridden_entities(
         _action("home.light_turn_on", "Living Room Lamp"), changes, _SNAPSHOT
     )
 
@@ -245,47 +259,40 @@ async def test_a_light_named_for_its_room_does_not_hide_the_rest_of_the_room() -
     the pendants too: a person's change to them is reversed."""
     changes = await _noted(_event(PENDANTS, "on", "off"))
 
-    reversed_ = reversed_entities(_action("home.light_turn_on", "Kitchen"), changes, _KITCHEN)
+    reversed_ = overridden_entities(_action("home.light_turn_on", "Kitchen"), changes, _KITCHEN)
 
     assert reversed_ == [PENDANTS]
 
 
-async def test_a_service_it_does_not_know_is_a_reversal_of_a_state_change() -> None:
-    changes = await _noted(_event(LAMP, "on", "off"))
+@pytest.mark.parametrize(
+    ("tool", "parameters"),
+    [
+        ("home.light_toggle", {}),
+        ("home.light_toggle", {"brightness_pct": 30}),
+        ("home.light_turn_off", {}),
+    ],
+    ids=["unknown-service", "unknown-service-with-brightness", "turn-off"],
+)
+@pytest.mark.parametrize(
+    "change", [("on", "off"), ("on", "on"), ("off", "on")], ids=["off", "brightness", "on"]
+)
+async def test_any_action_on_what_a_person_just_changed_is_hands_off(
+    tool: str, parameters: dict[str, object], change: tuple[str, str]
+) -> None:
+    changes = await _noted(_event(LAMP, *change))
 
-    assert reversed_entities(_action("home.light_toggle", LAMP), changes, _SNAPSHOT) == [LAMP]
-
-
-async def test_a_service_it_does_not_know_is_a_reversal_of_a_brightness_change() -> None:
-    changes = await _noted(_event(LAMP, "on", "on"))
-
-    assert reversed_entities(_action("home.light_toggle", LAMP), changes, _SNAPSHOT) == [LAMP]
-
-
-async def test_an_unknown_service_that_sets_a_brightness_is_allowed_after_a_state_change() -> None:
-    changes = await _noted(_event(LAMP, "off", "on"))
-
-    action = _action("home.light_toggle", LAMP, brightness_pct=30)
-
-    assert reversed_entities(action, changes, _SNAPSHOT) == []
-
-
-async def test_setting_the_volume_of_what_a_person_just_set_the_volume_of_reverses_it() -> None:
-    changes = await _noted(_event(TV, "playing", "playing"))
-
-    action = _action("home.media_player_volume_set", TV, volume_level=0.5)
-
-    assert reversed_entities(action, changes, _SNAPSHOT) == [TV]
+    assert overridden_entities(_action(tool, LAMP, **parameters), changes, _SNAPSHOT) == [LAMP]
 
 
-async def test_setting_the_volume_of_what_a_person_started_is_not_a_reversal() -> None:
-    """The person started the TV; they did not set its volume. ``volume_set`` is an attribute
-    setter, so against a state change it is neither a known state nor an unknown kind."""
-    changes = await _noted(_event(TV, "off", "playing"))
+@pytest.mark.parametrize("change", [("playing", "playing"), ("off", "playing")])
+async def test_setting_the_volume_of_what_a_person_just_changed_is_hands_off(
+    change: tuple[str, str],
+) -> None:
+    changes = await _noted(_event(TV, *change))
 
     action = _action("home.media_player_volume_set", TV, volume_level=0.5)
 
-    assert reversed_entities(action, changes, _SNAPSHOT) == []
+    assert overridden_entities(action, changes, _SNAPSHOT) == [TV]
 
 
 async def test_an_attribute_report_in_the_same_action_leaves_the_turn_on_as_it_was() -> None:
@@ -294,9 +301,8 @@ async def test_an_attribute_report_in_the_same_action_leaves_the_turn_on_as_it_w
         _event(LAMP, "on", "on", ago=timedelta(minutes=10)),  # the bulb's brightness report
     )
 
-    action = _action("home.light_turn_on", LAMP, brightness_pct=30)
-
-    assert reversed_entities(action, changes, _SNAPSHOT) == []
+    assert changes[LAMP].attributes_only is False
+    assert changes[LAMP].old_state == "off"
 
 
 async def test_an_attribute_change_from_another_action_replaces_the_record() -> None:
@@ -314,12 +320,12 @@ async def test_an_attribute_change_from_another_action_replaces_the_record() -> 
     action = _action("home.light_turn_on", LAMP, brightness_pct=30)
 
     assert changes[LAMP].attributes_only is True
-    assert reversed_entities(action, changes, _SNAPSHOT) == [LAMP]
+    assert overridden_entities(action, changes, _SNAPSHOT) == [LAMP]
 
 
-async def test_a_device_report_after_a_turn_on_leaves_the_dim_allowed() -> None:
-    """The spec's allowed case: dim what a person just turned on. A bulb's poll, reported
-    as an attributes-only change by no user, must not turn that into a reversal."""
+async def test_a_device_report_after_a_turn_on_leaves_the_record_as_it_was() -> None:
+    """A bulb's poll, reported as an attributes-only change by no user, is not a person's
+    change: it must not replace the turn-on or start its window again."""
     changes = await _noted(
         _event(LAMP, "off", "on", ago=timedelta(minutes=10)),
         _event(
@@ -331,9 +337,6 @@ async def test_a_device_report_after_a_turn_on_leaves_the_dim_allowed() -> None:
         ),
     )
 
-    action = _action("home.light_turn_on", LAMP, brightness_pct=30)
-
-    assert reversed_entities(action, changes, _SNAPSHOT) == []
     assert changes[LAMP].time == _NOW - timedelta(minutes=10)
     assert changes[LAMP].attributes_only is False
     assert changes[LAMP].new_state == "on"
@@ -393,8 +396,8 @@ async def test_a_later_person_change_replaces_the_earlier_one() -> None:
         ),
     )
 
-    assert reversed_entities(_action("home.light_turn_on", LAMP), changes, _SNAPSHOT) == []
-    assert reversed_entities(_action("home.light_turn_off", LAMP), changes, _SNAPSHOT) == [LAMP]
+    assert changes[LAMP].new_state == "on"
+    assert changes[LAMP].time == _NOW - timedelta(minutes=5)
 
 
 async def test_an_action_on_something_nobody_changed_reverses_nothing() -> None:
@@ -402,7 +405,7 @@ async def test_an_action_on_something_nobody_changed_reverses_nothing() -> None:
 
     action = _action("home.light_turn_on", BEDROOM_LAMP)
 
-    assert reversed_entities(action, changes, _SNAPSHOT) == []
+    assert overridden_entities(action, changes, _SNAPSHOT) == []
 
 
 # --- resolve_targets ---------------------------------------------------------------------------
@@ -456,6 +459,93 @@ def test_the_longest_matching_domain_names_the_tool() -> None:
     assert resolve_targets("home.media_player_media_pause", "Living Room", snapshot) == [TV]
 
 
+def test_the_prompts_name_for_an_entity_is_not_a_home_service_target() -> None:
+    assert resolve_targets("home.light_turn_on", "Living Room Lamp (Living Room)", _SNAPSHOT) == []
+
+
+# --- resolved_action: what a proposal acts on, or nothing it can be checked against -------------
+
+
+@pytest.mark.parametrize(
+    "target", [LAMP, "Living Room", "living room lamp"], ids=["entity-id", "area", "name"]
+)
+def test_a_target_home_service_resolves_stands_as_written(target: str) -> None:
+    action = _action("home.light_turn_on", target, brightness_pct=30)
+
+    assert resolved_action(action, _SNAPSHOT) == action
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["Living Room Lamp (Living Room)", "  living room lamp (LIVING ROOM) "],
+    ids=["as-written", "case-and-space"],
+)
+def test_the_prompts_name_for_one_entity_becomes_its_id(target: str) -> None:
+    """The House, What changed and Leave alone lines name an entity ``Name (Room)``; the model
+    copies that, and home-service does not read it. It is sent as the entity's ID."""
+    resolved = resolved_action(_action("home.light_turn_on", target, brightness_pct=30), _SNAPSHOT)
+
+    assert resolved is not None
+    assert resolved.parameters == {"target": LAMP, "brightness_pct": 30}
+    assert resolved.tool_name == "home.light_turn_on"
+
+
+def test_the_prompts_name_resolves_within_the_tools_domain() -> None:
+    action = _action("home.media_player_media_pause", "Living Room TV (Living Room)")
+
+    resolved = resolved_action(action, _SNAPSHOT)
+
+    assert resolved is not None
+    assert resolved.parameters["target"] == TV
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "the garage",
+        "Living Room Lamp (Bedroom)",  # the name, in the wrong room
+        "Living Room TV",  # another domain's entity
+        TV,
+        "",
+        "   ",
+    ],
+)
+def test_a_target_that_names_nothing_of_the_tools_domain_resolves_to_none(target: str) -> None:
+    assert resolved_action(_action("home.light_turn_on", target), _SNAPSHOT) is None
+
+
+def test_the_prompts_name_shared_by_two_entities_resolves_to_none() -> None:
+    """Two lamps of one name in one room: the name cannot say which, and no one ID names both."""
+    snapshot = {
+        **_SNAPSHOT,
+        "light.bedroom_lamp_2": _entity("light.bedroom_lamp_2", "Bedroom Lamp", "Bedroom"),
+    }
+
+    assert (
+        resolved_action(_action("home.light_turn_on", "Bedroom Lamp (Bedroom)"), snapshot) is None
+    )
+
+
+def test_a_tool_outside_every_snapshot_domain_resolves_to_none() -> None:
+    assert resolved_action(_action("home.vacuum_start", "Living Room"), _SNAPSHOT) is None
+
+
+def test_nothing_resolves_without_live_state() -> None:
+    assert resolved_action(_action("home.light_turn_on", LAMP), {}) is None
+
+
+@pytest.mark.parametrize("parameters", [{}, {"target": 3}, {"target": [LAMP]}])
+def test_an_action_without_a_string_target_resolves_to_none(parameters: dict[str, Any]) -> None:
+    action = ActionRequest(
+        source="reflex-engine",
+        target_service="home-service",
+        tool_name="home.light_turn_on",
+        parameters=parameters,
+    )
+
+    assert resolved_action(action, _SNAPSHOT) is None
+
+
 def test_an_action_without_a_string_target_reverses_nothing() -> None:
     action = ActionRequest(
         source="reflex-engine",
@@ -472,7 +562,7 @@ def test_an_action_without_a_string_target_reverses_nothing() -> None:
         attributes_only=False,
     )
 
-    assert reversed_entities(action, {LAMP: change}, _SNAPSHOT) == []
+    assert overridden_entities(action, {LAMP: change}, _SNAPSHOT) == []
 
 
 # --- PersonChanges: what the hash holds --------------------------------------------------------

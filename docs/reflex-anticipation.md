@@ -38,7 +38,7 @@ valid `repeat_hours`). Entries are stripped of surrounding whitespace.
 | `mode` | `shadow` | `shadow` or `ask` | `shadow` records decisions and asks nothing; `ask` puts a proposal that matches `ask_tools` to the owner first |
 | `ask_tools` | `[]` | up to 200 non-empty strings, each at most 256 characters | fnmatch patterns over tool names: the tools Reflex may ask about. Matched against the tool registry's names, never parsed or listed in code |
 | `allowed_scripts` | `[]` | up to 200 non-empty strings, each at most 256 characters | target ids the owner has approved running through an ask. Opaque: compared, never parsed |
-| `reverse_window_minutes` | `60` | 1 to 1440 | how long after a person changes something Reflex will not propose moving it back ([above](#never-reverse-a-person)) |
+| `reverse_window_minutes` | `60` | 1 to 1440 | how long after a person changes something Reflex keeps its hands off it ([above](#never-reverse-a-person)) |
 | `ask_expiry_seconds` | `600` | 60 to 3600 | how long an ask waits for an answer before it lapses |
 | `repeat_hours` | `2.0` | 0 to 168 | how long after asking about something Reflex will not ask about it again |
 | `daily_ask_cap` | `6` | 0 to 50 | the most asks in one local day; `0` means none |
@@ -95,8 +95,12 @@ can still repeat it once.
 
 ## Never reverse a person
 
-A rule in code, applied after the model answers: Reflex does not propose moving back what a
-person just changed. It does not ask the model to remember.
+A rule in code, applied after the model answers: hands off. Reflex does not act on anything a
+person just changed, whatever the action: undoing the change, repeating it (turning on a light
+they just turned on) or adjusting it (a brightness, a volume). It does not ask the model to
+remember. Until 2026-10-29 the rule blocked only a move back to the old state, and production
+showed why that was not enough: the model kept proposing changes to lights a person had just
+set, and a "repeat" or a new brightness passed as not reversing anything.
 
 - **What is kept.** The runner takes every state change of a house device (an entity whose ID
   starts with a domain in `HOUSE_DOMAINS`; a sensor update is not one) into
@@ -125,17 +129,27 @@ person just changed. It does not ask the model to remember.
   changed:` line naming those entities as the House block names them (`Name (Area)`, or just
   `Name`; sorted; an entity the snapshot lacks is named by its id). It is there so the model
   does not waste a proposal; the rule below does not depend on it.
-- **The rule.** `reversed_entities` takes the proposed action, those records and the live
-  snapshot, and names the entities the action would move back. With no live snapshot nothing
-  is reversed.
+- **The rule.** `overridden_entities` takes the proposed action, those records and the live
+  snapshot, and names the entities the action would act on that have a record. Any one makes
+  the outcome `would_reverse` (the name is kept so the counts read on across the change).
 - **Which entities a proposal names.** The proposal's `target` is resolved the way home-service
   resolves it (`EntityIndex.resolve`), among the entities of the tool's domain and ignoring
   case: an entity ID, else an area (every entity of the domain in it), else a friendly name.
   The first step that finds anything decides, so a light named for its room does not stand in
-  for the room, and an entity ID in another domain names nothing.
-- **One outcome per decision.** Every decision ends in a `ReflexOutcome`: `none`, `invalid`,
-  `would_reverse` (the proposal would undo a person's change; it names the entities and is not
-  published as a proposal), `shadow` (published; nothing executes), `asked` (put to the owner) and
+  for the room, and an entity ID in another domain names nothing. The model also copies the
+  prompt's own name for an entity, `Name (Area)`, which home-service does not read: when that
+  names exactly one entity of the tool's domain, `resolved_action` rewrites the target to its
+  entity ID, so the proposal is checked, recorded and (once asks run it) executed on that entity.
+- **Unresolved targets fail closed.** A proposal whose target names nothing in the tool's domain
+  (no match, a `Name (Area)` two entities share, a tool of no domain in the live state, no
+  string target, or no live state at all) ends as `invalid`: what it would act on cannot be
+  checked against what a person changed. It is kept as the model wrote it. Every Reflex tool
+  today is a home tool; a tool whose targets are not house entities would need its own
+  resolution before Reflex could propose it.
+- **One outcome per decision.** Every decision ends in a `ReflexOutcome`: `none`, `invalid` (the
+  model's reply was unusable, or its target names nothing; the proposal's `decision` says which),
+  `would_reverse` (the proposal would act on what a person just changed; it names the entities
+  and is not published as a proposal), `shadow` (published; nothing executes), `asked` (put to the owner) and
   `held` (a limit stopped the ask). It is kept on the decision-log record and on a published proposal's
   observation (a `none` or `would_reverse` is observed passively, with no outcome), counted in
   `alfred:reflex:decisions:<UTC date>` as `outcome:<kind>` (and `<kind>:<reason>` when there is
@@ -143,7 +157,7 @@ person just changed. It does not ask the model to remember.
   `—` in every cell of a day written before outcomes were counted (a day with at least one
   `outcome:*` field counts the kinds it lacks as `0`). The report then lists the `would_reverse`
   decisions it reads from the decision log, newest first, at most 20 and then `(N more)`, each
-  with its local time, tool, target and the entities it would have reversed. It is private,
+  with its local time, tool, target and the entities it would have acted on. It is private,
   like the rest of the report: only counts are ever posted.
 - **Fail closed.** A Redis error while reading the settings or the records propagates, before
   the model is asked: the entry stays pending and is retried rather than decided without

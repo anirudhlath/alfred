@@ -271,9 +271,10 @@ class ReflexProposal(BaseModel):
 
 
 # What Reflex's decision came to once the code had checked it (#285). ``none`` and ``invalid`` are
-# the model's own; ``would_reverse`` is a proposal that would have undone what a person just
-# changed; ``shadow`` is one that stands but is not executed; ``asked`` and ``held`` are what
-# the ask gate makes of one.
+# the model's own, and ``invalid`` is also a proposal whose target names nothing Reflex can
+# check; ``would_reverse`` is a proposal that would have acted on what a person just changed
+# (any action: undoing it, repeating it or adjusting it); ``shadow`` is one that stands but is
+# not executed; ``asked`` and ``held`` are what the ask gate makes of one.
 OutcomeKind = Literal["none", "invalid", "would_reverse", "shadow", "asked", "held"]
 # Why a proposal was held back instead of asked.
 HeldReason = Literal["tool_off", "quiet_hours", "dnd", "ask_open", "asked_recently", "daily_cap"]
@@ -282,7 +283,8 @@ HeldReason = Literal["tool_off", "quiet_hours", "dnd", "ask_open", "asked_recent
 class ReflexOutcome(BaseModel):
     """The one outcome of a Reflex decision.
 
-    ``reversed`` names the entities a ``would_reverse`` proposal would have moved back;
+    ``reversed`` names the entities a person just changed that a ``would_reverse`` proposal
+    would have acted on;
     ``reason`` is set for ``held``; ``ask_id`` for ``asked``.
     """
 

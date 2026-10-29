@@ -91,7 +91,9 @@ def targets(world: World, tool: str | None, parameters: dict[str, Any]) -> list[
     (``EntityIndex.resolve``), within the tool's domain:
     1. an entity_id;
     2. else an area name;
-    3. else an entity's friendly name.
+    3. else an entity's friendly name;
+    4. else one entity named as Reflex's prompt names it, ``Name (Room)``, which Reflex sends
+       as that entity's id (``core.reflex.reversal.resolved_action``).
 
     Each entity's area is added, so a golden can name either the room or the entity. The
     list is in world order (home-service sorts by entity_id); checks test membership.
@@ -103,10 +105,18 @@ def targets(world: World, tool: str | None, parameters: dict[str, Any]) -> list[
     wanted = raw.strip().casefold()
     candidates = [e for e in world.entities if not e.disabled and e.domain == domain]
     rooms = [a.area_id for a in world.areas if a.name.casefold() == wanted]
+    room_names = {a.area_id: a.name for a in world.areas}
+    by_head = [
+        e.entity_id
+        for e in candidates
+        if (room := room_names.get(world.area_of(e.entity_id) or ""))
+        and f"{e.friendly_name} ({room})".casefold() == wanted
+    ]
     hits = (
         [e.entity_id for e in candidates if e.entity_id.casefold() == wanted]
         or [entity for room in rooms for entity in world.entities_in(room, domain)]
         or [e.entity_id for e in candidates if e.friendly_name.casefold() == wanted]
+        or (by_head if len(by_head) == 1 else [])
     )
     out: list[str] = []
     for entity_id in hits:

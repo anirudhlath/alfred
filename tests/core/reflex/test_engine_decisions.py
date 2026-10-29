@@ -434,14 +434,70 @@ async def test_a_bad_settings_document_reads_as_the_default_window() -> None:
     assert list(decided.recent) == [LAMP]
 
 
-async def test_with_no_live_state_nothing_is_reversed_and_the_entity_is_named_by_id() -> None:
+async def test_turning_on_what_a_person_just_turned_on_is_would_reverse() -> None:
+    """Hands off: the entity is a person's for the window, whatever the action."""
+    proposal = {**ACT, "parameters": {"target": LAMP}}
+    engine, changes, _, _ = _with_changes(_reply(proposal), snapshot=_snapshot())
+    turned_on = _person_turned_lamp_off().model_copy(update={"old_state": "off", "new_state": "on"})
+    await changes.note(turned_on, "person")
+
+    decided = await engine.process_event(TV_PLAYS)
+
+    assert decided.outcome == ReflexOutcome(kind="would_reverse", reversed=[LAMP])
+
+
+async def test_a_target_named_as_the_prompt_names_it_acts_on_that_entity() -> None:
+    proposal = {**ACT, "parameters": {"target": "TV Lamp (Living Room)", "brightness_pct": 30}}
+    engine, _ = _engine(_snapshot(), _reply(proposal))
+
+    decided = await engine.process_event(TV_PLAYS)
+
+    assert decided.outcome == ReflexOutcome(kind="shadow")
+    assert decided.proposal.action is not None
+    assert decided.proposal.action.parameters == {"target": LAMP, "brightness_pct": 30}
+
+
+async def test_a_target_named_as_the_prompt_names_it_is_checked_against_a_persons_change() -> None:
+    proposal = {**ACT, "parameters": {"target": "TV Lamp (Living Room)"}}
+    engine, changes, _, _ = _with_changes(_reply(proposal), snapshot=_snapshot())
+    await changes.note(_person_turned_lamp_off(), "person")
+
+    decided = await engine.process_event(TV_PLAYS)
+
+    assert decided.outcome == ReflexOutcome(kind="would_reverse", reversed=[LAMP])
+
+
+@pytest.mark.parametrize("target", ["Garage", "Living Room TV"], ids=["nothing", "other-domain"])
+async def test_a_proposal_whose_target_names_nothing_is_invalid(target: str) -> None:
+    proposal = {**ACT, "parameters": {"target": target}}
+    engine, _ = _engine(_snapshot(), _reply(proposal))
+
+    decided = await engine.process_event(TV_PLAYS)
+
+    assert decided.outcome == ReflexOutcome(kind="invalid")
+    assert decided.proposal.decision == "act"  # what the model said is kept, as it said it
+    assert decided.proposal.action is not None
+    assert decided.proposal.action.parameters["target"] == target
+
+
+async def test_a_trigger_proposal_whose_target_names_nothing_is_invalid() -> None:
+    engine, _ = _engine(_snapshot(), _reply({**ACT, "parameters": {"target": "Garage"}}))
+    trigger = TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time")
+
+    decided = await engine.process_trigger_fired(trigger)
+
+    assert decided.outcome == ReflexOutcome(kind="invalid")
+
+
+async def test_with_no_live_state_a_proposal_is_invalid_and_the_entity_is_named_by_id() -> None:
+    """Nothing to check a target against: fail closed, as with an unknown target."""
     proposal = {**ACT, "parameters": {"target": LAMP}}
     engine, changes, _, script = _with_changes(_reply(proposal), snapshot=None)
     await changes.note(_person_turned_lamp_off(), "person")
 
     decided = await engine.process_event(TV_PLAYS)
 
-    assert decided.outcome == ReflexOutcome(kind="shadow")
+    assert decided.outcome == ReflexOutcome(kind="invalid")
     assert list(decided.recent) == [LAMP]
     assert f"Leave alone, a person just changed: {LAMP}" in script.prompt()
 

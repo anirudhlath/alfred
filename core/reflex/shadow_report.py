@@ -239,8 +239,9 @@ async def build_report(redis: AioRedis, *, days: int, now: datetime, tz_name: st
         "",
         "### Outcomes",
         "",
-        "_What each decision came to. `would_reverse` is a proposal that would have undone what"
-        " a person just changed: counted, never published._",
+        "_What each decision came to. `would_reverse` is a proposal that would have acted on"
+        " what a person just changed: counted, never published. `invalid` includes a proposal"
+        " whose target names nothing in the house._",
         "",
         *_counts_table(OUTCOMES, days_counted, prefix="outcome:"),
         "",

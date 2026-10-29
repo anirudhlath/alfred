@@ -329,13 +329,14 @@ async def ensure_consumer_group(
 def _asked_targets(action: ActionRequest, snapshot: Mapping[str, LiveEntity]) -> list[str]:
     """What an ask is about: the action's target resolved against the live state.
 
-    A target that names nothing there (a tool of a service that is not the home) stands for
-    itself; an action with no usable target has none.
+    The engine has already resolved it (``resolved_action``): a proposal whose target names
+    nothing there never stands, so it is never asked about. An action with no usable target has
+    none.
     """
     target = action.parameters.get("target")
     if not isinstance(target, str) or not target.strip():
         return []
-    return resolve_targets(action.tool_name, target, snapshot) or [target]
+    return resolve_targets(action.tool_name, target, snapshot)
 
 
 async def ask_or_hold(
@@ -439,8 +440,8 @@ async def process_stream_entry(
     malformed events, availability blips (``core/reflex/availability.py``),
     attention-gated events, and events the engine chose not to act on. That
     last branch is not a no-op: it records a debounced passive observation,
-    best-effort, so a failed write never blocks the ACK. So does a proposal that would
-    reverse a person's change (its outcome is ``would_reverse``). Every other proposal is
+    best-effort, so a failed write never blocks the ACK. So does a proposal that would act
+    on what a person just changed (its outcome is ``would_reverse``). Every other proposal is
     recorded too, undebounced and best-effort, with its outcome.
 
     A change to a device Reflex sees is noted in *person_changes* (when given) ahead of the
@@ -482,7 +483,7 @@ async def process_stream_entry(
     # Best-effort (record_change never raises): it never changes a decision or the ACK.
     await record_change(redis, event, entry_id=entry_id)
 
-    # Note what a person just changed, so Reflex never proposes undoing it. Only the devices
+    # Note what a person just changed, so Reflex keeps its hands off it. Only the devices
     # Reflex sees and acts on (the House block's domains): every sensor update has the cause
     # "outside", and noting those would fill the record with every sensor. Ahead of the gate,
     # like the count above: a gated change is still the latest word on its device. Best-effort
@@ -524,7 +525,7 @@ async def _record_outcome(
     if not publishes(decided.outcome):
         # Record it rather than dropping it. Without this Alfred remembers
         # only what it did, never what it saw, and pattern detection has
-        # nothing to run over. A proposal that would reverse a person's change lands here
+        # nothing to run over. A proposal that would act on what a person just changed lands here
         # too: it becomes a "none" for everything downstream.
         #
         # Isolated — failures don't block ACK. Recording is bookkeeping for an

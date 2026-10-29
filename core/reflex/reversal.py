@@ -1,9 +1,12 @@
-"""Never reverse a person: what they last changed, and which entities a proposal would undo.
+"""Never reverse a person: what they last changed, and what a proposal would act on.
 
 ``PersonChanges`` keeps, per entity, the last change a person (or a switch, app or device nobody
-can name) made, on ``REFLEX_PERSON_CHANGES_KEY``. ``reversed_entities`` is the rule itself: pure,
-it reads a proposed action, those records and the live snapshot, and says which entities the
-action would move back. A rule in code, applied after the model answers, not a prompt rule.
+can name) made, on ``REFLEX_PERSON_CHANGES_KEY``. ``overridden_entities`` is the rule itself,
+hands off: pure, it reads a proposed action, those records and the live snapshot, and names the
+entities the action would act on that a person changed within the window, whatever the action
+does to them. ``resolved_action`` comes first: it says what a proposal acts on, or that it names
+nothing Reflex can check, which fails closed. Rules in code, applied after the model answers,
+not prompt rules.
 
 The tool names that reach it are whatever the registry holds. It reads a tool's HA domain and
 service off the end of the name (``<anything>.<domain>_<service>``) against the domains the
@@ -19,7 +22,7 @@ from loguru import logger
 from pydantic import BaseModel, field_validator
 
 from core.attribution.cause import Cause  # noqa: TC001  # pydantic field type
-from core.reflex.prompt import _area, _name
+from core.reflex.prompt import _area, _head, _name
 from shared.streams import REFLEX_PERSON_CHANGES_KEY, decode_stream_value
 
 if TYPE_CHECKING:
@@ -30,16 +33,8 @@ if TYPE_CHECKING:
     from core.reflex.prompt import LiveEntity
     from shared.types import AioRedis
 
-# The state each HA service leaves an entity in. A service not listed here has no known state.
-SERVICE_STATES: Final = {
-    "turn_on": "on",
-    "turn_off": "off",
-    "media_play": "playing",
-    "media_pause": "paused",
-}
-# What an action carries when it sets an attribute (a brightness, a volume) rather than a state.
-_ATTRIBUTE_SERVICES: Final = frozenset({"volume_set"})
-_ATTRIBUTE_PARAMETER: Final = "brightness_pct"
+# The parameter a tool call names what it acts on with.
+_TARGET: Final = "target"
 # Deletes each field only while it still holds the bytes ``recent`` read. The state loop and the
 # trigger loop share one event loop: a change can be noted between ``recent`` reading an expired
 # record and deleting it, and an unconditional HDEL would take the fresh record with it.
@@ -89,8 +84,8 @@ class PersonChanges:
 
         A state change by a person, or by one nobody can name (``outside``, or no context at
         all), becomes the entity's record. A change by Alfred or an automation deletes it: that
-        change is the latest word on the entity, and what a person did before it is not what
-        Reflex would be undoing. An attributes-only change (the old and new state are the same:
+        change is the latest word on the entity, and what a person did before it is no longer
+        theirs to be left alone. An attributes-only change (the old and new state are the same:
         a brightness, a volume) counts only when an HA user made it. The event carries no old
         attributes, so a device report (a bulb or player giving its brightness, position or
         metadata) cannot be told apart from an outside app's slider, and recording one would
@@ -226,40 +221,54 @@ def resolve_targets(tool_name: str, target: str, snapshot: Mapping[str, LiveEnti
     return [] if split is None else _resolve(split[0], target, snapshot)
 
 
-def reversed_entities(
+def _by_head(domain: str, target: str, snapshot: Mapping[str, LiveEntity]) -> list[str]:
+    """The entities of *domain* the prompt names *target* (``Name (Room)``), case ignored."""
+    wanted = target.strip().casefold()
+    return sorted(
+        e.entity_id
+        for e in snapshot.values()
+        if e.domain == domain and _head(e.entity_id, e.attributes).casefold() == wanted
+    )
+
+
+def resolved_action(
+    action: ActionRequest, snapshot: Mapping[str, LiveEntity]
+) -> ActionRequest | None:
+    """*action* as home-service would act on it, or ``None`` when it names nothing to act on.
+
+    A target home-service resolves (``resolve_targets``) stands as written. One that names a
+    single entity of the tool's domain the way the prompt does (``Name (Room)``, as the House,
+    What changed and Leave alone lines write it) is rewritten to that entity's ID, since
+    home-service does not read that form. Anything else is ``None``: no string target, a tool of
+    no domain in the snapshot (with no live state, every tool), a target that names nothing in
+    the tool's domain, or a ``Name (Room)`` two entities share. What a proposal would act on
+    cannot then be checked against what a person just changed, so it fails closed.
+    """
+    split = _split_tool(action.tool_name, snapshot)
+    target = action.parameters.get(_TARGET)
+    if split is None or not isinstance(target, str) or not target.strip():
+        return None
+    if _resolve(split[0], target, snapshot):
+        return action
+    named = _by_head(split[0], target, snapshot)
+    if len(named) != 1:
+        return None
+    return action.model_copy(update={"parameters": {**action.parameters, _TARGET: named[0]}})
+
+
+def overridden_entities(
     action: ActionRequest,
     changes: Mapping[str, PersonChange],
     snapshot: Mapping[str, LiveEntity],
 ) -> list[str]:
-    """The entities *action* would move back from what a person just changed them to.
+    """The entities *action* would act on that a person just changed: hands off.
 
-    *changes* is ``PersonChanges.recent()``: the window is already applied. A target with a
-    record is reversed when:
-
-    - the record is attributes-only (a brightness, a volume) and the action sets attributes, or
-      its resulting state is unknown or differs from the one the entity had (fail closed: a
-      service not in ``SERVICE_STATES`` has no known state); or
-    - the record is a state change and the action's state is known and differs from the record's;
-      or
-    - the record is a state change and the action is of a kind not known (its service is neither
-      in ``SERVICE_STATES`` nor an attribute setter): fail closed.
+    *changes* is ``PersonChanges.recent()``: the window is already applied. Any action on such an
+    entity overrides the person, whatever it would do: undo the change, repeat it, or adjust it
+    (a brightness, a volume). *action*'s target is resolved as home-service resolves it, so pass
+    it through ``resolved_action`` first: a target it cannot resolve names nothing here.
     """
-    split = _split_tool(action.tool_name, snapshot)
-    target = action.parameters.get("target")
-    if split is None or not isinstance(target, str):
+    target = action.parameters.get(_TARGET)
+    if not isinstance(target, str):
         return []
-    domain, service = split
-    state = SERVICE_STATES.get(service)
-    sets_attributes = (
-        service in _ATTRIBUTE_SERVICES or action.parameters.get(_ATTRIBUTE_PARAMETER) is not None
-    )
-
-    def reverses(change: PersonChange) -> bool:
-        if change.attributes_only:
-            return sets_attributes or state != change.new_state  # an unknown state differs too
-        differs = state is not None and state != change.new_state
-        return differs or (state is None and not sets_attributes)
-
-    return sorted(
-        {e for e in _resolve(domain, target, snapshot) if e in changes and reverses(changes[e])}
-    )
+    return [e for e in resolve_targets(action.tool_name, target, snapshot) if e in changes]
