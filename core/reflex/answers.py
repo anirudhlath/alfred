@@ -39,6 +39,10 @@ ASK_SOURCE: Final = f"{REFLEX_SOURCE_PREFIX}-engine"
 # speech: a "yes" heard in a room has no way to be told apart from the room.
 ASK_REPLY_CHANNELS: Final = frozenset({"web_pwa", "ios", "signal"})
 
+# How far before an ask Alfred's own words still count as "since": a yes typed just after Alfred
+# asked its own question is meant for Alfred, even when the ask went out a moment after it.
+ASK_LOOKBACK_SECONDS: Final = 120
+
 # How long the answered marker lives: long past any redelivery of the answer.
 _ANSWERED_TTL_SECONDS: Final = 2 * 86_400
 

@@ -4,11 +4,12 @@
 
 Prints Markdown for the owner's review: daily decision counts and daily outcome counts from
 ``alfred:reflex:decisions:<UTC date>``, the decisions that would have reversed a person (newest
-first, from the decision log), the asks (asked, held by reason, and the answers from
-``alfred:reflex:answers``), then every act, ask and invalid proposal in the window, oldest
-first, in the user's local time. The proposals name people, their comings and goings and what
-was playing, so the report is reviewed privately: only the counts and verdict tallies go to
-the public #285 thread. The Asks section is counts alone, with no target, name or noticed text.
+first, from the decision log), the asks (asked, held by reason, the reasons shadow mode would
+have held for, and the answers from ``alfred:reflex:answers``), then every act, ask and invalid
+proposal in the window, oldest first, in the user's local time. The proposals name people,
+their comings and goings and what was playing, so the report is reviewed privately: only the
+counts and verdict tallies go to the public #285 thread. The Asks section is counts alone, with
+no target, name or noticed text.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from pydantic import ValidationError
 
 from bus.schemas.events import HeldReason, OutcomeKind, ReflexObservation, StateChangedEvent
 from core.reflex.answers import AnswerKind, ReflexAnswer, settle_expired
+from core.reflex.asks import SHADOW_REASONS
 from core.reflex.decision_log import DecisionLog
 from core.reflex.prompt import render_event
 from core.reflex.runner import decisions_key
@@ -46,11 +48,13 @@ OUTCOMES: tuple[str, ...] = get_args(OutcomeKind)
 # How an ask ends, and why one was held: the columns of the Asks section.
 ANSWERS: tuple[str, ...] = get_args(AnswerKind)
 HELD_REASONS: tuple[str, ...] = get_args(HeldReason)
-# The Asks table's columns, each with the field of the daily hash it reads.
+# The Asks table's columns, each with the field of the daily hash it reads: asks made, holds by
+# reason, then the reasons shadow mode would have held for (the evidence for switching to ask).
 ASK_FIELDS: dict[str, str] = {
     "asked": "outcome:asked",
     "held": "outcome:held",
     **{reason: f"held:{reason}" for reason in HELD_REASONS},
+    **{f"shadow:{reason}": f"shadow:{reason}" for reason in SHADOW_REASONS},
 }
 # Upper bound on observations scanned. A week runs to a few thousand; past this the
 # report says it was truncated rather than silently dropping the oldest.
@@ -194,8 +198,9 @@ async def _ask_lines(
         logger.warning("Shadow report could not settle the open ask: {}", e)
     lines = [
         "_Counts only. `held` is a proposal a limit stopped, under the limit that stopped it."
-        " An ask nobody answered counts as `expired` once it is settled, which this report"
-        " does first._",
+        " `shadow:<reason>` is the same limit met while Reflex was in shadow mode, where nothing"
+        " is asked. An ask nobody answered counts as `expired` once it is settled, which this"
+        " report does first._",
         "",
         *_counts_table(tuple(ASK_FIELDS), days, prefix="outcome:", fields=ASK_FIELDS),
         "",

@@ -20,14 +20,15 @@ turn of its own (``resume_approval``), under the approval id, answered as a foll
 A reply that no parked run in its conversation takes may still answer the ask Reflex has open
 (``_answer_reflex_ask``): a yes or no is recorded and answered with a short fixed reply, and
 no model runs, before the turn's recall and prompts are built. It does not once Alfred has
-spoken in that conversation since the ask went out: a "yes" then answers Alfred.
+spoken in that conversation since shortly before the ask went out (``ASK_LOOKBACK_SECONDS``):
+a "yes" then answers Alfred.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal
 
 from pydantic_ai import DeferredToolRequests, DeferredToolResults
@@ -61,6 +62,7 @@ from core.conscious.system2_prompts import fetch_system2_prompts
 from core.conscious.tools.integrations import fetch_integration_tools
 from core.identity.schemas import IdentityResult
 from core.reflex.answers import (
+    ASK_LOOKBACK_SECONDS,
     ASK_REPLY_CHANNELS,
     ASK_SOURCE,
     read_open_ask,
@@ -563,10 +565,12 @@ class ConsciousEngine:
         Only the owner answers, on a channel an ask's notification reaches
         (``ASK_REPLY_CHANNELS``, never speech), and only with a classifier: without one every
         reply moves on. An ask past its deadline is settled first. A reply answers the ask only
-        while Alfred has not spoken in this conversation since the ask went out: after that, a
-        "yes" answers whatever Alfred said, not Reflex (*history* is the conversation's, and
-        each response in it carries the time it was received). A conversation Alfred has not
-        spoken in since, or none at all, still counts: the ask reached the owner elsewhere.
+        while Alfred has not spoken in this conversation since ``ASK_LOOKBACK_SECONDS`` before
+        the ask went out: after that, a "yes" answers whatever Alfred said, not Reflex (Alfred's
+        own question, asked just before the ask, is the likelier one; *history* is the
+        conversation's, and each response in it carries the time it was received). A
+        conversation Alfred has not spoken in since, or none at all, still counts: the ask
+        reached the owner elsewhere.
         The parked action is read, not claimed, and the reply classified against it; ``decide``
         then claims it, so a Door tap and a reply can never both answer. ``None`` is a normal
         turn: no open ask, Alfred spoke since, a pending record that no longer reads or is not
@@ -578,9 +582,10 @@ class ConsciousEngine:
         ask = await read_open_ask(self._redis)
         if ask is None:
             return None
-        if spoke_since(history, ask.asked_at):
+        if spoke_since(history, ask.asked_at - timedelta(seconds=ASK_LOOKBACK_SECONDS)):
             logger.info(
-                "Reply is not read against Reflex ask %s: Alfred spoke in this conversation since",
+                "Reply is not read against Reflex ask %s: Alfred spoke in this conversation"
+                " around it",
                 ask.ask_id,
             )
             return None

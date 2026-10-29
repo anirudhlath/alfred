@@ -513,13 +513,13 @@ async def test_a_yes_that_lost_the_race_to_another_answer_runs_nothing(
     redis: fakeredis.FakeAsyncRedis,
 ) -> None:
     """The ask was answered a moment ago (its marker is set, its pending record not yet
-    gone): the decision is not recorded and so does not run."""
+    gone): the decision is not recorded, so it does not run and is not reported as made."""
     action = await _ask(redis)
     ask = _open_ask(action, deadline=NOW + timedelta(minutes=5))
     assert await record_answer(redis, ask, "expired", at=NOW, channel=None) is True
     await redis.set(REFLEX_ASK_OPEN_KEY, ask.model_dump_json())  # a straggler's view of it
 
-    assert await decide(redis, action.request_id, "approve", now=NOW) is True
+    assert await decide(redis, action.request_id, "approve", now=NOW) is False
 
     assert [a.answer for a in await _answers(redis)] == ["expired"]
     assert await _stream(redis, ACTIONS_STREAM) == []

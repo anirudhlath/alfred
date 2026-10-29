@@ -8,18 +8,19 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import create_autospec
 from zoneinfo import ZoneInfo
 
 import fakeredis
 import pytest
+from loguru import logger
 
 from bus.schemas.events import ActionRequest, OutcomeKind, ReflexOutcome, ReflexProposal
 from core.notifications.dnd import DNDChecker
 from core.notifications.publisher import NotificationPublisher
 from core.notifications.schema import Urgency
-from core.reflex.answers import OpenAsk
+from core.reflex.answers import OpenAsk, ReflexAnswer
 from core.reflex.asks import (
     ask_text,
     asked_key,
@@ -30,7 +31,7 @@ from core.reflex.asks import (
 )
 from core.reflex.settings import ReflexSettings
 from core.routing.pending import pending_key, read_pending
-from shared.streams import DND_STATE_KEY, REFLEX_ASK_OPEN_KEY
+from shared.streams import DND_STATE_KEY, REFLEX_ANSWERS_STREAM, REFLEX_ASK_OPEN_KEY
 
 if TYPE_CHECKING:
     from datetime import time
@@ -125,12 +126,21 @@ def an_open_ask(deadline: datetime, ask_id: str = "open-1") -> OpenAsk:
     )
 
 
-async def hold_open(redis: fakeredis.FakeAsyncRedis, deadline: datetime) -> None:
-    await redis.set(REFLEX_ASK_OPEN_KEY, an_open_ask(deadline).model_dump_json())
+async def hold_open(
+    redis: fakeredis.FakeAsyncRedis, deadline: datetime, ask_id: str = "open-1"
+) -> None:
+    await redis.set(REFLEX_ASK_OPEN_KEY, an_open_ask(deadline, ask_id).model_dump_json())
 
 
 async def turn_dnd_on(redis: fakeredis.FakeAsyncRedis) -> None:
     await redis.set(DND_STATE_KEY, json.dumps({"active": True, "source": "manual"}))
+
+
+async def answers_of(redis: fakeredis.FakeAsyncRedis) -> list[ReflexAnswer]:
+    return [
+        ReflexAnswer.model_validate_json(fields[b"event"])
+        for _id, fields in await redis.xrange(REFLEX_ANSWERS_STREAM)
+    ]
 
 
 # --- the gate: each limit on its own ----------------------------------------------------------
@@ -230,6 +240,31 @@ async def test_do_not_disturb_holds_an_ask(
     result = await run_gate(redis, dnd)
 
     assert result == ReflexOutcome(kind="held", reason="dnd")
+
+
+@pytest.mark.parametrize("mode", ["ask", "shadow"])
+@pytest.mark.parametrize("failure", ["malformed", "unreachable"])
+async def test_a_do_not_disturb_check_that_fails_counts_as_on(
+    redis: fakeredis.FakeAsyncRedis, dnd: DNDChecker, mode: Literal["ask", "shadow"], failure: str
+) -> None:
+    if failure == "malformed":
+        await redis.set(DND_STATE_KEY, "{not json")
+    else:
+        dnd = create_autospec(DNDChecker, instance=True)
+        dnd.is_active.side_effect = ConnectionError("reset")
+    warnings: list[str] = []
+    sink = logger.add(lambda message: warnings.append(str(message)), level="WARNING")
+    try:
+        result = await run_gate(redis, dnd, make_settings(mode=mode))
+    finally:
+        logger.remove(sink)
+
+    assert result == (
+        ReflexOutcome(kind="held", reason="dnd")
+        if mode == "ask"
+        else ReflexOutcome(kind="shadow", reason="dnd")
+    )
+    assert any("do-not-disturb" in line for line in warnings)
 
 
 async def test_an_open_ask_holds_the_next(redis: fakeredis.FakeAsyncRedis, dnd: DNDChecker) -> None:
@@ -386,6 +421,48 @@ async def test_every_limit_hit_at_once_is_reported_in_the_order_of_the_brief(
     assert order == ["tool_off", "quiet_hours", "dnd", "ask_open", "asked_recently", "daily_cap"]
 
 
+async def test_a_lapsed_ask_is_settled_before_a_tool_off_decision(
+    redis: fakeredis.FakeAsyncRedis, dnd: DNDChecker
+) -> None:
+    await hold_open(redis, NOON - timedelta(seconds=1))
+
+    result = await run_gate(redis, dnd, make_settings(ask_tools=[]))
+
+    assert result == ReflexOutcome(kind="held", reason="tool_off")
+    assert not await redis.exists(REFLEX_ASK_OPEN_KEY)
+    assert [(a.ask_id, a.answer) for a in await answers_of(redis)] == [("open-1", "expired")]
+
+
+async def test_a_lapsed_ask_is_settled_before_a_tool_that_cannot_be_asked_about(
+    redis: fakeredis.FakeAsyncRedis, dnd: DNDChecker
+) -> None:
+    await hold_open(redis, NOON - timedelta(seconds=1))
+
+    result = await run_gate(redis, dnd, askable=False)
+
+    assert result == ReflexOutcome(kind="held", reason="tool_off")
+    assert not await redis.exists(REFLEX_ASK_OPEN_KEY)
+
+
+async def test_a_lapsed_ask_is_settled_before_quiet_hours_and_dnd_hold(
+    redis: fakeredis.FakeAsyncRedis, dnd: DNDChecker
+) -> None:
+    quiet = make_settings(quiet_hours_start="23:00", quiet_hours_end="07:00")
+    await hold_open(redis, at(3) - timedelta(seconds=1))
+    in_quiet = await run_gate(redis, dnd, quiet, now=at(3))
+    quiet_settled = not await redis.exists(REFLEX_ASK_OPEN_KEY)
+
+    await hold_open(redis, NOON - timedelta(seconds=1), ask_id="open-2")
+    await turn_dnd_on(redis)
+    on_dnd = await run_gate(redis, dnd)
+
+    assert in_quiet == ReflexOutcome(kind="held", reason="quiet_hours")
+    assert quiet_settled
+    assert on_dnd == ReflexOutcome(kind="held", reason="dnd")
+    assert not await redis.exists(REFLEX_ASK_OPEN_KEY)
+    assert [a.ask_id for a in await answers_of(redis)] == ["open-1", "open-2"]
+
+
 # --- the gate: shadow mode --------------------------------------------------------------------
 
 
@@ -417,14 +494,27 @@ async def test_shadow_mode_reports_the_first_of_the_three(
     assert dnd_on == ReflexOutcome(kind="shadow", reason="dnd")
 
 
-async def test_shadow_mode_leaves_an_expired_ask_alone(
+async def test_shadow_mode_settles_an_expired_ask(
     redis: fakeredis.FakeAsyncRedis, dnd: DNDChecker
 ) -> None:
     await hold_open(redis, NOON - timedelta(minutes=1))
 
+    result = await run_gate(redis, dnd, make_settings(mode="shadow"))
+
+    assert result == ReflexOutcome(kind="shadow", reason=None)
+    assert not await redis.exists(REFLEX_ASK_OPEN_KEY)
+    assert [a.answer for a in await answers_of(redis)] == ["expired"]
+
+
+async def test_shadow_mode_leaves_an_ask_still_waiting_alone(
+    redis: fakeredis.FakeAsyncRedis, dnd: DNDChecker
+) -> None:
+    await hold_open(redis, NOON + timedelta(minutes=1))
+
     await run_gate(redis, dnd, make_settings(mode="shadow"))
 
     assert await redis.exists(REFLEX_ASK_OPEN_KEY)
+    assert await answers_of(redis) == []
 
 
 # --- quiet hours ------------------------------------------------------------------------------

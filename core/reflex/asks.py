@@ -17,6 +17,8 @@ from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any, Final, Literal
 from zoneinfo import ZoneInfo
 
+from loguru import logger
+
 from bus.schemas.events import ReflexOutcome
 from core.notifications.schema import Urgency
 from core.reflex.answers import ASK_SOURCE, OpenAsk, settle_expired
@@ -33,6 +35,8 @@ if TYPE_CHECKING:
     from core.reflex.settings import ReflexSettings
     from shared.types import AioRedis
 
+# The limits shadow mode checks, in the gate's order: a shadow outcome's reason is one of these.
+SHADOW_REASONS: Final = ("tool_off", "quiet_hours", "dnd")
 # The most a notification body may be, and the line that always ends it.
 BODY_MAX_CHARS: Final = 300
 _REPLY_LINE: Final = "Reply yes or no."
@@ -70,13 +74,26 @@ def in_quiet_hours(local: time, start: str, end: str) -> bool:
     return now >= begins or now < ends
 
 
+async def _dnd_on(dnd: DNDChecker) -> bool:
+    """Whether do-not-disturb is on; a check that fails counts as on.
+
+    Reflex never asks while the owner may not want to be disturbed, and it cannot tell that
+    from an unreadable state (the stored value does not parse, Redis does not answer). Held as
+    ``dnd``, the decision is recorded and the event is not retried into the same failure.
+    """
+    try:
+        return (await dnd.is_active()).active
+    except Exception as e:
+        logger.warning("Reflex could not read do-not-disturb; holding as if it were on: {}", e)
+        return True
+
+
 async def _first_hit(
     redis: AioRedis,
     settings: ReflexSettings,
     tool_name: str,
     targets: Sequence[str],
     local: datetime,
-    now: datetime,
     dnd: DNDChecker,
     *,
     askable: bool,
@@ -90,11 +107,10 @@ async def _first_hit(
         return "tool_off"
     if in_quiet_hours(local.time(), settings.quiet_hours_start, settings.quiet_hours_end):
         return "quiet_hours"
-    if (await dnd.is_active()).active:
+    if await _dnd_on(dnd):
         return "dnd"
     if cheap_only:
         return None
-    await settle_expired(redis, now=now)
     if await redis.exists(REFLEX_ASK_OPEN_KEY):
         return "ask_open"
     if await redis.exists(asked_key(tool_name, targets)):
@@ -119,12 +135,14 @@ async def gate(
 ) -> ReflexOutcome:
     """What the ask limits make of a proposal that stands (a ``shadow`` outcome).
 
-    Any other outcome comes back unchanged. The limits are checked in this order, and the first
-    one hit is the reason: ``tool_off`` (no ``ask_tools`` pattern matches the tool, or the tool
-    is not *askable*: the router refuses one whose declared risk is critical or unknown even
-    when it is confirmed, so a yes could only fail), ``quiet_hours`` (the owner's local time, in
-    *tz_name*), ``dnd``, ``ask_open`` (after an expired ask is settled), ``asked_recently`` and
-    ``daily_cap`` (counted by local date).
+    Any other outcome comes back unchanged. An expired ask is settled first, on every decision
+    and in either mode, so a lapsed ask ends as ``expired`` whatever limit the decision then
+    meets, and whether or not Reflex is still asking. The limits are checked in this order, and
+    the first one hit is the reason: ``tool_off`` (no ``ask_tools`` pattern matches the tool, or
+    the tool is not *askable*: the router refuses one whose declared risk is critical or unknown
+    even when it is confirmed, so a yes could only fail), ``quiet_hours`` (the owner's local
+    time, in *tz_name*), ``dnd`` (a check that fails counts as on), ``ask_open``,
+    ``asked_recently`` and ``daily_cap`` (counted by local date).
 
     In ``shadow`` mode only the first three are checked, and the result stays ``shadow``,
     carrying the reason or none. In ``ask`` mode a limit hit is ``held`` with its reason, and
@@ -134,6 +152,7 @@ async def gate(
     action = proposal.action
     if outcome.kind != "shadow" or action is None:
         return outcome
+    await settle_expired(redis, now=now)
     local = now.astimezone(ZoneInfo(tz_name))
     shadow = settings.mode == "shadow"
     reason = await _first_hit(
@@ -142,7 +161,6 @@ async def gate(
         action.tool_name,
         targets,
         local,
-        now,
         dnd,
         askable=askable,
         cheap_only=shadow,

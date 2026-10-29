@@ -6,6 +6,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from loguru import logger
 
 from bus.schemas.events import ActionRequest, ActionResult, ParkedAction
 from core.notifications.schema import Urgency
@@ -74,19 +75,6 @@ async def test_reflex_benign_dispatches() -> None:
     result = await router.route(_action("reflex-engine", "home.turn_on_lights"))
     assert result.status == "success"
     assert len(agent.calls) == 1
-
-
-@pytest.mark.asyncio
-async def test_reflex_elevated_rejected_with_observation() -> None:
-    router, agent, redis, _ = _router()
-    result = await router.route(_action("reflex-engine", "home.set_climate"))
-
-    assert result.status == "error"
-    assert result.error is not None and result.error.startswith("autonomy_violation")
-    assert agent.calls == []
-    # A ReflexObservation was published to the observations stream
-    streams = [call.args[0] for call in redis.xadd.await_args_list]
-    assert "alfred:reflex:observations" in streams
 
 
 @pytest.mark.asyncio
@@ -220,16 +208,22 @@ async def test_reflex_elevated_confirmed_dispatches() -> None:
 )
 async def test_reflex_action_not_runnable_is_rejected(tool: str, confirmed: bool) -> None:
     router, agent, redis, notifier = _router()
-    result = await router.route(_action("reflex-engine", tool, confirmed=confirmed))
+    warnings: list[str] = []
+    sink = logger.add(lambda message: warnings.append(str(message)), level="WARNING")
+    try:
+        result = await router.route(_action("reflex-engine", tool, confirmed=confirmed))
+    finally:
+        logger.remove(sink)
 
     assert result.status == "error"
     assert result.error is not None and result.error.startswith("autonomy_violation")
     assert agent.calls == []
     redis.set.assert_not_called()
     notifier.publish.assert_not_awaited()
-    # The violation is recorded as a ReflexObservation
+    # The violation is recorded as a ReflexObservation, and logged with whether it was confirmed
     streams = [call.args[0] for call in redis.xadd.await_args_list]
     assert "alfred:reflex:observations" in streams
+    assert any(f"confirmed={confirmed}" in line for line in warnings)
 
 
 @pytest.mark.asyncio

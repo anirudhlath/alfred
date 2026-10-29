@@ -25,6 +25,7 @@ import redis.asyncio as aioredis
 from bus.schemas.events import ReflexObservation, ReflexOutcome, StateChangedEvent
 from core.attribution.cause import cause_of
 from core.attribution.log import record_change
+from core.reflex.answers import ASK_SOURCE
 from core.reflex.asks import gate, open_ask
 from core.reflex.availability import bridge_availability
 from core.reflex.outcome import publishes
@@ -119,7 +120,7 @@ async def publish_observation(
 ) -> None:
     """Publish a ReflexObservation to the observation stream."""
     observation = ReflexObservation(
-        source="reflex-engine",
+        source=ASK_SOURCE,
         origin=origin,
         trigger_event=trigger_event.model_dump(),
         action=action,
@@ -258,7 +259,7 @@ async def publish_proposal(
 ) -> None:
     """Publish an observation carrying a proposal Reflex did not execute, and what it came to."""
     observation = ReflexObservation(
-        source="reflex-engine",
+        source=ASK_SOURCE,
         origin=origin,
         trigger_event=trigger_event.model_dump(),
         proposal=proposal,
@@ -286,7 +287,7 @@ async def observe_passively(
         return False
 
     observation = ReflexObservation(
-        source="reflex-engine",
+        source=ASK_SOURCE,
         origin="state_change",
         trigger_event=event.model_dump(),
     )
@@ -353,17 +354,18 @@ async def ask_or_hold(
     is gated: any other comes back as it is, and nothing is resolved or read for it. So does a
     ``shadow`` one when *notifier* or *dnd* is missing (a caller that wires no asks). Otherwise
     the owner's settings, the tool's declared risk and their time zone are read and the ask gate
-    run (``core.reflex.asks.gate``). A tool whose risk is not benign or elevated is never asked
-    about, because the router refuses it even when confirmed. In ``shadow`` mode the outcome
-    stays ``shadow`` with the reason a limit would have given; in ``ask`` mode the limits make
-    it ``held`` with their reason, or ``open_ask`` parks it and sends the notification and the
-    outcome is ``asked`` with the ask's id. An ask that lost the claim to another is ``held``
-    for ``ask_open``.
+    run (``core.reflex.asks.gate``, which first settles a lapsed ask, in either mode). A tool
+    whose risk is not benign or elevated is never asked about, because the router refuses it
+    even when confirmed. In ``shadow`` mode the outcome stays ``shadow`` with the reason a limit
+    would have given; in ``ask`` mode the limits make it ``held`` with their reason, or
+    ``open_ask`` parks it and sends the notification and the outcome is ``asked`` with the
+    ask's id. An ask that lost the claim to another is ``held`` for ``ask_open``.
 
     A failure in any of those reads, in the gate or in ``open_ask`` propagates, so the event
     stays pending and is retried (fail closed, as with ``PersonChanges.recent``). A retry finds
     the ask open, so it is held and never asked twice; ``open_ask`` notifies last, so the
-    owner hears of an ask at most once.
+    owner hears of an ask at most once. The one read that does not propagate is
+    do-not-disturb: a check that fails counts as on, and the decision is recorded as ``dnd``.
     """
     action = decided.proposal.action
     if decided.outcome.kind != "shadow" or action is None or notifier is None or dnd is None:

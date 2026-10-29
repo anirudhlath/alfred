@@ -156,10 +156,13 @@ async def _handle_trigger_fired(
     Returning normally means "ACK this entry". That covers entries that are not
     ours (no ``event`` field, another event type on the shared stream) and
     entries that can never parse — retrying cannot fix a malformed payload, and
-    left pending it would be reclaimed for eternity. Two failures propagate,
+    left pending it would be reclaimed for eternity. Four failures propagate,
     leaving the entry pending for the reclaim pass in ``_consume_trigger_fired``:
     the decided-check's Redis error (Redis cannot say whether the event was
-    decided) and a failure while *acting* on a valid TriggerFired, the ask step's included.
+    decided), the notified-check's (Redis cannot say whether the notification went
+    out), a failed send of the trigger's own notification, and a failure in the ask
+    step (a read, the gate, or ``open_ask``; a do-not-disturb check that fails does
+    not propagate, the gate holds it as ``dnd``).
     The trigger's own notification is sent at most once per event: it is marked sent
     (``mark_notified``) after a successful send, and a redelivery skips it.
 

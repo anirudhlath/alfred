@@ -159,22 +159,25 @@ The answers (the Door, a reply, or silence) are in
 [`autonomy.md`](autonomy.md#reflex-asks); this page keeps what it does not repeat.
 
 `gate` reduces a standing (`shadow`) proposal to `asked` or `held`, naming the first limit it
-meets, in this order:
+meets. It first settles an ask whose deadline has passed, on every decision and in either mode
+(recorded as `expired` at its deadline), so a lapsed ask ends whatever limit the decision then
+meets. The limits, in this order:
 
 1. `tool_off`: no `ask_tools` pattern matches the tool (an empty list turns every tool off), or
    the tool's declared risk is critical or unknown, which the router refuses even when the owner
    says yes;
 2. `quiet_hours`: the owner's local time is in `quiet_hours_start` up to `quiet_hours_end`
    (a start later than the end wraps midnight; equal means none);
-3. `dnd`: Do Not Disturb is on;
-4. `ask_open`: an ask is already waiting (an expired one is settled first, and recorded as
-   `expired` at its deadline);
+3. `dnd`: Do Not Disturb is on (a check that fails, say on a stored value that does not parse,
+   counts as on: the decision is recorded as held, not retried);
+4. `ask_open`: an ask is already waiting;
 5. `asked_recently`: `alfred:reflex:asked:<tool>:<sorted targets>` exists;
 6. `daily_cap`: `alfred:reflex:asks:<local YYYY-MM-DD>` has reached `daily_ask_cap`.
 
 In `shadow` mode only the first three are checked and the outcome stays `shadow`, with the
-reason or none. The gate writes nothing, apart from settling an expired ask: that records
-the `expired` answer and deletes the open key (`settle_expired`, `core/reflex/answers.py`).
+reason or none. The gate writes nothing, apart from settling an expired ask, in `shadow` mode
+too: that records the `expired` answer and deletes the open key (`settle_expired`,
+`core/reflex/answers.py`).
 
 `open_ask` claims `alfred:reflex:ask:open` first, with `SET NX` (the value is the `OpenAsk`
 JSON, kept for `ask_expiry_seconds` plus a day), because the state-change and trigger loops
@@ -186,7 +189,8 @@ notification goes out, its metadata carrying `pending_action_id` and `kind: refl
 failure in any step propagates, and the open key stays behind, so a redelivery finds `ask_open`
 and the proposal is recorded as `held`, never asked twice. The notification goes last, so the
 owner hears of an ask at most once. A failure in the runner's ask step (the settings, the tool's
-risk, the gate or `open_ask`) propagates too: the event stays pending and is retried.
+risk, the gate or `open_ask`) propagates too: the event stays pending and is retried. The one
+exception is the Do Not Disturb check, which counts as on when it fails.
 
 ### The words of an ask
 
@@ -211,20 +215,24 @@ Reflex had noticed; capped near 5,000 entries). Three roads lead there, all in
 - **A reply**, in words: the approval classifier reads it against the parked action. Only the
   owner can answer this way, on `web_pwa`, `ios` or `signal` (the channels an `important`
   notification reaches, never speech), and a reply does not answer once Alfred has spoken in that
-  conversation since the ask went out: a "yes" there answers whatever Alfred just said, so it
-  is a normal turn and the ask stays open for the Door.
+  conversation since 120 s before the ask went out (`ASK_LOOKBACK_SECONDS`): a "yes" there
+  answers whatever Alfred just said, so it is a normal turn and the ask stays open for the Door.
 - **Silence.** Nothing watches the clock: an ask past its deadline (`ask_expiry_seconds` after it
   was made, 600 s by default) is recorded as `expired`, with no channel, the next time anything
-  looks. The ask gate settles it only in `ask` mode, and only after the first three limits
-  (`tool_off`, quiet hours and do-not-disturb) have passed, so a lapsed ask stays open through a
-  decision that one of them holds; the next decision that gets past them settles it. The shadow
-  report settles it too, before it counts.
+  looks. The ask gate looks first, on every decision and in `shadow` mode too, before it checks
+  `tool_off`, quiet hours or do-not-disturb, so a lapsed ask is settled even by a decision that
+  one of them holds, and after the mode is flipped to `shadow`. The shadow report settles it
+  too, before it counts.
 
 One answer per ask: `alfred:reflex:answered:<ask id>` arbitrates between a Door tap and a reply that
-arrive together, and the loser runs nothing.
+arrive together, and the loser runs nothing and is told nothing (a reply is a normal turn, the Door
+gets a 404).
 
-A yes runs only an elevated action; a critical one is never asked about (`tool_off`), because the
-router refuses it even when confirmed. When the ask was for a script, the yes adds its targets to
+Switching the mode to `shadow` stops new asks, but an ask already open can still be answered, by
+the Door or a reply, and a yes then runs.
+
+A yes runs the benign or elevated action asked about; a critical or unknown one is never asked
+about (`tool_off`), because the router refuses it even when confirmed. When the ask was for a script, the yes adds its targets to
 `allowed_scripts` in the settings, each once and as opaque ids, through the function the command
 line's `allow-script` uses. That addition is best effort: if it fails, the answer stands and the
 action runs, and the owner can add the id by hand.
@@ -237,7 +245,10 @@ only:
 
 - a table by day of the asks made (`outcome:asked`) and the proposals held (`outcome:held`), then
   one column per reason a hold can name (`tool_off`, `quiet_hours`, `dnd`, `ask_open`,
-  `asked_recently`, `daily_cap`), from the same daily counters as the Outcomes table;
+  `asked_recently`, `daily_cap`), then one per reason shadow mode checks (`shadow:tool_off`,
+  `shadow:quiet_hours`, `shadow:dnd`): what an ask would have met while Reflex was in `shadow`
+  mode, to judge the switch to `ask` by. All from the same daily counters as the Outcomes
+  table;
 - a table by day of the answers, `yes`, `no` and `expired`, read from `alfred:reflex:answers` and
   bucketed by the day the entry was written. An answer to an ask made the evening before counts on
   the day it came.

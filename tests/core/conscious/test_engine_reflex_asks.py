@@ -26,7 +26,7 @@ from core.conscious.engine import (
     ConsciousEngine,
 )
 from core.conscious.session import SessionManager
-from core.reflex.answers import OpenAsk, ReflexAnswer
+from core.reflex.answers import ASK_LOOKBACK_SECONDS, OpenAsk, ReflexAnswer
 from core.reflex.settings import load_settings
 from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo
 from core.routing.pending import decide, pending_key, read_pending, store_pending_action
@@ -460,6 +460,24 @@ async def test_a_reply_that_lost_to_the_door_is_a_normal_turn() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_yes_that_lost_the_answered_marker_gets_no_acknowledgement() -> None:
+    """Another answer was recorded first (its marker is set): this yes records nothing and runs
+    nothing, so it must not be told "Okay." It is a normal turn."""
+    redis = fakeredis.FakeAsyncRedis()
+    await _open_ask(redis)
+    await redis.set(f"{REFLEX_ANSWERED_PREFIX}{ASK_ID}", "1")
+    approval = _classifier("approve")
+    script = Script("Hello.")
+
+    response = await _engine(redis, script, approval).process_request(_request())
+
+    assert response.text == "Hello."
+    assert script.call_count == 1
+    assert await _answers(redis) == []
+    assert await _republished(redis) == []
+
+
+@pytest.mark.asyncio
 async def test_a_yes_to_a_script_ask_allows_the_script() -> None:
     redis = fakeredis.FakeAsyncRedis()
     await _open_ask(redis, script=True)
@@ -542,7 +560,9 @@ async def test_a_reply_after_its_own_run_lapsed_answers_the_ask() -> None:
     )
     approval_id = await _park_a_run(engine, "sess-1")
     await redis.delete(pending_key(approval_id))
-    await _open_ask(redis, asked_at=datetime.now(UTC))  # after the turn that parked the run
+    # The ask went out well after the turn that parked the run: past the lookback, where
+    # Alfred's confirmation prompt is no longer what a yes is read as answering.
+    await _open_ask(redis, asked_at=datetime.now(UTC) + timedelta(seconds=ASK_LOOKBACK_SECONDS + 1))
 
     response = await engine.process_request(_request("yes please", session_id="sess-1"))
 
@@ -627,12 +647,42 @@ async def test_a_yes_after_alfred_spoke_does_not_allow_a_script_ask() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_yes_when_alfred_last_spoke_before_the_ask_answers_the_ask() -> None:
+@pytest.mark.parametrize("before_the_ask", [30, ASK_LOOKBACK_SECONDS - 1])
+async def test_a_yes_after_alfred_spoke_just_before_the_ask_is_a_normal_turn(
+    before_the_ask: int,
+) -> None:
+    """Alfred asked "Shall I add milk to the list?" a moment before Reflex's ask went out: the
+    owner's yes, typed just after both, is meant for Alfred."""
     redis = fakeredis.FakeAsyncRedis()
-    now = datetime.now(UTC)
-    await _open_ask(redis, asked_at=now - timedelta(minutes=1))
+    asked_at = datetime.now(UTC) - timedelta(minutes=1)
+    await _open_ask(redis, asked_at=asked_at)
     await _store_exchange(
-        redis, "sess-1", asked="Anything else, sir?", answered_at=now - timedelta(minutes=5)
+        redis,
+        "sess-1",
+        asked="Shall I add milk to the list?",
+        answered_at=asked_at - timedelta(seconds=before_the_ask),
+    )
+    approval = _classifier("approve")
+    script = Script("Added, sir.")
+
+    response = await _engine(redis, script, approval).process_request(_request("yes please"))
+
+    assert response.text == "Added, sir."
+    assert script.call_count == 1
+    approval.classify.assert_not_awaited()
+    assert await _ask_is_untouched(redis)
+
+
+@pytest.mark.asyncio
+async def test_a_yes_when_alfred_spoke_beyond_the_lookback_before_the_ask_answers_it() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    asked_at = datetime.now(UTC) - timedelta(minutes=1)
+    await _open_ask(redis, asked_at=asked_at)
+    await _store_exchange(
+        redis,
+        "sess-1",
+        asked="Anything else, sir?",
+        answered_at=asked_at - timedelta(seconds=ASK_LOOKBACK_SECONDS + 1),
     )
     script = Script("never sent")
 

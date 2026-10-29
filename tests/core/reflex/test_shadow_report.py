@@ -21,6 +21,7 @@ from bus.schemas.events import (
 from core.reflex import shadow_report
 from core.reflex.answers import AnswerKind, OpenAsk, ReflexAnswer
 from core.reflex.decision_log import DecisionRecord
+from core.reflex.runner import count_outcome
 from core.reflex.shadow_report import build_report
 from shared.streams import (
     REFLEX_ANSWERS_STREAM,
@@ -463,6 +464,8 @@ async def test_the_asks_section_counts_asked_and_held_by_reason_per_day() -> Non
                 b"held:dnd": b"1",
                 b"held:ask_open": b"2",
                 b"held:daily_cap": b"1",
+                b"shadow:tool_off": b"5",
+                b"shadow:dnd": b"4",
             }
         },
     )
@@ -471,12 +474,26 @@ async def test_the_asks_section_counts_asked_and_held_by_reason_per_day() -> Non
 
     assert (
         "| Day (UTC) | asked | held | tool_off | quiet_hours | dnd | ask_open"
-        " | asked_recently | daily_cap |"
+        " | asked_recently | daily_cap | shadow:tool_off | shadow:quiet_hours | shadow:dnd |"
     ) in report
-    assert "| 2026-10-07 | 2 | 7 | 3 | 0 | 1 | 2 | 0 | 1 |" in report
+    assert "| 2026-10-07 | 2 | 7 | 3 | 0 | 1 | 2 | 0 | 1 | 5 | 0 | 4 |" in report
     # Between the would-have-reversed list and the proposals, so a reader meets them in order.
     assert report.index("### Would have reversed") < report.index("### Asks")
     assert report.index("### Asks") < report.index("### Proposals")
+
+
+async def test_the_shadow_reasons_are_the_ones_the_gate_counts_in_shadow_mode() -> None:
+    """The columns read the counters ``count_outcome`` writes for a shadow decision."""
+    redis = fakeredis.FakeAsyncRedis()
+    for reason in ("tool_off", "quiet_hours", "dnd", "dnd", None):
+        await count_outcome(redis, ReflexOutcome(kind="shadow", reason=reason), now=NOW)
+
+    report = await build_report(redis, days=1, now=NOW, tz_name="UTC")
+
+    assert "| 2026-10-08 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 2 |" in rows_of(
+        report, "### Asks"
+    )
+    assert "`shadow:<reason>`" in report
 
 
 async def test_a_day_written_before_outcomes_were_counted_shows_dashes_in_the_asks_table() -> None:
@@ -484,7 +501,9 @@ async def test_a_day_written_before_outcomes_were_counted_shows_dashes_in_the_as
 
     report = await build_report(redis, days=2, now=NOW, tz_name="UTC")
 
-    assert "| 2026-10-06 | — | — | — | — | — | — | — | — |" in rows_of(report, "### Asks")
+    assert "| 2026-10-06 | — | — | — | — | — | — | — | — | — | — | — |" in rows_of(
+        report, "### Asks"
+    )
 
 
 async def test_the_answers_are_counted_per_day_they_were_recorded() -> None:
@@ -556,7 +575,7 @@ async def test_an_unreadable_answers_stream_costs_only_the_answers_table() -> No
 
     report = await build_report(redis, days=2, now=NOW, tz_name="UTC")
 
-    assert "| 2026-10-07 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |" in report
+    assert "| 2026-10-07 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |" in report
     assert "The answers could not be read, so their table is unavailable." in report
     assert "### Proposals (0)" in report
 
@@ -567,7 +586,7 @@ async def test_a_failed_settle_costs_nothing_else() -> None:
 
     report = await build_report(redis, days=2, now=NOW, tz_name="UTC")
 
-    assert "| 2026-10-07 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |" in report
+    assert "| 2026-10-07 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |" in report
     assert "| Day (UTC) | yes | no | expired |" in report
 
 

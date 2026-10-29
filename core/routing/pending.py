@@ -1,11 +1,14 @@
 """Pending approvals: the one store for everything waiting on the owner's yes or no.
 
-Two kinds of record live under ``PENDING_PREFIX`` (TTL 5 min), told apart by their
-``kind``: a ``ParkedRun`` (a System 2 run that deferred its critical calls) and a
-``ParkedAction`` (a critical action the DomainRouter intercepted from another source).
-Every resolution path — the web endpoints, a reply in the conversation — claims the
-record with ``GETDEL``, so a Door tap and a "yes" in chat can never both act on it.
-Expiry is silent (Redis TTL): a decision after expiry simply finds nothing.
+Two kinds of record live under ``PENDING_PREFIX`` (TTL 5 min unless the writer says otherwise),
+told apart by their ``kind``: a ``ParkedRun`` (a System 2 run that deferred its critical calls)
+and a ``ParkedAction`` (an action parked for the owner: a critical one the DomainRouter
+intercepted from another source, or one Reflex proposed and asked about, whose record lives
+``ask_expiry_seconds``). Every resolution path — the web endpoints, a reply in the
+conversation — claims the record with ``GETDEL``, so a Door tap and a "yes" in chat can never
+both act on it. Expiry of a run or a router-held action is silent (Redis TTL): a decision after
+expiry simply finds nothing. A Reflex ask is not silent: it settles as ``expired`` and is
+recorded (``core/reflex/answers.py``).
 """
 
 from __future__ import annotations
@@ -198,9 +201,9 @@ async def _answer_ask(
     False, and nothing runs, when no open ask names the action: it was settled elsewhere (it
     expired, or another answer was recorded first and cleared the key). The same when the ask's
     deadline has passed although its pending record has not lapsed (the record's TTL is counted
-    from a later write): the ask is settled as expired, and a late yes runs nothing. The action
-    is republished only when this call recorded the answer, so a yes that lost the race to
-    another answer runs nothing.
+    from a later write): the ask is settled as expired, and a late yes runs nothing. True means
+    this call recorded the answer: a decision that lost the race to another answer (its marker
+    is already set) records nothing, runs nothing and is False, so no caller acknowledges it.
     """
     ask = await read_open_ask(redis)
     if ask is None or ask.ask_id != action.request_id:
@@ -231,7 +234,7 @@ async def _answer_ask(
             decision,
             recorded,
         )
-    return True
+    return recorded
 
 
 async def decide(
@@ -252,7 +255,8 @@ async def decide(
     An action Reflex proposed is an ask (``core/reflex/answers.py``): the decision is recorded
     as its answer, from *channel* (the Door, or the channel a reply came on), and only the
     first answer to an ask records and runs anything. A decision that finds no open ask naming
-    the record (it was settled elsewhere) runs nothing and is False. When there is nothing to
+    the record (it was settled elsewhere), or that lost the race to another answer, runs nothing
+    and is False. When there is nothing to
     claim, an ask whose time has passed is settled as expired: its pending record lapsed with
     it. *now* is the clock for that, the current time unless a caller says otherwise.
     """

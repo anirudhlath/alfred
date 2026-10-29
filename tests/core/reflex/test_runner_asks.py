@@ -437,6 +437,31 @@ async def test_each_limit_is_recorded_as_held_and_counted_under_its_reason(
     assert await rig.pending() == []
 
 
+async def test_a_do_not_disturb_read_that_raises_holds_as_dnd_and_is_not_retried(
+    rig: Rig, origin: Origin
+) -> None:
+    """The stored state is malformed, so the checker raises: that is a decision, not a retry."""
+    await rig.redis.set(DND_STATE_KEY, "{not json")
+
+    await origin.deliver(rig)  # returns, so the entry is ACKed
+
+    assert await rig.outcomes() == [ReflexOutcome(kind="held", reason="dnd")]
+    assert (await rig.counted())["held:dnd"] == 1
+    assert rig.asks_sent() == []
+    assert await rig.pending() == []
+    assert await rig.marked()
+
+
+async def test_a_do_not_disturb_read_that_raises_is_the_dnd_reason_in_shadow_mode(rig: Rig) -> None:
+    await configure(rig.redis, mode="shadow")
+    await rig.redis.set(DND_STATE_KEY, "{not json")
+
+    await rig.state_change()
+
+    assert await rig.outcomes() == [ReflexOutcome(kind="shadow", reason="dnd")]
+    assert (await rig.counted())["shadow:dnd"] == 1
+
+
 async def test_a_held_proposal_opens_nothing(rig: Rig) -> None:
     await _dnd(rig)
 
@@ -924,9 +949,9 @@ async def test_the_notified_marker_is_set_only_after_a_successful_send(rig: Rig)
 async def test_the_notified_marker_lasts_as_long_as_the_decided_marker(rig: Rig) -> None:
     await rig.fired_trigger()
 
-    assert await rig.redis.ttl(fired_marker(rig)) == await rig.redis.ttl(
-        f"{runner.REFLEX_DECIDED_PREFIX}{rig.fired.event_id}"
-    )
+    notified = await rig.redis.ttl(fired_marker(rig))
+    decided_ttl = await rig.redis.ttl(f"{runner.REFLEX_DECIDED_PREFIX}{rig.fired.event_id}")
+    assert abs(notified - decided_ttl) <= 1  # two reads of a ticking clock
 
 
 async def test_a_refused_marker_write_never_fails_the_trigger(

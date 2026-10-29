@@ -96,10 +96,12 @@ class DomainRouter:
             f"autonomy_violation: reflex may not execute '{action.tool_name}' (risk={risk})",
         )
         logger.warning(
-            "Rejected Reflex ActionRequest '{}' targeting '{}' — risk '{}' exceeds benign",
+            "Rejected Reflex ActionRequest '{}' targeting '{}' (risk '{}', confirmed={}):"
+            " Reflex may run a benign tool, or an elevated one that is confirmed",
             action.tool_name,
             action.target_service,
             risk,
+            action.confirmed,
         )
         # Record for System 2 awareness. publish_observation's trigger_event
         # slot carries the rejected request itself (the router has no
