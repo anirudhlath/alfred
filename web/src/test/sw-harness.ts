@@ -519,6 +519,57 @@ export interface Harness {
     settled: Promise<void>;
   };
   message(data: unknown): Promise<void>;
+  /**
+   * Fires `push` as a push service's delivery does, and resolves once
+   * everything the worker extended the event with has. With no argument
+   * `event.data` is null, which is what a push with no body is — not an empty
+   * PushMessageData. Otherwise `payload` arrives as its JSON, or `raw` as
+   * itself: `text()` hands that text back and `json()` parses it, each call,
+   * synchronously, so a `raw` that is not JSON throws a SyntaxError inside the
+   * listener as a real `json()` does. Not modelled: `arrayBuffer()`, `blob()`
+   * and `bytes()`, which no worker here reads.
+   */
+  push(payload?: unknown, options?: { raw?: string }): Promise<void>;
+  /**
+   * Fires `notificationclick` for a notification whose `data` is this — what
+   * the `showNotification` that showed it was handed — and resolves as `push`
+   * does. Not modelled: the event's `action`, and the notification's title,
+   * body and tag, which no worker here reads.
+   */
+  notificationClick(data: unknown): Promise<void>;
+  /**
+   * Every notification `self.registration.showNotification()` showed, in order,
+   * with the options as the worker passed them. Recorded a macrotask after the
+   * call, when the promise it hands back settles: a real one is a round trip to
+   * the browser, so a worker that does not extend its push event with it has
+   * shown nothing by the time the event ends — the failure iOS answers by
+   * revoking the subscription. A microtask would hide that, as it would hide a
+   * missing `await` on a delete.
+   */
+  shown: { title: string; options: NotificationOptions }[];
+  /** How many times a tapped notification's `close()` was called. */
+  closedNotifications: number;
+  /**
+   * The absolute URL of every window `self.clients.openWindow()` opened, in
+   * order, resolved against the worker's own location as a browser resolves
+   * it. Recorded, and resolved with null, a macrotask after the call. Null is
+   * what a browser gives for a window it opened on another origin; the fake
+   * makes no page for it, so a worker cannot lean on a client it never made.
+   */
+  opened: string[];
+  /**
+   * The URL of every page a `focus()` focused, in order, a macrotask after the
+   * call — never one `refuseFocus()` refused, which rejects instead.
+   */
+  focused: string[];
+  /** Everything a window client's `postMessage()` was handed, by the page's URL, in order. */
+  posted: { url: string; data: unknown }[];
+  /**
+   * Program a page's `focus()` to reject with InvalidAccessError, which is what
+   * a browser answers a worker it will not let take focus with. A path, as
+   * `clients` names the page.
+   */
+  refuseFocus(url: string): void;
   skipWaitingCalls: number;
   claimCalls: number;
   unregisterCalls: number;
@@ -678,6 +729,14 @@ interface OpenPage {
   controller: "older" | "this" | null;
 }
 
+/** The slice of a `WindowClient` the fake `matchAll()` hands out. */
+interface FakeWindowClient {
+  url: string;
+  navigate(url: string): Promise<void>;
+  focus(): Promise<FakeWindowClient>;
+  postMessage(data: unknown): void;
+}
+
 /**
  * The slice of a `ServiceWorker` the fake registration hands out, in each of
  * its three slots — `installing`, `waiting` and `active` — every one of them
@@ -722,6 +781,13 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
   });
   /** Absolute page hrefs whose `navigate()` rejects although this worker controls them. */
   const navigateRefusals = new Set<string>();
+  /** Absolute page hrefs whose `focus()` rejects. */
+  const focusRefusals = new Set<string>();
+  /**
+   * Where the worker's script is, which is what `self.location` describes and
+   * what `openWindow()` resolves a relative URL against.
+   */
+  const workerLocation = new URL(`${origin}/sw.js`);
   const store = new Map<string, Map<string, Response>>();
   /** Keyed by absolute href, not pathname: a cross-origin URL is a different route. */
   const routes = new Map<string, Response>();
@@ -769,6 +835,10 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     inits: (FetchInit | undefined)[];
     puts: string[];
     released: string[];
+    shown: Harness["shown"];
+    opened: string[];
+    focused: string[];
+    posted: Harness["posted"];
   } = {
     fetched: [],
     reloaded: [],
@@ -779,8 +849,13 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     inits: [],
     puts: [],
     released: [],
+    shown: [],
+    opened: [],
+    focused: [],
+    posted: [],
   };
   let deadlinesCleared = 0;
+  let closedNotifications = 0;
 
   /* The clock `Harness.now` describes. One real macrotask per timer fired, and
      the earliest due first — insertion order breaking a tie, so two armed for
@@ -881,24 +956,41 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
    * `refuseNavigate()` names, and the page is recorded in `refusedNavigations`;
    * a navigation that starts is recorded in `navigated` at the call, which is
    * when a browser sets it going.
+   *
+   * `focus()` and `postMessage()` work on any page it lists, controlled or not,
+   * as a browser's do. A focus lands a macrotask after the call, in `focused`,
+   * or rejects for a page `refuseFocus()` names; a message is recorded in
+   * `posted` at the call, structured-cloned, since a real one is a copy too.
    */
-  const windowClient = (page: OpenPage) => ({
-    url: page.url,
-    navigate: (url: string) => {
-      const refused =
-        page.controller !== "this"
-          ? "this worker does not control the page"
-          : navigateRefusals.has(page.url)
-            ? "the page is closing or already reloading"
-            : undefined;
-      if (refused) {
-        harness.refusedNavigations.push(page.url);
-        return Promise.reject(new TypeError(`Failed to navigate ${page.url}: ${refused}`));
-      }
-      harness.navigated.push(new URL(url, origin).href);
-      return Promise.resolve();
-    },
-  });
+  const windowClient = (page: OpenPage): FakeWindowClient => {
+    const client: FakeWindowClient = {
+      url: page.url,
+      navigate: (url: string) => {
+        const refused =
+          page.controller !== "this"
+            ? "this worker does not control the page"
+            : navigateRefusals.has(page.url)
+              ? "the page is closing or already reloading"
+              : undefined;
+        if (refused) {
+          harness.refusedNavigations.push(page.url);
+          return Promise.reject(new TypeError(`Failed to navigate ${page.url}: ${refused}`));
+        }
+        harness.navigated.push(new URL(url, origin).href);
+        return Promise.resolve();
+      },
+      focus: () =>
+        settled(() => {
+          if (focusRefusals.has(page.url)) {
+            throw new DOMException("Not allowed to focus a window.", "InvalidAccessError");
+          }
+          harness.focused.push(page.url);
+          return client;
+        }),
+      postMessage: (data: unknown) => void harness.posted.push({ url: page.url, data: structuredClone(data) }),
+    };
+    return client;
+  };
 
   const scope = {
     addEventListener(type: string, fn: (event: unknown) => void) {
@@ -924,7 +1016,12 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
           return true;
         });
       },
+      // Shown a macrotask later: see `Harness.shown`.
+      showNotification: (title: string, options: NotificationOptions = {}) =>
+        settled(() => void harness.shown.push({ title, options })),
     },
+    // A URL stands in for a WorkerLocation: it has every field one has.
+    location: workerLocation,
     // A promise, as the real one returns: a worker that chains on it would
     // otherwise fail here with a TypeError it would never meet on a phone.
     skipWaiting: () => {
@@ -950,6 +1047,12 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
         Promise.resolve(
           pages.filter((page) => options?.includeUncontrolled || page.controller === "this").map(windowClient),
         ),
+      // Opened a macrotask later: see `Harness.opened`.
+      openWindow: (url: string) =>
+        settled(() => {
+          harness.opened.push(new URL(url, workerLocation).href);
+          return null;
+        }),
     },
     caches: {
       open: (name: string) => {
@@ -1054,11 +1157,15 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
   const inner = (new Function("self", ...SEALED, source + tail)(scope, ...SEALED.map(seal)) ??
     {}) as Harness["inner"];
 
-  /** Runs every listener and waits on every promise each one extended with. */
-  const extendable = async (type: string, data?: unknown) => {
+  /**
+   * Runs every listener with an event of `fields` — a message's `data`, a
+   * push's, a click's `notification` — and waits on every promise each one
+   * extended it with.
+   */
+  const extendable = async (type: string, fields: Record<string, unknown> = {}) => {
     const waited: Promise<unknown>[] = [];
     for (const listener of listeners.get(type) ?? []) {
-      listener({ data, waitUntil: (p: Promise<unknown>) => void waited.push(p) });
+      listener({ ...fields, waitUntil: (p: Promise<unknown>) => void waited.push(p) });
     }
     await Promise.all(waited);
   };
@@ -1260,7 +1367,25 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       await settled;
       return response;
     },
-    message: (data) => extendable("message", data),
+    message: (data) => extendable("message", { data }),
+    push: (payload, { raw } = {}) => {
+      const text = raw ?? (payload === undefined ? undefined : JSON.stringify(payload));
+      return extendable("push", {
+        data: text === undefined ? null : { text: () => text, json: (): unknown => JSON.parse(text) },
+      });
+    },
+    notificationClick: (data) =>
+      extendable("notificationclick", {
+        notification: { data, close: () => void (closedNotifications += 1) },
+      }),
+    shown: harness.shown,
+    get closedNotifications() {
+      return closedNotifications;
+    },
+    opened: harness.opened,
+    focused: harness.focused,
+    posted: harness.posted,
+    refuseFocus: (url) => void focusRefusals.add(new URL(url, origin).href),
     get skipWaitingCalls() {
       return skipWaitingCalls;
     },

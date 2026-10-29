@@ -839,6 +839,129 @@ describe("the fake lifecycle calls", () => {
   });
 });
 
+describe("the fake push and notifications", () => {
+  /**
+   * Shows one notification whose title says what `event.data` was: `null`, or
+   * what `text()` and `json()` made of it — `json()` by the name of what it
+   * threw, when it threw.
+   */
+  const reading = `
+    self.addEventListener("push", (event) => {
+      let parsed;
+      try {
+        parsed = event.data && JSON.stringify(event.data.json());
+      } catch (error) {
+        parsed = error.name;
+      }
+      const title = event.data === null ? "null" : event.data.text() + " -> " + parsed;
+      event.waitUntil(self.registration.showNotification(title, { body: "b" }));
+    });
+  `;
+
+  it("delivers a push with no payload as data that is null", async () => {
+    // What a browser hands a worker for a push with no body: `event.data` is
+    // null, not an empty PushMessageData, so `event.data.json()` is a TypeError.
+    const worker = loadWorker(reading);
+    await worker.push();
+    expect(worker.shown).toEqual([{ title: "null", options: { body: "b" } }]);
+  });
+
+  it("delivers a payload as JSON that json() parses back", async () => {
+    const worker = loadWorker(reading);
+    await worker.push({ title: "t", id: "n-1" });
+    expect(worker.shown).toEqual([
+      { title: '{"title":"t","id":"n-1"} -> {"title":"t","id":"n-1"}', options: { body: "b" } },
+    ]);
+  });
+
+  it("delivers raw text whose json() throws, as PushMessageData's does on text that is not JSON", async () => {
+    // A real `json()` parses synchronously and throws a SyntaxError, inside
+    // the listener, on a body that is not JSON. Not hypothetical for a worker
+    // in the field: a push service relays whatever bytes the server sent.
+    const worker = loadWorker(reading);
+    await worker.push(undefined, { raw: "not json" });
+    expect(worker.shown).toEqual([{ title: "not json -> SyntaxError", options: { body: "b" } }]);
+  });
+
+  it("does not show a notification until the promise it handed back has settled", async () => {
+    // A real showNotification is a round trip to the browser, so a worker that
+    // does not extend the event with it has shown nothing when the event ends,
+    // and the browser may stop the worker first. Chrome then shows "This site
+    // has been updated in the background", and iOS revokes a subscription that
+    // receives pushes it does not show. Modelled as a macrotask for the reason a
+    // delete is: a microtask would drain before the event settles and hide it.
+    const worker = loadWorker(`
+      self.addEventListener("push", () => { self.registration.showNotification("unwaited"); });
+    `);
+    await worker.push();
+    expect(worker.shown).toEqual([]);
+  });
+
+  it("delivers the tapped notification's data, and counts each close()", async () => {
+    const worker = loadWorker(`
+      self.addEventListener("notificationclick", (event) => {
+        event.notification.close();
+        event.waitUntil(self.clients.openWindow(event.notification.data.path));
+      });
+    `);
+    await worker.notificationClick({ path: "/actions/7" });
+    expect(worker.closedNotifications).toBe(1);
+    expect(worker.opened).toEqual([`${ORIGIN}/actions/7`]);
+  });
+
+  it("records each window's focus() and postMessage(), and refuses a focus it was told to", async () => {
+    // A real focus() rejects with InvalidAccessError where the browser will not
+    // let a worker take focus — outside a tap's grace period, and on platforms
+    // that keep it for themselves. Recorded in `focused` only when it worked,
+    // so a refused focus and one never asked for read the same there; what the
+    // worker went on to post says which.
+    const worker = loadWorker(
+      `self.addEventListener("notificationclick", (event) => {
+        event.waitUntil((async () => {
+          for (const client of await self.clients.matchAll({ type: "window", includeUncontrolled: true })) {
+            const outcome = await client.focus().then(() => "focused", (error) => error.name);
+            client.postMessage({ outcome });
+          }
+        })());
+      });`,
+      { clients: [{ path: "/" }, { path: "/actions/7" }] },
+    );
+    worker.refuseFocus("/actions/7");
+    await worker.notificationClick(null);
+    expect(worker.focused).toEqual([`${ORIGIN}/`]);
+    expect(worker.posted).toEqual([
+      { url: `${ORIGIN}/`, data: { outcome: "focused" } },
+      { url: `${ORIGIN}/actions/7`, data: { outcome: "InvalidAccessError" } },
+    ]);
+  });
+
+  it("resolves openWindow() and records the absolute URL it opened", async () => {
+    // Absolute because a browser resolves the argument against the worker's
+    // own location, and a fake that kept the string would let a relative and
+    // an absolute URL that open different pages compare equal.
+    const worker = loadWorker(`
+      self.addEventListener("notificationclick", (event) => {
+        event.waitUntil(self.clients.openWindow("/actions/7").then((opened) =>
+          self.registration.showNotification("resolved " + opened)));
+      });
+    `);
+    await worker.notificationClick(null);
+    expect(worker.opened).toEqual([`${ORIGIN}/actions/7`]);
+    expect(worker.shown.map(({ title }) => title)).toEqual(["resolved null"]);
+  });
+
+  it("gives the worker a location on its own origin", async () => {
+    const worker = loadWorker(
+      `self.addEventListener("push", (event) => {
+        event.waitUntil(self.registration.showNotification(self.location.origin + " " + self.location.href));
+      });`,
+      { scope: "http://localhost:8081/" },
+    );
+    await worker.push();
+    expect(worker.shown.map(({ title }) => title)).toEqual(["http://localhost:8081 http://localhost:8081/sw.js"]);
+  });
+});
+
 describe("the seams the harness depends on", () => {
   it("refuses a global reached bare rather than letting it hit Node's", async () => {
     // `self.` is a convention only because this enforces it. Node's own fetch

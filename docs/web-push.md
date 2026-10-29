@@ -242,14 +242,21 @@ It is at most 3072 bytes (`MAX_PAYLOAD_BYTES`): push services refuse an encrypte
 4096, and `aes128gcm` adds 103. Over it, the body is cut to the longest prefix that fits,
 ending in `…`, then the title the same way. The ids are never cut.
 
-The worker (`web/public/sw.js`) reads it on `push` and shows `title` (or `Alfred`) with
-`body` (or nothing), tagged by `id` when it is a string. A push it cannot read still shows
-`Alfred`: iOS revokes a subscription that receives pushes it does not show. The worker
-builds the tap's link itself: `/actions/<action_id>` when `action_id` matches
-`^[A-Za-z0-9_-]{1,128}$`, else `/`. The server never names a URL the worker opens. On
-`notificationclick` it closes the notification, focuses an open window on its origin and
-posts it `{type: "OPEN_PATH", path}`, or opens one at `path` when none is open; a `path`
-it would not have built becomes `/`.
+The worker (`web/public/sw.js`) reads it on `push` and calls
+`showNotification(title, {body, tag, data: {path}})` inside `waitUntil`: `title` when it
+is a non-empty string, else `Alfred`; `body` when it is a string, else `""`; `tag` is `id`
+when that is a string, and absent otherwise. A push it cannot read — no data, data that
+is not JSON, JSON that is not an object — still shows `Alfred`: iOS revokes a
+subscription that receives pushes it does not show. The worker builds the tap's link
+itself: `path` is `/actions/<action_id>` when `action_id` is a string matching
+`^[A-Za-z0-9_-]{1,128}$` (the class `_REQUEST_ID_RE` accepts), else `/`. The server never
+names a URL the worker opens. On `notificationclick` it closes the notification and then,
+inside `waitUntil`, takes the first window `matchAll({type: "window",
+includeUncontrolled: true})` lists on its own origin: it focuses it — a refused focus is
+ignored — and then posts it `{type: "OPEN_PATH", path}`, which `web/src/lib/push.ts`
+routes. With no such window it opens one at `path`. A `path` it would not have built
+becomes `/`, because a notification can be tapped long after the worker that showed it
+was replaced.
 
 A change to a field changes both sides in one branch: `build_payload()` and the worker's
 `push` listener. Any byte change to `sw.js` installs a new worker on every phone

@@ -26,6 +26,13 @@
       Promise, JSON, Set, Array, Error, decodeURIComponent, undefined — and
       URL and Response are reached bare: none of them reaches outside the
       worker, and the tests run the real ones.
+
+   It also shows pushes and opens what they name — the `push` and
+   `notificationclick` listeners after the `message` one — and caches nothing
+   for either: a push is shown from its own payload, and a tap hands a path to
+   a window or opens one. What the payload holds, and what the server's
+   build_payload() promises about it, is in docs/web-push.md, "The payload
+   contract with `sw.js`".
 */
 
 const VERSION = "v1";
@@ -285,7 +292,8 @@ function fetchFresh(url) {
 /* The origin this worker was served from, and the only one it will ever touch.
    `self.registration.scope` rather than `self.location`: the scope is what
    actually bounds a worker, and it keeps one notion of "us" in this file — the
-   fetch handler's cross-origin refusal reads the same value. Not named `origin`
+   fetch handler's cross-origin refusal reads the same value. The one other is
+   openPath()'s, which asks a different question (see there). Not named `origin`
    because a worker already has a global of that name. */
 function scopeOrigin() {
   return new URL(self.registration.scope).origin;
@@ -785,6 +793,105 @@ self.addEventListener("message", (event) => {
      `event.data &&` first, because a page can post null and `.type` read off
      it is a TypeError inside the listener. Anything else is ignored. */
   if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting();
+});
+
+/* What a tap may open, and the whole of it: the Room at `/`, or the Room at one
+   approval, `/actions/<id>`, the route src/door/useActionRoute.ts opens the
+   Door over. A push names the approval by its id and never by a URL, and this
+   builds the path, so nothing a payload says can send a tap to another host or
+   another route. The id's class is the one the server accepts for a request id
+   (`_REQUEST_ID_RE`, core/channels/web_server.py): an id outside it names no
+   approval, and the Room's read of one is a 400.
+
+   `typeof` first, because `test` coerces: the number 123 and the array
+   ["abc"] both pass the pattern as the strings they turn into. */
+const ACTION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const ACTIONS = "/actions/";
+
+function linkTo(actionId) {
+  return typeof actionId === "string" && ACTION_ID.test(actionId) ? ACTIONS + actionId : "/";
+}
+
+/* The path a tap opens: the one its notification carries, built again by
+   linkTo() from the id in it, so a path linkTo() would not have built comes out
+   as `/`. A notification outlives the worker that showed it — it can be tapped
+   days later, under a newer build of this file — and its data is whatever that
+   worker handed showNotification(), so it is judged again rather than trusted. */
+function tappedPath(data) {
+  const path = data && data.path;
+  return typeof path === "string" && path.startsWith(ACTIONS)
+    ? linkTo(path.slice(ACTIONS.length))
+    : "/";
+}
+
+/* A push is SHOWN, whatever it holds. iOS revokes a subscription that receives
+   pushes it does not show, and Chrome shows "This site has been updated in the
+   background" in their place, so a payload that is missing, is not JSON, or is
+   JSON of another shape is shown as "Alfred" rather than dropped. Every field
+   is read as untrusted, whatever build_payload() promises: a title only when it
+   is a string with something in it, a body only when it is a string, and `id`
+   as the tag only when it is a string — a tag is what makes a second push about
+   the same notification replace the first rather than stack beside it. The
+   link is built here, from `action_id` (see linkTo).
+
+   Inside waitUntil: showNotification() is a round trip to the browser, and an
+   event that ends before it lands has shown nothing, with the browser free to
+   stop the worker. */
+self.addEventListener("push", (event) => {
+  let payload;
+  try {
+    payload = event.data && event.data.json();
+  } catch {
+    /* Not JSON: json() throws a SyntaxError, synchronously, and the fallback
+       below is what is shown. */
+  }
+  /* Only null and undefined throw when a property is read off them; a string, a
+     number or an array is JSON with no title, and reads as one. */
+  const fields = payload ?? {};
+  const title = typeof fields.title === "string" && fields.title ? fields.title : "Alfred";
+  const options = {
+    body: typeof fields.body === "string" ? fields.body : "",
+    data: { path: linkTo(fields.action_id) },
+  };
+  if (typeof fields.id === "string") options.tag = fields.id;
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+/* Into the app that is open, if one is: the first window on this origin is
+   focused and told the path, and routes it itself — OPEN_PATH, which
+   src/lib/push.ts takes — so a tap lands in the conversation the owner already
+   has rather than reloading it. With none open, a new window at the path.
+
+   `includeUncontrolled`, because the page that registered this worker is
+   controlled by no worker until it reloads, and it is the app all the same.
+   The origin is judged on each window's URL because a window that has not
+   loaded anything yet can be about:blank, whose origin is "null", and nothing
+   there takes the message. `self.location` and not scopeOrigin(): it is what
+   openWindow() resolves `path` against, so the window told and the window
+   opened are on one origin — the scope's too, since a scope cannot leave its
+   script's.
+
+   Focused first, and a focus refused is no reason not to post: a browser may
+   refuse a worker focus (InvalidAccessError), and the path still belongs in
+   the window the owner has rather than a second copy of the app beside it. */
+async function openPath(path) {
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  const app = windows.find((client) => new URL(client.url).origin === self.location.origin);
+  if (app) {
+    await app.focus().catch(() => {});
+    app.postMessage({ type: "OPEN_PATH", path });
+  } else {
+    await self.clients.openWindow(path);
+  }
+}
+
+/* A tap. Closed first, because Chrome leaves a tapped notification in the shade
+   otherwise; then the path, judged again (see tappedPath), opened inside
+   waitUntil: a browser lets a worker focus a window or open one only in answer
+   to a tap, and waitUntil is what keeps the tap's event open while it does. */
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(openPath(tappedPath(event.notification.data)));
 });
 
 /* The paths this worker never answers, named rather than spelled inline for the

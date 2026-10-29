@@ -162,8 +162,8 @@ Phase 4: the app installs and opens with no network.
 
 ## The service worker
 
-`public/sw.js` is hand-written — 273 lines of code under 909 of comment at `1d166e3`, 3.3
-to 1, counted with acorn's tokenizer (a line is code if any token touches it, comment if
+`public/sw.js` is hand-written — 313 lines of code under 965 of comment once phase 5 added
+its push listeners, 3.1 to 1, counted with acorn's tokenizer (a line is code if any token touches it, comment if
 only a comment does, and a blank line, inside a comment or not, is neither) — and shipped
 verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
 precache manifest. The reasoning is in
