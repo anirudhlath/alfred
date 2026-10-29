@@ -255,6 +255,31 @@ def test_re_registering_at_the_cap_evicts_nothing(family: DeviceFamily) -> None:
     assert evictions(rows, _MAKE[family](5)[0], family) == []
 
 
+def test_a_web_push_field_taken_by_an_apple_token_counts_as_new() -> None:
+    """An APNs body whose token is a stored endpoint's hash still pays its family's cap."""
+    shared, browser = _web(MAX)
+    rows = _rows((_apple(n) for n in range(MAX)), [(shared, browser)])
+
+    assert evictions(rows, shared, "apns") == [_apple(0)[0]]
+
+
+def test_an_apple_token_taken_by_a_web_push_field_counts_as_new() -> None:
+    shared, iphone = _apple(MAX)
+    rows = _rows((_web(n) for n in range(MAX)), [(shared, iphone)])
+
+    assert evictions(rows, shared, "web_push") == [_web(0)[0]]
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_re_registering_an_overrun_family_heals_it_around_the_field(
+    family: DeviceFamily,
+) -> None:
+    rows = _rows(_MAKE[family](n) for n in range(MAX + 2))
+
+    # 11 others: two go, and never the field being written.
+    assert evictions(rows, _MAKE[family](0)[0], family) == [_MAKE[family](n)[0] for n in (1, 2)]
+
+
 def test_heals_an_overrun_cap() -> None:
     rows = _rows(_web(n) for n in range(MAX + 2))
 

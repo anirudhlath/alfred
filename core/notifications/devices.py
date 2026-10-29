@@ -201,16 +201,19 @@ def evictions(
 ) -> list[str]:
     """The fields to delete so that ``field`` fits its family's cap, oldest first.
 
-    Empty when ``field`` is already stored: re-registering replaces its own row. Only rows
-    of ``family`` count, and a row of neither family (not JSON, not an object, no known
-    platform) is neither counted nor evicted. More than one only when the family is
-    already over the cap, which this then heals.
+    Counts only the rows of ``family`` other than ``field``, and evicts the oldest of them
+    down to ``cap - 1``, so ``field`` makes ``cap``. Re-registering a field of the same
+    family evicts nothing: it was already one of the ``cap``. A field stored as the other
+    family counts as new (the write replaces that row), so no field an APNs token and a
+    Web Push hash can share slips past either cap. A row of neither family (not JSON, not
+    an object, no known platform) is neither counted nor evicted. More than one only when
+    the family is already over the cap, which this then heals.
     """
     stamped: list[tuple[str, str]] = []
     for raw_name, value in rows.items():
         name = decode_stream_value(raw_name)
         if name == field:
-            return []
+            continue
         row = decode_device(value)
         if row is not None and device_family(row) == family:
             # isoformat() in UTC sorts as text; a row with no stamp reads as the oldest.

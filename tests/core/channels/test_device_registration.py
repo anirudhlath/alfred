@@ -473,6 +473,36 @@ def test_a_corrupt_row_neither_counts_nor_goes(
     assert stored.hlen(DEVICE_TOKENS_KEY) == 1 + MAX_DEVICES_PER_FAMILY
 
 
+def _family_counts(stored: fakeredis.FakeRedis) -> dict[str, int]:
+    counts = {"web_push": 0, "apns": 0}
+    for value in stored.hvals(DEVICE_TOKENS_KEY):
+        counts["web_push" if json.loads(value)["platform"] == WEB_PUSH_PLATFORM else "apns"] += 1
+    return counts
+
+
+@pytest.mark.parametrize("seeded", ["apns", "web_push"])
+def test_a_shared_field_cannot_slip_past_the_cap(
+    push_client: TestClient, stored: fakeredis.FakeRedis, seeded: DeviceFamily
+) -> None:
+    """The review's probe: one field, written as each family in turn, 30 times over.
+
+    An APNs token is 32 to 200 hex characters, so ``endpoint_field()`` of an endpoint is a
+    valid one. Overwriting a row of the other family must still count as new.
+    """
+    (_seed_apple if seeded == "apns" else _seed)(stored, range(MAX_DEVICES_PER_FAMILY))
+
+    for n in range(30):
+        endpoint = f"{APPLE}-probe-{n:02d}"
+        browser, iphone = _web_push(endpoint), _apple(endpoint_field(endpoint))
+        for body in (browser, iphone) if seeded == "apns" else (iphone, browser):
+            assert push_client.post(REGISTER, json=body).status_code == 200
+            counts = _family_counts(stored)
+            assert counts["apns"] <= MAX_DEVICES_PER_FAMILY, (n, counts)
+            assert counts["web_push"] <= MAX_DEVICES_PER_FAMILY, (n, counts)
+
+    assert _family_counts(stored)[seeded] == MAX_DEVICES_PER_FAMILY
+
+
 @pytest.mark.parametrize("family", ["web_push", "apns"])
 def test_a_contended_store_answers_503(
     push_client: TestClient,

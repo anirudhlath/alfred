@@ -57,8 +57,9 @@ LAN here would defeat the point: the signed-in device doing the minting is often
 that is away. What stands in for the network half is the code's own budget — it must be
 presented on **both** `register/begin` and `register/complete`, it lives 5 minutes, it is
 consumed the moment the passkey is saved, and ten wrong guesses from one client address —
-a single IPv4 address or an IPv6 /64 — refuse that client for the rest of its 5-minute counter — the code itself stays live for
-everyone else, so a stranger cannot deny pairing to the device that is waiting.
+a single IPv4 address or an IPv6 /64 — refuse that client for the rest of its 5-minute
+counter — the code itself stays live for everyone else, so a stranger cannot deny pairing
+to the device that is waiting.
 
 See [`webauthn.md` → Sessions, passkeys and pairing](webauthn.md) for that whole surface.
 
