@@ -1310,12 +1310,30 @@ def test_the_ask_goldens_run_in_the_small_hours_with_the_quiet_hours_moved_off_t
         events = [(h.ha_event.entity_id, h.ha_event.state) for h in _steps_of(s)]
         assert events == [
             ("sun.sun", "below_horizon"),
-            ("light.living_room_lamp", "on"),
+            ("light.living_room_ceiling", "on"),
         ], golden_id
-        # A device's change, not a person's: a lamp a person lit is left alone, so a proposal
-        # to turn it off would be would_reverse and the golden would never reach the ask.
-        assert _causes(s)[("light.living_room_lamp", "on")] == "automation", golden_id
+        # A device's change, not a person's: a light a person switched on is left alone, so a
+        # proposal to turn it off would be would_reverse and the golden would never reach the ask.
+        assert _causes(s)[("light.living_room_ceiling", "on")] == "automation", golden_id
         assert kinds[-1] == "wait", golden_id  # the decision, and the ask it parks, land in it
+
+
+def test_each_ask_golden_switches_a_light_that_the_world_starts_in_another_state() -> None:
+    """Reflex drops an update that leaves the state as it was (an attribute-only update), so a
+    golden that switches a light to the state the world starts it in never reaches the model:
+    its checks find no decision about the step."""
+    for golden_id in ASK_GOLDENS:
+        s = _goldens()[golden_id]
+        world = load_world(s.world)
+        start = {e.entity_id: e.state for e in world.entities}
+        lights = [h.ha_event for h in _steps_of(s) if h.ha_event.entity_id.startswith("light.")]
+        assert lights, golden_id
+        for event in lights:
+            assert event.entity_id in start, (golden_id, event.entity_id)
+            assert event.state != start[event.entity_id], (
+                f"{golden_id}: {event.entity_id} already starts {start[event.entity_id]!r} in "
+                f"the {world.name} world, so this event changes nothing"
+            )
 
 
 def test_the_dnd_golden_lets_any_home_tool_be_asked_about_so_only_dnd_can_hold_it() -> None:

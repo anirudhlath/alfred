@@ -3,7 +3,7 @@ prd: [4.4.tiered-autonomy]
 status: shipped
 tags: [asks, dnd, lights]
 steps:
-  # The same shape as asks_ask_mode_asks: a lamp switched on in the small hours. The quiet
+  # The same shape as asks_ask_mode_asks: a light switched on in the small hours. The quiet
   # hours are moved so the ask gate is reached (02:00 is inside the defaults, which unit tests
   # pin), and every home tool may be asked about, so no tool_off can stand in for the hold
   # this golden pins.
@@ -11,8 +11,9 @@ steps:
   - reflex_settings: {mode: ask, ask_tools: ["home.*"], quiet_hours_start: "04:00", quiet_hours_end: "05:00"}
   - dnd: on
   - ha_event: {entity_id: sun.sun, state: below_horizon}
-  # By an automation, not a person: see asks_ask_mode_asks.
-  - ha_event: {entity_id: light.living_room_lamp, state: "on", by: automation}
+  # The ceiling light starts off, so this is a real transition; by an automation, not a
+  # person: see asks_ask_mode_asks.
+  - ha_event: {entity_id: light.living_room_ceiling, state: "on", by: automation}
   - wait: 6
 expect:
   # The owner asked not to be disturbed, so Reflex does not ask. It may say nothing at all.

@@ -255,13 +255,13 @@ eval goldens in `evals/suites/reflex/` run the whole path against the real stack
 `reflex-engine`, held for an ask already open, or nothing at all; `reflex.asks.dnd_holds` turns
 do-not-disturb on first and expects it to hold or to say nothing. Both run in the small hours,
 with the quiet hours moved off them so the ask gate is reached (the defaults are pinned by unit
-tests), and both switch a lamp on by an automation, because a lamp a person switched on is left
+tests), and both switch the living room ceiling light on by an automation, because a light a person switched on is left
 alone. The step restores the owner's settings when the sample ends, and the harness clears the
 open ask and the repeat keys before the next golden (`clear_reflex_asks`).
 
 When the model says `none`, the ask golden passes without exercising the ask. The end-to-end ask
 path is pinned by `tests/core/reflex/test_runner_asks.py`, and the current System 1 model says
-`none` in the evening TV-dimming shape, which is why the goldens use the lamp instead.
+`none` in the evening TV-dimming shape, which is why the goldens use a light instead.
 
 ## The sun and the weather
 
