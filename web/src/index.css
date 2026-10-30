@@ -369,6 +369,11 @@
     );
   }
 
+  /* The install gate's `Share ˅`, nudging towards Safari's toolbar. */
+  .gate-pointer {
+    animation: nudge 1.4s ease-in-out infinite;
+  }
+
   /* --------------------------------------------------------- full-screen surfaces
      Every layer sits on the visible band, exactly like #root. `inset-0` would
      pin it to the *layout* viewport instead, and with a keyboard up on iOS that
@@ -492,10 +497,21 @@
   }
 }
 
+@keyframes nudge {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(6px);
+  }
+}
+
 /* Handoff: "reduce-motion: presence field static, rise becomes a 200 ms opacity
    step". The blanket rule stops every other animation and transition; the two
    class rules that follow it win on specificity and give `rise` and `sink` their
-   opacity step. The canvas presence field checks the same query in JS (plan 1b). */
+   opacity step, and the third holds the gate pointer still where it rests. The
+   canvas presence field checks the same query in JS (plan 1b). */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -510,5 +526,8 @@
   }
   .rise-out {
     animation: fade-out 200ms linear both !important;
+  }
+  .gate-pointer {
+    animation: none !important;
   }
 }

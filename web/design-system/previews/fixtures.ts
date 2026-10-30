@@ -38,6 +38,9 @@ export const firstRunOverview: Overview = {
 
 export const lastTrue = new Date(NOW - 6 * 60_000);
 
+/** This session's `created_at`: signed in forty minutes before `NOW`. */
+export const signedInAt = iso(-40 * 60);
+
 export const pendingAction: TrackedAction = {
   phase: "pending",
   action: {

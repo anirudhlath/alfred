@@ -83,6 +83,13 @@ export interface GateProps {
    * focuses its title, it describes the title too (see `focusTitle`).
    */
   foot?: string;
+  /**
+   * The label of a pointer pinned to the bottom edge, nudging towards a control
+   * the page cannot draw: the install gate's `Share`, which is Safari's
+   * (`Alfred.dc.html:485`). Hidden from assistive tech, since the steps say
+   * the same thing in words.
+   */
+  pointer?: string;
 }
 
 export function Gate({
@@ -95,6 +102,7 @@ export function Gate({
   primary,
   secondary,
   foot,
+  pointer,
 }: GateProps) {
   const heading = useRef<HTMLHeadingElement>(null);
   // A layout effect, so focus is on the title before the gate is painted. A
@@ -206,6 +214,26 @@ export function Gate({
           </div>
         ) : null}
       </div>
+
+      {/* In the footer's 40 px bottom padding, so it never covers the foot.
+          The accent as text, so `--accent-text`: paper's raw accent is 2.34:1.
+          `nudge` is on the class, so the reduced-motion block can stop it. */}
+      {pointer ? (
+        <div
+          aria-hidden="true"
+          className="gate-pointer pointer-events-none absolute inset-x-0 flex flex-col items-center gap-0.5"
+          style={{
+            bottom: "calc(4px + env(safe-area-inset-bottom, 0px))",
+            color: "var(--accent-text)",
+          }}
+        >
+          <div className="font-mono text-[11px] leading-[normal] font-medium">{pointer}</div>
+          <span
+            className="block h-[11px] w-[11px] rotate-45 border-r-2 border-b-2"
+            style={{ borderColor: "currentColor" }}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -45,6 +45,8 @@ export { DoorLayer } from "@/door/DoorLayer";
 export { Gate } from "@/gates/Gate";
 export { StepList } from "@/gates/StepList";
 export { DeniedGate } from "@/gates/DeniedGate";
+export { InstallGate } from "@/gates/InstallGate";
+export { StandaloneGate } from "@/gates/StandaloneGate";
 
 // sheets
 export { Sheet } from "@/shell/Sheet";
