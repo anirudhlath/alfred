@@ -21,7 +21,7 @@ ciphertext it cannot read, so Apple's relay never sees a notification's text.
 | Admin read | `core/channels/admin_api.py` | `GET /api/admin/devices`, with Web Push rows redacted |
 | Worker | `web/public/sw.js` | the `push` and `notificationclick` listeners |
 | Client | `web/src/lib/push.ts` | subscribing, launch re-validation, sign-out, hearing a tap's `OPEN_PATH` ([`web-frontend.md`](web-frontend.md)) |
-| Client wiring | `web/src/shell/usePush.ts`, `web/src/shell/PushKeeper.tsx` | `usePush()`: the Reach state and `Enable`; `PushKeeper` (inside `AuthGate`): the re-validation once a launch, again after each sign-in and again when a permission taken away is given back, when installed with permission granted; `NotificationOpen`: routes a tap's `OPEN_PATH`. Sign-out (`useSystem`) forgets the subscription before it ends the session |
+| Client wiring | `web/src/shell/usePush.ts`, `web/src/shell/PushKeeper.tsx` | `usePush()`: the Reach state and `enable()`; `PushKeeper` (inside `AuthGate`): the re-validation once a launch, again after each sign-in and again when a permission taken away is given back, when installed with permission granted; `NotificationOpen`: routes a tap's `OPEN_PATH`. Sign-out (`useSystem`) forgets the subscription before it ends the session |
 | Reach card | `web/src/workshop/ReachSection.tsx`, `web/src/gates/InstallGate.tsx`, `web/src/gates/StandaloneGate.tsx` | System › Reach: the `Push notifications` row over `usePush()`, and the two gates it opens ("From the PWA" below) |
 
 ## Architecture
@@ -139,18 +139,19 @@ subscribes (spec §6.1).
 
 ### From the PWA
 
-`Enable`, on System › Reach, asks for permission inside the tap, then reads the key,
-subscribes and registers: one `POST` a tap, and a success is Reach's `on` with no second
-one. A 404 key read says Web Push is not set up, and nothing asks again; any other failure
-gets one try of the sync below once the tap is done, and Reach says what that sync found.
+The standalone gate's `Let me reach you` (opened by `Enable` on System › Reach) asks for
+permission inside the tap, then reads the key, subscribes and registers: one `POST` a tap,
+and a success is Reach's `on` with no second one. A 404 key read says Web Push is not set
+up, and nothing asks again; any other failure gets one try of the sync below once the tap
+is done, and Reach says what that sync found.
 
 System › Reach is one row, `Push notifications`, with either an action or a state word on
 its right, by `usePush()`'s `reach.kind`:
 
 | `reach.kind` | When | The row offers |
 |---|---|---|
-| `install` | a Safari tab | `Show me how`, which opens the install gate |
-| `unavailable` | installed, in a browser without the push APIs | `off` |
+| `install` | a browser tab, not the installed app | `Show me how`, which opens the install gate |
+| `unavailable` | installed, in a browser without the push APIs, or a dev build | `off` |
 | `denied` | the permission was declined | `off`, and a note naming the Settings path back |
 | `ask` | installed, never asked | `Enable`, which opens the standalone gate |
 | `checking` | permission granted, the sync in flight | `—` |
@@ -169,7 +170,8 @@ The sync (`usePush`, kept running by `PushKeeper`) does the same without the pro
 subscribing only when the browser holds no subscription. It runs once a launch, again after
 each sign-in, and again when a permission turned off in Settings is turned back on, since
 the browser deactivates the subscription with the permission. It never runs on focus: the
-row does not lapse.
+row does not lapse. Nor does opening the Reach card run it: the card watches the sync's
+answer (`usePush({ syncOnMount: false })`), and a failure stays `failed` until `Try again`.
 
 Every wait on the house and on the worker has a deadline, so a house that accepts a socket
 and never answers still leaves Reach with something to offer:

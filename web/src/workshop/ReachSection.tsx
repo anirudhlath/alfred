@@ -71,7 +71,9 @@ const DENIED_NOTE =
  *
  * The one section on the bench that reads for itself rather than from
  * `useSystem`: the state is `usePush()`'s, which `PushKeeper` already keeps, and
- * threading it through the bench would only hand it back here.
+ * threading it through the bench would only hand it back here. It watches that
+ * sync and never starts one by mounting: a failure stays `failed` until the
+ * reader presses `Try again`.
  *
  * Its two gates are mounted here at `level="gate"`, the way `AuthGate` mounts
  * its own, so they rise over the Workshop. The standalone gate's primary is
@@ -84,7 +86,8 @@ const DENIED_NOTE =
  * which is the rule `index.css` sets for meta a reader must take on its own.
  */
 export function ReachSection({ sessions }: { sessions: Sessions }) {
-  const { reach, asking, enable, retry } = usePush();
+  // An observer only: opening the bench is not asking again (`PushOptions`).
+  const { reach, asking, enable, retry } = usePush({ syncOnMount: false });
   const [gate, setGate] = useState<"install" | "standalone" | null>(null);
 
   // The asking ending closes the standalone gate. Adjusted during render, as

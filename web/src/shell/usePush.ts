@@ -45,6 +45,19 @@ export interface PushValue {
   retry: () => void;
 }
 
+export interface PushOptions {
+  /**
+   * Whether this observer's mount syncs again: on by default, and `PushKeeper`
+   * relies on it — it remounts under `AuthGate` with each sign-in, and that
+   * mount is the sync. System › Reach passes false. The bench remounts on every
+   * visit, and react-query marks a failed sync invalidated, so each opening of
+   * System would subscribe and register again behind the reader's back; the
+   * card's retry is its `Try again`. A query nothing has fetched yet still
+   * loads, as react-query always loads one: `PushKeeper` has normally done it.
+   */
+  syncOnMount?: boolean;
+}
+
 type Synced = "on" | "unconfigured";
 
 /** Register this browser's subscription, or learn that the house has no key to push with. */
@@ -82,7 +95,7 @@ function reachOf(
  * Web Push for this page: the launch sync (`PushKeeper` mounts it), and what
  * System › Reach shows and offers.
  */
-export function usePush(): PushValue {
+export function usePush({ syncOnMount = true }: PushOptions = {}): PushValue {
   const queryClient = useQueryClient();
   // Read once. A page never moves between a tab and the Home Screen: installing
   // opens a new one.
@@ -101,6 +114,10 @@ export function usePush(): PushValue {
     // not lapse, and a register on every app switch would only rewrite it.
     staleTime: Infinity,
     refetchOnWindowFocus: false,
+    // A failure is refetched on mount by `retryOnMount` when there is no data,
+    // and by `refetchOnMount` when an earlier answer stands beside it.
+    refetchOnMount: syncOnMount,
+    retryOnMount: syncOnMount,
   });
   const { refetch } = query;
 
