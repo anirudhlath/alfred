@@ -22,6 +22,7 @@ ciphertext it cannot read, so Apple's relay never sees a notification's text.
 | Worker | `web/public/sw.js` | the `push` and `notificationclick` listeners |
 | Client | `web/src/lib/push.ts` | subscribing, launch re-validation, sign-out, hearing a tap's `OPEN_PATH` ([`web-frontend.md`](web-frontend.md)) |
 | Client wiring | `web/src/shell/usePush.ts`, `web/src/shell/PushKeeper.tsx` | `usePush()`: the Reach state and `Enable`; `PushKeeper` (inside `AuthGate`): the re-validation once a launch, again after each sign-in and again when a permission taken away is given back, when installed with permission granted; `NotificationOpen`: routes a tap's `OPEN_PATH`. Sign-out (`useSystem`) forgets the subscription before it ends the session |
+| Reach card | `web/src/workshop/ReachSection.tsx`, `web/src/gates/InstallGate.tsx`, `web/src/gates/StandaloneGate.tsx` | System › Reach: the `Push notifications` row over `usePush()`, and the two gates it opens ("From the PWA" below) |
 
 ## Architecture
 
@@ -142,6 +143,27 @@ subscribes (spec §6.1).
 subscribes and registers: one `POST` a tap, and a success is Reach's `on` with no second
 one. A 404 key read says Web Push is not set up, and nothing asks again; any other failure
 gets one try of the sync below once the tap is done, and Reach says what that sync found.
+
+System › Reach is one row, `Push notifications`, with either an action or a state word on
+its right, by `usePush()`'s `reach.kind`:
+
+| `reach.kind` | When | The row offers |
+|---|---|---|
+| `install` | a Safari tab | `Show me how`, which opens the install gate |
+| `unavailable` | installed, in a browser without the push APIs | `off` |
+| `denied` | the permission was declined | `off`, and a note naming the Settings path back |
+| `ask` | installed, never asked | `Enable`, which opens the standalone gate |
+| `checking` | permission granted, the sync in flight | `—` |
+| `unconfigured` | the key read was 404 | `off` |
+| `on` | the house took the registration | `on` |
+| `failed` | the sync did not land | `Try again`, which runs the sync again, and the error under the row |
+
+`Enable` itself asks nothing: the standalone gate's `Let me reach you` is the tap that
+does, it holds while the prompt and the registration are under way, and the gate closes
+once they are done, leaving the row to say what came of it. Each gate's way out, `Not now`
+or `Not yet`, only closes it. A registration refused with 503 `Device store busy` is the
+`failed` row once the sync's one retry is refused too, with `Device store busy` under it
+and `Try again` beside it.
 
 The sync (`usePush`, kept running by `PushKeeper`) does the same without the prompt,
 subscribing only when the browser holds no subscription. It runs once a launch, again after

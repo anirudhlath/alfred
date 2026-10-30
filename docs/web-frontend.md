@@ -175,6 +175,7 @@ web/
       TriggerRow.tsx    # Kind, name, meta, the switch, payload, Fire now
       useTriggers.ts    # The list, the kind filter, the pending map, the 60 s re-read
       SystemBench.tsx   # Health, Quiet (and Held back), Maintenance
+      ReachSection.tsx  # Reach: Push notifications, and the install and standalone gates
       SystemSections.tsx# Sessions, Connected services, Devices & identity, Reflex
       IntegrationRow.tsx# One service: state, dot, and the credential form
       SystemFrame.tsx   # SystemSection and SystemRow — the shared card idiom

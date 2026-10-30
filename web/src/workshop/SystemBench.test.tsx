@@ -5,6 +5,13 @@ import { authSession, credential, integration, overviewFixture, SYSTEM_NOW } fro
 import { SystemBench } from "./SystemBench";
 import type { Maintenance, Quiet, System } from "./useSystem";
 
+// Reach is the one section that reads for itself (`ReachSection`): it is given
+// a phone not yet asked, so the bench-wide rules below measure its `Enable`
+// too. What it draws in each state is `ReachSection.test.tsx`'s.
+vi.mock("@/shell/usePush", () => ({
+  usePush: () => ({ reach: { kind: "ask" }, asking: false, enable: () => {}, retry: () => {} }),
+}));
+
 /**
  * The health grid as `lib/system.ts` really derives it, rather than four cells
  * written out by hand here: the bench's promise is that it prints what the
@@ -972,6 +979,7 @@ describe("SystemBench", () => {
     ).toEqual([
       "Health",
       "Quiet",
+      "Reach",
       "Sessions",
       "Connected services",
       "Devices & identity",
