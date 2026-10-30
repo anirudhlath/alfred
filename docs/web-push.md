@@ -149,8 +149,8 @@ each sign-in, and again when a permission turned off in Settings is turned back 
 the browser deactivates the subscription with the permission. It never runs on focus: the
 row does not lapse.
 
-Every wait has a deadline, so a house that accepts a socket and never answers still leaves
-Reach with something to offer:
+Every wait on the house and on the worker has a deadline, so a house that accepts a socket
+and never answers still leaves Reach with something to offer:
 
 | Wait | Deadline | `web/src/lib/push.ts` |
 |---|---|---|
@@ -159,7 +159,9 @@ Reach with something to offer:
 | Sign-out's `DELETE`, best effort | 5 s | `FORGET_TIMEOUT_MS` |
 
 The first two reject with a `TimeoutError`, which the query's retry policy never repeats:
-the next try is the owner's, from Reach. A 503 `Device store busy` is retried once.
+the next try is the owner's, from Reach. A 503 `Device store busy` is retried once. The
+browser's own calls — `Notification.requestPermission()`, `pushManager.getSubscription()`
+and `pushManager.subscribe()` — have no deadline of ours.
 
 ### The row
 

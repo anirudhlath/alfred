@@ -297,6 +297,27 @@ describe("usePush", () => {
     await waitFor(() => expect(result.current.reach).toEqual({ kind: "on" }));
   });
 
+  it("syncs again on a re-grant when the permission went while a sync was in flight", async () => {
+    const first = deferred<undefined>();
+    vi.mocked(syncSubscription).mockReturnValueOnce(first.promise);
+    const { result } = renderPush();
+    await waitFor(() => expect(syncSubscription).toHaveBeenCalledTimes(1));
+
+    granted = "denied";
+    comeBack();
+    expect(result.current.reach).toEqual({ kind: "denied" });
+
+    // The register lands after the revoke. Its success describes a subscription
+    // the browser has since deactivated, and must not stand in for a new sync.
+    await act(async () => first.resolve(undefined));
+    await settle();
+
+    granted = "granted";
+    comeBack();
+    await waitFor(() => expect(syncSubscription).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.reach).toEqual({ kind: "on" }));
+  });
+
   it("syncs again after every sign-in", async () => {
     const { result, client } = renderPush();
     await waitFor(() => expect(result.current.reach).toEqual({ kind: "on" }));

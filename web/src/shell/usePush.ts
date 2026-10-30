@@ -107,9 +107,16 @@ export function usePush(): PushValue {
   // A permission taken away strands the sync's answer: given back, the query
   // would still hold `on` for the subscription the browser deactivated, and
   // under `staleTime: Infinity` never ask again. Marked stale here, with no
-  // fetch, it syncs the moment the permission returns.
+  // fetch, it syncs the moment the permission returns. A sync still in flight
+  // is cancelled first: landing after the mark, its success would clear it, and
+  // its answer is about the subscription that just went. Both in this order and
+  // in one go — the cancel puts back the state from before the sync at once
+  // (react-query's `onCancel`), so the mark lands on it, and awaiting the cancel
+  // would leave a gap a re-grant can fall into. Neither call fetches, so a
+  // re-render while Enable runs (here or in `PushKeeper`) starts nothing.
   useEffect(() => {
     if (allowed === "granted") return;
+    void queryClient.cancelQueries({ queryKey: PUSH_QUERY_KEY });
     void queryClient.invalidateQueries({ queryKey: PUSH_QUERY_KEY, refetchType: "none" });
   }, [allowed, queryClient]);
 
