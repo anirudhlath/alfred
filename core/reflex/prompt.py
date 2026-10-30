@@ -26,8 +26,10 @@ if TYPE_CHECKING:
     from bus.schemas.events import StateChangedEvent, TriggerFired
     from sdk.alfred_sdk.context import ContextSnapshot
 
-# Domains the House section lists. A rendering choice, not a tool list: Reflex acts only
-# through its registered tools, but it judges better for seeing the thermostat.
+# Domains the House section always lists. A rendering choice, not a tool list: Reflex acts only
+# through its registered tools, but it judges better for seeing the thermostat. The House also
+# shows what the prompt's own Reflex tools can act on (see ``render_house``), so a domain Reflex
+# may only ask about needs no place in this set.
 HOUSE_DOMAINS: frozenset[str] = frozenset(
     {"light", "media_player", "switch", "climate", "fan", "cover", "lock", "vacuum"}
 )
@@ -251,13 +253,33 @@ def _house_item(entity: LiveEntity) -> str:
     return f"{text} {detail}" if detail else text
 
 
-def render_house(entities: Mapping[str, LiveEntity] | None) -> str:
-    """The actionable house, one line per room; entities with no room come last."""
+def split_tool(tool_name: str, snapshot: Mapping[str, LiveEntity]) -> tuple[str, str] | None:
+    """The tool's HA domain and service, or ``None`` when no snapshot domain starts its name.
+
+    The domain is the longest one in the snapshot that the tool's last dotted segment starts
+    with (``media_player_media_pause`` is ``media_player``, not a shorter prefix of it).
+    """
+    segment = tool_name.rsplit(".", 1)[-1]
+    domains = {entity.domain for entity in snapshot.values()}
+    domain = max((d for d in domains if segment.startswith(f"{d}_")), key=len, default=None)
+    return None if domain is None else (domain, segment.removeprefix(f"{domain}_"))
+
+
+def render_house(entities: Mapping[str, LiveEntity] | None, tools: Sequence[ToolInfo] = ()) -> str:
+    """The actionable house, one line per room; entities with no room come last.
+
+    It lists the controllable entities of ``HOUSE_DOMAINS`` and of every domain one of *tools*
+    acts on (``split_tool``), so Reflex sees what its own tools can reach. A tool whose name
+    starts with no domain of the live state adds nothing.
+    """
     if entities is None:
         return LIVE_STATE_UNAVAILABLE
+    shown = HOUSE_DOMAINS | {
+        split[0] for tool in tools if (split := split_tool(tool.name, entities)) is not None
+    }
     rooms: dict[str, list[LiveEntity]] = {}
     for entity in entities.values():
-        if entity.controllable and entity.domain in HOUSE_DOMAINS:
+        if entity.controllable and entity.domain in shown:
             rooms.setdefault(_area(entity.attributes) or OTHER_ROOM, []).append(entity)
     if not rooms:
         return NO_DEVICES
@@ -454,7 +476,7 @@ def _assemble(
             f"{prose.intro}\n\n{prose.rules}\n\n{render_tools(tools)}",
             f"## Preferences\n{preferences.strip() or NO_PREFERENCES}",
             f"## Now\n{render_now(now, tz_name, entities, leave_alone)}",
-            f"## House\n{render_house(entities)}",
+            f"## House\n{render_house(entities, tools)}",
             f"## {change_heading}\n{change}",
             "## Decision (JSON only):",
         ]

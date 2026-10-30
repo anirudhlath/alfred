@@ -22,7 +22,7 @@ from loguru import logger
 from pydantic import BaseModel, field_validator
 
 from core.attribution.cause import Cause  # noqa: TC001  # pydantic field type
-from core.reflex.prompt import _area, _head, _name
+from core.reflex.prompt import _area, _head, _name, split_tool
 from shared.streams import REFLEX_PERSON_CHANGES_KEY, decode_stream_value
 
 if TYPE_CHECKING:
@@ -176,18 +176,6 @@ class PersonChanges:
         return kept
 
 
-def _split_tool(tool_name: str, snapshot: Mapping[str, LiveEntity]) -> tuple[str, str] | None:
-    """The tool's HA domain and service, or ``None`` when no snapshot domain starts its name.
-
-    The domain is the longest one in the snapshot that the tool's last dotted segment starts
-    with (``media_player_media_pause`` is ``media_player``, not a shorter prefix of it).
-    """
-    segment = tool_name.rsplit(".", 1)[-1]
-    domains = {entity.domain for entity in snapshot.values()}
-    domain = max((d for d in domains if segment.startswith(f"{d}_")), key=len, default=None)
-    return None if domain is None else (domain, segment.removeprefix(f"{domain}_"))
-
-
 def _resolve(domain: str, target: str, snapshot: Mapping[str, LiveEntity]) -> list[str]:
     """What home-service's ``EntityIndex.resolve`` would act on, within *domain*, case ignored.
 
@@ -217,7 +205,7 @@ def resolve_targets(tool_name: str, target: str, snapshot: Mapping[str, LiveEnti
     gives every entity of the domain in that area, else as a friendly name. An entity ID in
     another domain names nothing, and a room-named entity does not hide the rest of its room.
     """
-    split = _split_tool(tool_name, snapshot)
+    split = split_tool(tool_name, snapshot)
     return [] if split is None else _resolve(split[0], target, snapshot)
 
 
@@ -244,7 +232,7 @@ def resolved_action(
     the tool's domain, or a ``Name (Room)`` two entities share. What a proposal would act on
     cannot then be checked against what a person just changed, so it fails closed.
     """
-    split = _split_tool(action.tool_name, snapshot)
+    split = split_tool(action.tool_name, snapshot)
     target = action.parameters.get(_TARGET)
     if split is None or not isinstance(target, str) or not target.strip():
         return None
