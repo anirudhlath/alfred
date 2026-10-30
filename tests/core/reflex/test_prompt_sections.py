@@ -339,7 +339,7 @@ def _reflex_tool(name: str) -> ToolInfo:
 def _with_a_script() -> dict[str, LiveEntity]:
     return _index(
         _e("light.tv_lamp", "off", friendly_name="TV Lamp", area="Living Room"),
-        _e("script.movie_night", "off", friendly_name="Movie night"),
+        _e("script.cinema_mode", "off", friendly_name="Cinema mode"),
     )
 
 
@@ -354,7 +354,7 @@ def test_house_shows_a_script_with_its_state_when_a_reflex_tool_acts_on_scripts(
     tools = [_reflex_tool("home.light_turn_on"), _reflex_tool("home.script_turn_on")]
 
     assert render_house(_with_a_script(), tools) == (
-        "Living Room: TV Lamp off\nOther: Movie night off"
+        "Living Room: TV Lamp off\nOther: Cinema mode off"
     )
 
 
@@ -390,7 +390,7 @@ def test_the_prompt_builder_shows_the_house_what_its_own_tools_act_on() -> None:
 
     assert house("home.light_turn_on") == "Living Room: TV Lamp off"
     assert house("home.light_turn_on", "home.script_turn_on") == (
-        "Living Room: TV Lamp off\nOther: Movie night off"
+        "Living Room: TV Lamp off\nOther: Cinema mode off"
     )
 
 
@@ -398,7 +398,7 @@ def test_split_tool_reads_the_longest_snapshot_domain_off_the_last_segment() -> 
     entities = _index(
         _e("media_player.tv", "off"),
         _e("light.lamp", "off"),
-        _e("script.movie_night", "off"),
+        _e("script.cinema_mode", "off"),
     )
 
     assert split_tool("home.media_player_media_pause", entities) == ("media_player", "media_pause")

@@ -1173,7 +1173,7 @@ goldens are public. Everything about it is fake or fenced.
 | `evals/harness/display.py` | `--display` choices and how Inspect's display is pinned |
 | `evals/harness/coverage.py` | PRD parsing and `coverage_problems()` |
 | `evals/suites/<suite>/` | Goldens |
-| `evals/suites/reflex/` | System 1's judgment on house events, its prompt (who caused a change, the weather), its latency, whether it leaves a person's change alone (`never_reverse_*`), and, in ask mode, whether it asks and holds its asks (`asks_*`) and only ever asks about a script (`scripts_only_asked`) |
+| `evals/suites/reflex/` | System 1's judgment on house events, its prompt (who caused a change, the weather), its latency, whether it leaves a person's change alone (`never_reverse_*`), and, in ask mode, whether it asks and holds its asks (`asks_*`) and only ever asks about a script (`asks_scripts_only_asked`) |
 | `evals/suites/triggers/` | Reminders and rules System 2 sets: relative, timezone, recurring, sensor and fast |
 | `evals/suites/notifications/` | Reminder urgency, do-not-disturb and its release |
 | `evals/suites/guest_boundary/` | Web/Signal identity, sir controls, personal-data requests and a sir-to-guest session transition; policy enforcement remains pending |
@@ -1193,16 +1193,18 @@ goldens are public. Everything about it is fake or fenced.
 
 - **The ask goldens stop at the parked ask.** `asks_ask_mode_asks` shows that Reflex put the
   proposal to the owner and parked it as a pending action from `reflex-engine`, and
-  `asks_dnd_holds` that do-not-disturb held it; `scripts_only_asked` that a script is
+  `asks_dnd_holds` that do-not-disturb held it; `asks_scripts_only_asked` that a script is
   asked about and never run. The owner's answer (a yes, a no, a lapse) and
   what follows it are covered by `tests/core/reflex/test_answers.py`,
   `tests/core/reflex/test_runner_asks.py` and `tests/core/conscious/test_engine_reflex_asks.py`,
-  not by a golden. Both goldens also pass when the model says nothing, because ask mode
-  changes what the code does with a proposal and not what the model proposes. When the model
-  says `none`, the ask golden passes without exercising the ask: the end-to-end ask path is
-  pinned by `tests/core/reflex/test_runner_asks.py`. The current System 1 model says `none` in
-  the evening TV-dimming shape, so the goldens use a light that starts off, switched on by an automation in the
-  small hours, with the quiet hours moved off that hour so the ask gate is reached.
+  not by a golden. All three also pass when the model says nothing, because ask mode
+  changes what the code does with a proposal and not what the model proposes: the end-to-end
+  ask path is pinned by `tests/core/reflex/test_runner_asks.py`. The current System 1 model says
+  `none` in the evening TV-dimming shape, so the first two use a light that starts off,
+  switched on by an automation in the small hours, with the quiet hours moved off that hour so
+  the ask gate is reached. `asks_scripts_only_asked` is the exception: it keeps the evening
+  film, because the script has to be tempting, so it can pass on `none` and so exercise
+  nothing.
 - **Timed do-not-disturb windows are not exercised.** The `dnd` step is on/off only, so
   neither a window's `until` nor the drain trigger the dispatcher creates for it is tested.
 - **A trigger record can go stale.** The harness records a trigger from its TriggerCreated,

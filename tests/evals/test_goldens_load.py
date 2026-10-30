@@ -1401,35 +1401,37 @@ def test_neither_ask_golden_can_pass_on_an_ask_that_went_out_or_a_hold_for_anoth
 SCRIPT_GOLDEN = "reflex.asks.scripts_only_asked"
 
 
-def test_the_world_has_a_script_that_is_not_the_scene_of_the_same_name() -> None:
+def test_the_world_has_a_script_that_no_other_entity_shares_a_name_with() -> None:
     """Reflex may ask about ``home.script_turn_on`` only when the live state holds a script,
     and the fake HA must offer ``script.turn_on`` for home-service to generate that tool. The
-    scene beside it has the same name in other letters, so a mix-up between them shows."""
+    script's name is its own: a golden that asks a System 2 to "set the movie night scene"
+    would otherwise have two things to reach for."""
     world = load_world("apartment")
-    script = next(e for e in world.entities if e.entity_id == "script.movie_night")
-    assert (script.friendly_name, script.state, script.domain) == ("Movie night", "off", "script")
+    script = next(e for e in world.entities if e.entity_id == "script.cinema_mode")
+    assert (script.friendly_name, script.state, script.domain) == ("Cinema mode", "off", "script")
     assert not script.disabled
     assert "turn_on" in world.services["script"]
-    scene = next(e for e in world.entities if e.entity_id == "scene.movie_night")
-    assert scene.friendly_name == "Movie Night"
+    others = [e.friendly_name.casefold() for e in world.entities if e is not script]
+    assert script.friendly_name.casefold() not in others
+    assert not any(name in script.friendly_name.casefold() for name in ("movie", "night"))
 
 
 def test_a_script_changing_state_reads_back_from_reflexs_what_changed_line() -> None:
     """The round trip the harness ties a System 1 call to its step by: the line Reflex writes
     for the script is read back to the script, not to the scene of the same name."""
     world = load_world("apartment")
-    script = next(e for e in world.entities if e.entity_id == "script.movie_night")
+    script = next(e for e in world.entities if e.entity_id == "script.cinema_mode")
     event = StateChangedEvent(
         source="home-service",
         domain="home",
-        entity_id="script.movie_night",
+        entity_id="script.cinema_mode",
         old_state="off",
         new_state="on",
-        attributes=world.initial_states()["script.movie_night"].attributes,
+        attributes=world.initial_states()["script.cinema_mode"].attributes,
     )
     line = render_event(event, _served(world, script))
     seen = reflex_event(reflex_prompt(line), world)
-    assert seen is not None and seen.is_of("script.movie_night", "on"), (line, seen)
+    assert seen is not None and seen.is_of("script.cinema_mode", "on"), (line, seen)
     assert _unreadable(world, "apartment") == []
 
 
@@ -1461,7 +1463,7 @@ def test_the_script_golden_wants_a_script_asked_about_or_left_alone_and_never_ru
     outcome, never_run = s.expect
     assert outcome.name == "reflex_outcome"
     assert outcome.params.model_dump(exclude_none=True) == {
-        "target": "script.movie_night",
+        "target": "script.cinema_mode",
         "outcome": ["asked", "held", "none"],
     }
     assert never_run.name == "ha_not_called"
@@ -1481,7 +1483,7 @@ def test_the_script_golden_fails_a_script_that_ran_or_was_left_as_a_shadow() -> 
 
     def proposal(kind: str | None) -> str:
         decisions = (
-            logged(kind, tool="home.script_turn_on", targets=("script.movie_night",)),
+            logged(kind, tool="home.script_turn_on", targets=("script.cinema_mode",)),
             logged(kind, tool="home.light_turn_on", targets=("light.living_room_lamp",)),
         )
         return run_check(outcome.name, outcome.params, ev(decisions=decisions)).status
@@ -1494,7 +1496,26 @@ def test_the_script_golden_fails_a_script_that_ran_or_was_left_as_a_shadow() -> 
         ("would_reverse", "fail"),
     ):
         assert proposal(kind) == status, kind
-    run = evidence(ha_calls=[call("script", "turn_on", ["script.movie_night"])])
+
+    # Only decisions that propose the script are judged: a light left as a shadow, or one that
+    # would reverse a person, beside an asked script is not this golden's business.
+    def beside_an_asked_script(kind: str) -> str:
+        decisions = (
+            logged("asked", tool="home.script_turn_on", targets=("script.cinema_mode",)),
+            logged(kind, tool="home.light_turn_on", targets=("light.living_room_lamp",)),
+        )
+        return run_check(outcome.name, outcome.params, ev(decisions=decisions)).status
+
+    for kind in ("shadow", "would_reverse"):
+        assert beside_an_asked_script(kind) == "pass", kind
+    # An invalid decision that names the script is not an outcome the golden allows. One that
+    # names nothing (the model's tool call did not parse) proposes no script, so it has nothing
+    # to judge and passes: the check cannot tell it from a light-only decision.
+    named = (logged("invalid", tool="home.script_turn_on", targets=("script.cinema_mode",)),)
+    assert run_check(outcome.name, outcome.params, ev(decisions=named)).status == "fail"
+    unnamed = (logged("invalid", tool=None),)
+    assert run_check(outcome.name, outcome.params, ev(decisions=unnamed)).status == "pass"
+    run = evidence(ha_calls=[call("script", "turn_on", ["script.cinema_mode"])])
     assert run_check(never_run.name, never_run.params, run).status == "fail"
     lit = evidence(ha_calls=[call("light", "turn_on", ["light.living_room_lamp"])])
     assert run_check(never_run.name, never_run.params, lit).status == "pass"

@@ -21,7 +21,7 @@ entities:
   - {entity_id: media_player.bedroom_tv, name: Bedroom TV, area_id: bedroom, device_id: dev_bedroom_tv, state: "off"}
   - {entity_id: scene.movie_night, name: Movie Night, area_id: living_room, state: "2026-01-01T00:00:00+00:00"}
   - {entity_id: scene.good_night, name: Good Night, state: "2026-01-01T00:00:00+00:00"}
-  - {entity_id: script.movie_night, name: Movie night, state: "off"}
+  - {entity_id: script.cinema_mode, name: Cinema mode, state: "off"}
   - {entity_id: lock.front_door, name: Front Door Lock, area_id: entryway, device_id: dev_front_lock, state: locked}
   - {entity_id: cover.garage_door, name: Garage Door, area_id: garage, device_id: dev_garage_opener, state: closed, attributes: {device_class: garage}}
   - {entity_id: alarm_control_panel.home_alarm, name: Home Alarm, area_id: entryway, state: disarmed}

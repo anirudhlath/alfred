@@ -20,7 +20,7 @@ from core.reflex.context_reader import LIVE_STATE_UNAVAILABLE
 from core.reflex.tool_registry import REFLEX_AUDIENCE, ToolInfo
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Collection, Mapping, Sequence
     from datetime import datetime
 
     from bus.schemas.events import StateChangedEvent, TriggerFired
@@ -253,29 +253,35 @@ def _house_item(entity: LiveEntity) -> str:
     return f"{text} {detail}" if detail else text
 
 
+def _split_among(tool_name: str, domains: Collection[str]) -> tuple[str, str] | None:
+    """The longest of *domains* the tool's last dotted segment starts with, and the rest."""
+    segment = tool_name.rsplit(".", 1)[-1]
+    domain = max((d for d in domains if segment.startswith(f"{d}_")), key=len, default=None)
+    return None if domain is None else (domain, segment.removeprefix(f"{domain}_"))
+
+
 def split_tool(tool_name: str, snapshot: Mapping[str, LiveEntity]) -> tuple[str, str] | None:
     """The tool's HA domain and service, or ``None`` when no snapshot domain starts its name.
 
     The domain is the longest one in the snapshot that the tool's last dotted segment starts
     with (``media_player_media_pause`` is ``media_player``, not a shorter prefix of it).
     """
-    segment = tool_name.rsplit(".", 1)[-1]
-    domains = {entity.domain for entity in snapshot.values()}
-    domain = max((d for d in domains if segment.startswith(f"{d}_")), key=len, default=None)
-    return None if domain is None else (domain, segment.removeprefix(f"{domain}_"))
+    return _split_among(tool_name, {entity.domain for entity in snapshot.values()})
 
 
 def render_house(entities: Mapping[str, LiveEntity] | None, tools: Sequence[ToolInfo] = ()) -> str:
     """The actionable house, one line per room; entities with no room come last.
 
     It lists the controllable entities of ``HOUSE_DOMAINS`` and of every domain one of *tools*
-    acts on (``split_tool``), so Reflex sees what its own tools can reach. A tool whose name
-    starts with no domain of the live state adds nothing.
+    acts on (the domain its name starts with, as ``split_tool`` reads it), so Reflex sees what
+    its own tools can reach. A tool whose name starts with no domain of the live state adds
+    nothing.
     """
     if entities is None:
         return LIVE_STATE_UNAVAILABLE
+    domains = {entity.domain for entity in entities.values()}
     shown = HOUSE_DOMAINS | {
-        split[0] for tool in tools if (split := split_tool(tool.name, entities)) is not None
+        split[0] for tool in tools if (split := _split_among(tool.name, domains)) is not None
     }
     rooms: dict[str, list[LiveEntity]] = {}
     for entity in entities.values():
