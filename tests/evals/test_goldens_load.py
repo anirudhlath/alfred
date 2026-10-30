@@ -1396,3 +1396,106 @@ def test_neither_ask_golden_can_pass_on_an_ask_that_went_out_or_a_hold_for_anoth
     ):
         assert status("reflex.asks.dnd_holds", outcome, reason) == dnd, (outcome, reason)
         assert status("reflex.asks.ask_mode_asks", outcome, reason) == ask, (outcome, reason)
+
+
+SCRIPT_GOLDEN = "reflex.asks.scripts_only_asked"
+
+
+def test_the_world_has_a_script_that_is_not_the_scene_of_the_same_name() -> None:
+    """Reflex may ask about ``home.script_turn_on`` only when the live state holds a script,
+    and the fake HA must offer ``script.turn_on`` for home-service to generate that tool. The
+    scene beside it has the same name in other letters, so a mix-up between them shows."""
+    world = load_world("apartment")
+    script = next(e for e in world.entities if e.entity_id == "script.movie_night")
+    assert (script.friendly_name, script.state, script.domain) == ("Movie night", "off", "script")
+    assert not script.disabled
+    assert "turn_on" in world.services["script"]
+    scene = next(e for e in world.entities if e.entity_id == "scene.movie_night")
+    assert scene.friendly_name == "Movie Night"
+
+
+def test_a_script_changing_state_reads_back_from_reflexs_what_changed_line() -> None:
+    """The round trip the harness ties a System 1 call to its step by: the line Reflex writes
+    for the script is read back to the script, not to the scene of the same name."""
+    world = load_world("apartment")
+    script = next(e for e in world.entities if e.entity_id == "script.movie_night")
+    event = StateChangedEvent(
+        source="home-service",
+        domain="home",
+        entity_id="script.movie_night",
+        old_state="off",
+        new_state="on",
+        attributes=world.initial_states()["script.movie_night"].attributes,
+    )
+    line = render_event(event, _served(world, script))
+    seen = reflex_event(reflex_prompt(line), world)
+    assert seen is not None and seen.is_of("script.movie_night", "on"), (line, seen)
+    assert _unreadable(world, "apartment") == []
+
+
+def test_the_script_golden_has_sam_start_a_movie_in_the_evening_with_scripts_askable() -> None:
+    s = _goldens()[SCRIPT_GOLDEN]
+    assert s.status == "shipped" and s.prd == ["4.4.tiered-autonomy"]
+    assert s.watches_reflex and s.reads_outcomes
+    [clock] = [step for step in s.steps if isinstance(step, ClockStep)]
+    assert clock.clock.hour == 21
+    # Outside the default quiet hours, so no hold for them can stand in for the ask.
+    defaults = ReflexSettings()
+    assert not in_quiet_hours(time(21, 0), defaults.quiet_hours_start, defaults.quiet_hours_end)
+    [settings] = [step for step in s.steps if isinstance(step, ReflexSettingsStep)]
+    assert settings.reflex_settings.mode == "ask"
+    assert settings.reflex_settings.ask_tools == ["home.script_*", "home.light_*"]
+    kinds = [step_kind(step) for step in s.steps]
+    assert kinds.index("clock") < kinds.index("reflex_settings") < kinds.index("ha_event")
+    last = _steps_of(s)[-1].ha_event
+    assert (last.entity_id, last.state, last.by) == (
+        "media_player.living_room_tv",
+        "playing",
+        "person.sam",
+    )
+    assert kinds[-1] == "wait"  # the ask, if the model makes one, is parked in it
+
+
+def test_the_script_golden_wants_a_script_asked_about_or_left_alone_and_never_run() -> None:
+    s = _goldens()[SCRIPT_GOLDEN]
+    outcome, never_run = s.expect
+    assert outcome.name == "reflex_outcome"
+    assert outcome.params.model_dump(exclude_none=True) == {
+        "target": "script.movie_night",
+        "outcome": ["asked", "held", "none"],
+    }
+    assert never_run.name == "ha_not_called"
+    assert never_run.params.model_dump(exclude_none=True) == {
+        "domain": "script",
+        "service": "turn_on",
+    }
+
+
+def test_the_script_golden_fails_a_script_that_ran_or_was_left_as_a_shadow() -> None:
+    """The scoring, on what a bad Reflex would leave: a script run (the fake HA saw it), and a
+    proposal for it that nothing gated."""
+    from tests.evals.harness.factories import call, evidence
+    from tests.evals.harness.test_checks_reflex import ev, logged
+
+    outcome, never_run = _goldens()[SCRIPT_GOLDEN].expect
+
+    def proposal(kind: str | None) -> str:
+        decisions = (
+            logged(kind, tool="home.script_turn_on", targets=("script.movie_night",)),
+            logged(kind, tool="home.light_turn_on", targets=("light.living_room_lamp",)),
+        )
+        return run_check(outcome.name, outcome.params, ev(decisions=decisions)).status
+
+    for kind, status in (
+        ("asked", "pass"),
+        ("held", "pass"),
+        ("none", "pass"),
+        ("shadow", "fail"),
+        ("would_reverse", "fail"),
+    ):
+        assert proposal(kind) == status, kind
+    run = evidence(ha_calls=[call("script", "turn_on", ["script.movie_night"])])
+    assert run_check(never_run.name, never_run.params, run).status == "fail"
+    lit = evidence(ha_calls=[call("light", "turn_on", ["light.living_room_lamp"])])
+    assert run_check(never_run.name, never_run.params, lit).status == "pass"
+    assert run_check(never_run.name, never_run.params, evidence()).status == "pass"

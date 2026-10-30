@@ -290,6 +290,15 @@ tests), and both switch the living room ceiling light on by an automation, becau
 alone. The step restores the owner's settings when the sample ends, and the harness clears the
 open ask and the repeat keys before the next golden (`clear_reflex_asks`).
 
+A third, `reflex.asks.scripts_only_asked`, is about scripts. The apartment world has a script
+(`script.movie_night`) and the `script.turn_on` service, so home-service offers `home.script_turn_on`
+and the House shows the script ([The House](#the-house)). At 21:00, in `ask` mode with
+`ask_tools` of `home.script_*` and `home.light_*`, a person starts a film on the living room TV.
+Whatever Reflex proposes for the script must end as an ask, a hold or nothing (`reflex_outcome`
+with `target: script.movie_night`), and the fake Home Assistant must never see `script.turn_on`
+(`ha_not_called`): a script is only ever asked about, never run, because nobody answered yes.
+It passes, without exercising the ask, when the model proposes nothing or something else.
+
 When the model says `none`, the ask golden passes without exercising the ask. The end-to-end ask
 path is pinned by `tests/core/reflex/test_runner_asks.py`, and the current System 1 model says
 `none` in the evening TV-dimming shape, which is why the goldens use a light instead.
