@@ -3,9 +3,10 @@ prd: [4.4.tiered-autonomy]
 status: shipped
 tags: [asks, scripts]
 steps:
-  # Evening, well outside the default quiet hours (23:00 to 07:00), so no hold for them can
-  # stand in for what this golden pins. Scripts and lights may be asked about: a script is an
-  # elevated tool, which Reflex may only ever ask about, and only because its tool is named here.
+  # Evening, well outside the default quiet hours (23:00 to 07:00), so the quiet-hours hold is
+  # not in play, and the only holds the check below accepts are for an ask already open or a
+  # repeat of one. Scripts and lights may be asked about: a script is an elevated tool, which
+  # Reflex may only ever ask about, and only because its tool is named here.
   - clock: {hour: 21}
   - reflex_settings: {mode: ask, ask_tools: ["home.script_*", "home.light_*"]}
   # The sun goes down first, as in the other evening goldens.
@@ -17,11 +18,15 @@ steps:
   # An ask is parked just after the model answers: this step is the snapshot that shows it.
   - wait: 6
 expect:
-  # Whatever the model proposes for the script ends as an ask, a hold or nothing: never a
-  # shadow that is left standing, and never an act. It may well say nothing, or turn to the
-  # lights or the scene instead (not the script, so this check has nothing to judge and
-  # passes); the unit tests pin the ask path itself, which this golden does not need the model
-  # to reach.
-  - reflex_outcome: {target: script.cinema_mode, outcome: [asked, held, none]}
+  # Whatever the model proposes for the script ends as an ask, a hold for an ask already open
+  # (or a repeat of one), or nothing: never a shadow that is left standing, never an act, and
+  # never a hold for any other reason (a script that was not allowed would end as tool_off).
+  # It may well say nothing, or turn to the lights or the scene instead (not the script, so
+  # this check has nothing to judge and passes); the unit tests pin the ask path itself, which
+  # this golden does not need the model to reach.
+  - reflex_outcome: {target: script.cinema_mode, outcome: [asked, held, none], reason: [ask_open, asked_recently]}
+  # Every ask made in the sample is a pending action from Reflex, waiting for the owner's
+  # answer: an "asked" that is parked, not only logged.
+  - reflex_ask_parked: {}
   # And nothing ran the script: no yes was given, so the fake HA never saw script.turn_on.
   - ha_not_called: {domain: script, service: turn_on}

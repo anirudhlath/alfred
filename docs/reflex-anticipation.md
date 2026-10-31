@@ -296,9 +296,11 @@ proposal. The apartment world has a script (`script.cinema_mode`) and the `scrip
 service, so home-service offers `home.script_turn_on` and the House shows the script
 ([The House](#the-house)). At 21:00, in `ask` mode with `ask_tools` of `home.script_*` and
 `home.light_*`, a person starts a film on the living room TV. Whatever Reflex proposes for the
-script must end as an ask, a hold or nothing (`reflex_outcome` with
-`target: script.cinema_mode`), and the fake Home Assistant must never see `script.turn_on`
-(`ha_not_called`): a script is only ever asked about, never run, because nobody answered yes.
+script must end as an ask, a hold for an ask already open or just made, or nothing
+(`reflex_outcome` with `target: script.cinema_mode` and the `ask_open` and `asked_recently`
+reasons), every ask made must be parked (`reflex_ask_parked`), and the fake Home Assistant must
+never see `script.turn_on` (`ha_not_called`): a script is never run without a yes, and nobody
+answered yes.
 
 When the model says `none`, the first two goldens pass without exercising the ask, and the
 scripts golden passes without exercising anything: it also passes when the model proposes
@@ -323,7 +325,9 @@ entity with no room comes last, under `Other`). Which domains it lists is the un
   live state adds nothing. This is how a script, a tool Reflex may only ask about, reaches the
   model: it is shown because a script tool is in the prompt, and an install whose service
   offers no such tool never shows one. Nothing in the engine names a domain for it. A scene
-  shows the same way, because the scene tool is a Reflex tool.
+  shows the same way, because the scene tool is a Reflex tool. A scene's state is the time it
+  was last activated (an ISO timestamp), and the House shows it as it is: that costs tokens in a
+  home with many scenes and tells the model nothing.
 
 A script a person just ran is not recorded as a person's change: the runner notes only the
 `HOUSE_DOMAINS` (see [Never reverse a person](#never-reverse-a-person)), so Reflex is not told

@@ -16,7 +16,7 @@ import pytest
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from bus.schemas.events import ChangeContext, StateChangedEvent
+from bus.schemas.events import ActionRequest, ChangeContext, StateChangedEvent
 from core.conscious.tools.attention import ATTENTION_FUNCTIONS
 from core.conscious.tools.memory import MEMORY_FUNCTIONS
 from core.conscious.tools.names import wire_name
@@ -1418,7 +1418,7 @@ def test_the_world_has_a_script_that_no_other_entity_shares_a_name_with() -> Non
 
 def test_a_script_changing_state_reads_back_from_reflexs_what_changed_line() -> None:
     """The round trip the harness ties a System 1 call to its step by: the line Reflex writes
-    for the script is read back to the script, not to the scene of the same name."""
+    for the script is read back to the script, whatever else the world holds."""
     world = load_world("apartment")
     script = next(e for e in world.entities if e.entity_id == "script.cinema_mode")
     event = StateChangedEvent(
@@ -1460,12 +1460,18 @@ def test_the_script_golden_has_sam_start_a_movie_in_the_evening_with_scripts_ask
 
 def test_the_script_golden_wants_a_script_asked_about_or_left_alone_and_never_run() -> None:
     s = _goldens()[SCRIPT_GOLDEN]
-    outcome, never_run = s.expect
+    outcome, parked, never_run = s.expect
     assert outcome.name == "reflex_outcome"
     assert outcome.params.model_dump(exclude_none=True) == {
         "target": "script.cinema_mode",
         "outcome": ["asked", "held", "none"],
+        # Held only for an ask that is already open or was just made; no other limit, so a
+        # script that was not allowed (tool_off) or a quiet hour does not pass as a hold.
+        "reason": ["ask_open", "asked_recently"],
     }
+    assert parked.name == "reflex_ask_parked"
+    # The ask is parked just after the model answers: the golden ends on a step that waits.
+    assert step_kind(s.steps[-1]) == "wait"
     assert never_run.name == "ha_not_called"
     assert never_run.params.model_dump(exclude_none=True) == {
         "domain": "script",
@@ -1479,7 +1485,7 @@ def test_the_script_golden_fails_a_script_that_ran_or_was_left_as_a_shadow() -> 
     from tests.evals.harness.factories import call, evidence
     from tests.evals.harness.test_checks_reflex import ev, logged
 
-    outcome, never_run = _goldens()[SCRIPT_GOLDEN].expect
+    outcome, _parked, never_run = _goldens()[SCRIPT_GOLDEN].expect
 
     def proposal(kind: str | None) -> str:
         decisions = (
@@ -1520,3 +1526,35 @@ def test_the_script_golden_fails_a_script_that_ran_or_was_left_as_a_shadow() -> 
     lit = evidence(ha_calls=[call("light", "turn_on", ["light.living_room_lamp"])])
     assert run_check(never_run.name, never_run.params, lit).status == "pass"
     assert run_check(never_run.name, never_run.params, evidence()).status == "pass"
+
+
+def test_the_script_golden_holds_only_for_an_ask_in_flight_and_finds_the_ask_it_made() -> None:
+    """An ask counts when it is parked, and a hold counts only when an ask is already open or
+    was just made: a script the owner did not allow (``tool_off``) is not an ask, whatever the
+    log calls it."""
+    from tests.evals.harness.test_checks_reflex import logged, parked, with_pending
+
+    outcome, ask_parked, _never_run = _goldens()[SCRIPT_GOLDEN].expect
+    script = {"tool": "home.script_turn_on", "targets": ("script.cinema_mode",)}
+
+    def hold(reason: str) -> str:
+        e = with_pending([], decisions=(logged("held", reason=reason, **script),))
+        return run_check(outcome.name, outcome.params, e).status
+
+    for reason, status in (
+        ("ask_open", "pass"),
+        ("asked_recently", "pass"),
+        ("tool_off", "fail"),
+        ("quiet_hours", "fail"),
+        ("dnd", "fail"),
+        ("daily_cap", "fail"),
+    ):
+        assert hold(reason) == status, reason
+
+    def asked(*pending: list[ActionRequest]) -> str:
+        e = with_pending(*pending, decisions=(logged("asked", **script),))
+        return run_check(ask_parked.name, ask_parked.params, e).status
+
+    assert asked([], [parked(tool="home.script_turn_on")]) == "pass"
+    assert asked([], []) == "fail"
+    assert asked([], [parked(tool="home.script_turn_on", source="someone-else")]) == "fail"

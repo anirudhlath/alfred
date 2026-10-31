@@ -1173,7 +1173,7 @@ goldens are public. Everything about it is fake or fenced.
 | `evals/harness/display.py` | `--display` choices and how Inspect's display is pinned |
 | `evals/harness/coverage.py` | PRD parsing and `coverage_problems()` |
 | `evals/suites/<suite>/` | Goldens |
-| `evals/suites/reflex/` | System 1's judgment on house events, its prompt (who caused a change, the weather), its latency, whether it leaves a person's change alone (`never_reverse_*`), and, in ask mode, whether it asks and holds its asks (`asks_*`) and only ever asks about a script (`asks_scripts_only_asked`) |
+| `evals/suites/reflex/` | System 1's judgment on house events, its prompt (who caused a change, the weather), its latency, whether it leaves a person's change alone (`never_reverse_*`), and, in ask mode, whether it asks and holds its asks (`asks_*`) and never runs a script without a yes (`asks_scripts_only_asked`) |
 | `evals/suites/triggers/` | Reminders and rules System 2 sets: relative, timezone, recurring, sensor and fast |
 | `evals/suites/notifications/` | Reminder urgency, do-not-disturb and its release |
 | `evals/suites/guest_boundary/` | Web/Signal identity, sir controls, personal-data requests and a sir-to-guest session transition; policy enforcement remains pending |
@@ -1194,7 +1194,7 @@ goldens are public. Everything about it is fake or fenced.
 - **The ask goldens stop at the parked ask.** `asks_ask_mode_asks` shows that Reflex put the
   proposal to the owner and parked it as a pending action from `reflex-engine`, and
   `asks_dnd_holds` that do-not-disturb held it; `asks_scripts_only_asked` that a script is
-  asked about and never run. The owner's answer (a yes, a no, a lapse) and
+  never run without a yes. The owner's answer (a yes, a no, a lapse) and
   what follows it are covered by `tests/core/reflex/test_answers.py`,
   `tests/core/reflex/test_runner_asks.py` and `tests/core/conscious/test_engine_reflex_asks.py`,
   not by a golden. All three also pass when the model says nothing, because ask mode
