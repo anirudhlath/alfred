@@ -14,12 +14,11 @@ function setPush(reach: Reach, asking = false) {
   push.value = { ...push.value, reach, asking };
 }
 
-// Alfred.dc.html:389-395 and the brief's table, verbatim; D1–D4 from the
-// plan's Deviations table.
+// Alfred.dc.html:389-395 and the brief's table, verbatim; D1–D4 and D7 from
+// the plan's Deviations table.
 const INSTALL_SUB = "unavailable in Safari · add to home screen first";
 const ASK_SUB = "off · not yet asked · iOS asks once";
-const ON_SUB =
-  "on · this iPhone · important and urgent only · badge = waiting approvals + unread urgent";
+const ON_SUB = "on · this iPhone · important and urgent only";
 const DENIED_SUB = "off · declined in iOS · this app cannot flip it";
 const DENIED_NOTE =
   "Settings › Alfred › Notifications › Allow. iOS holds this switch now; nothing in here can flip it, and Alfred will not raise it again.";

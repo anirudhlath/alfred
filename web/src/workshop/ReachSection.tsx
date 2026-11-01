@@ -34,7 +34,7 @@ const LINES: Record<Reach["kind"], { sub: string; right: Right }> = {
     right: { action: "Enable", go: "standalone" },
   },
   on: {
-    sub: "on · this iPhone · important and urgent only · badge = waiting approvals + unread urgent",
+    sub: "on · this iPhone · important and urgent only",
     right: { word: "on", state: "ok" },
   },
   denied: {
