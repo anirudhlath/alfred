@@ -70,8 +70,9 @@ class FakeSubscription {
 
 /**
  * A PushManager as strict as a browser's: subscribing under one key while a
- * subscription under another is held is an InvalidStateError, and subscribing
- * under the held one hands that subscription back.
+ * subscription under another, or under none it reports, is held is an
+ * InvalidStateError, and subscribing under the held one hands that subscription
+ * back.
  */
 class FakePushManager {
   subscription: FakeSubscription | null = null;
@@ -82,7 +83,7 @@ class FakePushManager {
     const current = this.subscription;
     if (current) {
       const heldKey = current.options.applicationServerKey;
-      if (heldKey && !sameBytes(heldKey, key)) {
+      if (!heldKey || !sameBytes(heldKey, key)) {
         const message = "A subscription with a different applicationServerKey already exists.";
         return Promise.reject(new DOMException(message, "InvalidStateError"));
       }
@@ -173,6 +174,37 @@ function fakeDeadlines(): void {
     return deadline.signal;
   });
 }
+
+/**
+ * Holds the next `subscribe()` until the returned function is called, then answers
+ * it as the fake would have: a sync caught between asking the browser and
+ * registering with the house.
+ */
+function holdSubscribe(pushManager: FakePushManager): () => void {
+  const subscribe = pushManager.subscribe.getMockImplementation()!;
+  let release: () => void = () => {};
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  pushManager.subscribe.mockImplementationOnce((options) => released.then(() => subscribe(options)));
+  return release;
+}
+
+/** A POST held in flight until the returned function answers it, which the log records. */
+function holdPost(): { onPost: Answer; answer: () => void } {
+  let answer: () => void = () => {};
+  const onPost: Answer = () =>
+    new Promise((resolve) => {
+      answer = () => {
+        log.push("POST answered");
+        resolve(reply(200, { status: "ok" }));
+      };
+    });
+  return { onPost, answer: () => answer() };
+}
+
+/** Lets every queued microtask and the timers already due run, with real timers. */
+const drain = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** What each request asked for, in order. */
 function requests(mock: ReturnType<typeof stubHouse>) {
@@ -521,6 +553,121 @@ describe("forgetPush", () => {
     await expect(forgetPush()).resolves.toBeUndefined();
     registry({ ready: false });
     await expect(forgetPush()).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("forgetPush and a sync under way", () => {
+  it("keeps a sync that has not registered from registering, and unsubscribes what it made", async () => {
+    const { pushManager } = registry();
+    const fetchMock = stubHouse();
+    const release = holdSubscribe(pushManager);
+    const syncing = syncSubscription(HOUSE_KEY);
+    await vi.waitFor(() => expect(pushManager.subscribe).toHaveBeenCalledTimes(1));
+
+    const forgetting = forgetPush();
+    release();
+    await expect(syncing).resolves.toBeUndefined();
+    await expect(forgetting).resolves.toBeUndefined();
+
+    // No register at all: the house never learns of the subscription the sync made,
+    // and the browser does not keep it.
+    expect(requests(fetchMock)).toEqual([
+      { method: "DELETE", path: DEVICES_PATH, body: { endpoint: FRESH } },
+    ]);
+    expect(log).toEqual(["subscribe", `DELETE ${DEVICES_PATH}`, `unsubscribe ${FRESH}`]);
+    expect(pushManager.subscription).toBeNull();
+  });
+
+  it("sends its DELETE only once a register already in flight has been answered", async () => {
+    const held = new FakeSubscription(HELD, HOUSE_BYTES);
+    registry({ held });
+    const post = holdPost();
+    const fetchMock = stubHouse({ onPost: post.onPost });
+    const syncing = syncSubscription(HOUSE_KEY);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    const forgetting = forgetPush();
+    await drain();
+    expect(log).toEqual([`POST ${DEVICES_PATH}`]);
+
+    post.answer();
+    await syncing;
+    await forgetting;
+    expect(log).toEqual([
+      `POST ${DEVICES_PATH}`,
+      "POST answered",
+      `DELETE ${DEVICES_PATH}`,
+      `unsubscribe ${HELD}`,
+    ]);
+  });
+
+  it("lets the next sync register once it has finished", async () => {
+    const { pushManager } = registry();
+    const fetchMock = stubHouse();
+    const release = holdSubscribe(pushManager);
+    const overlapping = syncSubscription(HOUSE_KEY);
+    await vi.waitFor(() => expect(pushManager.subscribe).toHaveBeenCalledTimes(1));
+    const forgetting = forgetPush();
+    release();
+    await overlapping;
+    await forgetting;
+
+    // The next sign-in's sync.
+    await syncSubscription(HOUSE_KEY);
+    expect(requests(fetchMock)).toEqual([
+      { method: "DELETE", path: DEVICES_PATH, body: { endpoint: FRESH } },
+      registering(pushManager.subscription!),
+    ]);
+  });
+
+  it("keeps a sync that starts while it runs from registering, even once it has ended", async () => {
+    const { pushManager, container } = registry();
+    const fetchMock = stubHouse();
+    // Sign-out held at `getRegistration()`, so a sync can start while it runs.
+    let answerRegistration: () => void = () => {};
+    container.getRegistration.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerRegistration = () => resolve({ pushManager });
+        }),
+    );
+    const forgetting = forgetPush();
+    await vi.waitFor(() => expect(container.getRegistration).toHaveBeenCalledTimes(1));
+
+    // A retry starts mid-sign-out and is held at `subscribe()` until sign-out has
+    // ended, then subscribes.
+    const release = holdSubscribe(pushManager);
+    const late = syncSubscription(HOUSE_KEY);
+    await vi.waitFor(() => expect(pushManager.subscribe).toHaveBeenCalledTimes(1));
+    answerRegistration();
+    await forgetting;
+    release();
+    await expect(late).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("waits for a stuck sync no longer than a request may take", async () => {
+    vi.useFakeTimers();
+    fakeDeadlines();
+    const { pushManager } = registry();
+    const fetchMock = stubHouse();
+    const release = holdSubscribe(pushManager);
+    const stuck = syncSubscription(HOUSE_KEY);
+    await vi.waitFor(() => expect(pushManager.subscribe).toHaveBeenCalledTimes(1));
+
+    let settled = false;
+    const forgetting = forgetPush().then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await forgetting;
+
+    // The browser answers at last, long after sign-out: still no register.
+    release();
+    await stuck;
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

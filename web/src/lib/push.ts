@@ -123,6 +123,33 @@ async function forgetRow(endpoint: string): Promise<void> {
 }
 
 /**
+ * Sign-out's two rules (docs/web-push.md, "From the PWA"). `generation` moves when
+ * a `forgetPush` starts and again when it ends, and `forgetting` counts those
+ * under way: a sync registers only if neither says one has started since it did.
+ * `syncing` holds the syncs under way, which `forgetPush` waits for.
+ */
+let generation = 0;
+let forgetting = 0;
+const syncing = new Set<Promise<void>>();
+
+/**
+ * Every sync under way settled, or `REQUEST_TIMEOUT_MS` gone, whichever is first.
+ * A register POST already sent carries that deadline itself, so it has always
+ * been answered or given up by then; a sync stuck before its POST never sends it.
+ */
+async function syncsSettled(): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, REQUEST_TIMEOUT_MS);
+  });
+  try {
+    await Promise.race([Promise.allSettled([...syncing]), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Register this browser's subscription with the house, subscribing first when
  * it holds none. Run at every launch, so a row the house pruned or lost comes
  * back without the owner doing anything.
@@ -132,12 +159,26 @@ async function forgetRow(endpoint: string): Promise<void> {
  * pushed to again: its row is deleted, and it is unsubscribed and replaced. One
  * whose key the browser does not report is kept, since nothing says it is stale.
  *
+ * A sync that has not sent its register POST by the time a sign-out starts, or
+ * that starts during one, never sends it: it resolves without registering.
+ *
  * Rejects when no worker is ready in time, when the browser refuses, or when
  * the registration does or runs out of time. The two deadlines reject with a
  * TimeoutError, which the query's retry policy never repeats; anything else —
  * the house's 503 `Device store busy` included — it retries once.
  */
 export async function syncSubscription(publicKey: string): Promise<void> {
+  const run = runSync(publicKey, generation);
+  syncing.add(run);
+  try {
+    await run;
+  } finally {
+    syncing.delete(run);
+  }
+}
+
+/** `syncSubscription`'s steps, for a sync that started at `generation` `started`. */
+async function runSync(publicKey: string, started: number): Promise<void> {
   const { pushManager } = await readyRegistration();
   const key = new Uint8Array(b64urlToBuf(publicKey));
   let subscription = await pushManager.getSubscription();
@@ -151,6 +192,7 @@ export async function syncSubscription(publicKey: string): Promise<void> {
     userVisibleOnly: true,
     applicationServerKey: key,
   });
+  if (generation !== started || forgetting > 0) return;
   await bounded(DEVICES_PATH, {
     method: "POST",
     body: JSON.stringify({ platform: "web_push", subscription: subscription.toJSON() }),
@@ -177,6 +219,11 @@ export async function requestAndSubscribe(): Promise<NotificationPermission> {
  * Forget this browser's subscription, at the house and then in the browser —
  * what signing out does. Run it before the session ends: the DELETE needs it.
  *
+ * A sync under way is waited for first, for at most `REQUEST_TIMEOUT_MS`: one
+ * that has not sent its register POST never will, and one that has is answered
+ * before the DELETE goes, so the DELETE is always the last word. Whatever
+ * subscription the browser holds then is the one forgotten.
+ *
  * It never waits for `ready`, which never settles without a registered worker
  * (always, in dev) and would hold sign-out forever: `getRegistration()` answers
  * at once. And it never rejects, so sign-out never stops here. The DELETE gives
@@ -184,17 +231,25 @@ export async function requestAndSubscribe(): Promise<NotificationPermission> {
  * the browser stops receiving even when the house could not be told.
  */
 export async function forgetPush(): Promise<void> {
-  if (!("serviceWorker" in navigator)) return;
+  generation += 1;
+  forgetting += 1;
   try {
+    if (!("serviceWorker" in navigator)) return;
+    await syncsSettled();
     const registration = await navigator.serviceWorker.getRegistration();
     const subscription = await registration?.pushManager.getSubscription();
     if (!subscription) return;
     await forgetRow(subscription.endpoint);
     await subscription.unsubscribe();
   } catch {
-    // A known gap, which "never rejects" accepts: when the DELETE and the
-    // unsubscribe both fail, the browser keeps its subscription and the house its
-    // row, so this browser goes on receiving pushes while signed out.
+    // A known gap, which "never rejects" accepts: when `getRegistration()` or
+    // `getSubscription()` throws, neither the DELETE nor the unsubscribe ran, and
+    // when the DELETE and the unsubscribe both fail, the browser keeps its
+    // subscription and the house its row. Either way this browser goes on
+    // receiving pushes while signed out.
+  } finally {
+    forgetting -= 1;
+    generation += 1;
   }
 }
 
