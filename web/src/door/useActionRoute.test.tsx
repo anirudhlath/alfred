@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrackedAction } from "@/lib/actions";
+import { authEvents } from "@/lib/auth-events";
 import { pendingActionFixture } from "@/test/fixtures";
 import { useActionRoute } from "./useActionRoute";
 
@@ -163,6 +164,53 @@ describe("useActionRoute", () => {
     expect(screen.getByTestId("tomb")).toHaveTextContent("none");
     expect(openActionMock).not.toHaveBeenCalled();
     expect(answeredMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the path when the session has lapsed, and reads it again after a sign-in", async () => {
+    status = 401;
+    const expired = vi.fn();
+    const off = authEvents.on("expired", expired);
+    renderAt("/actions/a91f3c2e");
+    await waitFor(() => expect(expired).toHaveBeenCalledTimes(1));
+    off();
+    // Let the read's last step run: it would navigate here if it were going to.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(screen.getByTestId("path")).toHaveTextContent("/actions/a91f3c2e");
+    expect(openActionMock).not.toHaveBeenCalled();
+    expect(answeredMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId("tomb")).toHaveTextContent("none");
+
+    // The Expired gate's sign-in, with the Room still mounted under it.
+    status = 200;
+    act(() => authEvents.emit("signed-in"));
+    await waitFor(() => expect(openActionMock).toHaveBeenCalledWith("a91f3c2e"));
+    expect(calls).toEqual(["/api/actions/a91f3c2e", "/api/actions/a91f3c2e"]);
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent(ROOT));
+  });
+
+  it("reads again after a sign-in that lands while a lapsed read is in flight", async () => {
+    // The first read is held, and answers 401 only after the sign-in.
+    let answerFirst: (response: Response) => void = () => {};
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      if (calls.length === 1) {
+        return new Promise<Response>((resolve) => {
+          answerFirst = resolve;
+        });
+      }
+      return new Response(JSON.stringify(pendingActionFixture), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderAt("/actions/a91f3c2e");
+    await waitFor(() => expect(calls).toHaveLength(1));
+
+    act(() => authEvents.emit("signed-in"));
+    await waitFor(() => expect(openActionMock).toHaveBeenCalledWith("a91f3c2e"));
+    answerFirst(new Response('{"detail":"Not authenticated"}', { status: 401 }));
+
+    await waitFor(() => expect(screen.getByTestId("path")).toHaveTextContent(ROOT));
+    expect(calls).toHaveLength(2);
+    expect(openActionMock).toHaveBeenCalledTimes(1);
   });
 
   it("names an unremembered approval by its short id", async () => {

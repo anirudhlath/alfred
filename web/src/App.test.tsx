@@ -46,6 +46,13 @@ vi.mock("@/lib/chat-socket", () => ({
   },
 }));
 
+// A passkey sign-in, which jsdom cannot perform; everything else is the real module.
+const { loginPasskeyMock } = vi.hoisted(() => ({ loginPasskeyMock: vi.fn(async () => {}) }));
+vi.mock("@/lib/webauthn", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/webauthn")>()),
+  loginPasskey: loginPasskeyMock,
+}));
+
 vi.mock("@/lib/telemetry-socket", () => ({
   TelemetrySocket: class {
     onstatus = () => {};
@@ -253,6 +260,26 @@ describe("App", () => {
     expect(screen.getByText("CRITICAL · a91f")).toBeInTheDocument();
     // The fuse is still running: the clock is pinned inside it (see beforeEach).
     expect(screen.getByText("until it lapses")).toBeInTheDocument();
+  });
+
+  it("keeps the deep link through a lapsed session, and opens the Door once signed back in", async () => {
+    window.history.pushState({}, "", "/actions/a91f3c2e");
+    routes["/api/actions/a91f3c2e"] = new Response('{"detail":"Not authenticated"}', {
+      status: 401,
+    });
+    render(<App />);
+
+    // The Expired gate, over a Room that kept the link and opened nothing.
+    const gate = await screen.findByRole("dialog", { name: "Session lapsed" });
+    expect(window.location.pathname).toBe("/actions/a91f3c2e");
+    expect(screen.queryByRole("dialog", { name: "Critical approval" })).toBeNull();
+
+    delete routes["/api/actions/a91f3c2e"];
+    fireEvent.click(within(gate).getByRole("button", { name: "Sign in with Face ID" }));
+
+    expect(await screen.findByRole("dialog", { name: "Critical approval" })).toBeInTheDocument();
+    expect(loginPasskeyMock).toHaveBeenCalledOnce();
+    expect(fetched().filter((url) => url === "/api/actions/a91f3c2e")).toHaveLength(2);
   });
 
   it("leaves a tombstone in the thread when the deep link's action is gone", async () => {

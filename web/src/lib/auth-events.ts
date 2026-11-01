@@ -1,9 +1,10 @@
 /**
- * Two facts the app must react to from anywhere: the session lapsed (401), and
- * the house refused this network (403). A module-level emitter rather than
+ * Three facts the app must react to from anywhere: the session lapsed (401),
+ * the house refused this network (403), and a sign-in brought a session back
+ * (AuthGate's, at any of its gates). A module-level emitter rather than
  * context, because `api()` is a plain function with no React above it.
  */
-export type AuthEventKind = "expired" | "denied";
+export type AuthEventKind = "expired" | "denied" | "signed-in";
 
 type Handler = () => void;
 
