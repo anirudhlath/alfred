@@ -4,7 +4,9 @@ Every Web Push subscription lives in ``DEVICE_TOKENS_KEY`` beside the APNs token
 ``core/notifications/devices.py``). Each push is the notification as compact JSON,
 encrypted to the subscription's keys (``aes128gcm``) and POSTed to its endpoint with a
 VAPID ``Authorization`` header. The push service answers 404 or 410 for a subscription
-the browser has dropped, and only then is the row pruned.
+the browser has dropped, and only then is the row pruned. Each row is validated again as a
+``WebPushSubscription`` before its POST: registration checked it, but the hash has other
+writers, and a row aimed off the allowlist would send the house wherever it points.
 
 The endpoint, ``p256dh`` and ``auth`` are credentials, so nothing here logs them: a line
 names the field's first 12 characters and the push host instead.
@@ -21,9 +23,16 @@ from typing import TYPE_CHECKING, Any, ClassVar, Final
 import http_ece
 from cryptography.hazmat.primitives.asymmetric import ec
 from loguru import logger
+from pydantic import ValidationError
 
 from core.notifications.channels import ChannelAdapter, ChannelRegistry
-from core.notifications.devices import decode_b64url, decode_device, is_web_push, push_host
+from core.notifications.devices import (
+    WebPushSubscription,
+    decode_b64url,
+    decode_device,
+    is_web_push,
+    push_host,
+)
 from core.notifications.schema import Notification, Urgency
 from shared.streams import DEVICE_TOKENS_KEY
 
@@ -97,6 +106,17 @@ def build_payload(notification: Notification) -> bytes:
     return encoded
 
 
+def _stored_host(row: dict[str, Any]) -> str:
+    """A stored row's push host, safe to log; empty for an endpoint that is not a URL."""
+    endpoint = row.get("endpoint")
+    if not isinstance(endpoint, str):
+        return ""
+    try:
+        return push_host(endpoint)
+    except ValueError:  # urlsplit refuses a malformed IPv6 host
+        return ""
+
+
 def encrypt(plaintext: bytes, p256dh: str, auth: str) -> bytes:
     """``plaintext`` encrypted to a subscription's keys (RFC 8291, ``aes128gcm``).
 
@@ -155,12 +175,22 @@ class WebPushChannelAdapter(ChannelAdapter):
     async def deliver(self, notification: Notification) -> None:
         """Deliver notification to every Web Push subscription."""
         rows: dict[bytes | str, bytes | str] = await self._redis.hgetall(DEVICE_TOKENS_KEY)
-        subscriptions: list[tuple[str, dict[str, Any]]] = []
+        subscriptions: list[tuple[str, WebPushSubscription]] = []
         for raw_field, value in rows.items():
             row = decode_device(value)
-            if row is not None and is_web_push(row):  # APNs tokens are the APNs adapter's
-                field = raw_field.decode() if isinstance(raw_field, bytes) else raw_field
-                subscriptions.append((field, row))
+            if row is None or not is_web_push(row):  # APNs tokens are the APNs adapter's
+                continue
+            field = raw_field.decode() if isinstance(raw_field, bytes) else raw_field
+            try:
+                subscriptions.append((field, WebPushSubscription.model_validate(row)))
+            except ValidationError:
+                # Kept: only a push service's 404 or 410 says a subscription is gone. Named
+                # by its prefix and host alone, the credential rule's two safe facts.
+                logger.warning(
+                    "Skipped a stored web push subscription that fails validation ({}…, {})",
+                    field[:_FIELD_PREFIX],
+                    _stored_host(row),
+                )
         if not subscriptions:
             logger.debug("WebPushChannelAdapter: no web push subscriptions, skipping")
             return
@@ -175,14 +205,12 @@ class WebPushChannelAdapter(ChannelAdapter):
             "Urgency": URGENCY_HEADER[urgency],
         }
 
-        async def _send(field: str, row: dict[str, Any]) -> None:
+        async def _send(field: str, subscription: WebPushSubscription) -> None:
             prefix = field[:_FIELD_PREFIX]
-            host = ""
+            endpoint = subscription.endpoint
+            host = push_host(endpoint)
             try:
-                endpoint = row["endpoint"]
-                host = push_host(endpoint)
-                keys = row["keys"]
-                body = encrypt(payload, keys["p256dh"], keys["auth"])
+                body = encrypt(payload, subscription.keys.p256dh, subscription.keys.auth)
                 # aud is the push service's origin, so each endpoint signs its own token.
                 authorization = self._keys.authorization(endpoint, self._subject, time.time())
                 resp = await client.post(
@@ -213,4 +241,4 @@ class WebPushChannelAdapter(ChannelAdapter):
                     "Web push delivery error for {}… ({}): {}", prefix, host, type(exc).__name__
                 )
 
-        await asyncio.gather(*(_send(field, row) for field, row in subscriptions))
+        await asyncio.gather(*(_send(field, sub) for field, sub in subscriptions))

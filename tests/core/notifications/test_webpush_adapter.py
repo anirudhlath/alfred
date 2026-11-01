@@ -327,6 +327,61 @@ async def test_a_row_whose_platform_is_not_a_string_stops_nothing(
     assert browser.payload(service.to(APPLE)[0])["title"] == "Front door"
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        pytest.param("https://alfred.example.com/push/QGuQyavXutnMH8", id="off-allowlist"),
+        pytest.param("http://web.push.apple.com/QGuQyavXutnMH8", id="plain-http"),
+        pytest.param("https://web.push.apple.com:8443/QGuQyavXutnMH8", id="port"),
+    ],
+)
+async def test_skips_a_stored_row_the_allowlist_refuses(
+    redis: fakeredis.FakeAsyncRedis, logs: list[str], endpoint: str
+) -> None:
+    """A row registration would have refused, written by anything else, gets no POST.
+
+    It is kept (nothing proves the push service dropped it) and named only by its field's
+    prefix and its host; the good row beside it still gets its push.
+    """
+    planted, good = Browser(endpoint), Browser(FCM)
+    await _store(redis, planted, good)
+    service = PushService()
+
+    await _deliver(redis, service, _notification())
+
+    assert [str(request.url) for request in service.requests] == [FCM]
+    assert await redis.hexists(DEVICE_TOKENS_KEY, planted.device_field)
+    [warning] = [line for line in logs if line.startswith("WARNING")]
+    assert planted.device_field[:12] in warning
+    assert endpoint.split("/")[2].split(":")[0] in warning
+    for line in logs:
+        for secret in (endpoint, endpoint.split("/", 3)[3], planted.p256dh, _b64url(planted.auth)):
+            assert secret not in line
+
+
+async def test_skips_a_stored_row_whose_keys_are_not_a_subscription(
+    redis: fakeredis.FakeAsyncRedis, logs: list[str]
+) -> None:
+    """A p256dh that is not a P-256 point, or no keys at all, gets no POST either."""
+    bad_point, keyless, good = Browser(APPLE), Browser(MOZILLA), Browser(FCM)
+    await _store(redis, good)
+    row = json.loads(bad_point.row())
+    row["keys"]["p256dh"] = _b64url(b"\x04" + b"\x00" * 64)
+    await redis.hset(DEVICE_TOKENS_KEY, bad_point.device_field, json.dumps(row))
+    row = json.loads(keyless.row())
+    del row["keys"]
+    await redis.hset(DEVICE_TOKENS_KEY, keyless.device_field, json.dumps(row))
+    service = PushService()
+
+    await _deliver(redis, service, _notification())
+
+    assert [str(request.url) for request in service.requests] == [FCM]
+    warnings = [line for line in logs if line.startswith("WARNING")]
+    assert len(warnings) == 2
+    assert any("web.push.apple.com" in line for line in warnings)
+    assert any("updates.push.services.mozilla.com" in line for line in warnings)
+
+
 async def test_never_logs_the_endpoint_or_keys(
     redis: fakeredis.FakeAsyncRedis, logs: list[str]
 ) -> None:
