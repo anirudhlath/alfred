@@ -168,10 +168,13 @@ and `Try again` beside it.
 
 The sync (`usePush`, kept running by `PushKeeper`) does the same without the prompt,
 subscribing only when the browser holds no subscription. It runs once a launch, again after
-each sign-in, and again when a permission turned off in Settings is turned back on, since
-the browser deactivates the subscription with the permission. It never runs on focus: the
-row does not lapse. Nor does opening the Reach card run it: the card watches the sync's
-answer (`usePush({ syncOnMount: false })`), and a failure stays `failed` until `Try again`.
+each sign-in, again when a permission turned off in Settings is turned back on, since the
+browser deactivates the subscription with the permission, and again on react-query's
+reconnect refetch, which re-runs a sync that failed (a failure leaves the query stale; a
+success never does). `Try again` runs it on demand. It never runs on focus: the row does
+not lapse. Nor does opening the Reach card run it: the card watches the sync's answer
+(`usePush({ syncOnMount: false })`), so opening it shows a failed sync as `failed`, with
+`Try again`, and leaves it there.
 
 Every wait on the house and on the worker has a deadline, so a house that accepts a socket
 and never answers still leaves Reach with something to offer:

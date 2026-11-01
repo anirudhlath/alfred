@@ -166,7 +166,8 @@ Phase 5, slice 1: Alfred reaches the phone when the app is closed. The architect
   the handoff's copy verbatim and already names the badge, which slice 2 makes true.
 - **A sign-out whose `DELETE` and unsubscribe both fail** leaves the subscription live
   and the house's row in place, so pushes keep arriving on a signed-out phone until the
-  next sign-in or until the push service drops it (`docs/web-frontend.md`, "Web Push").
+  next sign-in, until the push service drops it, or until the cap evicts the row
+  (`docs/web-frontend.md`, "Web Push").
 - **Four things the old SPA could do and this client cannot**, which is the whole of the
   remaining parity gap (spec §8's gate is *full capability parity with the old SPA*).
   Three of them have no endpoint to call: **creating, editing or deleting a trigger**

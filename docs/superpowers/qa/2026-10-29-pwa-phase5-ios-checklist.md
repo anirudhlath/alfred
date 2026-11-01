@@ -39,12 +39,22 @@ the first 12 characters of its field, and never the endpoint. How the pieces fit
 - [ ] Another device signed in to Alfred (Safari on a Mac, or Signal), to ask for something
       critical while this phone is locked. A confirmation lives five minutes
       (`PENDING_TTL_SECONDS`); a tap after that opens a Door that has nothing to claim
-- [ ] Reflex in `ask` mode (`docs/reflex-anticipation.md`, "Settings"), or a decision to
-      skip the Reflex line: switching the live house's mode is the owner's call, and in
-      `shadow` mode no ask is ever sent
-- [ ] A way to make the house send an informational notification: a trigger's own
-      notification is informational unless asked otherwise (`core/triggers/models.py`),
-      so a reminder a minute from now, asked for on the other device, is one
+- [ ] Do Not Disturb off, and no calendar meeting under way. While either holds, the
+      dispatcher defers every notification that is not URGENT
+      (`core/notifications/dispatcher.py`), and a deferred one reaches neither this phone
+      nor the Activity bench
+- [ ] The other device can ask Alfred for reminders. A fired reminder with no action is
+      announced at the urgency it was created with, informational unless asked otherwise
+      (`core/triggers/models.py`; `create_trigger`'s `urgency`, `core/triggers/feature.py`),
+      so one reminder makes the IMPORTANT notification below and another the informational
+      one
+- [ ] Optional, for the Reflex ask line: all of these at once. Reflex in `ask` mode, with an
+      `ask_tools` pattern that matches the tool (the default `[]` holds every proposal as
+      `tool_off`); a tool whose declared risk is benign or elevated; outside Reflex's quiet
+      hours (23:00 to 07:00 unless changed); Do Not Disturb off; and the model proposing
+      something (`docs/reflex-anticipation.md`, "Settings" and "Asks"). Switching the live
+      house's mode is the owner's call, and in `shadow` mode no ask is ever sent, so the
+      line is normally skipped
 - [ ] You can stop the house and start it again
 - [ ] A second phone on iOS 16.4 or later, for the last section
 - [ ] Optional: a Mac with Safari's Web Inspector, for "With Web Inspector"
@@ -57,8 +67,8 @@ the first 12 characters of its field, and never the endpoint. How the pieces fit
 - [ ] `Show me how` opens the install gate: `reaching you · 3 of 6 · in Safari`,
       `Add me to the home screen.`, three steps with `Tap Share, below` current, and a
       pointer at the bottom edge nudging down
-- [ ] **Record where the Share pointer sits against Safari's toolbar** (R9 in the plan): over
-      the Share button, beside it, or somewhere else, and whether Safari's toolbar was
+- [ ] **Record where the Share pointer sits against Safari's toolbar** (R9 in the plan):
+      over the Share button, beside it, or somewhere else, and whether Safari's toolbar was
       expanded or collapsed. The pointer assumes the page's own bottom edge is where
       Safari's chrome begins
 - [ ] **Watch the pointer's chevron at the bottom of its nudge.** If the tip is clipped at
@@ -110,16 +120,28 @@ Close the app from the app switcher and lock the phone for each of these.
 - [ ] Ask again, open Alfred, then send it to the background (home screen, not closed) and
       lock the phone. Tap the new notification: the open app raises that action's Door.
       Record both cases
-- [ ] A Reflex ask (IMPORTANT) arrives on the lock screen, and a tap opens its Door. Record
-      what made Reflex ask, or record the line skipped
-- [ ] An informational notification does **not** arrive. The Activity bench's
-      notifications stream shows it with `informational`, which proves it was sent
+- [ ] On the other device, ask Alfred: "In one minute, remind me to check the oven, and make
+      it important". A notification titled `Trigger: ` and the name Alfred gave the
+      reminder arrives on the lock screen. The Activity bench's notifications stream shows
+      it with `important`; if it shows `informational`, Alfred did not pass the urgency, so
+      record it and ask again. This is the IMPORTANT delivery (`Urgency: normal`, kept a day
+      by the push service). It is sent before Reflex decides anything about the trigger, so
+      in any Reflex mode
+- [ ] Tap it: it carries no approval (no `pending_action_id`), so Alfred opens on the Room
+      (`/`), with no Door. A tap reaching a Door is the confirmation's to prove, above
+- [ ] Optional: a Reflex ask (IMPORTANT) arrives on the lock screen, and a tap opens its
+      Door. It needs every precondition in "Before you start"; record what made Reflex
+      ask, or record the line skipped
+- [ ] Ask for a plain reminder a minute from now, naming no urgency. It does **not**
+      arrive. The Activity bench's notifications stream shows it with `informational`,
+      which proves it was sent
 
 ## Relaunch
 
-- [ ] Close the app and open it from the tile. No gate, no iOS dialog and no tap: the
-      launch re-syncs on its own. System › Reach reads `on`, and the row's `registered_at`
-      has moved past the one you noted. Still exactly one `web_push` row for this phone
+- [ ] Close the app and open it from the tile. No Reach gate, no iOS dialog and no tap in
+      the app: the launch re-syncs on its own. System › Reach reads `on`, and the row's
+      `registered_at` has moved past the one you noted. Still exactly one `web_push` row
+      for this phone
 
 ## Permission taken away
 
@@ -131,11 +153,15 @@ Close the app from the app switcher and lock the phone for each of these.
       (`off · not yet asked · iOS asks once`) instead
 - [ ] **A failure stays a failure.** Stop the house. Settings › Alfred › Notifications back
       on, then switch to Alfred (no relaunch): the permission's return starts a sync, which
-      fails, after some seconds. Reach reads `off · allowed in iOS · the house did not take the registration`
-      with `Try again`, and the error under it
+      fails, after some seconds. Reach reads
+      `off · allowed in iOS · the house did not take the registration` with `Try again`,
+      and the error under it
 - [ ] Start the house. Leave System for the Room, then open System › Reach again: it still
       reads `failed`, with `Try again`, no flash of `checking`, and no row's
-      `registered_at` has moved. Opening the bench never retries behind the reader's back
+      `registered_at` has moved. Opening the bench never retries behind the reader's back.
+      If the phone lost and regained its network in between, react-query's reconnect
+      refetch re-runs the sync, as it should (`docs/web-push.md`, "From the PWA"): redo the
+      step
 - [ ] `Try again`: `checking`, then `on`, and a row's `registered_at` moves. Record how many
       `web_push` rows this phone has now: a second one means iOS issued a new endpoint, and
       the old row stays until a push to it draws a 404 or 410 and prunes it
@@ -147,8 +173,11 @@ Close the app from the app switcher and lock the phone for each of these.
 - [ ] A confirmation asked for on the other device does **not** arrive on this phone. If one
       does, that is the double-failure gap (`docs/web-frontend.md`, "Web Push": both the
       `DELETE` and the browser's unsubscribe failed); record it
-- [ ] Sign in again on this phone. With no Reach gate, no iOS dialog and no tap, the row
-      is back: a sign-in re-runs the sync
+- [ ] Sign in again on this phone. Sign-out unsubscribed the browser, so the sign-in's
+      sync subscribes again outside any Reach tap, this time after a passkey ceremony: the
+      same unmeasured question as "Install and enable". **Record** whether the row came
+      back with no Reach tap and no iOS dialog, and what Reach reads: `on`, or `failed`
+      with its error's words
 
 ## A second phone
 

@@ -1761,17 +1761,20 @@ same query through `usePush({ syncOnMount: false })`, and it is the only caller 
 the option. The System bench remounts on every visit and react-query marks a failed query
 invalidated, so with the defaults every opening of System would quietly subscribe and
 register again. With the option, opening System never re-runs a failed sync: Reach shows
-`failed` and `Try again`. The sync runs again on `Try again`, a relaunch, a sign-in, a
-permission given back, or react-query's reconnect refetch, which this query leaves at its
-default. A query nothing has fetched yet still loads on Reach's mount, as react-query
-always loads one; `PushKeeper`, mounted beside it, has normally done that already.
+`failed` and `Try again`. What does run the sync is listed once, in
+[`web-push.md`](web-push.md#from-the-pwa), "From the PWA". A query nothing has fetched yet
+still loads on Reach's mount, as react-query always loads one; `PushKeeper`, mounted beside
+it, has normally done that already.
 
 **Enable asks first.** `enable()` calls `requestAndSubscribe()` before any await, state or
 effect, because iOS shows the permission prompt only from inside the tap. The key read and
 `pushManager.subscribe()` follow the answer, and so run outside the tap: whether iOS
 accepts a `subscribe()` that late is unmeasured, and the phase-5 checklist records it.
-While `asking`, the hook that asked keeps the query disabled, so a render that reads the new
-permission mid-tap starts no second registration: the tap registers for itself. Its success
+While `asking`, the hook that asked keeps its own observer disabled, so the asking hook
+starts no second registration when a render reads the new permission mid-tap: the tap
+registers for itself. `PushKeeper`'s `usePush` is not asking, so a re-render of it
+mid-prompt could start one. That is unlikely and harmless: it registers the same
+subscription, under the same field. Its success
 is written into the query as `on` and a 404 key read as `unconfigured`; any other failure
 invalidates the query, so the sync gets one try of its own once the tap is done.
 

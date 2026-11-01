@@ -72,8 +72,9 @@ const DENIED_NOTE =
  * The one section on the bench that reads for itself rather than from
  * `useSystem`: the state is `usePush()`'s, which `PushKeeper` already keeps, and
  * threading it through the bench would only hand it back here. It watches that
- * sync and never starts one by mounting: a failure stays `failed` until the
- * reader presses `Try again`.
+ * sync and never starts one by mounting: opening the bench shows a failed sync
+ * as `failed` and leaves it there. `Try again` runs it again, as a sign-in, a
+ * permission given back or a reconnect does (docs/web-push.md, "From the PWA").
  *
  * Its two gates are mounted here at `level="gate"`, the way `AuthGate` mounts
  * its own, so they rise over the Workshop. The standalone gate's primary is
