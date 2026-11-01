@@ -1017,6 +1017,21 @@ describe("the fake push and notifications", () => {
     expect(worker.shown.map(({ title }) => title)).toEqual(["rejected DataCloneError"]);
   });
 
+  it("structured-clones only the options' data, as a real one does", async () => {
+    // A real one converts the other members as a dictionary and ignores the
+    // ones it does not know, so a function outside `data` shows the
+    // notification; only `data` goes through structured clone.
+    const worker = loadWorker(`
+      self.addEventListener("push", (event) => {
+        event.waitUntil(self.registration.showNotification("t", { body: "b", extra: () => {} }).then(
+          () => self.registration.showNotification("shown"),
+          (error) => self.registration.showNotification("rejected " + error.name)));
+      });
+    `);
+    await worker.push();
+    expect(worker.shown.map(({ title }) => title)).toEqual(["t", "shown"]);
+  });
+
   it("lists only windows, and records what each matchAll() asked for", async () => {
     // Every client the fake has is a window, so "window" — the default — and
     // "all" list them, and "worker" and "sharedworker" list nothing. The
@@ -1047,6 +1062,20 @@ describe("the fake push and notifications", () => {
     const worker = loadWorker(`
       self.addEventListener("push", (event) => {
         event.waitUntil(self.clients.matchAll({ type: "windows" }).then(
+          (clients) => self.registration.showNotification("listed " + clients.length),
+          (error) => self.registration.showNotification("rejected " + error.name)));
+      });
+    `);
+    await worker.push();
+    expect(worker.shown.map(({ title }) => title)).toEqual(["rejected TypeError"]);
+  });
+
+  it("rejects an explicit type: null with a TypeError, where undefined means window", async () => {
+    // A dictionary member converts null to the string "null", which is no
+    // ClientType; only an absent or undefined member takes the default.
+    const worker = loadWorker(`
+      self.addEventListener("push", (event) => {
+        event.waitUntil(self.clients.matchAll({ type: null, includeUncontrolled: true }).then(
           (clients) => self.registration.showNotification("listed " + clients.length),
           (error) => self.registration.showNotification("rejected " + error.name)));
       });

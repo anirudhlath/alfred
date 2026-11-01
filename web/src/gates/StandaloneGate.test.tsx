@@ -81,6 +81,8 @@ describe("StandaloneGate", () => {
     // step is done, only its time is not yet known.
     render(gate({ signedInAt: null }));
     expect(row("Sign in with Face ID")).not.toHaveTextContent(/\d|--:--/);
+    // No empty meta element either, holding a gap where the time would go.
+    expect(row("Sign in with Face ID").querySelector(".t-meta")).toBeNull();
   });
 
   it("asks from the primary and holds it while asking", async () => {

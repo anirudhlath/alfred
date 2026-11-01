@@ -1,6 +1,5 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api";
@@ -11,11 +10,8 @@ import {
   requestAndSubscribe,
   syncSubscription,
 } from "@/lib/push";
-import { authSession } from "@/test/fixtures";
-import { ReachSection } from "@/workshop/ReachSection";
-import type { Sessions } from "@/workshop/useSystem";
-import { QUERY_DEFAULTS } from "./QueryProvider";
-import { PUSH_QUERY_KEY, usePush, type PushOptions } from "./usePush";
+import { BUSY, failedClient, makeClient } from "@/test/push-client";
+import { usePush, type PushOptions } from "./usePush";
 
 vi.mock("@/lib/push", () => ({
   reachContext: vi.fn(),
@@ -29,15 +25,6 @@ const HOUSE_KEY = "BFakeHouseKey";
 
 /** The page's notification permission, which a test changes as the owner would. */
 let granted: NotificationPermission;
-
-/**
- * A client on the app's own policy, so the one retry a failed sync gets is the
- * source's and not the harness's. Only the backoff is the harness's.
- */
-const makeClient = (): QueryClient =>
-  new QueryClient({
-    defaultOptions: { ...QUERY_DEFAULTS, queries: { ...QUERY_DEFAULTS.queries, retryDelay: 0 } },
-  });
 
 function renderPush(client = makeClient(), options?: PushOptions) {
   const wrapper = ({ children }: { children: ReactNode }) => (
@@ -175,8 +162,9 @@ describe("usePush", () => {
     await waitFor(() =>
       expect(result.current.reach).toEqual({ kind: "failed", detail: "no service worker" }),
     );
-    // A sync that has already waited ten seconds is not retried behind the
-    // owner's back: the next try is theirs, from the card.
+    // The retry policy never repeats a deadline failure: a sync that has already
+    // waited ten seconds is not waited out again. The next try is `Try again`, or
+    // the next sign-in, re-grant or reconnect (docs/web-push.md, "From the PWA").
     expect(syncSubscription).toHaveBeenCalledTimes(1);
   });
 
@@ -334,33 +322,6 @@ describe("usePush", () => {
   });
 });
 
-const BUSY = "Device store busy";
-
-/**
- * A client already holding a sync that failed, as it is when System is opened
- * after one: `afterOn` puts an earlier `on` behind the failure, the shape a
- * sign-in's failed re-sync leaves. Either way react-query has marked the query
- * invalidated, which is what a mounting observer reads as a reason to fetch.
- */
-async function failedClient(afterOn: boolean): Promise<QueryClient> {
-  const client = makeClient();
-  if (afterOn) client.setQueryData(PUSH_QUERY_KEY, "on");
-  await client
-    .fetchQuery({
-      queryKey: PUSH_QUERY_KEY,
-      queryFn: () => Promise.reject(new ApiError(503, BUSY)),
-      retry: false,
-      staleTime: 0,
-    })
-    .catch(() => {});
-  expect(client.getQueryState(PUSH_QUERY_KEY)).toMatchObject({
-    status: "error",
-    isInvalidated: true,
-    data: afterOn ? "on" : undefined,
-  });
-  return client;
-}
-
 describe("usePush on mount", () => {
   // `PushKeeper`'s: it remounts under `AuthGate` on each sign-in, and that
   // mount is the sync.
@@ -387,67 +348,4 @@ describe("usePush on mount", () => {
       expect(result.current.reach).toEqual({ kind: "failed", detail: BUSY });
     },
   );
-});
-
-/**
- * The card over its own hook. `ReachSection.test.tsx` hands it a `PushValue`,
- * so it can only prove the row draws what it is given; whether opening the
- * bench syncs is a fact about the observer the card mounts.
- */
-const SESSIONS: Sessions = {
-  list: [authSession({ current: true })],
-  read: true,
-  ended: {},
-  ending: {},
-  failed: {},
-  end: () => {},
-  error: null,
-};
-
-const FAILED_SUB = "off · allowed in iOS · the house did not take the registration";
-
-function renderReach(client: QueryClient) {
-  return render(
-    <QueryClientProvider client={client}>
-      <ReachSection sessions={SESSIONS} />
-    </QueryClientProvider>,
-  );
-}
-
-describe("ReachSection over usePush", () => {
-  it.each([false, true])(
-    "opens on a failed sync without syncing, and Try again syncs (after an on: %s)",
-    async (afterOn) => {
-      const user = userEvent.setup();
-      renderReach(await failedClient(afterOn));
-      await settle();
-
-      expect(fetchPublicKey).not.toHaveBeenCalled();
-      expect(syncSubscription).not.toHaveBeenCalled();
-      expect(screen.getByText(FAILED_SUB)).toBeInTheDocument();
-      expect(screen.getByText(BUSY)).toBeInTheDocument();
-
-      await user.click(screen.getByRole("button", { name: "Try again" }));
-
-      await waitFor(() => expect(screen.getByText("on")).toBeInTheDocument());
-      expect(syncSubscription).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  it("enables from its own observer, registering once", async () => {
-    granted = "default";
-    const user = userEvent.setup();
-    renderReach(makeClient());
-
-    await user.click(screen.getByRole("button", { name: "Enable" }));
-    await user.click(screen.getByRole("button", { name: "Let me reach you" }));
-
-    await waitFor(() => expect(screen.getByText("on")).toBeInTheDocument());
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(requestAndSubscribe).toHaveBeenCalledTimes(1);
-    // Enable registered for itself; the query took its answer, and nothing
-    // registered a second time.
-    expect(fetchPublicKey).not.toHaveBeenCalled();
-    expect(syncSubscription).not.toHaveBeenCalled();
-  });
 });

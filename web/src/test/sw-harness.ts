@@ -1050,12 +1050,14 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
           return true;
         });
       },
-      // Copied at the call, shown a macrotask later: see `Harness.shown`. Options
-      // it cannot copy reject the promise, as a real one's do, rather than throw.
+      // Copied at the call, shown a macrotask later: see `Harness.shown`. Only
+      // `data` is structured-cloned, as a real one's is; the other members are
+      // copied as they are. A `data` it cannot clone rejects the promise, as a
+      // real one's does, rather than throw.
       showNotification: (title: string, options: NotificationOptions = {}) => {
         let copy: NotificationOptions;
         try {
-          copy = structuredClone(options);
+          copy = "data" in options ? { ...options, data: structuredClone(options.data) } : { ...options };
         } catch (error) {
           return Promise.reject(error as Error);
         }
@@ -1086,11 +1088,12 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
       // that registered it is one of the open pages, and reloading that one
       // registers it again. Every page here is a window, so "window" (the
       // default) and "all" list them and "worker" and "sharedworker" none; a
-      // type outside ClientType is a TypeError, as a real one's is. The
+      // type outside ClientType is a TypeError, as a real one's is, and so is an
+      // explicit null, which a dictionary reads as the string "null". The
       // options are recorded, see `Harness.matchAllOptions`.
       matchAll: (options?: MatchAllOptions) => {
         harness.matchAllOptions.push(options === undefined ? undefined : { ...options });
-        const type = options?.type ?? "window";
+        const type = options?.type === undefined ? "window" : options.type;
         if (!CLIENT_TYPES.includes(type)) {
           return Promise.reject(
             new TypeError(`Failed to execute 'matchAll' on 'Clients': '${type}' is not a valid ClientType.`),

@@ -109,6 +109,9 @@ export function usePush({ syncOnMount = true }: PushOptions = {}): PushValue {
     queryFn: sync,
     // Off while Enable runs, which registers for itself: a render that reads
     // the new permission mid-tap would otherwise start a second register.
+    // `!asking` holds off only this hook instance's query. Another instance,
+    // such as `PushKeeper`'s, can still sync; at worst that is one extra POST,
+    // which rewrites the same row (docs/web-frontend.md, "Enable asks first").
     enabled: context === "capable" && allowed === "granted" && !asking,
     // Once a launch and once a sign-in, never on focus: the house's row does
     // not lapse, and a register on every app switch would only rewrite it.
@@ -125,8 +128,9 @@ export function usePush({ syncOnMount = true }: PushOptions = {}): PushValue {
   // would still hold `on` for the subscription the browser deactivated, and
   // under `staleTime: Infinity` never ask again. Marked stale here, with no
   // fetch, it syncs the moment the permission returns. A sync still in flight
-  // is cancelled first: landing after the mark, its success would clear it, and
-  // its answer is about the subscription that just went. Both in this order and
+  // has its answer discarded first: landing after the mark, its success would
+  // clear it, and its answer is about the subscription that just went. The sync
+  // itself ignores the signal, so its POST may still land. Both in this order and
   // in one go — the cancel puts back the state from before the sync at once
   // (react-query's `onCancel`), so the mark lands on it, and awaiting the cancel
   // would leave a gap a re-grant can fall into. Neither call fetches, so a
