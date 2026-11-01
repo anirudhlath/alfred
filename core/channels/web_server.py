@@ -269,10 +269,15 @@ class OnboardingPayload(BaseModel):
     guest_controls: list[str] | None = None
 
 
+# Whose voice print or device a client names. One bound for every model that takes one,
+# so they cannot drift.
+Identity = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")]
+
+
 class VoiceEnrollmentPayload(BaseModel):
     """Voice enrollment samples from the settings page."""
 
-    identity: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
+    identity: Identity
     samples: list[str] = Field(min_length=3, max_length=5)
 
 
@@ -302,7 +307,7 @@ class DeviceRegistration(BaseModel):
 
     device_token: str = Field(min_length=32, max_length=200, pattern=_DEVICE_TOKEN_PATTERN)
     platform: ApnsPlatform
-    identity: str
+    identity: Identity
 
 
 class WebPushRegistration(BaseModel):

@@ -296,6 +296,19 @@ def _seed_apple(stored: fakeredis.FakeRedis, numbers: Iterable[int]) -> None:
         stored.hset(DEVICE_TOKENS_KEY, _token(n), json.dumps(row))
 
 
+@pytest.mark.parametrize(
+    "identity",
+    [pytest.param("a" * 65, id="over-long"), pytest.param("Sir Alfred", id="bad-pattern")],
+)
+def test_bounds_an_apple_identity(
+    push_client: TestClient, stored: fakeredis.FakeRedis, identity: str
+) -> None:
+    """Voice enrollment's bound: a session from anywhere stores no name of its choosing."""
+    resp = push_client.post(REGISTER, json={**_apple(), "identity": identity})
+    assert resp.status_code == 422
+    assert stored.hlen(DEVICE_TOKENS_KEY) == 0
+
+
 def test_registers_a_web_push_subscription(
     push_client: TestClient, stored: fakeredis.FakeRedis
 ) -> None:
