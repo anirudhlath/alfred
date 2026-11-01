@@ -17,7 +17,7 @@ import type { Sessions } from "./useSystem";
 // The card over its own hook. `ReachSection.test.tsx` hands it a `PushValue`,
 // so it can only prove the row draws what it is given; whether opening the
 // bench syncs is a fact about the observer the card mounts. The real `usePush`
-// runs here, over the browser's push APIs as `usePush.test.tsx` fakes them.
+// runs here, over a mocked `@/lib/push`, as in `usePush.test.tsx`.
 vi.mock("@/lib/push", () => ({
   reachContext: vi.fn(),
   permission: vi.fn(),
