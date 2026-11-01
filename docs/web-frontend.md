@@ -520,7 +520,9 @@ Confirmation is a slide with travel (`CONFIRM_RATIO = 0.85`), never a tap; iOS g
 client no haptics, so the resistance is the confirmation. An approval that lapses leaves
 a struck-through tombstone in the thread. `/actions/:id` renders the same Room with the
 Door open over it — `useActionRoute` reads the action once and tells the Door when the
-deep link finds one already gone.
+deep link finds one already gone. A 401 is no answer: the path stays under the Expired
+gate, and the read is asked again after the sign-in (`authEvents`' `signed-in`, which
+`AuthGate` emits with every sign-in), or by the Room the sign-in gate mounts afresh.
 
 ---
 
@@ -851,7 +853,7 @@ needs only the router, so a tapped notification's path is heard whichever gate i
 
 | Kind | Keys |
 |---|---|
-| TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]`, `["trace", stream, id]` (the Why sheet — `staleTime` of the join window, not the app's 10 s), `["push", "subscription"]` (the Web Push sync, `usePush.ts` — `staleTime: Infinity`, so a launch, a sign-in, a permission given back and Reach's `Try again` are what run it, and react-query's reconnect refetch after a failure; "Web Push"); and the benches' own: `["memory", "episodic", "browse"]`, `["memory", "episodic", "search", query]`, `["memory", "semantic" \| "routines" \| "scratchpad"]`, `["triggers"]`, `["system", "sessions" \| "credentials" \| "integrations" \| "attention"]`, `["system", "integration-status", name]`. Each bench's keys sit under one prefix, which is how `REHYDRATE_KEYS` (`ConnectionProvider.tsx`) reaches all of them with `["memory"]`, `["triggers"]` and `["system"]` |
+| TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]`, `["trace", stream, id]` (the Why sheet — `staleTime` of the join window, not the app's 10 s), `["push", "subscription"]` (the Web Push sync, `usePush.ts` — `staleTime: Infinity`; what runs it is listed in [`web-push.md`](web-push.md#from-the-pwa)); and the benches' own: `["memory", "episodic", "browse"]`, `["memory", "episodic", "search", query]`, `["memory", "semantic" \| "routines" \| "scratchpad"]`, `["triggers"]`, `["system", "sessions" \| "credentials" \| "integrations" \| "attention"]`, `["system", "integration-status", name]`. Each bench's keys sit under one prefix, which is how `REHYDRATE_KEYS` (`ConnectionProvider.tsx`) reaches all of them with `["memory"]`, `["triggers"]` and `["system"]` |
 | `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session`, `alfred.session-at` — every key is `alfred.<noun>`, `alfred.session-at` the one compound noun |
 | `sessionStorage` | `alfred.draft` — the composer's half-typed message, kept for the tab: it survives a reload, the update note's `Reload` included, and is removed when it is sent or emptied. Storage that refuses costs the draft and never the message. A queued message is `alfred.unsent`'s, in `localStorage`, because it must outlive the tab and a draft need not. Like `alfred.unsent` and `alfred.session`, it survives a lapsed session and `Sign out on this device`, by design: the house has one principal, and the draft shows only after a passkey sign-in |
 | Cache Storage | `alfred-shell-<VERSION>`, the service worker's: `/index.html`, the hashed `/assets/*` it names, the `.woff2` fonts its stylesheet names, and `/__shell-manifest`, the worker's record of the precache. Nothing the house said is ever in it ("The service worker") |
@@ -1788,7 +1790,8 @@ Given back, the permission enables the query, which is stale, so it syncs again.
 
 **Sign-out forgets first.** `Sign out on this device` awaits `forgetPush()` before
 `logoutSession()`, because the `DELETE` of the house's row needs the session the logout
-ends (plan ruling R8). `forgetPush()` reads the registration with `getRegistration()`, never
+ends (plan ruling R8). It waits first for a sync under way, by the two rules
+[`web-push.md`](web-push.md#from-the-pwa) states. `forgetPush()` reads the registration with `getRegistration()`, never
 `ready`, which never settles without a worker. It gives the `DELETE` `FORGET_TIMEOUT_MS`
 (5 s), unsubscribes whatever the `DELETE` answered, and never rejects, so the logout always
 follows. A failed `DELETE` alone leaves a row whose endpoint the browser has just dropped:
@@ -1839,19 +1842,24 @@ Each gate's way out, `Not now` or `Not yet`, only closes it.
   primary, `Let me reach you`, is `enable()`, held while `asking`, and the gate closes when
   the asking ends, leaving the row to say what came of it.
 
-**Not in slice 1.** Phase 5's slice 2 brings the Room's home-screen prompt row
-(`Alfred.dc.html:751`), the allowed and declined Act rows (`:752`) and the icon badge
-(`navigator.setAppBadge`, spec §6.3). Reach's `on` line is the handoff's copy verbatim,
-`badge = waiting approvals + unread urgent` included, so until slice 2 lands it names a
-badge the app does not set.
+**Not in slice 1.** Phase 5's slice 2 brings:
+
+- the Room's home-screen prompt row (`Alfred.dc.html:751`);
+- the allowed and declined Act rows (`:752`);
+- the icon badge (`navigator.setAppBadge`, spec §6.3);
+- Reach's `on` line's clause `badge = waiting approvals + unread urgent`, restored with the
+  badge: slice 1 leaves it out, since it sets no badge (deviation D7);
+- a `pushsubscriptionchange` handler in the worker, so a subscription the browser rotates
+  while the app is closed is re-registered without waiting for the next launch.
 
 | File | Covers |
 |---|---|
 | `src/test/sw-push.test.ts` | The worker's two listeners ("How it is tested" above) |
-| `src/lib/push.test.ts` | The context and permission reads, the key read's 404, the sync and its resubscribe after a key change, both deadlines, the prompt asked first, `forgetPush`'s order and its never rejecting, and `onOpenPath`'s filter |
+| `src/lib/push.test.ts` | The context and permission reads, the key read's 404, the sync and its resubscribe after a key change, both deadlines, the prompt asked first, `forgetPush`'s order and its never rejecting, its two rules for a sync under way and the bound on its wait, and `onOpenPath`'s filter |
 | `src/shell/usePush.test.tsx` | Every Reach state, Enable's one registration, the sign-in and re-grant syncs, the revoke during a sync, and `syncOnMount` |
 | `src/shell/PushKeeper.test.tsx` | The launch sync, and `NotificationOpen` routing an `OPEN_PATH` |
 | `src/workshop/ReachSection.test.tsx` | The row in each state, both gates opening and closing, the notes, and `Try again` |
+| `src/workshop/ReachSection.hook.test.tsx` | The card over the real `usePush`: opening on a failed sync without syncing, `Try again` syncing, and Enable registering once |
 | `src/gates/InstallGate.test.tsx`, `src/gates/StandaloneGate.test.tsx`, `src/gates/Gate.test.tsx` | The gates' copy and steps, and the pointer |
 | `src/workshop/useSystem.test.tsx` | Sign-out forgets the subscription before it logs out |
 

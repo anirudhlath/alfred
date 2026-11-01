@@ -46,6 +46,7 @@
 | D4 | Reach, permission granted, sync failed | — | sub `off · allowed in iOS · the house did not take the registration`, action `Try again`, and the error in the note row | Same reason: `on` would lie |
 | D5 | Standalone gate step meta | `alfred.local`, `07:02` | `window.location.hostname` (as `SignInGate` does), and the current session's `created_at` as `hhmm()`, omitted until the sessions read lands | Sample data, not copy |
 | D6 | Install gate bottom | sheet stops 115 px above the bottom | full height (R9) | R9 |
+| D7 | Reach, on | `on · this iPhone · important and urgent only · badge = waiting approvals + unread urgent` | `on · this iPhone · important and urgent only` | slice 1 sets no badge (`setAppBadge` is slice 2); slice 2 restores the handoff line verbatim |
 
 ## Global Constraints
 

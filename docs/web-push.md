@@ -174,7 +174,10 @@ reconnect refetch, which re-runs a sync that failed (a failure leaves the query 
 success never does). `Try again` runs it on demand. It never runs on focus: the row does
 not lapse. Nor does opening the Reach card run it: the card watches the sync's answer
 (`usePush({ syncOnMount: false })`), so opening it shows a failed sync as `failed`, with
-`Try again`, and leaves it there.
+`Try again`, and leaves it there. A query never fetched is the one exception: it still
+loads on Reach's mount (react-query's `shouldLoadOnMount`), as
+[`web-frontend.md`](web-frontend.md#web-push) says, and `PushKeeper` normally gets there
+first.
 
 Every wait on the house and on the worker has a deadline, so a house that accepts a socket
 and never answers still leaves Reach with something to offer:
@@ -183,12 +186,30 @@ and never answers still leaves Reach with something to offer:
 |---|---|---|
 | A ready service worker | 10 s | `READY_TIMEOUT_MS` |
 | The key read, and the registration, each | 10 s | `REQUEST_TIMEOUT_MS` |
+| Sign-out's wait for a sync under way | 10 s | `REQUEST_TIMEOUT_MS` |
 | Sign-out's `DELETE`, best effort | 5 s | `FORGET_TIMEOUT_MS` |
 
 The first two reject with a `TimeoutError`, which the query's retry policy never repeats:
-the next try is the owner's, from Reach. A 503 `Device store busy` is retried once. The
-browser's own calls — `Notification.requestPermission()`, `pushManager.getSubscription()`
-and `pushManager.subscribe()` — have no deadline of ours.
+the next try is `Try again`, or the next sign-in, re-grant or reconnect (the paragraph
+above). A 503 `Device store busy` is retried once. The browser's own calls — the
+permission prompt, `getRegistration()`, and the push manager's and subscription's own
+methods — have no deadline of ours.
+
+Signing out (`forgetPush()`, which `Sign out on this device` awaits before it ends the
+session) keeps two rules, so a sync under way cannot register what sign-out forgets:
+
+1. **A sync that has not yet sent its register `POST` never sends it once `forgetPush()`
+   starts.** It resolves without registering. So does a sync that starts while
+   `forgetPush()` runs, even if it reaches its `POST` after sign-out has ended.
+2. **`forgetPush()` waits for a register `POST` already in flight to settle before it sends
+   its `DELETE`**, so the `DELETE` always follows the `POST`'s response.
+
+`forgetPush()` waits for the syncs under way for at most `REQUEST_TIMEOUT_MS`, the longest
+a `POST` already sent can take, then forgets whatever subscription the browser holds: it
+reads it, `DELETE`s its row and unsubscribes it. So sign-out takes at most
+`REQUEST_TIMEOUT_MS` + `FORGET_TIMEOUT_MS`, beside the browser's own calls, and never
+rejects. A sync that starts after `forgetPush()` has finished, the next sign-in's,
+registers as usual. Both rules are `web/src/lib/push.ts`'s own.
 
 ### The row
 

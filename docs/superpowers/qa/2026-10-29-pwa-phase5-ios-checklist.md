@@ -48,10 +48,16 @@ the first 12 characters of its field, and never the endpoint. How the pieces fit
       (`core/triggers/models.py`; `create_trigger`'s `urgency`, `core/triggers/feature.py`),
       so one reminder makes the IMPORTANT notification below and another the informational
       one
+- [ ] Reflex running, not off: its log shows `Reflex Runner started`, not `Reflex is off`.
+      Reflex sends a fired trigger's notification, and with no `REFLEX_MODEL` it stays off
+      and reads no stream (`stay_off()`, `core/reflex/__main__.py:122-132`), so no trigger
+      notifies
 - [ ] Optional, for the Reflex ask line: all of these at once. Reflex in `ask` mode, with an
       `ask_tools` pattern that matches the tool (the default `[]` holds every proposal as
       `tool_off`); a tool whose declared risk is benign or elevated; outside Reflex's quiet
-      hours (23:00 to 07:00 unless changed); Do Not Disturb off; and the model proposing
+      hours (23:00 to 07:00 unless changed); Do Not Disturb off; no ask already open; not the
+      same ask within `repeat_hours` (2 h); fewer than the day's cap of 6 asks
+      (`daily_ask_cap`; the three are `core/reflex/asks.py:111-118`); and the model proposing
       something (`docs/reflex-anticipation.md`, "Settings" and "Asks"). Switching the live
       house's mode is the owner's call, and in `shadow` mode no ask is ever sent, so the
       line is normally skipped
@@ -93,11 +99,10 @@ the first 12 characters of its field, and never the endpoint. How the pieces fit
 - [ ] `Enable` again, then `Let me reach you`: the iOS dialog asking whether Alfred may send
       notifications
 - [ ] Allow. `Let me reach you` holds while the phone subscribes and registers, the gate
-      closes, and Reach reads
-      `on · this iPhone · important and urgent only · badge = waiting approvals + unread urgent`
-      with `on` in green. `checking · allowed in iOS · registering with the house` shows
-      under the gate on this path, so record whether you saw it at all; the row ending on
-      `on` is the assertion
+      closes, and Reach reads `on · this iPhone · important and urgent only` with `on` in
+      green. `checking · allowed in iOS · registering with the house` shows under the gate
+      on this path, so record whether you saw it at all; the row ending on `on` is the
+      assertion
 - [ ] **This step measures whether iOS lets `subscribe()` run outside the tap.** Enable asks
       the permission inside the tap, then fetches the house's key and subscribes after it.
       If iOS refused that, the gate closes on `checking` while the sync tries again, and
