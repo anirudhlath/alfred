@@ -116,7 +116,8 @@ every other credential ([`secrets.md`](secrets.md)).
 
 `subscription` is the browser's `PushSubscription.toJSON()` as it stands; `expirationTime`
 is ignored. The APNs body keeps its shape, `{"device_token", "platform": "ios" | "ipados" |
-"macos", "identity"}`. Any other `platform` is a 422.
+"macos", "identity"}`. Any other `platform` is a 422, and so is an `identity` that is not 1–64
+characters of `[a-z0-9_-]`.
 
 `DELETE` takes `{"endpoint": "…"}` for a Web Push subscription or `{"device_token": "…"}`
 for APNs. The endpoint there is not checked against the allowlist: it only names the field

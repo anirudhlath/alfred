@@ -111,7 +111,7 @@ discriminated on `platform`:
 
 | `platform` | Body | Field in the hash |
 |------------|------|-------------------|
-| `ios`, `ipados`, `macos` | `{"device_token", "platform", "identity"}` | the APNs token |
+| `ios`, `ipados`, `macos` | `{"device_token", "platform", "identity"}`: `identity` is 1–64 characters of `[a-z0-9_-]`, and any other is a 422 | the APNs token |
 | `web_push` | `{"platform": "web_push", "subscription": <PushSubscription.toJSON()>}` | the SHA-256 hex of the endpoint |
 
 Any other `platform` is a 422. `DELETE` takes exactly one of `{"device_token"}` and

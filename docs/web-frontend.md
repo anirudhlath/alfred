@@ -77,7 +77,9 @@ web/
                          # 401→expired, 403→denied (not for the status read, whose
                          # route sends neither); timedOut() — whether a request
                          # failed on its deadline
-      auth-events.ts     # authEvents.on/emit — the emitter api() announces gates on
+      auth-events.ts     # authEvents.on/emit — the emitter api() announces gates on;
+                         # AuthGate emits `signed-in` on it with every sign-in, and
+                         # useActionRoute reads again on it ("The Door")
       auth.ts            # fetchAuthStatus (STATUS_DEADLINE_MS, the payload check),
                          # DEVICE_KEY, rememberDevice, deviceFootLine
       sw.ts              # installServiceWorker, onUpdateReady, applyUpdate, unregisterAll —
@@ -1782,10 +1784,11 @@ invalidates the query, so the sync gets one try of its own once the tap is done.
 
 **A permission taken away.** `usePush` re-reads the permission on every render and on each
 return to the foreground (`onVisible`), which is how a change made in Settings arrives.
-Whenever it is not `granted`, `usePush` cancels any sync in flight and then invalidates the
-query without fetching, the two calls in that order and in one go. The browser deactivates
-the subscription with the permission, and without the cancel a sync still in flight could
-land after the mark, clear it, and leave `on` standing for a subscription that is gone.
+Whenever it is not `granted`, `usePush` discards the answer of any sync in flight and then
+invalidates the query without fetching, the two calls in that order and in one go. The sync
+itself ignores the cancel, so its `POST` may still land; only its answer is dropped. The
+browser deactivates the subscription with the permission, and without the cancel that answer
+could land after the mark, clear it, and leave `on` standing for a subscription that is gone.
 Given back, the permission enables the query, which is stale, so it syncs again.
 
 **Sign-out forgets first.** `Sign out on this device` awaits `forgetPush()` before

@@ -57,7 +57,7 @@ the first 12 characters of its field, and never the endpoint. How the pieces fit
       `tool_off`); a tool whose declared risk is benign or elevated; outside Reflex's quiet
       hours (23:00 to 07:00 unless changed); Do Not Disturb off; no ask already open; not the
       same ask within `repeat_hours` (2 h); fewer than the day's cap of 6 asks
-      (`daily_ask_cap`; the three are `core/reflex/asks.py:111-118`); and the model proposing
+      (`daily_ask_cap`; the three are `core/reflex/asks.py:114-120`); and the model proposing
       something (`docs/reflex-anticipation.md`, "Settings" and "Asks"). Switching the live
       house's mode is the owner's call, and in `shadow` mode no ask is ever sent, so the
       line is normally skipped
