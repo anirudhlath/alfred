@@ -6,6 +6,7 @@ import os
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 import fakeredis
 import http_ece
@@ -16,7 +17,11 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from loguru import logger
 
-from core.notifications.adapters.webpush import MAX_PAYLOAD_BYTES, WebPushChannelAdapter
+from core.notifications.adapters.webpush import (
+    MAX_LOGGED_HOST,
+    MAX_PAYLOAD_BYTES,
+    WebPushChannelAdapter,
+)
 from core.notifications.devices import WEB_PUSH_PLATFORM, endpoint_field
 from core.notifications.schema import Notification, Urgency
 from core.notifications.vapid import VapidKeys, generate_private_pem, load_keys
@@ -333,6 +338,7 @@ async def test_a_row_whose_platform_is_not_a_string_stops_nothing(
         pytest.param("https://alfred.example.com/push/QGuQyavXutnMH8", id="off-allowlist"),
         pytest.param("http://web.push.apple.com/QGuQyavXutnMH8", id="plain-http"),
         pytest.param("https://web.push.apple.com:8443/QGuQyavXutnMH8", id="port"),
+        pytest.param(f"https://{'a' * 80}.example.com/push/QGuQyavXutnMH8", id="long-host"),
     ],
 )
 async def test_skips_a_stored_row_the_allowlist_refuses(
@@ -341,7 +347,8 @@ async def test_skips_a_stored_row_the_allowlist_refuses(
     """A row registration would have refused, written by anything else, gets no POST.
 
     It is kept (nothing proves the push service dropped it) and named only by its field's
-    prefix and its host; the good row beside it still gets its push.
+    prefix and its host, quoted and cut to ``MAX_LOGGED_HOST``; the good row beside it still
+    gets its push.
     """
     planted, good = Browser(endpoint), Browser(FCM)
     await _store(redis, planted, good)
@@ -353,7 +360,9 @@ async def test_skips_a_stored_row_the_allowlist_refuses(
     assert await redis.hexists(DEVICE_TOKENS_KEY, planted.device_field)
     [warning] = [line for line in logs if line.startswith("WARNING")]
     assert planted.device_field[:12] in warning
-    assert endpoint.split("/")[2].split(":")[0] in warning
+    host = urlsplit(endpoint).hostname or ""
+    assert repr(host[:MAX_LOGGED_HOST]) in warning
+    assert len(host) <= MAX_LOGGED_HOST or host not in warning
     for line in logs:
         for secret in (endpoint, endpoint.split("/", 3)[3], planted.p256dh, _b64url(planted.auth)):
             assert secret not in line

@@ -52,6 +52,9 @@ MAX_PAYLOAD_BYTES: Final = 3072
 _ELLIPSIS: Final = "…"
 _SALT_LEN: Final = 16
 _FIELD_PREFIX: Final = 12  # how much of a device field a log line may show
+# How much of a stored row's host a log line may show: any writer can store a row, and a
+# host is as long as it likes.
+MAX_LOGGED_HOST: Final = 64
 _MAX_RESPONSE_TEXT: Final = 200
 
 
@@ -107,12 +110,14 @@ def build_payload(notification: Notification) -> bytes:
 
 
 def _stored_host(row: dict[str, Any]) -> str:
-    """A stored row's push host, safe to log; empty for an endpoint that is not a URL."""
+    """A stored row's push host, safe to log: its first ``MAX_LOGGED_HOST`` characters, empty
+    for an endpoint that is not a URL. Log it with ``{!r}``, which escapes what it cannot show.
+    """
     endpoint = row.get("endpoint")
     if not isinstance(endpoint, str):
         return ""
     try:
-        return push_host(endpoint)
+        return push_host(endpoint)[:MAX_LOGGED_HOST]
     except ValueError:  # urlsplit refuses a malformed IPv6 host
         return ""
 
@@ -187,7 +192,7 @@ class WebPushChannelAdapter(ChannelAdapter):
                 # Kept: only a push service's 404 or 410 says a subscription is gone. Named
                 # by its prefix and host alone, the credential rule's two safe facts.
                 logger.warning(
-                    "Skipped a stored web push subscription that fails validation ({}…, {})",
+                    "Skipped a stored web push subscription that fails validation ({}…, {!r})",
                     field[:_FIELD_PREFIX],
                     _stored_host(row),
                 )
