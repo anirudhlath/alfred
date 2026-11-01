@@ -13,17 +13,22 @@ answered yet — and, under the Room, the **Workshop**, where the house's eight 
 streams are read as they happen. There is no navigation: a notification tap deep-links
 to the approval it names, the Workshop is a layer rather than a route, and everything
 else is one merged timeline. A hand-written service worker keeps the app shell on the
-phone, so the app opens with no network at all, and never keeps anything the house said.
+phone, so the app opens with no network at all, and never keeps anything the house said;
+it also shows the house's pushes when the app is closed, and a tap on one opens the
+approval it names ("Web Push").
 
 Design source: `docs/design/2026-09-04-pwa-client-handoff/` (tokens, copy, and the
 `Alfred.dc.html` prototype the presence field and the slide maths were ported from).
 Spec: `docs/superpowers/specs/2026-09-04-mobile-first-pwa-client-design.md`.
 Client-side working notes: `web/README.md`.
 
-Phases 1 to 4 of six: phase 4 is the icon set, the manifest pair, the service worker and
-its kill switch, and the gates for a launch that has read nothing. Web Push, the install
-rail that leads to it, and the desktop composition are later phases — see "What phases 1
-to 4 do not cover" at the end.
+Phases 1 to 4 of six, and the first of phase 5's two slices. Phase 4 is the icon set, the
+manifest pair, the service worker and its kill switch, and the gates for a launch that has
+read nothing. Phase 5's slice 1 is Web Push: the worker's `push` and `notificationclick`
+listeners, the subscription the app keeps registered, System › Reach, and the `install` and
+`standalone` gates it opens ("Web Push"). Phase 5's slice 2 (the Room's home-screen prompt
+row, the allowed and declined Act rows, the icon badge) and the desktop composition are
+later — see "What phases 1 to 5 do not cover" at the end.
 
 ---
 
@@ -57,7 +62,8 @@ web/
                    # one theme-color meta and one manifest link (applyTheme rewrites
                    # both), the apple-touch-icon link, Apple standalone metas
   public/          # Unhashed; copied into dist/ byte for byte ("The service worker")
-    sw.js                # The service worker: precache, purge, route, SKIP_WAITING
+    sw.js                # The service worker: precache, purge, route, SKIP_WAITING,
+                         # and the push and notificationclick listeners ("Web Push")
     sw.kill.js           # The kill switch — nothing registers it until it is copied over sw.js
     manifest.json        # The manifest in the dark theme's colours
     manifest-light.json  # The same in the light theme's; applyTheme swaps the link
@@ -77,6 +83,9 @@ web/
       sw.ts              # installServiceWorker, onUpdateReady, applyUpdate, unregisterAll —
                          # the page's half of the service worker; unregisterAll takes a
                          # `stopped` check, so a later install stops a dev clean-up
+      push.ts            # reachContext, permission, fetchPublicKey, syncSubscription,
+                         # requestAndSubscribe, forgetPush, onOpenPath, and the three
+                         # deadlines — every browser push API the app touches ("Web Push")
       webauthn.ts        # registerPasskey(), loginPasskey(), sessionChannel()
       ws.ts              # ReconnectingSocket — backoff, code-4001 gate, ping keepalive
       chat-socket.ts     # ChatSocket over /ws (channel "web_pwa", timezone, session_id)
@@ -121,9 +130,13 @@ web/
       UpdateNote.tsx         # "A newer Alfred is waiting." + Reload, in the Room's header
       useUpdateReady.ts      # Whether a changed sw.js is waiting (onUpdateReady)
       useOnline.ts           # navigator.onLine and its two events — explains, never gates
-    gates/         # Identity, over whatever is on screen
+      usePush.ts             # usePush({ syncOnMount }) → { reach, asking, enable, retry };
+                             # the one push query, ["push", "subscription"]
+      PushKeeper.tsx         # PushKeeper (the launch and sign-in sync, inside AuthGate) and
+                             # NotificationOpen (routes the worker's OPEN_PATH, outside it)
+    gates/         # Identity, over whatever is on screen; and Reach's two
       AuthGate.tsx       # Which gate, over what
-      Gate.tsx           # kicker / title / body / children / footer
+      Gate.tsx           # kicker / title / body / children / footer, and the pointer
       GateField.tsx      # 220px dot field, drifting slowly
       StepList.tsx       # 48px rows, 22px ring; progress and toggle variants
       SetupGate.tsx      # First run: passkey → home-service credentials → attention set
@@ -132,6 +145,8 @@ web/
       DeniedGate.tsx     # 403
       OfflineGate.tsx    # Nothing read, and the phone says it is offline
       UnansweredGate.tsx # Nothing read, the phone online, and the house did not answer
+      InstallGate.tsx    # Reach, in a browser tab: add to the home screen, and the Share pointer
+      StandaloneGate.tsx # Reach, in the installed app: Let me reach you
     room/          # The one screen
       Room.tsx           # Composes all of it
       PresenceField.tsx  # 393x190 canvas; the ported presence()
@@ -632,6 +647,10 @@ and the pure formatters that turn what the server sent into what a row can say �
 one hook over each. That is what makes a bench testable by handing it an object: a bench
 test builds no `QueryClient` and no providers at all, and the hook's exported state
 interface (`Memory`, `Triggers`, `System`) is the whole contract between the two halves.
+One section breaks the rule, on purpose: System's Reach (`ReachSection.tsx`) reads
+`usePush()` for itself, because its state is the push sync's, which `PushKeeper` keeps
+whether or not the bench is showing, and threading it through `useSystem` would only hand
+it back. `SystemBench.test.tsx` mocks that one hook ("Web Push").
 
 **The hooks are called in `WorkshopPanel`, above the bench that gets swapped out.** All
 four, side by side, each gated on whether its own bench is showing. Only one bench is
@@ -821,15 +840,18 @@ answer, so it is a line on the device checklist.
 | `*` | `<Navigate to="/" replace>` | There is nowhere else |
 
 Provider order in `App.tsx` is load-bearing:
-`QueryProvider → ThemeProvider → ConnectionProvider → BrowserRouter → AuthGate →
-DoorProvider → Routes`. `DoorProvider` sits inside `AuthGate` so nothing reads
-`/api/actions/pending` before there is a session to read it with.
+`QueryProvider → ThemeProvider → ConnectionProvider → BrowserRouter → (NotificationOpen,
+AuthGate → DoorProvider → (PushKeeper, Routes))`. `DoorProvider` sits inside `AuthGate` so
+nothing reads `/api/actions/pending` before there is a session to read it with, and
+`PushKeeper` for the same reason: its registration needs a session. `NotificationOpen`
+needs only the router, so a tapped notification's path is heard whichever gate is up
+("Web Push").
 
 ### Client state keys
 
 | Kind | Keys |
 |---|---|
-| TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]`, `["trace", stream, id]` (the Why sheet — `staleTime` of the join window, not the app's 10 s), `["push", "subscription"]` (the Web Push sync, `usePush.ts` — `staleTime: Infinity`, so a launch, a sign-in and a permission given back are what run it); and the benches' own: `["memory", "episodic", "browse"]`, `["memory", "episodic", "search", query]`, `["memory", "semantic" \| "routines" \| "scratchpad"]`, `["triggers"]`, `["system", "sessions" \| "credentials" \| "integrations" \| "attention"]`, `["system", "integration-status", name]`. Each bench's keys sit under one prefix, which is how `REHYDRATE_KEYS` (`ConnectionProvider.tsx`) reaches all of them with `["memory"]`, `["triggers"]` and `["system"]` |
+| TanStack Query | `["auth-status"]`, `["overview"]`, `["integrations"]`, `["attention"]`, `["room-history"]`, `["deferred"]`, `["pending-actions"]`, `["trace", stream, id]` (the Why sheet — `staleTime` of the join window, not the app's 10 s), `["push", "subscription"]` (the Web Push sync, `usePush.ts` — `staleTime: Infinity`, so a launch, a sign-in, a permission given back and Reach's `Try again` are what run it, and react-query's reconnect refetch after a failure; "Web Push"); and the benches' own: `["memory", "episodic", "browse"]`, `["memory", "episodic", "search", query]`, `["memory", "semantic" \| "routines" \| "scratchpad"]`, `["triggers"]`, `["system", "sessions" \| "credentials" \| "integrations" \| "attention"]`, `["system", "integration-status", name]`. Each bench's keys sit under one prefix, which is how `REHYDRATE_KEYS` (`ConnectionProvider.tsx`) reaches all of them with `["memory"]`, `["triggers"]` and `["system"]` |
 | `localStorage` | `alfred.theme`, `alfred.device`, `alfred.unsent`, `alfred.session`, `alfred.session-at` — every key is `alfred.<noun>`, `alfred.session-at` the one compound noun |
 | `sessionStorage` | `alfred.draft` — the composer's half-typed message, kept for the tab: it survives a reload, the update note's `Reload` included, and is removed when it is sent or emptied. Storage that refuses costs the draft and never the message. A queued message is `alfred.unsent`'s, in `localStorage`, because it must outlive the tab and a draft need not. Like `alfred.unsent` and `alfred.session`, it survives a lapsed session and `Sign out on this device`, by design: the house has one principal, and the draft shows only after a passkey sign-in |
 | Cache Storage | `alfred-shell-<VERSION>`, the service worker's: `/index.html`, the hashed `/assets/*` it names, the `.woff2` fonts its stylesheet names, and `/__shell-manifest`, the worker's record of the precache. Nothing the house said is ever in it ("The service worker") |
@@ -1136,7 +1158,12 @@ bench, `2026-09-16-pwa-phase3-ios-checklist.md` for the other three — which ca
 questions jsdom cannot answer at all, such as whether VoiceOver re-announces an
 `aria-atomic` region whose sibling text changed — and
 `2026-09-16-pwa-phase4-ios-checklist.md` for the install, the offline launch, the update
-and the kill switch, none of which jsdom can run at all.
+and the kill switch, none of which jsdom can run at all. Phase 5's slice 1 added
+`sw-push.test.ts` for the worker's two push listeners, `lib/push.test.ts`,
+`usePush.test.tsx`, `PushKeeper.test.tsx` and `ReachSection.test.tsx` for the
+subscription and Reach, and `InstallGate.test.tsx` and `StandaloneGate.test.tsx` for the
+two gates; whether iOS takes the subscription and shows the pushes is
+`2026-10-29-pwa-phase5-ios-checklist.md`'s.
 
 Three of them bite hardest:
 
@@ -1335,7 +1362,7 @@ answers with the app itself — `/`, `/workshop` and four near-misses of the ref
 (`/apifoo`, `/healthz`, `/docsx`, `/docs/foo`) — and fails if any is refused. Moving a
 docs route, or changing either of `mount_spa`'s lists, fails it.
 
-### The four events
+### The six events
 
 | Event | What it does |
 |---|---|
@@ -1343,6 +1370,8 @@ docs route, or changing either of `mount_spa`'s lists, fails it.
 | `activate` | Deletes every other cache on the origin. Then collects its own: deletes every entry that none of the record, the shell now in the cache and the shell this worker last served from it names, itself or through its stylesheet, and then calls `clients.claim()`. A navigation's refresh runs the same collection once it has published a shell. |
 | `fetch` | `isRefused` first. A navigation is network-first, and an `/assets/` URL is cache-first. Everything else (the manifests, the icons) is left to the network untouched. |
 | `message` | `{ type: "SKIP_WAITING" }` calls `skipWaiting()`. Nothing else is acted on. |
+| `push` | Shows a notification from the payload, inside `waitUntil`, whatever the payload holds: one it cannot read is shown as `Alfred`, because iOS revokes a subscription whose pushes are not shown. Its `data.path` is built here from the payload's `action_id`. Reads no cache and fetches nothing ("Web Push"). |
+| `notificationclick` | Closes the notification, builds its path again, and either focuses the first window on the origin and posts it `{ type: "OPEN_PATH", path }`, or, with none open, opens a window at the path. Reads no cache and fetches nothing. |
 
 Three things about `activate` and its collection are not obvious from the code:
 
@@ -1351,8 +1380,10 @@ Three things about `activate` and its collection are not obvious from the code:
   alone, since a second app or worker scope behind the same hostname would lose its caches
   on every activate. Nor is a cache safe inside `alfred-shell-<VERSION>`: a collection
   keeps only what the record or a shell it keeps names, that shell's stylesheet's fonts
-  included (next), and one runs after most online navigations. What that asks of phase 5
-  is [#406](https://github.com/anirudhlath/alfred/issues/406) §1.
+  included (next), and one runs after most online navigations. What that asked of phase 5
+  is [#406](https://github.com/anirudhlath/alfred/issues/406) §1, and slice 1 meets it by
+  storing nothing: the `push` and `notificationclick` listeners read and write no cache
+  (plan decision 4), so neither a purge nor a collection has anything of theirs to take.
 - **A record it cannot trust means keep everything.** A record that is absent, is not a
   list, or will not read is treated the same way, because deleting on a record you cannot
   read is guessing, and what it guesses with is the only offline copy of the app. The
@@ -1628,6 +1659,7 @@ entry can be held or failed while another reader of the same key goes on.
 | File | Covers |
 |---|---|
 | `src/test/sw.test.ts` | The worker, event by event |
+| `src/test/sw-push.test.ts` | The `push` and `notificationclick` listeners: what is shown for every payload shape, the deep link, focus before post, an uncontrolled window, a new window when none is open, and rule 1 unchanged |
 | `src/test/sw-kill.test.ts` | The kill switch, in the same fake scope |
 | `src/test/sw-harness.test.ts` | The fake scope itself: `ExtendableEvent`, `Cache.put`, `Clients.matchAll`, which worker controls each open page, the clock, and the late answers, held puts and held or failed reads (`late`, `holdPut`, `holdRead`, `refuseRead`) |
 | `src/test/sw-server-routes.test.ts` | `NEVER` and `NEVER_UNDER` against the routes `create_app` and `mount_spa` declare |
@@ -1637,7 +1669,8 @@ entry can be held or failed while another reader of the same key goes on.
 Two things are not tested here. Nothing checks that the built `dist/sw.js` exists and is
 served as JavaScript ([#406](https://github.com/anirudhlath/alfred/issues/406) §10). And none of it is
 WebKit: what Safari does with any of it is the phase-4 device checklist's
-(`docs/superpowers/qa/2026-09-16-pwa-phase4-ios-checklist.md`).
+(`docs/superpowers/qa/2026-09-16-pwa-phase4-ios-checklist.md`), and for pushes the
+phase-5 one's (`docs/superpowers/qa/2026-10-29-pwa-phase5-ios-checklist.md`).
 
 ### The manifest pair
 
@@ -1694,22 +1727,147 @@ regenerated from a different drawing fails rather than ships.
 
 ---
 
-## What phases 1 to 4 do not cover
+## Web Push
 
-- **Web Push, and the six-step install rail that leads to it** — phase 5. Phase 4 landed
-  the icons, the manifest pair, the service worker and its kill switch ("The service
-  worker" above). The rail did not land, and it is not missing by accident: spec §8 puts
-  the "install-and-enable sequence" in phase 5 with Web Push, and every step of it exists
-  to reach the last one, allowing notifications on iOS. Shipping the first four steps with
-  nothing behind them would be a control that pretends, the defect the phase-2 placeholder
-  tabs were (plan decision 6). So there is **no `install` gate, no `standalone` gate, no
-  home-screen prompt row and no System › Reach card**. The handoff's copy is final for all
-  four (`Alfred.dc.html:669`, `:670`, `:751` and `:385-397`). What phase 4 hands phase 5
-  is an app the rail's gesture installs correctly, and a worker to add `push` and
-  `notificationclick` handlers to, with a condition on any cache of phase 5's own
-  ([#406](https://github.com/anirudhlath/alfred/issues/406) §1).
+Phase 5's slice 1: the house pushes every important and urgent notification to each
+installed copy of the app, and a tap on one opens the approval it names. The house's half
+(VAPID, the adapter, the registration routes, the payload contract with `sw.js`) is
+[`web-push.md`](web-push.md). So is the client's flow as the owner meets it: what System ›
+Reach says in each state and what it offers, Enable and the gates it opens, when the sync
+runs, and the deadline on every wait, all in ["From the PWA"](web-push.md#from-the-pwa)
+there. This section does not restate any of that. It is the client's architecture around
+it.
+
+| Piece | File | What it owns |
+|---|---|---|
+| The browser's push APIs | `src/lib/push.ts` | Every call to `PushManager` and `Notification`, and the worker's messages: `reachContext()`, `permission()`, `fetchPublicKey()`, `syncSubscription()`, `requestAndSubscribe()`, `forgetPush()`, `onOpenPath()`, and the deadlines `READY_TIMEOUT_MS`, `REQUEST_TIMEOUT_MS` and `FORGET_TIMEOUT_MS` |
+| The sync and the Reach state | `src/shell/usePush.ts` | `usePush(options?)`, which returns `{ reach, asking, enable, retry }` over one query, `["push", "subscription"]` (`PUSH_QUERY_KEY`) |
+| Keeping it registered, and a tap | `src/shell/PushKeeper.tsx` | `PushKeeper`, inside `AuthGate`, and `NotificationOpen`, outside it (`App.tsx`) |
+| Reach | `src/workshop/ReachSection.tsx` | The System bench's `Push notifications` row, and the two gates it opens |
+| The gates | `src/gates/InstallGate.tsx`, `src/gates/StandaloneGate.tsx` | Both drawn on `Gate`. The install gate's `Share` pointer is `Gate`'s `pointer` prop |
+| Sign-out | `src/workshop/useSystem.ts` | `Sign out on this device` forgets the subscription first |
+| The worker | `public/sw.js` | `push` and `notificationclick` ("The six events" above) |
+
+**One query, one owner.** The sync is a react-query query rather than an effect so that a
+sign-in through the Expired gate, which leaves the Room mounted and calls
+`invalidateQueries()`, reaches it like every other key (plan ruling R7). It is enabled only
+in a production build of the installed app, with the push APIs present and the permission
+granted, and `staleTime: Infinity` with `refetchOnWindowFocus: false` keeps it to once a
+launch: the house's row does not lapse, and a register on every app switch would only
+rewrite it. `PushKeeper` owns it. Mounted inside `AuthGate`, it syncs when it mounts at
+launch, and each sign-in's `invalidateQueries()` runs the sync again, whether the sign-in
+gate's sign-in mounted it or the Expired gate's left it mounted. `ReachSection` watches the
+same query through `usePush({ syncOnMount: false })`, and it is the only caller that passes
+the option. The System bench remounts on every visit and react-query marks a failed query
+invalidated, so with the defaults every opening of System would quietly subscribe and
+register again. With the option, opening System never re-runs a failed sync: Reach shows
+`failed` and `Try again`. The sync runs again on `Try again`, a relaunch, a sign-in, a
+permission given back, or react-query's reconnect refetch, which this query leaves at its
+default. A query nothing has fetched yet still loads on Reach's mount, as react-query
+always loads one; `PushKeeper`, mounted beside it, has normally done that already.
+
+**Enable asks first.** `enable()` calls `requestAndSubscribe()` before any await, state or
+effect, because iOS shows the permission prompt only from inside the tap. The key read and
+`pushManager.subscribe()` follow the answer, and so run outside the tap: whether iOS
+accepts a `subscribe()` that late is unmeasured, and the phase-5 checklist records it.
+While `asking`, the hook that asked keeps the query disabled, so a render that reads the new
+permission mid-tap starts no second registration: the tap registers for itself. Its success
+is written into the query as `on` and a 404 key read as `unconfigured`; any other failure
+invalidates the query, so the sync gets one try of its own once the tap is done.
+
+**A permission taken away.** `usePush` re-reads the permission on every render and on each
+return to the foreground (`onVisible`), which is how a change made in Settings arrives.
+Whenever it is not `granted`, `usePush` cancels any sync in flight and then invalidates the
+query without fetching, the two calls in that order and in one go. The browser deactivates
+the subscription with the permission, and without the cancel a sync still in flight could
+land after the mark, clear it, and leave `on` standing for a subscription that is gone.
+Given back, the permission enables the query, which is stale, so it syncs again.
+
+**Sign-out forgets first.** `Sign out on this device` awaits `forgetPush()` before
+`logoutSession()`, because the `DELETE` of the house's row needs the session the logout
+ends (plan ruling R8). `forgetPush()` reads the registration with `getRegistration()`, never
+`ready`, which never settles without a worker. It gives the `DELETE` `FORGET_TIMEOUT_MS`
+(5 s), unsubscribes whatever the `DELETE` answered, and never rejects, so the logout always
+follows. A failed `DELETE` alone leaves a row whose endpoint the browser has just dropped:
+it stays until the push service refuses a push to it with 404 or 410, which prunes it, or
+until the cap evicts it. A failed unsubscribe alone, after the `DELETE` landed, leaves a
+subscription the house no longer pushes to.
+
+**The gap: both fail.** When the `DELETE` and the `unsubscribe()` both fail, the browser
+keeps its subscription and the house keeps its row. So does a failure to read the
+registration or the subscription, which skips both. Pushes then keep arriving on this
+device, text and all, while it is signed out. That lasts until the next sign-in's sync
+registers the same subscription again, by which time the device is the owner's once more,
+or until the push service drops the subscription, or the cap evicts the row. `forgetPush`
+accepts the gap rather than hold sign-out on a retry, and its comment says so. Nothing on
+the phone shows it. `GET /api/admin/devices` still lists the row, and
+[`web-push.md`](web-push.md), "Operations", says how to remove one by hand.
+
+**A tap.** The worker builds every path it opens from the payload's `action_id`, and builds
+a tapped notification's path again, so a tap opens `/` or `/actions/<id>` and nothing else.
+With a window open, it focuses the window and posts it `{ type: "OPEN_PATH", path }`.
+`onOpenPath()` passes on only `/` and a path the router's own `ACTION_PATH` matches, and
+`NotificationOpen` navigates there. It is mounted in `App.tsx` inside the router and outside
+`AuthGate`, so the path is heard whichever gate is up, and `useActionRoute` opens the Door
+once there is a session. With no window open, the worker opens one at the path, so a cold
+launch lands on the approval's route. Neither case has been seen on an iPhone yet: the
+phase-5 checklist taps one of each.
+
+**What the worker keeps.** Nothing new. Neither listener reads or writes a cache, which
+meets the condition [#406](https://github.com/anirudhlath/alfred/issues/406) §1 set on
+phase 5 ("The six events" above).
+
+**The two gates.** Both take only props, both are drawn on `Gate`, and `ReachSection` mounts
+them at `level="gate"`, so they rise over the Workshop as `AuthGate`'s rise over the Room.
+Each gate's way out, `Not now` or `Not yet`, only closes it.
+
+- **`InstallGate`** (`reaching you · 3 of 6 · in Safari`) has no primary, because Safari
+  keeps the gesture to itself. It has the three steps, `Not now`, and `Gate`'s `pointer`:
+  a `Share` label over a chevron, pinned at `calc(4px + env(safe-area-inset-bottom, 0px))`
+  from the bottom edge and nudging down towards Safari's toolbar. The pointer is hidden from
+  assistive tech, since the steps say the same in words, and it holds still under reduced
+  motion. The handoff stops the gate 115 px above the bottom for its mock Safari toolbar. A
+  real page's viewport already ends at Safari's chrome, so the gate runs full height (plan
+  ruling R9, deviation D6). Where the pointer lands on a real phone is for the phase-5
+  checklist to record.
+- **`StandaloneGate`** (`reaching you · 5 of 6 · opened from the home screen`) has all six
+  steps, the first four done. The first carries this host, the second the time the current
+  session began (once the sessions read lands), and the fourth `now` (deviation D5). Its
+  primary, `Let me reach you`, is `enable()`, held while `asking`, and the gate closes when
+  the asking ends, leaving the row to say what came of it.
+
+**Not in slice 1.** Phase 5's slice 2 brings the Room's home-screen prompt row
+(`Alfred.dc.html:751`), the allowed and declined Act rows (`:752`) and the icon badge
+(`navigator.setAppBadge`, spec §6.3). Reach's `on` line is the handoff's copy verbatim,
+`badge = waiting approvals + unread urgent` included, so until slice 2 lands it names a
+badge the app does not set.
+
+| File | Covers |
+|---|---|
+| `src/test/sw-push.test.ts` | The worker's two listeners ("How it is tested" above) |
+| `src/lib/push.test.ts` | The context and permission reads, the key read's 404, the sync and its resubscribe after a key change, both deadlines, the prompt asked first, `forgetPush`'s order and its never rejecting, and `onOpenPath`'s filter |
+| `src/shell/usePush.test.tsx` | Every Reach state, Enable's one registration, the sign-in and re-grant syncs, the revoke during a sync, and `syncOnMount` |
+| `src/shell/PushKeeper.test.tsx` | The launch sync, and `NotificationOpen` routing an `OPEN_PATH` |
+| `src/workshop/ReachSection.test.tsx` | The row in each state, both gates opening and closing, the notes, and `Try again` |
+| `src/gates/InstallGate.test.tsx`, `src/gates/StandaloneGate.test.tsx`, `src/gates/Gate.test.tsx` | The gates' copy and steps, and the pointer |
+| `src/workshop/useSystem.test.tsx` | Sign-out forgets the subscription before it logs out |
+
+---
+
+## What phases 1 to 5 do not cover
+
+- **Phase 5's second slice.** Slice 1 landed Web Push, System › Reach and the `install` and
+  `standalone` gates ("Web Push" above). Slice 2 brings the Room's home-screen prompt row,
+  the allowed and declined Act rows, and the icon badge; until it lands, the Room says
+  nothing about notifications, and the iOS prompt is raised only from the standalone gate.
+  The handoff's copy for the prompt row is final (`Alfred.dc.html:751`).
 - **Anything iOS does with the manifests or the launch screen** is unmeasured: the
   phase-4 device checklist is the only thing that settles it, and it is unrun.
+- **Anything iOS does with Web Push** is unmeasured as well: whether a `subscribe()` after
+  the tap is accepted, how the pushes and the taps behave, and where the install gate's
+  pointer lands. The phase-5 device checklist
+  (`docs/superpowers/qa/2026-10-29-pwa-phase5-ios-checklist.md`) settles it, and it is
+  unrun.
 - **Trigger editing, service restart and log download** — the three things the old SPA
   could do that no endpoint supports. Only the first is said out loud in the client: the
   Triggers footer reads `Nothing here edits a trigger — ask Alfred to change or remove
