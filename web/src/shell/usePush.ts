@@ -3,12 +3,12 @@ import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-q
 import { ApiError, errorText } from "@/lib/api";
 import { onVisible } from "@/lib/lifecycle";
 import {
-  fetchPublicKey,
   permission,
   reachContext,
   requestAndSubscribe,
   syncSubscription,
   type ReachContext,
+  type SyncAnswer,
 } from "@/lib/push";
 
 /**
@@ -58,16 +58,6 @@ export interface PushOptions {
   syncOnMount?: boolean;
 }
 
-type Synced = "on" | "unconfigured";
-
-/** Register this browser's subscription, or learn that the house has no key to push with. */
-async function sync(): Promise<Synced> {
-  const key = await fetchPublicKey();
-  if (key === null) return "unconfigured";
-  await syncSubscription(key);
-  return "on";
-}
-
 /**
  * The phone's facts first, the sync's answer after: a sync only runs once they
  * all allow it. By status, not by `data` — a re-sync that fails after an
@@ -78,7 +68,7 @@ async function sync(): Promise<Synced> {
 function reachOf(
   context: ReachContext,
   allowed: NotificationPermission,
-  query: UseQueryResult<Synced>,
+  query: UseQueryResult<SyncAnswer>,
 ): Reach {
   if (context === "tab") return { kind: "install" };
   if (context === "unsupported") return { kind: "unavailable" };
@@ -106,7 +96,8 @@ export function usePush({ syncOnMount = true }: PushOptions = {}): PushValue {
   const [asking, setAsking] = useState(false);
   const query = useQuery({
     queryKey: PUSH_QUERY_KEY,
-    queryFn: sync,
+    // The key read is the sync's own (`syncSubscription`), so sign-out counts it.
+    queryFn: () => syncSubscription(),
     // Off while Enable runs, which registers for itself: a render that reads
     // the new permission mid-tap would otherwise start a second register.
     // `!asking` holds off only this hook instance's query. Another instance,

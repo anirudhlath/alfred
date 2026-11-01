@@ -126,11 +126,15 @@ async function forgetRow(endpoint: string): Promise<void> {
  * Sign-out's two rules (docs/web-push.md, "From the PWA"). `generation` moves when
  * a `forgetPush` starts and again when it ends, and `forgetting` counts those
  * under way: a sync registers only if neither says one has started since it did.
- * `syncing` holds the syncs under way, which `forgetPush` waits for.
+ * `syncing` holds the syncs under way, from their key read on, which `forgetPush`
+ * waits for.
  */
 let generation = 0;
 let forgetting = 0;
-const syncing = new Set<Promise<void>>();
+const syncing = new Set<Promise<unknown>>();
+
+/** Whether a sign-out has started since a sync that started at `started`, or is under way. */
+const overtaken = (started: number): boolean => generation !== started || forgetting > 0;
 
 /**
  * Every sync under way settled, or `REQUEST_TIMEOUT_MS` gone, whichever is first.
@@ -149,10 +153,14 @@ async function syncsSettled(): Promise<void> {
   }
 }
 
+/** What a sync found: the house took the registration, or it has no key to push with. */
+export type SyncAnswer = "on" | "unconfigured";
+
 /**
- * Register this browser's subscription with the house, subscribing first when
- * it holds none. Run at every launch, so a row the house pruned or lost comes
- * back without the owner doing anything.
+ * Read the house's key, then register this browser's subscription with the
+ * house, subscribing first when it holds none. Run at every launch, so a row the
+ * house pruned or lost comes back without the owner doing anything. A 404 key
+ * read is `unconfigured`, and nothing more is asked.
  *
  * A subscription made under a key other than the house's — the house's was
  * regenerated (docs/web-push.md, "A rotated key heals itself") — can never be
@@ -160,28 +168,35 @@ async function syncsSettled(): Promise<void> {
  * whose key the browser does not report is kept, since nothing says it is stale.
  *
  * A sync that has not sent its register POST by the time a sign-out starts, or
- * that starts during one, never sends it: it resolves without registering.
+ * that starts during one, never sends it: it resolves without registering. The
+ * sync counts from its key read, so a key arriving after sign-out has ended
+ * registers nothing either, and one overtaken before it subscribes subscribes
+ * nothing.
  *
- * Rejects when no worker is ready in time, when the browser refuses, or when
- * the registration does or runs out of time. The two deadlines reject with a
- * TimeoutError, which the query's retry policy never repeats; anything else —
- * the house's 503 `Device store busy` included — it retries once.
+ * Rejects when the key read fails, when no worker is ready in time, when the
+ * browser refuses, or when the registration does or runs out of time. The
+ * deadlines reject with a TimeoutError, which the query's retry policy never
+ * repeats; anything else — the house's 503 `Device store busy` included — it
+ * retries once.
  */
-export async function syncSubscription(publicKey: string): Promise<void> {
-  const run = runSync(publicKey, generation);
+export async function syncSubscription(): Promise<SyncAnswer> {
+  const run = runSync(generation);
   syncing.add(run);
   try {
-    await run;
+    return await run;
   } finally {
     syncing.delete(run);
   }
 }
 
 /** `syncSubscription`'s steps, for a sync that started at `generation` `started`. */
-async function runSync(publicKey: string, started: number): Promise<void> {
+async function runSync(started: number): Promise<SyncAnswer> {
+  const publicKey = await fetchPublicKey();
+  if (publicKey === null) return "unconfigured";
   const { pushManager } = await readyRegistration();
   const key = new Uint8Array(b64urlToBuf(publicKey));
   let subscription = await pushManager.getSubscription();
+  if (overtaken(started)) return "on";
   const heldKey = subscription?.options.applicationServerKey;
   if (subscription && heldKey && !sameBytes(heldKey, key)) {
     await forgetRow(subscription.endpoint);
@@ -192,11 +207,12 @@ async function runSync(publicKey: string, started: number): Promise<void> {
     userVisibleOnly: true,
     applicationServerKey: key,
   });
-  if (generation !== started || forgetting > 0) return;
+  if (overtaken(started)) return "on";
   await bounded(DEVICES_PATH, {
     method: "POST",
     body: JSON.stringify({ platform: "web_push", subscription: subscription.toJSON() }),
   });
+  return "on";
 }
 
 /**
@@ -209,9 +225,9 @@ async function runSync(publicKey: string, started: number): Promise<void> {
 export async function requestAndSubscribe(): Promise<NotificationPermission> {
   const answer = await Notification.requestPermission();
   if (answer !== "granted") return answer;
-  const key = await fetchPublicKey();
-  if (key === null) throw new ApiError(404, "Web Push not configured");
-  await syncSubscription(key);
+  if ((await syncSubscription()) === "unconfigured") {
+    throw new ApiError(404, "Web Push not configured");
+  }
   return answer;
 }
 

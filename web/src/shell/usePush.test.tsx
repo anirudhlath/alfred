@@ -4,24 +4,21 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api";
 import {
-  fetchPublicKey,
   permission,
   reachContext,
   requestAndSubscribe,
   syncSubscription,
 } from "@/lib/push";
 import { BUSY, failedClient, makeClient } from "@/test/push-client";
+import type { SyncAnswer } from "@/lib/push";
 import { usePush, type PushOptions } from "./usePush";
 
 vi.mock("@/lib/push", () => ({
   reachContext: vi.fn(),
   permission: vi.fn(),
-  fetchPublicKey: vi.fn(),
   syncSubscription: vi.fn(),
   requestAndSubscribe: vi.fn(),
 }));
-
-const HOUSE_KEY = "BFakeHouseKey";
 
 /** The page's notification permission, which a test changes as the owner would. */
 let granted: NotificationPermission;
@@ -81,8 +78,7 @@ beforeEach(() => {
   granted = "granted";
   vi.mocked(reachContext).mockReturnValue("capable");
   vi.mocked(permission).mockImplementation(() => granted);
-  vi.mocked(fetchPublicKey).mockResolvedValue(HOUSE_KEY);
-  vi.mocked(syncSubscription).mockResolvedValue(undefined);
+  vi.mocked(syncSubscription).mockResolvedValue("on");
   answers("granted");
 });
 
@@ -99,7 +95,6 @@ describe("usePush", () => {
 
     expect(result.current.reach).toEqual({ kind: "install" });
     // Granted or not, a tab is never subscribed: iOS pushes only to the installed app.
-    expect(fetchPublicKey).not.toHaveBeenCalled();
     expect(syncSubscription).not.toHaveBeenCalled();
   });
 
@@ -126,14 +121,14 @@ describe("usePush", () => {
   });
 
   it("is checking while the sync is in flight, then on", async () => {
-    const sync = deferred<undefined>();
+    const sync = deferred<SyncAnswer>();
     vi.mocked(syncSubscription).mockReturnValue(sync.promise);
     const { result } = renderPush();
 
-    await waitFor(() => expect(syncSubscription).toHaveBeenCalledWith(HOUSE_KEY));
+    await waitFor(() => expect(syncSubscription).toHaveBeenCalled());
     expect(result.current.reach).toEqual({ kind: "checking" });
 
-    await act(async () => sync.resolve(undefined));
+    await act(async () => sync.resolve("on"));
     await waitFor(() => expect(result.current.reach).toEqual({ kind: "on" }));
   });
 
@@ -149,7 +144,7 @@ describe("usePush", () => {
     // The app's one retry for a 5xx, and no more until someone asks.
     expect(syncSubscription).toHaveBeenCalledTimes(2);
 
-    vi.mocked(syncSubscription).mockResolvedValue(undefined);
+    vi.mocked(syncSubscription).mockResolvedValue("on");
     act(() => result.current.retry());
     await waitFor(() => expect(result.current.reach).toEqual({ kind: "on" }));
     expect(syncSubscription).toHaveBeenCalledTimes(3);
@@ -179,21 +174,21 @@ describe("usePush", () => {
       expect(result.current.reach).toEqual({ kind: "failed", detail: "Device store busy" }),
     );
 
-    const sync = deferred<undefined>();
+    const sync = deferred<SyncAnswer>();
     vi.mocked(syncSubscription).mockReturnValue(sync.promise);
     act(() => result.current.retry());
     await waitFor(() => expect(result.current.reach).toEqual({ kind: "checking" }));
 
-    await act(async () => sync.resolve(undefined));
+    await act(async () => sync.resolve("on"));
     await waitFor(() => expect(result.current.reach).toEqual({ kind: "on" }));
   });
 
   it("is unconfigured when the house has no key", async () => {
-    vi.mocked(fetchPublicKey).mockResolvedValue(null);
+    vi.mocked(syncSubscription).mockResolvedValue("unconfigured");
     const { result } = renderPush();
 
     await waitFor(() => expect(result.current.reach).toEqual({ kind: "unconfigured" }));
-    expect(syncSubscription).not.toHaveBeenCalled();
+    expect(syncSubscription).toHaveBeenCalledTimes(1);
   });
 
   it("enables: asks, then syncs, and goes on", async () => {
@@ -220,7 +215,6 @@ describe("usePush", () => {
     expect(result.current.asking).toBe(false);
     // Enable's own registration is the only one: one register POST per tap.
     expect(requestAndSubscribe).toHaveBeenCalledTimes(1);
-    expect(fetchPublicKey).not.toHaveBeenCalled();
     expect(syncSubscription).not.toHaveBeenCalled();
   });
 
@@ -238,8 +232,8 @@ describe("usePush", () => {
 
   it("is unconfigured when enabling finds the house has no key", async () => {
     granted = "default";
-    // A key read after the 404 would fail: the 404 itself is the answer.
-    vi.mocked(fetchPublicKey).mockRejectedValue(new ApiError(502, "Bad Gateway"));
+    // A sync after the 404 would fail: the 404 itself is the answer.
+    vi.mocked(syncSubscription).mockRejectedValue(new ApiError(502, "Bad Gateway"));
     answers("granted", new ApiError(404, "Web Push not configured"));
     const { result } = renderPush();
 
@@ -247,7 +241,6 @@ describe("usePush", () => {
     await waitFor(() => expect(result.current.asking).toBe(false));
     expect(result.current.reach).toEqual({ kind: "unconfigured" });
     await settle();
-    expect(fetchPublicKey).not.toHaveBeenCalled();
     expect(syncSubscription).not.toHaveBeenCalled();
   });
 
@@ -290,7 +283,7 @@ describe("usePush", () => {
   });
 
   it("syncs again on a re-grant when the permission went while a sync was in flight", async () => {
-    const first = deferred<undefined>();
+    const first = deferred<SyncAnswer>();
     vi.mocked(syncSubscription).mockReturnValueOnce(first.promise);
     const { result } = renderPush();
     await waitFor(() => expect(syncSubscription).toHaveBeenCalledTimes(1));
@@ -301,7 +294,7 @@ describe("usePush", () => {
 
     // The register lands after the revoke. Its success describes a subscription
     // the browser has since deactivated, and must not stand in for a new sync.
-    await act(async () => first.resolve(undefined));
+    await act(async () => first.resolve("on"));
     await settle();
 
     granted = "granted";
@@ -343,7 +336,6 @@ describe("usePush on mount", () => {
       const { result } = renderPush(await failedClient(afterOn), { syncOnMount: false });
       await settle();
 
-      expect(fetchPublicKey).not.toHaveBeenCalled();
       expect(syncSubscription).not.toHaveBeenCalled();
       expect(result.current.reach).toEqual({ kind: "failed", detail: BUSY });
     },

@@ -6,16 +6,13 @@ import { syncSubscription } from "@/lib/push";
 import { QUERY_DEFAULTS } from "./QueryProvider";
 import { NotificationOpen, PushKeeper } from "./PushKeeper";
 
-const { HOUSE_KEY } = vi.hoisted(() => ({ HOUSE_KEY: "BFakeHouseKey" }));
-
 // The installed app, permission granted, a house with a key. `onOpenPath` is the
 // real one, so the route test hears a message the way the app does.
 vi.mock("@/lib/push", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/push")>()),
   reachContext: vi.fn(() => "capable"),
   permission: vi.fn(() => "granted"),
-  fetchPublicKey: vi.fn(() => Promise.resolve(HOUSE_KEY)),
-  syncSubscription: vi.fn(() => Promise.resolve()),
+  syncSubscription: vi.fn(() => Promise.resolve("on" as const)),
 }));
 
 function Where() {
@@ -35,7 +32,7 @@ describe("PushKeeper", () => {
       </QueryClientProvider>,
     );
 
-    await waitFor(() => expect(syncSubscription).toHaveBeenCalledWith(HOUSE_KEY));
+    await waitFor(() => expect(syncSubscription).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();
   });
 });

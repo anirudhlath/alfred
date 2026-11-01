@@ -203,6 +203,16 @@ function holdPost(): { onPost: Answer; answer: () => void } {
   return { onPost, answer: () => answer() };
 }
 
+/** The key read held until the returned function answers it with the house key. */
+function holdKey(): { onKey: Answer; answer: () => void } {
+  let answer: () => void = () => {};
+  const onKey: Answer = () =>
+    new Promise((resolve) => {
+      answer = () => resolve(reply(200, { public_key: HOUSE_KEY }));
+    });
+  return { onKey, answer: () => answer() };
+}
+
 /** Lets every queued microtask and the timers already due run, with real timers. */
 const drain = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -214,6 +224,9 @@ function requests(mock: ReturnType<typeof stubHouse>) {
     body: typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined,
   }));
 }
+
+/** The sync's key read, its first request. */
+const KEY_READ = { method: "GET", path: PUSH_KEY_PATH, body: undefined };
 
 /** The request that registers `subscription` with the house. */
 function registering(subscription: FakeSubscription) {
@@ -338,41 +351,42 @@ describe("syncSubscription", () => {
   it("subscribes with the house key and registers", async () => {
     const { pushManager, readyReads } = registry();
     const fetchMock = stubHouse();
-    await syncSubscription(HOUSE_KEY);
+    await syncSubscription();
     expect(readyReads()).toBe(1);
     expect(pushManager.subscribe).toHaveBeenCalledTimes(1);
     const [options] = pushManager.subscribe.mock.calls[0];
     expect(options.userVisibleOnly).toBe(true);
     expect(new Uint8Array(options.applicationServerKey as ArrayBuffer)).toEqual(HOUSE_BYTES);
-    expect(requests(fetchMock)).toEqual([registering(pushManager.subscription!)]);
+    expect(requests(fetchMock)).toEqual([KEY_READ, registering(pushManager.subscription!)]);
   });
 
   it("re-registers a subscription it already holds", async () => {
     const held = new FakeSubscription(HELD, HOUSE_BYTES);
     const { pushManager } = registry({ held });
     const fetchMock = stubHouse();
-    await syncSubscription(HOUSE_KEY);
+    await syncSubscription();
     expect(pushManager.subscribe).not.toHaveBeenCalled();
     expect(held.unsubscribe).not.toHaveBeenCalled();
-    expect(requests(fetchMock)).toEqual([registering(held)]);
+    expect(requests(fetchMock)).toEqual([KEY_READ, registering(held)]);
   });
 
   it("keeps a subscription that names no key, as it is", async () => {
     const held = new FakeSubscription(HELD, null);
     const { pushManager } = registry({ held });
     const fetchMock = stubHouse();
-    await syncSubscription(HOUSE_KEY);
+    await syncSubscription();
     expect(pushManager.subscribe).not.toHaveBeenCalled();
     expect(held.unsubscribe).not.toHaveBeenCalled();
-    expect(requests(fetchMock)).toEqual([registering(held)]);
+    expect(requests(fetchMock)).toEqual([KEY_READ, registering(held)]);
   });
 
   it("resubscribes when the house key changed", async () => {
     const held = new FakeSubscription(HELD, OLD_BYTES);
     const { pushManager } = registry({ held });
     const fetchMock = stubHouse();
-    await syncSubscription(HOUSE_KEY);
+    await syncSubscription();
     expect(log).toEqual([
+      `GET ${PUSH_KEY_PATH}`,
       `DELETE ${DEVICES_PATH}`,
       `unsubscribe ${HELD}`,
       "subscribe",
@@ -380,6 +394,7 @@ describe("syncSubscription", () => {
     ]);
     expect(pushManager.subscription!.endpoint).toBe(FRESH);
     expect(requests(fetchMock)).toEqual([
+      KEY_READ,
       { method: "DELETE", path: DEVICES_PATH, body: { endpoint: HELD } },
       registering(pushManager.subscription!),
     ]);
@@ -389,8 +404,9 @@ describe("syncSubscription", () => {
     const held = new FakeSubscription(HELD, OLD_BYTES);
     registry({ held });
     stubHouse({ onDelete: async () => reply(503, { detail: "Device store busy" }) });
-    await expect(syncSubscription(HOUSE_KEY)).resolves.toBeUndefined();
+    await expect(syncSubscription()).resolves.toBe("on");
     expect(log).toEqual([
+      `GET ${PUSH_KEY_PATH}`,
       `DELETE ${DEVICES_PATH}`,
       `unsubscribe ${HELD}`,
       "subscribe",
@@ -404,12 +420,13 @@ describe("syncSubscription", () => {
     const held = new FakeSubscription(HELD, OLD_BYTES);
     registry({ held });
     stubHouse({ onDelete: stalled });
-    const syncing = syncSubscription(HOUSE_KEY);
+    const syncing = syncSubscription();
     await vi.advanceTimersByTimeAsync(4_999);
     expect(held.unsubscribe).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    await expect(syncing).resolves.toBeUndefined();
+    await expect(syncing).resolves.toBe("on");
     expect(log).toEqual([
+      `GET ${PUSH_KEY_PATH}`,
       `DELETE ${DEVICES_PATH}`,
       `unsubscribe ${HELD}`,
       "subscribe",
@@ -420,7 +437,7 @@ describe("syncSubscription", () => {
   it("hands the house's busy store back to the caller, to retry", async () => {
     registry();
     stubHouse({ onPost: async () => reply(503, { detail: "Device store busy" }) });
-    const error = await syncSubscription(HOUSE_KEY).catch((caught: unknown) => caught);
+    const error = await syncSubscription().catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({
       status: 503,
@@ -434,7 +451,7 @@ describe("syncSubscription", () => {
     registry({ ready: false });
     const fetchMock = stubHouse();
     let settled = false;
-    const syncing = syncSubscription(HOUSE_KEY);
+    const syncing = syncSubscription();
     syncing.catch(() => {
       settled = true;
     });
@@ -445,7 +462,7 @@ describe("syncSubscription", () => {
     // A deadline by name, so the retry policy does not wait it out twice.
     expect(error).toMatchObject({ name: "TimeoutError", message: "no service worker" });
     expect(timedOut(error)).toBe(true);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(requests(fetchMock)).toEqual([KEY_READ]);
   });
 
   it("gives up on a registration that never answers, with a deadline's name", async () => {
@@ -454,7 +471,7 @@ describe("syncSubscription", () => {
     registry();
     stubHouse({ onPost: stalled });
     let settled = false;
-    const syncing = syncSubscription(HOUSE_KEY).catch((caught: unknown) => {
+    const syncing = syncSubscription().catch((caught: unknown) => {
       settled = true;
       return caught;
     });
@@ -464,7 +481,7 @@ describe("syncSubscription", () => {
     const error = await syncing;
     expect(error).toMatchObject({ name: "TimeoutError" });
     expect(timedOut(error)).toBe(true);
-    expect(log).toEqual(["subscribe", `POST ${DEVICES_PATH}`]);
+    expect(log).toEqual([`GET ${PUSH_KEY_PATH}`, "subscribe", `POST ${DEVICES_PATH}`]);
   });
 });
 
@@ -562,20 +579,26 @@ describe("forgetPush and a sync under way", () => {
     const { pushManager } = registry();
     const fetchMock = stubHouse();
     const release = holdSubscribe(pushManager);
-    const syncing = syncSubscription(HOUSE_KEY);
+    const syncing = syncSubscription();
     await vi.waitFor(() => expect(pushManager.subscribe).toHaveBeenCalledTimes(1));
 
     const forgetting = forgetPush();
     release();
-    await expect(syncing).resolves.toBeUndefined();
+    await expect(syncing).resolves.toBe("on");
     await expect(forgetting).resolves.toBeUndefined();
 
     // No register at all: the house never learns of the subscription the sync made,
     // and the browser does not keep it.
     expect(requests(fetchMock)).toEqual([
+      KEY_READ,
       { method: "DELETE", path: DEVICES_PATH, body: { endpoint: FRESH } },
     ]);
-    expect(log).toEqual(["subscribe", `DELETE ${DEVICES_PATH}`, `unsubscribe ${FRESH}`]);
+    expect(log).toEqual([
+      `GET ${PUSH_KEY_PATH}`,
+      "subscribe",
+      `DELETE ${DEVICES_PATH}`,
+      `unsubscribe ${FRESH}`,
+    ]);
     expect(pushManager.subscription).toBeNull();
   });
 
@@ -584,17 +607,18 @@ describe("forgetPush and a sync under way", () => {
     registry({ held });
     const post = holdPost();
     const fetchMock = stubHouse({ onPost: post.onPost });
-    const syncing = syncSubscription(HOUSE_KEY);
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const syncing = syncSubscription();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 
     const forgetting = forgetPush();
     await drain();
-    expect(log).toEqual([`POST ${DEVICES_PATH}`]);
+    expect(log).toEqual([`GET ${PUSH_KEY_PATH}`, `POST ${DEVICES_PATH}`]);
 
     post.answer();
     await syncing;
     await forgetting;
     expect(log).toEqual([
+      `GET ${PUSH_KEY_PATH}`,
       `POST ${DEVICES_PATH}`,
       "POST answered",
       `DELETE ${DEVICES_PATH}`,
@@ -606,7 +630,7 @@ describe("forgetPush and a sync under way", () => {
     const { pushManager } = registry();
     const fetchMock = stubHouse();
     const release = holdSubscribe(pushManager);
-    const overlapping = syncSubscription(HOUSE_KEY);
+    const overlapping = syncSubscription();
     await vi.waitFor(() => expect(pushManager.subscribe).toHaveBeenCalledTimes(1));
     const forgetting = forgetPush();
     release();
@@ -614,16 +638,19 @@ describe("forgetPush and a sync under way", () => {
     await forgetting;
 
     // The next sign-in's sync.
-    await syncSubscription(HOUSE_KEY);
+    await syncSubscription();
     expect(requests(fetchMock)).toEqual([
+      KEY_READ,
       { method: "DELETE", path: DEVICES_PATH, body: { endpoint: FRESH } },
+      KEY_READ,
       registering(pushManager.subscription!),
     ]);
   });
 
   it("keeps a sync that starts while it runs from registering, even once it has ended", async () => {
     const { pushManager, container } = registry();
-    const fetchMock = stubHouse();
+    const key = holdKey();
+    const fetchMock = stubHouse({ onKey: key.onKey });
     // Sign-out held at `getRegistration()`, so a sync can start while it runs.
     let answerRegistration: () => void = () => {};
     container.getRegistration.mockImplementationOnce(
@@ -635,16 +662,15 @@ describe("forgetPush and a sync under way", () => {
     const forgetting = forgetPush();
     await vi.waitFor(() => expect(container.getRegistration).toHaveBeenCalledTimes(1));
 
-    // A retry starts mid-sign-out and is held at `subscribe()` until sign-out has
-    // ended, then subscribes.
-    const release = holdSubscribe(pushManager);
-    const late = syncSubscription(HOUSE_KEY);
-    await vi.waitFor(() => expect(pushManager.subscribe).toHaveBeenCalledTimes(1));
+    // A retry starts mid-sign-out, and its key arrives once sign-out has ended.
+    const late = syncSubscription();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     answerRegistration();
     await forgetting;
-    release();
-    await expect(late).resolves.toBeUndefined();
-    expect(fetchMock).not.toHaveBeenCalled();
+    key.answer();
+    await expect(late).resolves.toBe("on");
+    expect(requests(fetchMock)).toEqual([KEY_READ]);
+    expect(pushManager.subscribe).not.toHaveBeenCalled();
   });
 
   it("waits for a stuck sync no longer than a request may take", async () => {
@@ -653,7 +679,7 @@ describe("forgetPush and a sync under way", () => {
     const { pushManager } = registry();
     const fetchMock = stubHouse();
     const release = holdSubscribe(pushManager);
-    const stuck = syncSubscription(HOUSE_KEY);
+    const stuck = syncSubscription();
     await vi.waitFor(() => expect(pushManager.subscribe).toHaveBeenCalledTimes(1));
 
     let settled = false;
@@ -668,7 +694,48 @@ describe("forgetPush and a sync under way", () => {
     // The browser answers at last, long after sign-out: still no register.
     release();
     await stuck;
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(requests(fetchMock)).toEqual([KEY_READ]);
+  });
+
+  it("keeps a sync whose key read is in flight from registering or subscribing", async () => {
+    vi.useFakeTimers();
+    const { pushManager } = registry();
+    const key = holdKey();
+    const fetchMock = stubHouse({ onKey: key.onKey });
+    const syncing = syncSubscription();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // Sign-out waits for the sync no longer than a request may take, then ends.
+    const forgetting = forgetPush();
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
+    await forgetting;
+
+    // The key arrives after sign-out has ended.
+    key.answer();
+    await syncing;
+    expect(log).toEqual([`GET ${PUSH_KEY_PATH}`]);
+    expect(pushManager.subscribe).not.toHaveBeenCalled();
+    expect(pushManager.subscription).toBeNull();
+  });
+
+  it("keeps Enable from registering or subscribing when sign-out overtakes its key read", async () => {
+    vi.useFakeTimers();
+    const { pushManager } = registry();
+    stubNotification("granted");
+    const key = holdKey();
+    const fetchMock = stubHouse({ onKey: key.onKey });
+    const asking = requestAndSubscribe();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    const forgetting = forgetPush();
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
+    await forgetting;
+
+    key.answer();
+    await expect(asking).resolves.toBe("granted");
+    expect(log).toEqual(["requestPermission", `GET ${PUSH_KEY_PATH}`]);
+    expect(pushManager.subscribe).not.toHaveBeenCalled();
+    expect(pushManager.subscription).toBeNull();
   });
 });
 

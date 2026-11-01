@@ -3,7 +3,6 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  fetchPublicKey,
   permission,
   reachContext,
   requestAndSubscribe,
@@ -21,12 +20,9 @@ import type { Sessions } from "./useSystem";
 vi.mock("@/lib/push", () => ({
   reachContext: vi.fn(),
   permission: vi.fn(),
-  fetchPublicKey: vi.fn(),
   syncSubscription: vi.fn(),
   requestAndSubscribe: vi.fn(),
 }));
-
-const HOUSE_KEY = "BFakeHouseKey";
 
 /** The page's notification permission, which a test changes as the owner would. */
 let granted: NotificationPermission;
@@ -63,8 +59,7 @@ beforeEach(() => {
   granted = "granted";
   vi.mocked(reachContext).mockReturnValue("capable");
   vi.mocked(permission).mockImplementation(() => granted);
-  vi.mocked(fetchPublicKey).mockResolvedValue(HOUSE_KEY);
-  vi.mocked(syncSubscription).mockResolvedValue(undefined);
+  vi.mocked(syncSubscription).mockResolvedValue("on");
   // The owner says yes, and the browser's permission follows a tick after the ask.
   vi.mocked(requestAndSubscribe).mockImplementation(async () => {
     await Promise.resolve();
@@ -81,7 +76,6 @@ describe("ReachSection over usePush", () => {
       renderReach(await failedClient(afterOn));
       await settle();
 
-      expect(fetchPublicKey).not.toHaveBeenCalled();
       expect(syncSubscription).not.toHaveBeenCalled();
       expect(screen.getByText(FAILED_SUB)).toBeInTheDocument();
       expect(screen.getByText(BUSY)).toBeInTheDocument();
@@ -106,7 +100,6 @@ describe("ReachSection over usePush", () => {
     expect(requestAndSubscribe).toHaveBeenCalledTimes(1);
     // Enable registered for itself; the query took its answer, and nothing
     // registered a second time.
-    expect(fetchPublicKey).not.toHaveBeenCalled();
     expect(syncSubscription).not.toHaveBeenCalled();
   });
 });
