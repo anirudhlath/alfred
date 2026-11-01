@@ -481,7 +481,9 @@ def create_admin_router() -> APIRouter:
             elif is_web_push(row):
                 out.append(_web_push_device(tok, row))
             else:
-                out.append({"device_token": tok, **row})
+                # The prefix last, so a row that stores its own `device_token` cannot
+                # replace it with the full token.
+                out.append({**row, "device_token": tok})
         return {"devices": out}
 
     @router.get("/memory/episodic")

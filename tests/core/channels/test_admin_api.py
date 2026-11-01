@@ -773,6 +773,27 @@ def test_devices_list_truncates_the_device_token() -> None:
     assert full_token not in resp.text
 
 
+def test_devices_list_truncates_a_token_the_row_repeats() -> None:
+    """A stored row carrying its own ``device_token`` cannot put the full token back."""
+    full_token = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    r = _overview_redis()
+
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        row = {"platform": "ios", "device_token": full_token}
+        return {full_token.encode(): json.dumps(row).encode()}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/devices")
+
+    assert resp.json()["devices"] == [{"device_token": full_token[:12], "platform": "ios"}]
+    assert full_token not in resp.text
+
+
 def test_devices_list_truncates_the_token_on_corrupt_metadata() -> None:
     """The except branch truncates too — corrupt JSON must not leak the full token."""
     full_token = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
