@@ -224,7 +224,8 @@ async def test_a_proposal_is_marked_after_it_is_published() -> None:
 
     assert script.call_count == 1
     assert await _decisions_today(redis) == {"ask": 1}
-    assert await _outcomes_today(redis) == {"shadow": 1}  # counted once, like the decision
+    # No live state, so the target is checked against nothing and the proposal is invalid.
+    assert await _outcomes_today(redis) == {"invalid": 1}  # counted once, like the decision
     assert await redis.xlen(REFLEX_OBSERVATIONS_STREAM) == 1
 
 

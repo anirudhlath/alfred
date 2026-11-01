@@ -359,6 +359,16 @@ def test_targets_resolve_like_home_service_and_add_the_room() -> None:
     assert targets(world, None, {}) == []
 
 
+def test_targets_read_the_name_reflexs_prompt_gives_an_entity() -> None:
+    """Reflex sends ``Name (Room)`` as the one entity it names, so a golden judges that entity."""
+    world = load_world("apartment")
+    assert targets(world, "home.light_turn_on", {"target": "bedroom lamp (Bedroom)"}) == [
+        "light.bedroom_lamp",
+        "bedroom",
+    ]
+    assert targets(world, "home.light_turn_on", {"target": "Bedroom Lamp (Kitchen)"}) == []
+
+
 def den(*entities: dict[str, object]) -> World:
     return World.model_validate(
         {
@@ -368,6 +378,14 @@ def den(*entities: dict[str, object]) -> World:
             "services": {"light": {"turn_on": {}}},
         }
     )
+
+
+def test_targets_skip_a_name_and_room_two_entities_share() -> None:
+    world = den(
+        {"entity_id": "light.lamp_a", "name": "Lamp", "area_id": "den", "state": "on"},
+        {"entity_id": "light.lamp_b", "name": "Lamp", "area_id": "den", "state": "off"},
+    )
+    assert targets(world, "home.light_turn_on", {"target": "Lamp (Den)"}) == []
 
 
 def test_targets_prefer_a_room_to_a_same_named_entity_and_skip_disabled_ones() -> None:

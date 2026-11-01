@@ -229,7 +229,7 @@ async def _handle_trigger_fired(
     )
     proposal = decided.proposal
     await record_decision(redis, decision_log, "trigger_fired", trigger_event, decided, now=clock())
-    # A "none", and a proposal that would reverse a person's change, publish nothing here.
+    # A "none", and a proposal that would act on what a person just changed, publish nothing here.
     if publishes(decided.outcome):
         if proposal.decision == "invalid":
             logger.warning(

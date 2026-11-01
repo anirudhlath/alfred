@@ -22,7 +22,8 @@ expect:
   # Saying nothing is allowed, as in the other single-event goldens. A second judgment of the
   # same change can find the first one's ask still open (one at a time, with a repeat window),
   # and is then held for it. When the model says none this golden passes without exercising
-  # the ask: the end-to-end ask path is pinned by tests/core/reflex/test_runner_asks.py.
-  - reflex_outcome: {outcome: [asked, none, held], reason: [ask_open, asked_recently]}
+  # the ask: the end-to-end ask path is pinned by tests/core/reflex/test_runner_asks.py. So
+  # does a proposal whose target names nothing, which is invalid and never reaches the gate.
+  - reflex_outcome: {outcome: [asked, none, held, invalid], reason: [ask_open, asked_recently]}
   # Every ask made in the sample is a pending action from Reflex, waiting for the owner's answer.
   - reflex_ask_parked: {}

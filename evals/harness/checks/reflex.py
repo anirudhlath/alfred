@@ -6,7 +6,7 @@ the golden's last one). A call in the window about anything else is named in the
 as unattributed, never judged.
 
 ``reflex_outcome`` reads Reflex's decision log instead: what the code made of the model's
-decision (a proposal that would undo what a person just changed is ``would_reverse``).
+decision (a proposal that would act on what a person just changed is ``would_reverse``).
 ``reflex_ask_parked`` reads the log and the sample's last pending snapshot: an ask the log says
 was made is a pending action Reflex parked.
 """

@@ -877,7 +877,8 @@ scored separately. Params are validated at load and unknown keys are rejected.
 reached the proxy during that step, from its start to the next step's or, for the last
 step, to the sample's end. Each is parsed into the decision Reflex took from it
 (see [The bus](#the-bus)). A proposal's target is resolved the way home-service resolves
-it, and each entity's area is added, so a check can name the entity or the room.
+it, or, when it is Reflex's own `Name (Room)` for one entity, as that entity (the way Reflex
+rewrites it), and each entity's area is added, so a check can name the entity or the room.
 
 Reflex attends to every entity a shipped golden judges but one, so **no call** means the
 event was lost: a cooldown swallowed it, the consumer stopped, or the attention set
@@ -891,7 +892,8 @@ A System 1 call vLLM answered with a 5xx holds no judgment, so a reflex check or
 is Reflex's own request refused, such as a prompt too long.
 
 `reflex_outcome` judges what Reflex did with a decision, which the replies alone do not show
-(a proposal it turned into `would_reverse` reads as an `act` in `reflex_decision`). The driver
+(a proposal it turned into `would_reverse`, or into `invalid` because its target names
+nothing, reads as an `act` in `reflex_decision`). The driver
 reads Reflex's decision log for a golden that has a `reflex_outcome` or a `reflex_ask_parked`, after the last step: it waits, up to
 10 s with a blocking read, until the log holds as many decisions as System 1 answered calls,
 then keeps the records of state changes. A missing record is not a harness error: the check

@@ -191,6 +191,13 @@ This slice is PR 8 of #317.
 
 **Never reverse a person.** This is a rule in code, applied after the model answers, not a prompt rule.
 
+> **Superseded 2026-10-29:** the rule below shipped as written, but is now **hands off**: Reflex does
+> not act on an entity a person changed within the window, whatever the action, so dimming a lamp a
+> person just turned on is held back too, and a proposal whose target names nothing it can check is
+> `invalid`. Production showed the model kept proposing changes to what a person had just set. This
+> file is the historical design record and is deliberately not rewritten; `docs/reflex-anticipation.md`,
+> "Never reverse a person", is current.
+
 - **Reversing means moving an entity back toward the state it had before a person changed it** (cause
   `person` or `outside`) in the last 60 minutes (**my call** on the window; it is a setting):
   - turning off what a person turned on, or on what they turned off;

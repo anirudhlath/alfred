@@ -4,8 +4,9 @@ One event in, a ``Decided`` out (#285): the model's proposal (act, ask, none or 
 the outcome it comes to. Reads preferences, Reflex's tools, live state and what people just
 changed, builds the prompt with ``core.reflex.prompt`` and decides through the Reflex agent
 (``core.reflex.agent``), which parses the reply with ``core.reflex.decision``. Never reverse a
-person (``core.reflex.reversal``): a proposal that would undo what a person just changed is
-checked after the model answers and ends as ``would_reverse``.
+person (``core.reflex.reversal``), checked after the model answers: a proposal whose target names
+nothing in the live state ends as ``invalid``, and one that would act on anything a person just
+changed ends as ``would_reverse``.
 
 Design for eval-ability: structured (event, preferences, live state) in → structured
 decision out. The engine has no effect on the house — in shadow mode nothing a proposal names
@@ -20,12 +21,13 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 
+from bus.schemas.events import ReflexOutcome
 from core.memory.reader import MemoryReader
 from core.reflex.agent import decide
 from core.reflex.outcome import Decided, first_outcome
 from core.reflex.prompt import build_state_change_prompt, build_trigger_prompt, index_snapshot
 from core.reflex.prose import fetch_prose, repo_prose
-from core.reflex.reversal import reversed_entities
+from core.reflex.reversal import overridden_entities, resolved_action
 from core.reflex.settings import ReflexSettings, load_settings
 from core.reflex.tool_registry import REFLEX_AUDIENCE
 from sdk.alfred_sdk.telemetry import track_latency
@@ -71,20 +73,32 @@ def _decided(
 ) -> Decided:
     """The proposal, its outcome and what it was decided from, live state included.
 
-    With no live state there is nothing to resolve a target against, so nothing is reversed:
-    Reflex sees no House then either, and executes nothing.
+    An action whose target names nothing in the live state (with none, nothing at all) is
+    ``invalid``, kept as the model wrote it: what it would act on cannot be checked. Otherwise its
+    target is the one ``resolved_action`` gives, an entity ID where the model named an entity as
+    the prompt does, and anything it would act on that a person just changed makes it
+    ``would_reverse``.
     """
-    reversed_ = (
-        []
-        if proposal.action is None
-        else reversed_entities(proposal.action, recent, entities or {})
-    )
+    snapshot = entities or {}
+    overridden: list[str] = []
+    if proposal.action is not None:
+        action = resolved_action(proposal.action, snapshot)
+        if action is None:
+            return Decided(
+                proposal=proposal,
+                outcome=ReflexOutcome(kind="invalid"),
+                prompt=prompt,
+                recent=recent,
+                snapshot=snapshot,
+            )
+        proposal = proposal.model_copy(update={"action": action})
+        overridden = overridden_entities(action, recent, snapshot)
     return Decided(
         proposal=proposal,
-        outcome=first_outcome(proposal, reversed_),
+        outcome=first_outcome(proposal, overridden),
         prompt=prompt,
         recent=recent,
-        snapshot=entities or {},
+        snapshot=snapshot,
     )
 
 

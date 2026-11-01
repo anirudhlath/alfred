@@ -66,7 +66,7 @@ class ReflexSettings(BaseModel):
     allowed_scripts: list[_Text] = Field(default_factory=list, max_length=MAX_LIST_ITEMS)
     # The numbers are strict: ``true`` or ``"60"`` is a wrong type, not 1 or 60. A flag read as 1
     # would shrink the never-reverse window to a minute. (A whole number is still a float.)
-    # How long after a person changes something Reflex will not propose moving it back.
+    # How long after a person changes something Reflex keeps its hands off it.
     reverse_window_minutes: int = Field(60, ge=1, le=1440, strict=True)
     # How long an ask waits for an answer before it lapses.
     ask_expiry_seconds: int = Field(600, ge=60, le=3600, strict=True)

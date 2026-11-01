@@ -6,9 +6,11 @@ records, counts and publishes what it decided (``core/reflex/runner.py``): shado
 executes nothing.
 
 ``first_outcome`` is the first reduction: the model's own ``none`` and ``invalid``, a
-proposal that would undo what a person just changed (``core/reflex/reversal.py``), and
-every other proposal, which stands as ``shadow``. The runner then puts a standing proposal to
-the owner or holds it (``ask_or_hold``), which makes it ``asked`` or ``held``.
+proposal that would act on what a person just changed (``core/reflex/reversal.py``), and
+every other proposal, which stands as ``shadow``. The engine makes a proposal whose target
+names nothing Reflex can check ``invalid`` before it gets here. The runner then puts a
+standing proposal to the owner or holds it (``ask_or_hold``), which makes it ``asked`` or
+``held``.
 """
 
 from __future__ import annotations
@@ -44,10 +46,10 @@ class Decided:
 
 
 def first_outcome(proposal: ReflexProposal, reversed: Sequence[str]) -> ReflexOutcome:  # noqa: A002
-    """The outcome of *proposal*, given the entities it would move back from what a person set.
+    """The outcome of *proposal*, given the entities a person just changed that it acts on.
 
-    ``none`` and ``invalid`` stay as they are. An ``act`` or ``ask`` that would reverse any
-    entity is ``would_reverse``, naming them; every other one is ``shadow``.
+    ``none`` and ``invalid`` stay as they are. An ``act`` or ``ask`` that acts on any of them is
+    ``would_reverse``, naming them; every other one is ``shadow``.
     """
     if proposal.decision == "none":
         return ReflexOutcome(kind="none")

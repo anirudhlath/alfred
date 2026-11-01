@@ -18,5 +18,6 @@ steps:
 expect:
   # The owner asked not to be disturbed, so Reflex does not ask. It may say nothing at all.
   # A proposal it makes is held for do-not-disturb (not for the quiet hours, which 02:00 is
-  # outside here), and an ask that went out anyway is the bug this golden pins.
-  - reflex_outcome: {outcome: [held, none], reason: dnd}
+  # outside here), and an ask that went out anyway is the bug this golden pins. A proposal
+  # whose target names nothing is invalid and never reaches the gate: no ask either.
+  - reflex_outcome: {outcome: [held, none, invalid], reason: dnd}

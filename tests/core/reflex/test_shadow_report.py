@@ -48,7 +48,10 @@ ASK = ReflexProposal(decision="ask", reason="Dim for the film?")
 
 
 def _entry(
-    at: datetime, proposal: ReflexProposal | None, trigger: TriggerFired | None = None
+    at: datetime,
+    proposal: ReflexProposal | None,
+    trigger: TriggerFired | None = None,
+    outcome: ReflexOutcome | None = None,
 ) -> tuple[bytes, dict[bytes, bytes]]:
     if trigger is not None:
         obs = ReflexObservation(
@@ -56,6 +59,7 @@ def _entry(
             origin="trigger_fired",
             trigger_event=trigger.model_dump(),
             proposal=proposal,
+            outcome=outcome,
             timestamp=at,
         )
     else:
@@ -72,6 +76,7 @@ def _entry(
             origin="state_change",
             trigger_event=event.model_dump(),
             proposal=proposal,
+            outcome=outcome,
             timestamp=at,
         )
     return f"{int(at.timestamp() * 1000)}-0".encode(), {b"event": obs.model_dump_json().encode()}
@@ -304,6 +309,24 @@ async def test_an_invalid_proposal_shows_its_problem_and_raw_text_on_one_line() 
         " — problem: not JSON · raw: `'''json {} '''`"
     )
     assert line in report
+
+
+async def test_a_proposal_whose_target_named_nothing_says_it_ended_invalid() -> None:
+    redis = _redis(
+        [
+            _entry(
+                datetime(2026, 10, 7, 3, 0, tzinfo=UTC), ACT, outcome=ReflexOutcome(kind="invalid")
+            ),
+            _entry(
+                datetime(2026, 10, 7, 4, 0, tzinfo=UTC), ACT, outcome=ReflexOutcome(kind="shadow")
+            ),
+        ]
+    )
+
+    report = await build_report(redis, days=2, now=NOW, tz_name="America/Chicago")
+
+    assert "- Tue 06 Oct 22:00 · **act** → **invalid** · Living Room TV: paused → playing" in report
+    assert "- Tue 06 Oct 23:00 · **act** · Living Room TV: paused → playing" in report
 
 
 async def test_a_trigger_proposal_names_the_trigger() -> None:

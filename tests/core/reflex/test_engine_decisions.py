@@ -11,14 +11,23 @@ import fakeredis
 import pytest
 from redis import exceptions as redis_exceptions
 
-from bus.schemas.events import ChangeContext, ReflexOutcome, StateChangedEvent, TriggerFired
+from bus.schemas.events import (
+    ChangeContext,
+    ReflexObservation,
+    ReflexOutcome,
+    StateChangedEvent,
+    TriggerFired,
+)
 from core.reflex.context_reader import LIVE_STATE_UNAVAILABLE
+from core.reflex.decision_log import DecisionLog
 from core.reflex.engine import ReflexEngine
 from core.reflex.reversal import PersonChanges
+from core.reflex.runner import process_stream_entry
 from core.reflex.settings import ReflexSettings, save_settings
 from core.reflex.tool_registry import ToolInfo
 from sdk.alfred_sdk.context import ContextEntry, ContextSnapshot
-from shared.streams import REFLEX_SETTINGS_KEY
+from shared.redis_streams import forward_range
+from shared.streams import REFLEX_OBSERVATIONS_STREAM, REFLEX_SETTINGS_KEY
 from tests.core.reflex.fakes import reflex_agent
 
 if TYPE_CHECKING:
@@ -434,14 +443,97 @@ async def test_a_bad_settings_document_reads_as_the_default_window() -> None:
     assert list(decided.recent) == [LAMP]
 
 
-async def test_with_no_live_state_nothing_is_reversed_and_the_entity_is_named_by_id() -> None:
+async def test_turning_on_what_a_person_just_turned_on_is_would_reverse() -> None:
+    """Hands off: the entity is a person's for the window, whatever the action."""
+    proposal = {**ACT, "parameters": {"target": LAMP}}
+    engine, changes, _, _ = _with_changes(_reply(proposal), snapshot=_snapshot())
+    turned_on = _person_turned_lamp_off().model_copy(update={"old_state": "off", "new_state": "on"})
+    await changes.note(turned_on, "person")
+
+    decided = await engine.process_event(TV_PLAYS)
+
+    assert decided.outcome == ReflexOutcome(kind="would_reverse", reversed=[LAMP])
+
+
+async def test_a_target_named_as_the_prompt_names_it_acts_on_that_entity() -> None:
+    proposal = {**ACT, "parameters": {"target": "TV Lamp (Living Room)", "brightness_pct": 30}}
+    engine, _ = _engine(_snapshot(), _reply(proposal))
+
+    decided = await engine.process_event(TV_PLAYS)
+
+    assert decided.outcome == ReflexOutcome(kind="shadow")
+    assert decided.proposal.action is not None
+    assert decided.proposal.action.parameters == {"target": LAMP, "brightness_pct": 30}
+
+
+async def test_the_runner_records_and_publishes_the_entity_the_prompts_name_stands_for() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    proposal = {**ACT, "parameters": {"target": "TV Lamp (Living Room)"}}
+    engine, _ = _engine(_snapshot(), _reply(proposal), redis=redis)
+    log = DecisionLog(redis, clock=lambda: NIGHT_UTC)
+
+    await process_stream_entry(
+        entry_id=b"1760000000000-0",
+        entry_data={b"event": TV_PLAYS.model_dump_json().encode()},
+        engine=engine,
+        agent=AsyncMock(),
+        redis=redis,
+        result_stream="alfred:home:action_results",
+        observation_stream=REFLEX_OBSERVATIONS_STREAM,
+        decision_log=log,
+    )
+
+    [record] = await log.read(since=NIGHT_UTC - timedelta(days=1))
+    assert record.proposal.action is not None
+    assert record.proposal.action.parameters["target"] == LAMP
+    [(_, fields)] = await forward_range(redis, REFLEX_OBSERVATIONS_STREAM)
+    published = ReflexObservation.model_validate_json(fields[b"event"])
+    assert published.proposal is not None
+    assert published.proposal.action is not None
+    assert published.proposal.action.parameters["target"] == LAMP
+
+
+async def test_a_target_named_as_the_prompt_names_it_is_checked_against_a_persons_change() -> None:
+    proposal = {**ACT, "parameters": {"target": "TV Lamp (Living Room)"}}
+    engine, changes, _, _ = _with_changes(_reply(proposal), snapshot=_snapshot())
+    await changes.note(_person_turned_lamp_off(), "person")
+
+    decided = await engine.process_event(TV_PLAYS)
+
+    assert decided.outcome == ReflexOutcome(kind="would_reverse", reversed=[LAMP])
+
+
+@pytest.mark.parametrize("target", ["Garage", "Living Room TV"], ids=["nothing", "other-domain"])
+async def test_a_proposal_whose_target_names_nothing_is_invalid(target: str) -> None:
+    proposal = {**ACT, "parameters": {"target": target}}
+    engine, _ = _engine(_snapshot(), _reply(proposal))
+
+    decided = await engine.process_event(TV_PLAYS)
+
+    assert decided.outcome == ReflexOutcome(kind="invalid")
+    assert decided.proposal.decision == "act"  # what the model said is kept, as it said it
+    assert decided.proposal.action is not None
+    assert decided.proposal.action.parameters["target"] == target
+
+
+async def test_a_trigger_proposal_whose_target_names_nothing_is_invalid() -> None:
+    engine, _ = _engine(_snapshot(), _reply({**ACT, "parameters": {"target": "Garage"}}))
+    trigger = TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time")
+
+    decided = await engine.process_trigger_fired(trigger)
+
+    assert decided.outcome == ReflexOutcome(kind="invalid")
+
+
+async def test_with_no_live_state_a_proposal_is_invalid_and_the_entity_is_named_by_id() -> None:
+    """Nothing to check a target against: fail closed, as with an unknown target."""
     proposal = {**ACT, "parameters": {"target": LAMP}}
     engine, changes, _, script = _with_changes(_reply(proposal), snapshot=None)
     await changes.note(_person_turned_lamp_off(), "person")
 
     decided = await engine.process_event(TV_PLAYS)
 
-    assert decided.outcome == ReflexOutcome(kind="shadow")
+    assert decided.outcome == ReflexOutcome(kind="invalid")
     assert list(decided.recent) == [LAMP]
     assert f"Leave alone, a person just changed: {LAMP}" in script.prompt()
 
