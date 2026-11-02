@@ -24,6 +24,7 @@ from core.channels.admin_api import (
 )
 from core.channels.web_server import create_app, require_trusted_network
 from core.conscious.session import MESSAGES_FIELD, text_turn
+from core.notifications.devices import endpoint_field
 from shared.streams import SPEND_PREFIX
 from tests.core.channels.conftest import _TEST_SESSION_ID, session_hgetall
 from tests.helpers import aiter_values, attention_redis
@@ -65,7 +66,7 @@ def test_admin_requires_auth_cookie() -> None:
 def test_admin_reads_and_controls_need_only_a_session() -> None:
     """Admin is gated by the passkey session alone — a public caller with a valid
     cookie gets reads AND controls. The network gate is reserved for endpoints that
-    can mint or widen credentials (registration, credential writes, device tokens)."""
+    can mint or widen credentials (registration, credential writes, voice enrolment)."""
     client = make_admin_client(_overview_redis())
 
     # Structural half: no admin route may carry a network gate, and every one must
@@ -772,6 +773,27 @@ def test_devices_list_truncates_the_device_token() -> None:
     assert full_token not in resp.text
 
 
+def test_devices_list_truncates_a_token_the_row_repeats() -> None:
+    """A stored row carrying its own ``device_token`` cannot put the full token back."""
+    full_token = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    r = _overview_redis()
+
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        row = {"platform": "ios", "device_token": full_token}
+        return {full_token.encode(): json.dumps(row).encode()}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    client = make_admin_client(r)
+    resp = client.get("/api/admin/devices")
+
+    assert resp.json()["devices"] == [{"device_token": full_token[:12], "platform": "ios"}]
+    assert full_token not in resp.text
+
+
 def test_devices_list_truncates_the_token_on_corrupt_metadata() -> None:
     """The except branch truncates too — corrupt JSON must not leak the full token."""
     full_token = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
@@ -790,6 +812,73 @@ def test_devices_list_truncates_the_token_on_corrupt_metadata() -> None:
 
     assert resp.json()["devices"] == [{"device_token": full_token[:12]}]
     assert full_token not in resp.text
+
+
+def test_devices_redacts_web_push() -> None:
+    """A Web Push row's endpoint and keys are credentials: the read names its push host,
+    the field's prefix and the row's metadata, and nothing else."""
+    endpoint = "https://web.push.apple.com/QGuQyavXutnMH8"
+    field = endpoint_field(endpoint)
+    p256dh = (
+        "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM"
+    )
+    auth = "tBHItJI5svbpez7KI4CCXg"
+    row = {
+        "platform": "web_push",
+        "endpoint": endpoint,
+        "keys": {"p256dh": p256dh, "auth": auth},
+        "identity": "sir",
+        "registered_at": "2026-10-29T00:00:00+00:00",
+        "user_agent": "Mozilla/5.0 (iPhone)",
+    }
+    r = _overview_redis()
+
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        return {
+            field.encode(): json.dumps(row).encode(),
+            b"a1b2c3d4e5f60718293a4b5c6d7e8f90": json.dumps({"platform": "ios"}).encode(),
+        }
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    resp = make_admin_client(r).get("/api/admin/devices")
+
+    web_push, apns = resp.json()["devices"]
+    assert web_push == {
+        "device_token": field[:12],
+        "platform": "web_push",
+        "identity": "sir",
+        "registered_at": "2026-10-29T00:00:00+00:00",
+        "user_agent": "Mozilla/5.0 (iPhone)",
+        "push_host": "web.push.apple.com",
+    }
+    assert apns == {"device_token": "a1b2c3d4e5f6", "platform": "ios"}
+    for secret in (endpoint, p256dh, auth, field):
+        assert secret not in resp.text
+
+
+def test_devices_survives_a_web_push_row_without_an_endpoint() -> None:
+    """Reads are defensive: a damaged row reads with an empty push host, not a 500."""
+    field = "f" * 64
+    r = _overview_redis()
+
+    session = session_hgetall()
+
+    async def _hgetall(key: str) -> dict[bytes, bytes]:
+        if session_data := await session(key):
+            return session_data
+        return {field.encode(): json.dumps({"platform": "web_push", "endpoint": 7}).encode()}
+
+    r.hgetall = AsyncMock(side_effect=_hgetall)
+    resp = make_admin_client(r).get("/api/admin/devices")
+
+    assert resp.status_code == 200
+    [device] = resp.json()["devices"]
+    assert device["push_host"] == ""
+    assert device["device_token"] == field[:12]
 
 
 # ---------------------------------------------------------------------------

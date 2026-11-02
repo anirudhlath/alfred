@@ -11,6 +11,7 @@ import jwt  # PyJWT[crypto]
 from loguru import logger
 
 from core.notifications.channels import ChannelAdapter, ChannelRegistry
+from core.notifications.devices import decode_device, is_web_push
 from core.notifications.schema import Notification, Urgency
 from shared.env import is_truthy_flag
 from shared.streams import DEVICE_TOKENS_KEY
@@ -123,7 +124,10 @@ class APNsChannelAdapter(ChannelAdapter):
 
     async def deliver(self, notification: Notification) -> None:
         """Deliver notification to all registered iOS devices."""
-        raw_tokens: dict[bytes | str, bytes | str] = await self._redis.hgetall(DEVICE_TOKENS_KEY)
+        rows: dict[bytes | str, bytes | str] = await self._redis.hgetall(DEVICE_TOKENS_KEY)
+        # Web Push subscriptions share the hash and are the Web Push adapter's; a row that
+        # is not JSON is still a token, as it always was.
+        raw_tokens = [tok for tok, row in rows.items() if not is_web_push(decode_device(row))]
         if not raw_tokens:
             logger.debug("APNsChannelAdapter: no registered devices, skipping")
             return

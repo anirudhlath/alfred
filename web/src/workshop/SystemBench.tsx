@@ -10,6 +10,7 @@ import {
   type HealthCell,
 } from "@/lib/system";
 import type { Overview } from "@/lib/types";
+import { ReachSection } from "./ReachSection";
 import { Switch } from "./Switch";
 import { SystemRow, SystemSection } from "./SystemFrame";
 import {
@@ -625,17 +626,19 @@ function MaintenanceSection({ maintenance, now }: { maintenance: Maintenance; no
  * itself, what it is holding back, and the nightly work. A pure view over
  * `useSystem`'s one state object, exactly as `TriggersBench` is over `Triggers`
  * — it fetches nothing, which is what lets its tests build a state rather than
- * a `QueryClient`.
+ * a `QueryClient`. Reach is the one exception: it reads `usePush()` for itself
+ * (`ReachSection.tsx`).
  *
  * "Online" here is this bench's own reads landing, not the chat socket: every
  * number on the grid comes from the overview poll, so the poll is what the
  * stamp above them is entitled to speak for. The telemetry pump's liveness is
  * the Workshop header's business and says nothing about these figures.
  *
- * Seven sections, in the handoff's order: Health, Quiet, Sessions, Connected
- * services, Devices & identity, Reflex, Maintenance. The four in the middle
- * live in `SystemSections.tsx` — they share this file's frame and nothing else,
- * and the bench was already the largest view in `src/workshop/` without them.
+ * Eight sections, in the handoff's order: Health, Quiet, Reach, Sessions,
+ * Connected services, Devices & identity, Reflex, Maintenance. Reach lives in
+ * `ReachSection.tsx` and the four after it in `SystemSections.tsx` — they share
+ * this file's frame and nothing else, and the bench was already the largest
+ * view in `src/workshop/` without them.
  */
 export function SystemBench({ system }: SystemBenchProps) {
   // The clock every stamp on the bench is dated against — one clock, so two
@@ -714,6 +717,7 @@ export function SystemBench({ system }: SystemBenchProps) {
           readAt={readAt}
         />
         <QuietSection quiet={system.quiet} maintenance={system.maintenance} now={now} />
+        <ReachSection sessions={system.sessions} />
         {/* One clock for the whole bench, as the consolidation row and the
             expiry chips already share: a session list and a passkey list span
             weeks, and two stamps a pixel apart must not disagree about which

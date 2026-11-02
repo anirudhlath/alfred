@@ -37,12 +37,18 @@ two shapes:
 
 | Endpoints | Gates | Why |
 |---|---|---|
-| `PUT/DELETE /api/integrations/{name}/credentials`, `POST/DELETE /api/devices/register`, `POST /api/voice/enroll` | **both** (`_CREDENTIAL_GATES`, network first) | A caller who can write these can widen Alfred's reach, so being on the LAN/tailnet *and* signed in are both required. |
+| `PUT/DELETE /api/integrations/{name}/credentials`, `POST /api/voice/enroll` | **both** (`_CREDENTIAL_GATES`, network first) | A caller who can write these can widen Alfred's reach, so being on the LAN/tailnet *and* signed in are both required. |
 | `POST /api/auth/register/{begin,complete}` | **network or pairing code** (`_registration_gate` in `core/identity/auth_routes.py`, wrapping `trusted_network_dep` injected from `web_server.py`) | Registration is how the first session comes into existence — the first-run user has no cookie yet, so a session gate here would be unsatisfiable. Trust therefore comes from network position, or from a short-lived `X-Pairing-Code` an already-signed-in device minted. |
 
 Removing a passkey (`DELETE /api/auth/credentials/{credential_id}`) sits on the **session
 only**, like the admin surface: it neither mints nor widens a credential, so the rule above
 does not reach it.
+
+Device registration (`POST/DELETE /api/devices/register`) is **session-only** too, by
+spec §6.2 and the owner's decision of 2026-10-29: a phone away from home must be able to
+turn on notifications as soon as it installs the app. The trade, and what bounds it (the
+push-service allowlist, and a cap of 10 rows for each family, Web Push and APNs), is in
+[`web-push.md`](web-push.md#registration).
 
 Minting the code that makes the second row's alternative possible
 (`POST /api/auth/pairing`) is **session only** for a different reason — the code it hands
@@ -51,8 +57,9 @@ LAN here would defeat the point: the signed-in device doing the minting is often
 that is away. What stands in for the network half is the code's own budget — it must be
 presented on **both** `register/begin` and `register/complete`, it lives 5 minutes, it is
 consumed the moment the passkey is saved, and ten wrong guesses from one client address —
-a single IPv4 address or an IPv6 /64 — refuse that client for the rest of its 5-minute counter — the code itself stays live for
-everyone else, so a stranger cannot deny pairing to the device that is waiting.
+a single IPv4 address or an IPv6 /64 — refuse that client for the rest of its 5-minute
+counter — the code itself stays live for everyone else, so a stranger cannot deny pairing
+to the device that is waiting.
 
 See [`webauthn.md` → Sessions, passkeys and pairing](webauthn.md) for that whole surface.
 
@@ -319,16 +326,24 @@ the key existed, `{"deleted": false}` if not. Logs at INFO regardless.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/admin/devices` | List registered APNs device tokens |
+| `GET` | `/api/admin/devices` | List registered push devices: APNs tokens and Web Push subscriptions |
 
-Reads `HGETALL alfred:push:devices`. Each field is a device token; each value is the JSON
-object `POST /api/devices/register` wrote — `platform`, `identity` and `registered_at`
-(`web_server.py`). Corrupt values fall back to `{"device_token": tok}`.
+Reads `HGETALL alfred:push:devices`. Each field is an APNs device token or, for a Web Push
+subscription, the SHA-256 hex of its endpoint; each value is the JSON object
+`POST /api/devices/register` wrote (`web_server.py`). Corrupt values fall back to
+`{"device_token": tok}`.
+
+- **An APNs row** returns its stored fields: `platform`, `identity` and `registered_at`.
+- **A Web Push row** returns exactly `device_token`, `platform` (`web_push`), `identity`,
+  `registered_at`, `user_agent` and `push_host` (the endpoint's host, `""` when the row
+  has no readable endpoint). The `endpoint` and `keys` are **never returned**: with them
+  anyone can push to that browser ([`web-push.md`](web-push.md#credentials)).
 
 `device_token` is **truncated to its first 12 characters and never returned in full** — a
 whole APNs token is credential-equivalent, and this route needs only a session, so it is
 reachable from the public hostname. 12 characters is what the UI renders and is enough to
-distinguish devices.
+distinguish devices. For a Web Push row it is the first 12 characters of the field, the
+prefix its log lines carry.
 
 ---
 

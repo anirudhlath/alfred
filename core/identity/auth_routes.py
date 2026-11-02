@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
 _AUTH_SESSION_TTL = 8 * 3600  # 8 hours — a phone re-auths with Face ID, cheap to renew
 _CHALLENGE_TTL = 300  # 5 minutes
-_MAX_USER_AGENT_LEN = 200  # bounds what a hostile client can park in the session hash
+MAX_USER_AGENT_LEN = 200  # bounds what a hostile client can park in the session hash
 # Session ids are uuid4 strings; the class also covers a token_urlsafe id should
 # the generator ever change. Anything else is refused before it reaches Redis or
 # the log line, so a %00 or a 5000-character path segment goes nowhere.
@@ -319,7 +319,7 @@ def create_auth_router(
                 "credential_id": credential_id,
                 "created_at": datetime.now(UTC).isoformat(),
                 "ip": _client_address(request),
-                "user_agent": request.headers.get("user-agent", "")[:_MAX_USER_AGENT_LEN],
+                "user_agent": request.headers.get("user-agent", "")[:MAX_USER_AGENT_LEN],
                 "channel": channel,
             },
         )

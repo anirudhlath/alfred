@@ -23,3 +23,8 @@ export const WithSteps = () => (
     </Gate>
   </Page>
 );
+export const WithPointer = () => (
+  <Page theme="dark" frame="phone">
+    <Gate kicker="reaching you · 3 of 6 · in Safari" title="Add me to the home screen." secondary={{ label: "Not now", onClick: () => {} }} pointer="Share" />
+  </Page>
+);

@@ -3,8 +3,8 @@
 Every endpoint requires an authenticated passkey session (``require_authenticated``,
 HTTP 401 otherwise) and nothing else: admin reads and controls are usable from the
 public hostname once signed in. The trusted-network gate is reserved for endpoints
-that can mint or widen credentials — passkey registration, credential writes, device
-tokens, voice enrolment — which live in ``web_server.py`` / ``auth_routes.py``.
+that can mint or widen credentials — passkey registration, credential writes, voice
+enrolment — which live in ``web_server.py`` / ``auth_routes.py``.
 
 Reads are defensive: missing keys/streams/files yield empty results, never 500s.
 Controls map to operations the system already performs — direct Redis writes
@@ -30,6 +30,7 @@ from bus.schemas.events import ActionRequest
 from core.channels.stream_catalog import STREAM_CATALOG, decode_entry, stream_summaries
 from core.conscious.session import stored_messages, turn_count
 from core.memory.paths import episodic_cold_path, preferences_dir, profile_dir, scratchpad_path
+from core.notifications.devices import decode_device, is_web_push, push_host
 from core.reflex.attention import (
     attention_add,
     attention_domains,
@@ -326,6 +327,24 @@ def _redis(request: Request) -> AioRedis:
     return r
 
 
+def _web_push_device(tok: str, row: dict[str, Any]) -> dict[str, Any]:
+    """A Web Push row as the devices read shows it: the endpoint and keys are credentials
+    (anyone holding them can push to the browser), so only the push host stands in."""
+    endpoint = row.get("endpoint")
+    host = ""
+    if isinstance(endpoint, str):
+        with contextlib.suppress(ValueError):  # urlsplit refuses a malformed host
+            host = push_host(endpoint)
+    return {
+        "device_token": tok,
+        "platform": row.get("platform"),
+        "identity": row.get("identity"),
+        "registered_at": row.get("registered_at"),
+        "user_agent": row.get("user_agent"),
+        "push_host": host,
+    }
+
+
 def create_admin_router() -> APIRouter:
     router = APIRouter(
         prefix="/api/admin",
@@ -456,11 +475,15 @@ def create_admin_router() -> APIRouter:
             # reachable from the public hostname with only a session. 12 chars is what
             # the UI renders and is enough to tell devices apart.
             tok = decode_stream_value(token)[:12]
-            val = decode_stream_value(value)
-            try:
-                out.append({"device_token": tok, **json.loads(val)})
-            except (json.JSONDecodeError, ValueError):
+            row = decode_device(value)
+            if row is None:
                 out.append({"device_token": tok})
+            elif is_web_push(row):
+                out.append(_web_push_device(tok, row))
+            else:
+                # The prefix last, so a row that stores its own `device_token` cannot
+                # replace it with the full token.
+                out.append({**row, "device_token": tok})
         return {"devices": out}
 
     @router.get("/memory/episodic")

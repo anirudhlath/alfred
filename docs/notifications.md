@@ -16,7 +16,7 @@ graph TD
     DND -->|Yes + non-urgent| DEFER[Redis List<br/>alfred:notifications:deferred]
     DND -->|No or Urgent| STREAM[Redis Stream<br/>alfred:notifications:dispatch]
     STREAM --> CG1[conscious-delivery group<br/>→ SignalAdapter]
-    STREAM --> CG2[channels-delivery group<br/>→ WebSocket + APNs + Satellite]
+    STREAM --> CG2[channels-delivery group<br/>→ WebSocket + APNs + Web Push + Satellite]
     DEFER -->|DND expiry trigger<br/>or DND cleared| DRAIN[drain_deferred]
     DRAIN --> STREAM
 ```
@@ -28,10 +28,11 @@ graph TD
 | Level | Value | Channels |
 |-------|-------|----------|
 | INFORMATIONAL | `"informational"` | Signal + APNs |
-| IMPORTANT | `"important"` | Signal + WebSocket + APNs |
-| URGENT | `"urgent"` | Signal + WebSocket (with spoken audio) + APNs + Satellite (bypasses DND) |
+| IMPORTANT | `"important"` | Signal + WebSocket + APNs + Web Push |
+| URGENT | `"urgent"` | Signal + WebSocket (with spoken audio) + APNs + Web Push + Satellite (bypasses DND) |
 
-APNs delivers only when its credentials are configured, and Satellite only when
+APNs delivers only when its credentials are configured, Web Push only when
+`WEBPUSH_VAPID_SUBJECT` is set ([`web-push.md`](web-push.md)), and Satellite only when
 `config/satellites.yaml` lists devices.
 
 ### Notification (Pydantic BaseModel)
@@ -86,7 +87,8 @@ at import time and are initialized via `set_instance()` during startup.
 |---------|-----------|----------|
 | SignalChannelAdapter | All | Formats `"Title: body"` → SignalBridge.send_notification() |
 | WebSocketChannelAdapter | Important, Urgent | JSON `notification` frame to all connected WS sessions; an Urgent one also carries its TTS audio (base64 WAV in `audio`) |
-| APNsChannelAdapter | All | HTTP/2 push to every registered iOS device token |
+| APNsChannelAdapter | All | HTTP/2 push to every registered iOS device token (it skips the Web Push rows) |
+| WebPushChannelAdapter | Important, Urgent | `aes128gcm`-encrypted push with a VAPID token to every Web Push subscription, through the browser's push service; prunes on 404/410 ([web-push.md](web-push.md)) |
 | SatelliteChannelAdapter | Urgent only | TTS audio played on every connected voice satellite ([voice-satellites.md](voice-satellites.md)) |
 
 ### Spoken audio
@@ -101,14 +103,27 @@ There is no separate voice adapter. A second adapter pushing audio to the same W
 sessions would speak every URGENT notification twice (the hazard
 [#56](https://github.com/anirudhlath/alfred/issues/56) investigates).
 
-### Device Registration (APNs)
+### Device Registration
 
-Native clients register their APNs token with `POST /api/devices/register` (and `DELETE`
-to unregister); tokens live in the `alfred:push:devices` Redis hash. Both routes are
-double-gated — `require_trusted_network` **and** `require_authenticated` — so a client
-must be on the LAN/tailnet *and* send a valid `alfred_auth` passkey session cookie. A
-native client that presents only a device token gets 403 (untrusted network) or 401 (no
-session), never a registration.
+Clients register with `POST /api/devices/register` and unregister with `DELETE`. Both
+routes keep every push device in the `alfred:push:devices` Redis hash. The `POST` body is
+discriminated on `platform`:
+
+| `platform` | Body | Field in the hash |
+|------------|------|-------------------|
+| `ios`, `ipados`, `macos` | `{"device_token", "platform", "identity"}`: `identity` is 1–64 characters of `[a-z0-9_-]`, and any other is a 422 | the APNs token |
+| `web_push` | `{"platform": "web_push", "subscription": <PushSubscription.toJSON()>}` | the SHA-256 hex of the endpoint |
+
+Any other `platform` is a 422. `DELETE` takes exactly one of `{"device_token"}` and
+`{"endpoint"}`, non-empty, and answers `{"status": "ok"}` whether or not the row existed.
+
+Both routes are **session-only** (`require_authenticated`), from any network (spec §6.2,
+the owner's decision of 2026-10-29): a phone away from home can turn on notifications as
+soon as it installs the app. A client with no valid `alfred_auth` passkey session cookie
+gets 401, never a registration. A Web Push endpoint must be on a known push service, and
+at most 10 devices of each family are kept, 10 Web Push subscriptions and 10 APNs tokens,
+each family evicting only its own oldest; the allowlist, the caps and the row are in
+[`web-push.md`](web-push.md#registration).
 
 ### Adding a New Channel Adapter
 
@@ -217,6 +232,7 @@ in the Room.
 | `alfred:memory:dnd` | String (JSON) | Manual DND state |
 | `alfred:notifications:deferred` | List | Deferred notification queue |
 | `alfred:notifications:dispatch` | Stream | Cross-process notification delivery |
+| `alfred:push:devices` | Hash | Push devices: an APNs token's field is the token and its value the JSON row; a Web Push subscription's field is the SHA-256 hex of its endpoint ([`web-push.md`](web-push.md#the-row)) |
 | `alfred:followup:{event_id}` | String (`waiting` \| `late`) | A channel's wait for a response, 600 s; `late` marks one that gave up and got `LATE_REPLY` |
 
 ## Drain Trigger
