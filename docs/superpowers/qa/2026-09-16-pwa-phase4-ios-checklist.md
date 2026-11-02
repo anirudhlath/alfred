@@ -312,9 +312,12 @@ written, record what Safari offered instead.
 
 ## Nothing lies
 
-- [ ] There is no Reach card, no `install` gate, no `standalone` gate, no home-screen
-      prompt row and no notification permission prompt anywhere. That is phase 5, and an
-      inert one would be the defect the phase-2 placeholder tabs were
+- [ ] Since phase 5's slice 1, System › Reach and the `install` and `standalone` gates
+      exist, and the standalone gate raises iOS's notification permission prompt; the
+      phase-5 checklist (`2026-10-29-pwa-phase5-ios-checklist.md`) runs them, not this
+      one. The Room shows no home-screen prompt row and raises no notification permission
+      prompt: those arrive with phase 5's slice 2, and an inert one would be the defect the
+      phase-2 placeholder tabs were
 - [ ] No launch above showed `signed out` before the house had answered: with no network
       or no answer, the sign-in gate never appeared
 - [ ] The update note appeared only when a changed `sw.js` was waiting, never after an

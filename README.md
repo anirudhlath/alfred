@@ -66,7 +66,7 @@ flowchart TB
     Librarian --> Procedural
 
     Conscious --> Integrations["IntegrationRegistry<br/>weather, calendar, health, robinhood"]
-    Conscious --> Notify["Notification Dispatcher<br/>APNs push, WebSocket, voice TTS"]
+    Conscious --> Notify["Notification Dispatcher<br/>APNs + Web Push, WebSocket, voice TTS"]
 
     Evals["PRD Eval Suite<br/>goldens on a throwaway stack, vLLM in every role"] -.-> Reflex
     Evals -.-> Conscious

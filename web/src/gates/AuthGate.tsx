@@ -125,10 +125,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (expired && !authenticated) setExpired(false);
 
   // A sign-in is the one moment the sockets need a push: the server closed them
-  // with 4001 while there was no session, and a 4001 is never retried.
+  // with 4001 while there was no session, and a 4001 is never retried. It is
+  // announced too, for a read the lapsed session left unasked (useActionRoute).
   const refetchEverything = useCallback(() => {
     reconnect();
     void queryClient.invalidateQueries();
+    authEvents.emit("signed-in");
   }, [queryClient, reconnect]);
 
   let body: ReactNode;

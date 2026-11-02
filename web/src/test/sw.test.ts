@@ -80,9 +80,13 @@ const LOADS_THE_WORKER = /["'`][^"'`\n]*public\/sw\.js(?:\?[^"'`\n]*)?["'`]/;
 // worker and not about the worker.
 it("finds every file that reads the worker's bytes standing down when the switch is fired", () => {
   const loaders = Object.keys(SOURCES).filter((path) => LOADS_THE_WORKER.test(SOURCES[path]));
-  // Not vacuous: the two files that test the worker are found by the same rule.
+  // Not vacuous: the files that test the worker are found by the same rule.
   expect(loaders).toEqual(
-    expect.arrayContaining(["/src/test/sw.test.ts", "/src/test/sw-server-routes.test.ts"]),
+    expect.arrayContaining([
+      "/src/test/sw.test.ts",
+      "/src/test/sw-server-routes.test.ts",
+      "/src/test/sw-push.test.ts",
+    ]),
   );
   for (const path of loaders) {
     expect(SOURCES[path], path).toMatch(/^const FIRED = /m);

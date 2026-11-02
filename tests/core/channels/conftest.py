@@ -61,12 +61,16 @@ def make_session_redis(session_id: str = _TEST_SESSION_ID) -> AsyncMock:
 
 
 @contextmanager
-def live_channels_client(dist: Path | None = None) -> Iterator[TestClient]:
+def live_channels_client(
+    dist: Path | None = None, *, webpush: bool = False
+) -> Iterator[TestClient]:
     """A TestClient over the real `create_app`, with every external dependency mocked.
 
     The lifespan has to actually run — it is what registers the auth router ahead of the
     SPA catch-all — so everything it reaches for is patched out here. Pass `dist` to point
-    `_SPA_DIST` at a fixture tree; leave it None to serve the real `web/dist/`.
+    `_SPA_DIST` at a fixture tree; leave it None to serve the real `web/dist/`. Pass
+    `webpush=True` to run the real Web Push startup: it reads `WEBPUSH_VAPID_SUBJECT` and
+    the (in-memory) keyring, and registers its adapter on the process-global registry.
     """
     # Minimal mock Redis — handles auth-session lookup and any other calls.
     mock_redis = AsyncMock()
@@ -109,6 +113,10 @@ def live_channels_client(dist: Path | None = None) -> Iterator[TestClient]:
         # httpx.AsyncClient.aclose() is called on shutdown.
         patch("httpx.AsyncClient.aclose", new=AsyncMock()),
     ]
+    if not webpush:
+        # Skip Web Push init (reads the environment and the keyring, and registers a
+        # process-global adapter).
+        patches.append(patch("core.channels.web_server._init_webpush_adapter", new=AsyncMock()))
     if dist is not None:
         # Point _SPA_DIST at the fixture dist so mount_spa actually mounts.
         patches.append(patch.object(ws_mod, "_SPA_DIST", dist))

@@ -60,10 +60,10 @@ sequenceDiagram
 
 - Registration requires a trusted network (`require_trusted_network`) **or** a valid
   `X-Pairing-Code` header on both `register/begin` and `register/complete`. The other
-  credential-minting endpoints (credential writes, `POST`/`DELETE
-  /api/devices/register`, `POST /api/voice/enroll`) take the network gate *and* the
-  session; see [`admin-api.md` → Auth Model](admin-api.md#auth-model). Admin reads and
-  controls — and session/passkey management — need only the session
+  credential-minting endpoints (credential writes, `POST /api/voice/enroll`) take the
+  network gate *and* the session; see [`admin-api.md` → Auth Model](admin-api.md#auth-model).
+  Admin reads and controls, session/passkey management and push device registration
+  (`POST`/`DELETE /api/devices/register`) need only the session
 - Pairing codes are minted only by an authenticated session, live 5 minutes, and are
   consumed the moment the new passkey is saved. Ten wrong guesses refuse the **address**
   that made them for the rest of its 5-minute counter, not the code — so a stranger
@@ -145,9 +145,9 @@ including on the 503 path, so the PWA is never left holding a session id that ha
 been deleted.
 
 Note the gate: removing a passkey needs **only the session**, unlike
-`DELETE /api/integrations/{name}/credentials` and `POST`/`DELETE /api/devices/register`,
-which also require a trusted network. Removal neither mints nor widens a credential, so
-the rule that reserves the network gate does not reach it.
+`DELETE /api/integrations/{name}/credentials`, which also requires a trusted network.
+Removal neither mints nor widens a credential, so the rule that reserves the network gate
+does not reach it.
 
 **Outages.** Every store failure on the sessions, passkeys, pairing and logout routes
 answers **503** `{"detail": "Session store unavailable"}` — one vocabulary, so a client

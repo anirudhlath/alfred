@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, errorText } from "@/lib/api";
 import { finiteNumber } from "@/lib/format";
+import { forgetPush } from "@/lib/push";
 import {
   drainDeferred,
   DND_UNCONFIRMED,
@@ -621,27 +622,35 @@ export function useSystem(enabled: boolean, onHeld: () => void): System {
     const fresh = claim("logout");
     setSigningOut(true);
     setSignOutError(null);
-    void logoutSession().then(
-      () => {
-        if (!fresh()) return;
-        setSigningOut(false);
-        // The cookie is gone; this re-read is the request that 401s and raises
-        // the Expired gate over the bench, exactly as ending your own session
-        // does.
-        void queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
-      },
-      (error: unknown) => {
-        if (!fresh()) return;
-        setSigningOut(false);
-        // `auth_routes.logout` clears the cookie on its 503 as well as on its
-        // 200, so this device is signed out whatever the status line said. The
-        // re-read goes out on this branch too — without it the Expired gate
-        // arrives half a minute later on the overview poll, with nothing tying
-        // it to the tap the reader was told had failed.
-        setSignOutError(`${errorText(error)} · ${SIGNED_OUT_ANYWAY}`);
-        void queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
-      },
-    );
+    // This browser's subscription goes first, while its DELETE still has the
+    // session the logout ends (R8). `forgetPush` never rejects, so the logout
+    // always follows. A session already past its cap answers that DELETE with
+    // a 401, which raises the Expired gate a moment early, over the same bench
+    // the re-read below would raise it over: the gate is a latch, and this
+    // carries on to the same place.
+    void forgetPush()
+      .then(() => logoutSession())
+      .then(
+        () => {
+          if (!fresh()) return;
+          setSigningOut(false);
+          // The cookie is gone; this re-read is the request that 401s and
+          // raises the Expired gate over the bench, exactly as ending your own
+          // session does.
+          void queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
+        },
+        (error: unknown) => {
+          if (!fresh()) return;
+          setSigningOut(false);
+          // `auth_routes.logout` clears the cookie on its 503 as well as on its
+          // 200, so this device is signed out whatever the status line said.
+          // The re-read goes out on this branch too — without it the Expired
+          // gate arrives half a minute later on the overview poll, with nothing
+          // tying it to the tap the reader was told had failed.
+          setSignOutError(`${errorText(error)} · ${SIGNED_OUT_ANYWAY}`);
+          void queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
+        },
+      );
   }, [claim, queryClient]);
 
   // ── Connected services ─────────────────────────────────────────────────────

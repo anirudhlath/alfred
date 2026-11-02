@@ -39,6 +39,8 @@ const DND = "/api/admin/dnd";
 const DRAIN = "/api/admin/notifications/drain";
 const LIBRARIAN = "/api/admin/librarian/run";
 const LOGOUT = "/api/auth/logout";
+const DEVICES = "/api/devices/register";
+const ENDPOINT = "https://fcm.googleapis.com/fcm/send/fake-endpoint";
 
 const statusPath = (name: string) => `${INTEGRATIONS}/${name}/status`;
 const credentialsPath = (name: string) => `${INTEGRATIONS}/${name}/credentials`;
@@ -211,6 +213,23 @@ function renderSystem(enabled = true, client = makeClient()) {
   });
 }
 
+/**
+ * A browser holding a push subscription, as the installed app does once Reach is
+ * on. jsdom has no `navigator.serviceWorker`, so every other test signs out of a
+ * browser with nothing to forget; cleanup deletes this one. Returns the
+ * subscription's `unsubscribe`.
+ */
+function subscribedBrowser(): ReturnType<typeof vi.fn> {
+  const unsubscribe = vi.fn(() => Promise.resolve(true));
+  const subscription = { endpoint: ENDPOINT, unsubscribe };
+  const registration = { pushManager: { getSubscription: () => Promise.resolve(subscription) } };
+  Object.defineProperty(navigator, "serviceWorker", {
+    configurable: true,
+    value: { getRegistration: () => Promise.resolve(registration) },
+  });
+  return unsubscribe;
+}
+
 /** Let every queued microtask run without asserting anything happened. */
 const settle = async (): Promise<void> => {
   await act(async () => {
@@ -255,6 +274,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const off of listeners) off();
   for (const queue of parked.values()) for (const resolve of queue) resolve(OK);
+  Reflect.deleteProperty(navigator, "serviceWorker");
   focusManager.setFocused(undefined);
   onlineManager.setOnline(true);
   vi.useRealTimers();
@@ -1330,6 +1350,8 @@ describe("useSystem", () => {
 
     act(() => result.current.credentials.signOut());
     act(() => result.current.credentials.signOut());
+    // Each logout is sent once its `forgetPush` has settled, a tick after the tap.
+    await waitFor(() => expect(parked.get(route("POST", LOGOUT))).toHaveLength(2));
     unhold("POST", LOGOUT);
 
     // The superseded attempt answers first, and with a refusal: neither its
@@ -1339,6 +1361,50 @@ describe("useSystem", () => {
 
     await waitFor(() => expect(result.current.credentials.signingOut).toBe(false));
     expect(result.current.credentials.error).toBeNull();
+  });
+
+  it("forgets push before signing out", async () => {
+    const unsubscribe = subscribedBrowser();
+    const { result } = await openBench();
+
+    act(() => result.current.credentials.signOut());
+    await waitFor(() => expect(result.current.credentials.signingOut).toBe(false));
+
+    // The DELETE needs the session the logout ends, so it goes first, and it is
+    // finished — the browser unsubscribed — before the logout is sent (R8).
+    const writes = calls.filter((call) => call.method !== "GET");
+    expect(writes.map((call) => route(call.method, call.url))).toEqual([
+      route("DELETE", DEVICES),
+      route("POST", LOGOUT),
+    ]);
+    expect(sent("DELETE", DEVICES)?.body).toEqual({ endpoint: ENDPOINT });
+    const logoutAt = calls.findIndex((call) => call.method === "POST" && call.url === LOGOUT);
+    expect(unsubscribe.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(fetch).mock.invocationCallOrder[logoutAt] ?? 0,
+    );
+    expect(result.current.credentials.error).toBeNull();
+  });
+
+  // Past the eight-hour cap the DELETE is the first request to find no session,
+  // and `api()` announces its 401 in the middle of the sign-out. The gate it
+  // raises is the one the logout's own re-read raises a moment later — a latch,
+  // set twice — so the sign-out must carry on to the same place.
+  it("signs out all the same when the session lapsed before push was forgotten", async () => {
+    subscribedBrowser();
+    const expired = listen("expired");
+    answer("DELETE", DEVICES, { status: 401, body: { detail: "Not authenticated" } });
+    const { result } = await openBench();
+    answer("GET", SESSIONS, { status: 401, body: { detail: "Not authenticated" } });
+    const sessionReads = countOf("GET", SESSIONS);
+
+    act(() => result.current.credentials.signOut());
+    await waitFor(() => expect(result.current.credentials.signingOut).toBe(false));
+
+    expect(sent("POST", LOGOUT)).toBeDefined();
+    expect(result.current.credentials.error).toBeNull();
+    // What a normal sign-out ends with: the re-read behind it, which 401s too.
+    await waitFor(() => expect(countOf("GET", SESSIONS)).toBe(sessionReads + 1));
+    expect(expired).toHaveBeenCalledTimes(2);
   });
 
   it("queues a drain and a consolidation, and leaves them queued", async () => {

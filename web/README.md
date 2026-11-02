@@ -4,7 +4,8 @@ The phone-first PWA that replaced the Mission Control SPA. One screen (the Room)
 one interrupt (the Door), four identity gates over the top of them and two for a
 launch the house has not answered yet — and, under the Room, the Workshop, where the
 house's streams are read as they happen. A hand-written service worker keeps the app
-shell on the phone, so it opens with no network.
+shell on the phone, so it opens with no network, and shows the house's pushes when the
+app is closed.
 
 Design: `docs/design/2026-09-04-pwa-client-handoff/` (tokens, copy and the
 `Alfred.dc.html` prototype the presence field and slide maths were ported from).
@@ -40,15 +41,18 @@ src/lib/        no React: api, sockets, formatters, the presence physics,
                 the action reducer, the slide maths, audio and recording,
                 the stream catalogue (streams.ts), the feed reducer (feed.ts),
                 the causal thread (trace.ts), the page's half of the service
-                worker (sw.ts) — and one module per bench:
+                worker (sw.ts), the browser's push APIs (push.ts) — and one
+                module per bench:
                 memory.ts (the three-shape episodic adapter), triggers.ts
                 (kinds and meta lines), system.ts (sessions, credentials,
                 pairing, integrations, attention, the health cells)
 src/shell/      providers, the two surfaces everything rises on, the
                 ErrorBoundary the Workshop wraps its panel in, the update
-                note (UpdateNote.tsx, useUpdateReady.ts) and useOnline.ts
+                note (UpdateNote.tsx, useUpdateReady.ts), useOnline.ts, and
+                Web Push's sync (usePush.ts, PushKeeper.tsx)
 src/gates/      setup, sign-in, expired, denied, offline and unanswered — and
-                the router between them
+                the router between them; and Reach's install and standalone
+                gates
 src/room/       the one screen: presence field, headline, timeline, composer,
                 and the handle into the Workshop (WorkshopHandle.tsx)
 src/door/       the approval interrupt: banner, fuse, slide, deep link
@@ -57,7 +61,7 @@ src/workshop/   the Workshop layer: the bench switcher (BenchSwitcher.tsx,
                 ActivityBench + EventRow/StreamChips/useActivity,
                 MemoryBench + RoutineRow/useMemory,
                 TriggersBench + TriggerRow/useTriggers,
-                SystemBench + SystemSections/IntegrationRow/useSystem,
+                SystemBench + ReachSection/SystemSections/IntegrationRow/useSystem,
                 over the shared SystemFrame.tsx and Switch.tsx
 src/sheets/     the held-back queue and `Why Alfred did that`
 src/test/       jsdom setup, shared fixtures, the contrast restatement, the
@@ -92,7 +96,7 @@ Tests live beside their source (`lib/history.ts` → `lib/history.test.ts`).
   (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in the layer's own type,
   ink on paper. Do not invent new words for system state.
 
-## What phases 1 to 4 cover
+## What phases 1 to 5 cover
 
 Phase 1: shell, theme and viewport; the four identity gates; the Room (presence
 field, headline, status line, offline note, DND row and the held-back sheet, the
@@ -119,8 +123,7 @@ Phase 3: the Workshop's other three benches, each a pure view over one hook call
   `queued HH:MM · … · takes effect within 60 s` note until a fresh read says otherwise.
 - **System** — health, cloud spend, quiet hours and the held-back queue, maintenance,
   auth sessions, connected services and their credential forms, passkeys and pairing,
-  and the reflex attention set. Web Push (the Reach card) lands with phase 5; the card
-  is deliberately absent rather than inert.
+  and the reflex attention set. Phase 5 added Reach to it (below).
 
 Phase 4: the app installs and opens with no network.
 
@@ -140,16 +143,31 @@ Phase 4: the app installs and opens with no network.
   no answer. Sign-in and setup follow only the house's own answer (see
   `docs/web-frontend.md`, "The gates").
 
+Phase 5, slice 1: Alfred reaches the phone when the app is closed. The architecture is
+`docs/web-frontend.md`, "Web Push"; the house's half and the Reach states are
+`docs/web-push.md`.
+
+- **The worker's `push` and `notificationclick`** — every important and urgent
+  notification is shown, and a tap opens the approval it names, in the open app
+  (`OPEN_PATH`, routed by `NotificationOpen`) or in a new window. Neither listener
+  caches anything, which is the condition
+  [#406](https://github.com/anirudhlath/alfred/issues/406) §1 set.
+- **The subscription, kept registered** — `src/lib/push.ts` and `usePush()`, run by
+  `PushKeeper` once a launch, after each sign-in and when a permission taken away is
+  given back. `Sign out on this device` forgets it first.
+- **System › Reach and its two gates** — the `Push notifications` row, `Show me how`
+  to the `install` gate in a browser tab, `Enable` to the `standalone` gate in the
+  installed app, whose `Let me reach you` asks iOS.
+
 ## What it does not
 
-- **Web Push, and the install rail that leads to it** — phase 5. The standalone metas
-  are in `index.html` and the gesture the rail teaches already installs a correct app,
-  but there is no `install` gate, no `standalone` gate, no home-screen prompt row and no
-  System › Reach card: the rail's every step exists to reach *Allow in iOS*, and steps
-  with nothing behind them would be controls that pretend. Phase 5 owes all four (the
-  handoff's copy for them is final), plus VAPID, the push adapter, the registration, and
-  the worker's `push` and `notificationclick` handlers, with a condition on any cache of
-  its own. Filed, condition and all, as [#406](https://github.com/anirudhlath/alfred/issues/406) §1.
+- **Phase 5's second slice** — the Room's home-screen prompt row, the allowed and
+  declined Act rows, and the icon badge (`navigator.setAppBadge`). Reach's `on` line is
+  the handoff's copy verbatim and already names the badge, which slice 2 makes true.
+- **A sign-out whose `DELETE` and unsubscribe both fail** leaves the subscription live
+  and the house's row in place, so pushes keep arriving on a signed-out phone until the
+  next sign-in, until the push service drops it, or until the cap evicts the row
+  (`docs/web-frontend.md`, "Web Push").
 - **Four things the old SPA could do and this client cannot**, which is the whole of the
   remaining parity gap (spec §8's gate is *full capability parity with the old SPA*).
   Three of them have no endpoint to call: **creating, editing or deleting a trigger**
@@ -162,11 +180,11 @@ Phase 4: the app installs and opens with no network.
 
 ## The service worker
 
-`public/sw.js` is hand-written — 273 lines of code under 909 of comment at `1d166e3`, 3.3
-to 1, counted with acorn's tokenizer (a line is code if any token touches it, comment if
-only a comment does, and a blank line, inside a comment or not, is neither) — and shipped
-verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no Workbox, no generated
-precache manifest. The reasoning is in
+`public/sw.js` is hand-written — 313 lines of code under 965 of comment once phase 5 added
+its push listeners, 3.1 to 1, counted with acorn's tokenizer (a line is code if any token
+touches it, comment if only a comment does, and a blank line, inside a comment or not, is
+neither) — and shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no
+Workbox, no generated precache manifest. The reasoning is in
 `docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md`; the short version
 is that a versioned cache, an explicit purge and a documented kill switch all have to be
 things a reviewer can *read in the shipped bytes*, and a negative requirement — "this
@@ -499,6 +517,16 @@ is a change to `sw.js` itself, not a deploy: `VERSION` is bumped by hand and the
 byte-identical across most deploys, so most deploys install nothing, leave nothing waiting,
 and are taken at the next navigation by the network-first branch.
 
+**Two more listeners, for pushes, and they cache nothing.** Phase 5 added `push`, which
+shows a notification from the payload whatever it holds (`Alfred` when it cannot read one,
+since iOS revokes a subscription whose pushes are not shown), and `notificationclick`, which
+hands the tapped notification's path to the open app as `{ type: "OPEN_PATH", path }`, or
+opens a window at it when none is open. The worker builds that path itself from the
+payload's `action_id`: `/actions/<id>` or `/`. Neither listener reads or writes a cache, so
+the first rule below holds unchanged. The payload is `docs/web-push.md`, "The payload
+contract with `sw.js`", and the page's half is `src/lib/push.ts` (`docs/web-frontend.md`,
+"Web Push").
+
 **`src/lib/sw.ts` registers it**, from one `installServiceWorker()` call in `main.tsx` after
 the app is handed to React. In a production build that registers `/sw.js` at the root; in dev
 it unregisters every worker and deletes every cache instead, because a worker left behind by
@@ -559,6 +587,7 @@ switch leaves behind on the pages that lived through it: `docs/web-frontend.md`,
 kill switch".
 
 The tests are `src/test/sw.test.ts` (the worker, driven event by event),
+`src/test/sw-push.test.ts` (its two push listeners, through the same fake scope),
 `src/test/sw-kill.test.ts` (the kill switch, through the same fake scope),
 `src/test/sw-harness.test.ts` (the fake scope itself — it has to model `ExtendableEvent`,
 `Cache.put`, `Clients.matchAll` and which worker controls each open page closely enough

@@ -12,7 +12,7 @@ import time
 from contextlib import asynccontextmanager, contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 from uuid import uuid4
 
 import httpx
@@ -27,7 +27,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from redis.exceptions import RedisError
 
 if TYPE_CHECKING:
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from core.channels.followups import FollowupSink
     from core.channels.service_credentials import ServiceCredentialManifest
     from core.integrations.base import CredentialSchema
+    from shared.types import AioRedis
 
 from bus.schemas.events import AlfredResponse, UserRequest
 from core.channels.admin_api import aclose_episodic, create_admin_router, require_authenticated
@@ -53,15 +54,26 @@ from core.channels.voice_models import (  # re-exported for tests (see __all__)
     transcribe_async,
 )
 from core.identity.auth_middleware import AuthCookieMiddleware
-from core.identity.auth_routes import create_auth_router
+from core.identity.auth_routes import MAX_USER_AGENT_LEN, create_auth_router
 from core.identity.credentials import CredentialStore
 from core.identity.ws_auth import require_ws_auth
 from core.notifications.adapters.satellite import SatelliteChannelAdapter
 from core.notifications.channels import ChannelRegistry
+from core.notifications.devices import (
+    MAX_ENDPOINT_LEN,
+    WEB_PUSH_PLATFORM,
+    ApnsPlatform,
+    DeviceStoreBusyError,
+    WebPushSubscription,
+    endpoint_field,
+    push_host,
+    store_device,
+)
 from core.notifications.dispatcher import NotificationDispatcher
 from core.notifications.dnd import DNDChecker
 from core.notifications.publisher import NotificationPublisher
 from core.notifications.schema import Urgency
+from core.notifications.vapid import VAPID_SUBJECT_ENV, ensure_vapid_keys, vapid_subject
 from core.routing.pending import (
     decide,
     get_pending,
@@ -73,6 +85,7 @@ from core.shutdown import teardown
 from core.warmup import start_warmup
 from shared.env import is_truthy_flag
 from shared.redis_streams import create_redis
+from shared.streams import DEVICE_TOKENS_KEY
 from shared.usertime import is_valid_timezone
 
 # mypy --strict (no_implicit_reexport): mark the voice_models re-imports above as
@@ -256,10 +269,15 @@ class OnboardingPayload(BaseModel):
     guest_controls: list[str] | None = None
 
 
+# Whose voice print or device a client names. One bound for every model that takes one,
+# so they cannot drift.
+Identity = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")]
+
+
 class VoiceEnrollmentPayload(BaseModel):
     """Voice enrollment samples from the settings page."""
 
-    identity: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
+    identity: Identity
     samples: list[str] = Field(min_length=3, max_length=5)
 
 
@@ -288,14 +306,59 @@ class DeviceRegistration(BaseModel):
     """APNs device token registration."""
 
     device_token: str = Field(min_length=32, max_length=200, pattern=_DEVICE_TOKEN_PATTERN)
-    platform: str = Field(pattern=r"^(ios|ipados|macos)$")
-    identity: str
+    platform: ApnsPlatform
+    identity: Identity
+
+
+class WebPushRegistration(BaseModel):
+    """A browser's Web Push subscription, as ``PushSubscription.toJSON()`` hands it over."""
+
+    platform: Literal["web_push"]
+    subscription: WebPushSubscription
+
+
+# One route registers both kinds of device, told apart by ``platform`` (spec §6.2).
+DevicePayload = Annotated[DeviceRegistration | WebPushRegistration, Field(discriminator="platform")]
 
 
 class DeviceUnregistration(BaseModel):
-    """APNs device token removal."""
+    """A device's removal: an APNs token or a Web Push endpoint, exactly one of the two."""
 
-    device_token: str = Field(min_length=32, max_length=200, pattern=_DEVICE_TOKEN_PATTERN)
+    device_token: str | None = Field(
+        default=None, min_length=32, max_length=200, pattern=_DEVICE_TOKEN_PATTERN
+    )
+    endpoint: str | None = Field(default=None, min_length=1, max_length=MAX_ENDPOINT_LEN)
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> Self:
+        if (self.device_token is None) == (self.endpoint is None):
+            raise ValueError("give exactly one of device_token and endpoint")
+        return self
+
+
+def _web_push_row(subscription: WebPushSubscription, user_agent: str) -> str:
+    """The stored row for a subscription: credentials, so never logged or returned."""
+    return json.dumps(
+        {
+            "platform": WEB_PUSH_PLATFORM,
+            "endpoint": subscription.endpoint,
+            "keys": subscription.keys.model_dump(),
+            # Only a signed-in session reaches the route, as with the WebSocket handler.
+            "identity": "sir",
+            "registered_at": datetime.now(UTC).isoformat(),
+            "user_agent": user_agent[:MAX_USER_AGENT_LEN],
+        }
+    )
+
+
+def _apns_row(registration: DeviceRegistration) -> str:
+    return json.dumps(
+        {
+            "platform": registration.platform,
+            "identity": registration.identity,
+            "registered_at": datetime.now(UTC).isoformat(),
+        }
+    )
 
 
 def _preference_file(
@@ -430,6 +493,28 @@ async def _init_apns_adapter(pool: aioredis.Redis) -> None:
     logger.info("APNs adapter registered (team={}, bundle={})", team_id, bundle_id)
 
 
+async def _init_webpush_adapter(app: FastAPI, pool: AioRedis) -> None:
+    """Register the Web Push adapter when a VAPID subject is configured (R4).
+
+    The subject is read here, once per start, and handed to the adapter. The VAPID key is
+    read or, on the first start with a subject, generated (R5); its public half is what
+    ``GET /api/push/public-key`` serves.
+    """
+    subject = vapid_subject()
+    if subject is None:
+        logger.info("Web Push not configured ({} unset), skipping adapter", VAPID_SUBJECT_ENV)
+        return
+    keys = await ensure_vapid_keys()
+
+    import core.notifications.adapters.webpush  # noqa: F401 — trigger @register
+    from core.notifications.adapters.webpush import WebPushChannelAdapter
+
+    adapter = WebPushChannelAdapter(redis=pool, keys=keys, subject=subject)
+    ChannelRegistry.set_instance("webpush", adapter)
+    app.state.vapid_public_key = keys.public_key
+    logger.info("Web Push adapter registered")
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     """Manage shared Redis connection pool lifecycle + notification delivery."""
@@ -464,6 +549,11 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         await _init_apns_adapter(pool)
     except Exception as exc:
         logger.warning("APNs adapter init failed ({}): {}", type(exc).__name__, exc)
+
+    try:
+        await _init_webpush_adapter(app, pool)
+    except Exception as exc:
+        logger.warning("Web Push adapter init failed ({}): {}", type(exc).__name__, exc)
 
     from core.channels.followups import followup_worker
     from core.channels.service_credentials import credential_push_worker
@@ -535,6 +625,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 
     shutdown.set()
     apns = ChannelRegistry.get_instance("apns")
+    webpush = ChannelRegistry.get_instance("webpush")
     # One protected sequence rather than a bare chain: every close here used to sit
     # behind the one before it, so a single raiser (or a cancellation during shutdown)
     # silently skipped the rest — leaking the http client and the Redis pool.
@@ -543,6 +634,7 @@ async def _lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         closers={
             "satellite bridge": satellite_bridge.stop if satellite_bridge is not None else None,
             "apns adapter": getattr(apns, "close", None) if apns is not None else None,
+            "webpush adapter": getattr(webpush, "close", None) if webpush is not None else None,
             "credential store": credential_store.close,
             # The admin API's episodic embedding provider is a module-level singleton
             # (it must outlive any single request), so this hook is its only close.
@@ -603,11 +695,13 @@ def _tool_registry_read(costs: str) -> Iterator[None]:
         raise _ToolRegistryUnavailable from exc
 
 
-# The credential-equivalent routes (credential writes, device-token writes, voice
-# enrolment) carry BOTH gates. Order is load-bearing: the network gate runs FIRST so an
-# anonymous caller is refused on network grounds without the session ever being
-# consulted — a session-first order would make 401-vs-403 a session-validity oracle for
-# a stolen cookie. Kept as one list so a new route cannot pick up half the pair.
+# The credential-equivalent routes (credential writes, voice enrolment) carry BOTH
+# gates. Order is load-bearing: the network gate runs FIRST so an anonymous caller is
+# refused on network grounds without the session ever being consulted — a session-first
+# order would make 401-vs-403 a session-validity oracle for a stolen cookie. Kept as one
+# list so a new route cannot pick up half the pair. Device registration is not among
+# them: it is session-only by spec §6.2 and the owner's decision of 2026-10-29, so a
+# phone away from home can register for push.
 _CREDENTIAL_GATES = [Depends(require_trusted_network), Depends(require_authenticated)]
 
 
@@ -616,6 +710,8 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
     _ensure_integrations_registered()
     app = FastAPI(title="Alfred Web Channel", lifespan=_lifespan)
     app.state.redis_url = redis_url
+    # Set by _init_webpush_adapter when Web Push is configured; None answers 404.
+    app.state.vapid_public_key = None
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -1111,36 +1207,53 @@ def create_app(redis_url: str = "redis://localhost:6379") -> FastAPI:
 
     @app.post(
         "/api/devices/register",
-        dependencies=_CREDENTIAL_GATES,
+        dependencies=[Depends(require_authenticated)],
     )
-    async def register_device(payload: DeviceRegistration) -> dict[str, str]:
-        """Register an APNs device token for push notifications."""
-        from shared.streams import DEVICE_TOKENS_KEY
-
+    async def register_device(payload: DevicePayload, request: Request) -> dict[str, str]:
+        """Register a device for push: an APNs token, or a browser's Web Push subscription."""
         r: aioredis.Redis = app.state.redis
-        value = json.dumps(
-            {
-                "platform": payload.platform,
-                "identity": payload.identity,
-                "registered_at": datetime.now(UTC).isoformat(),
-            }
-        )
-        await r.hset(DEVICE_TOKENS_KEY, payload.device_token, value)
-        logger.info("Registered device token (platform={})", payload.platform)
+        try:
+            if isinstance(payload, WebPushRegistration):
+                subscription = payload.subscription
+                field = endpoint_field(subscription.endpoint)
+                user_agent = request.headers.get("user-agent", "")
+                await store_device(r, field, _web_push_row(subscription, user_agent), "web_push")
+                logger.info(
+                    "Registered web push subscription ({}…, host={})",
+                    field[:12],
+                    push_host(subscription.endpoint),
+                )
+            else:
+                await store_device(r, payload.device_token, _apns_row(payload), "apns")
+                logger.info("Registered device token (platform={})", payload.platform)
+        except DeviceStoreBusyError:
+            # store_device() has logged the give-up; nothing was written.
+            raise HTTPException(status_code=503, detail="Device store busy") from None
         return {"status": "ok"}
 
     @app.delete(
         "/api/devices/register",
-        dependencies=_CREDENTIAL_GATES,
+        dependencies=[Depends(require_authenticated)],
     )
     async def unregister_device(payload: DeviceUnregistration) -> dict[str, str]:
-        """Remove an APNs device token."""
-        from shared.streams import DEVICE_TOKENS_KEY
-
+        """Remove an APNs token or a Web Push subscription; ok whether or not it was stored."""
         r: aioredis.Redis = app.state.redis
-        await r.hdel(DEVICE_TOKENS_KEY, payload.device_token)
-        logger.info("Unregistered device token")
+        if payload.endpoint is not None:
+            field = endpoint_field(payload.endpoint)
+            await r.hdel(DEVICE_TOKENS_KEY, field)
+            logger.info("Unregistered web push subscription ({}…)", field[:12])
+        elif payload.device_token is not None:
+            await r.hdel(DEVICE_TOKENS_KEY, payload.device_token)
+            logger.info("Unregistered device token")
         return {"status": "ok"}
+
+    @app.get("/api/push/public-key")
+    async def push_public_key() -> dict[str, str]:
+        """The VAPID public key a browser subscribes with. Unauthenticated (spec §6.1)."""
+        key: str | None = app.state.vapid_public_key
+        if key is None:
+            raise HTTPException(status_code=404, detail="Web Push not configured")
+        return {"public_key": key}
 
     app.include_router(create_admin_router())
     register_telemetry_ws(app)

@@ -177,7 +177,9 @@ dependencies = [
     { name = "aiomqtt" },
     { name = "aiosqlite" },
     { name = "croniter" },
+    { name = "cryptography" },
     { name = "fastapi" },
+    { name = "http-ece" },
     { name = "httpx", extra = ["http2"] },
     { name = "jsonschema" },
     { name = "keyring" },
@@ -249,10 +251,12 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "caldav", marker = "extra == 'integrations'", specifier = ">=3.4.0" },
     { name = "croniter", specifier = ">=3.0" },
+    { name = "cryptography", specifier = ">=46" },
     { name = "espeakng-loader", marker = "extra == 'voice'", specifier = ">=0.2.4,<0.3" },
     { name = "fakeredis", extras = ["lua"], marker = "extra == 'dev'", specifier = ">=2.39.0" },
     { name = "fastapi", specifier = ">=0.142.2" },
     { name = "faster-whisper", marker = "extra == 'voice'", specifier = ">=1.0" },
+    { name = "http-ece", specifier = ">=1.2.1" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.28.1" },
     { name = "huggingface-hub", marker = "extra == 'voice'", specifier = ">=0.24" },
     { name = "inspect-ai", marker = "extra == 'evals'", specifier = ">=0.3.277,<0.4" },
@@ -1266,6 +1270,15 @@ sdist = { url = "https://files.pythonhosted.org/packages/26/5b/fcabf6028144a8723
 wheels = [
     { url = "https://files.pythonhosted.org/packages/71/b4/4a9fcfb2aef6ba44d9073ecd301443aa00b3dac95de5619f2a7de7ec8a91/hpack-4.2.0-py3-none-any.whl", hash = "sha256:858ac0b02280fa582b5080d68db0899c62a80375e0e5413a74970c5e518b6986", size = 34246, upload-time = "2026-06-23T18:34:45.472Z" },
 ]
+
+[[package]]
+name = "http-ece"
+version = "1.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7c/af/249d1576653b69c20b9ac30e284b63bd94af6a175d72d87813235caf2482/http_ece-1.2.1.tar.gz", hash = "sha256:8c6ab23116bbf6affda894acfd5f2ca0fb8facbcbb72121c11c75c33e7ce8cff", size = 8830, upload-time = "2024-08-08T00:10:47.301Z" }
 
 [[package]]
 name = "httpcore"

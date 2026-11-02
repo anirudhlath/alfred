@@ -41,7 +41,7 @@ const GROUPS = {
     "FirstDay",
   ],
   door: ["FuseRing", "DoorBanner", "SlideToConfirm", "DoorLayer"],
-  gates: ["Gate", "StepList", "DeniedGate"],
+  gates: ["Gate", "StepList", "DeniedGate", "InstallGate", "StandaloneGate"],
   sheets: ["Sheet"],
   workshop: [
     "BenchSwitcher",
@@ -57,7 +57,7 @@ const GROUPS = {
 /** Overlays portal to <body>: each story gets its own frame so they do not stack. */
 const FRAMES = new Set(["DoorLayer", "Sheet"]);
 /** Phone-sized stories need a column at least as wide as the phone. */
-const PHONE = new Set(["RoomScreen", "Gate", "DeniedGate"]);
+const PHONE = new Set(["RoomScreen", "Gate", "DeniedGate", "InstallGate", "StandaloneGate"]);
 
 // ---------------------------------------------------------------- sources
 const entry = readFileSync(path.join(HERE, "entry.tsx"), "utf8");

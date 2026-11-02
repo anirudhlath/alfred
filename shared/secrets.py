@@ -29,7 +29,7 @@ from keyring.errors import PasswordDeleteError
 from shared.fs import atomic_write
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
 SERVICE = "alfred"
 
@@ -234,6 +234,42 @@ def delete_secret(integration: str, field: str) -> None:
         keyring.delete_password(SERVICE, f"{integration}.{field}")
 
 
+def _lock_path() -> Path:
+    """The keyring file every Alfred process locks: the cryptfile store's own.
+
+    A backend with no file (native macOS, the tests' in-memory one) locks the path the
+    cryptfile store would use, so a get-or-create still has one lock every process shares.
+    """
+    file_path = getattr(keyring.get_keyring(), "file_path", None)
+    if file_path:
+        return Path(file_path)
+    from shared.config import data_path
+
+    return data_path("secrets", "keyring.cfg")
+
+
+def get_or_create_secret(
+    integration: str, field: str, create: Callable[[], str]
+) -> tuple[str, bool]:
+    """The stored value, storing ``create()`` first when there is none; and whether it did.
+
+    The read, ``create()`` and the write run under one keyring lock, so concurrent callers
+    in every process and thread agree on one value — without it, two callers that both
+    read "absent" each create one and the last write wins. The backend's own get and set
+    re-enter that lock instead of deadlocking on it (``_keyring_lock``). A read that
+    raises propagates and nothing is created; an empty stored value counts as none.
+    ``create()`` runs under that lock, which every process's keyring call waits on, so it
+    must be fast and do no I/O.
+    """
+    with _keyring_lock(_lock_path()):
+        value = get_secret(integration, field)
+        if value:
+            return value, False
+        value = create()
+        set_secret(integration, field, value)
+        return value, True
+
+
 def get_all_secrets(integration: str, fields: list[str]) -> dict[str, str]:
     """Fetch all credential fields for an integration. Returns only non-None values."""
     return {f: v for f in fields if (v := get_secret(integration, f)) is not None}
@@ -260,3 +296,10 @@ async def adelete_secret(integration: str, field: str) -> None:
 async def aget_all_secrets(integration: str, fields: list[str]) -> dict[str, str]:
     """Async version of get_all_secrets."""
     return await asyncio.to_thread(get_all_secrets, integration, fields)
+
+
+async def aget_or_create_secret(
+    integration: str, field: str, create: Callable[[], str]
+) -> tuple[str, bool]:
+    """Async version of get_or_create_secret: the whole read-create-write in one thread."""
+    return await asyncio.to_thread(get_or_create_secret, integration, field, create)

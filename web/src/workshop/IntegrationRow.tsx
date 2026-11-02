@@ -33,8 +33,14 @@ export interface IntegrationRowProps {
  * `queued` are a keyring that is empty, a probe in flight and this client's own
  * claim that a save landed, and spending the card's one "look here" colour on a
  * row that is merely busy would blunt it on the row that is broken.
+ *
+ * Exported for System › Reach, which says its states in these words' colours
+ * rather than a second set (`ReachSection.tsx`).
  */
-const WORD_COLOUR: Record<ServiceState, string> = {
+// One constant exported beside the component, as `BenchSwitcher.tsx` exports
+// its helper: Reach shares it, and a copy would be a second place to drift.
+// eslint-disable-next-line react-refresh/only-export-components
+export const WORD_COLOUR: Record<ServiceState, string> = {
   ok: "var(--green-text)",
   failed: "var(--accent-text)",
   unset: "var(--fg2)",
@@ -72,8 +78,10 @@ const NEEDED = "needed";
  * share `--muted`, exactly as `WORD_COLOUR` shares `--fg2` for them. The word
  * beside the dot is what actually distinguishes the five, and the dot stays
  * `aria-hidden` because of it.
+ *
+ * Exported for System › Reach, whose dot is this one (`ReachSection.tsx`).
  */
-function StateDot({ state }: { state: ServiceState }) {
+export function StateDot({ state }: { state: ServiceState }) {
   const ok = state === "ok";
   return (
     <span

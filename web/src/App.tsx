@@ -3,6 +3,7 @@ import { DoorProvider } from "@/door/DoorProvider";
 import { AuthGate } from "@/gates/AuthGate";
 import { Room } from "@/room/Room";
 import { ConnectionProvider } from "@/shell/ConnectionProvider";
+import { NotificationOpen, PushKeeper } from "@/shell/PushKeeper";
 import { QueryProvider } from "@/shell/QueryProvider";
 import { ThemeProvider } from "@/shell/ThemeProvider";
 
@@ -10,7 +11,9 @@ import { ThemeProvider } from "@/shell/ThemeProvider";
  * Provider order is load-bearing: ConnectionProvider and AuthGate both read the
  * query client, AuthGate reads the connection for the Denied gate's stamp, and
  * DoorProvider sits inside AuthGate so nothing reads `/api/actions/pending`
- * before there is a session to read it with.
+ * before there is a session to read it with. PushKeeper is inside it for the
+ * same reason: its registration needs a session. NotificationOpen needs only
+ * the router, so a tap's path is heard whichever gate is up.
  *
  * There is one screen. `/actions/:id` is the Room as well — a notification tap
  * must land on the approval it names (spec §6.3), and `useActionRoute` opens the
@@ -22,8 +25,10 @@ export default function App() {
       <ThemeProvider>
         <ConnectionProvider>
           <BrowserRouter>
+            <NotificationOpen />
             <AuthGate>
               <DoorProvider>
+                <PushKeeper />
                 <Routes>
                   <Route path="/" element={<Room />} />
                   <Route path="/actions/:id" element={<Room />} />

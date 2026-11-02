@@ -310,4 +310,21 @@ describe("Gate", () => {
     );
     expect(screen.getByText("step list goes here")).toBeInTheDocument();
   });
+
+  it("draws no pointer unless asked", () => {
+    const { container, rerender } = render(<Gate kicker="k" title="t" foot="f" />);
+    expect(container.querySelector(".gate-pointer")).toBeNull();
+
+    rerender(<Gate kicker="k" title="t" foot="f" pointer="Share" />);
+    expect(container.querySelector(".gate-pointer")).toHaveTextContent("Share");
+  });
+
+  it("draws the pointer hidden from assistive tech", () => {
+    // The install gate's steps already say `Tap Share, below`: a screen reader
+    // hearing the pointer's `Share` too would be told the same thing twice.
+    render(<Gate kicker="k" title="t" pointer="Share" />);
+    const pointer = screen.getByText("Share").closest('[aria-hidden="true"]');
+    expect(pointer).not.toBeNull();
+    expect(pointer).not.toHaveClass("gate-field");
+  });
 });

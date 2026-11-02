@@ -115,9 +115,9 @@ between runs.
 ## Left out, and why
 
 The four benches, `Workshop`, the Held-back and Why sheets, `SetupGate`, `SignInGate`,
-`ExpiredGate` and `IntegrationRow` read live data through react-query hooks or call
-WebAuthn, so they do not render without a server. Their rows and controls are in the
-package.
+`ExpiredGate`, `IntegrationRow` and `ReachSection` read live data through react-query
+hooks or call WebAuthn, so they do not render without a server. Their rows and controls
+are in the package.
 
 ## Gotchas
 
