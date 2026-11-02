@@ -11,13 +11,17 @@ from core.reflex.context_reader import LIVE_STATE_UNAVAILABLE
 from core.reflex.prompt import (
     MAX_DETAIL_CHARS,
     LiveEntity,
+    build_state_change_prompt,
     index_snapshot,
     render_event,
     render_house,
     render_now,
     render_trigger,
+    split_tool,
     time_of_day,
 )
+from core.reflex.prose import repo_prose
+from core.reflex.tool_registry import ToolInfo
 from sdk.alfred_sdk.context import ContextEntry, ContextSnapshot
 
 # 03:30 UTC on Thu 8 Oct 2026 is 22:30 on Wed 7 Oct in Chicago (CDT, UTC-5).
@@ -318,6 +322,90 @@ def test_house_leaves_out_sensors_people_and_noise_domains() -> None:
     )
 
     assert render_house(entities) == "Living Room: TV Lamp off"
+
+
+def _reflex_tool(name: str) -> ToolInfo:
+    return ToolInfo(
+        name=name,
+        description="",
+        feature_name="home",
+        feature_description="",
+        target_service="home-service",
+        audience="reflex",
+        input_schema={"type": "object", "properties": {"target": {}}, "required": ["target"]},
+    )
+
+
+def _with_a_script() -> dict[str, LiveEntity]:
+    return _index(
+        _e("light.tv_lamp", "off", friendly_name="TV Lamp", area="Living Room"),
+        _e("script.cinema_mode", "off", friendly_name="Cinema mode"),
+    )
+
+
+def test_house_leaves_out_a_script_when_no_tool_acts_on_scripts() -> None:
+    assert render_house(_with_a_script()) == "Living Room: TV Lamp off"
+    assert render_house(_with_a_script(), tools=[_reflex_tool("home.light_turn_on")]) == (
+        "Living Room: TV Lamp off"
+    )
+
+
+def test_house_shows_a_script_with_its_state_when_a_reflex_tool_acts_on_scripts() -> None:
+    tools = [_reflex_tool("home.light_turn_on"), _reflex_tool("home.script_turn_on")]
+
+    assert render_house(_with_a_script(), tools) == (
+        "Living Room: TV Lamp off\nOther: Cinema mode off"
+    )
+
+
+def test_a_tool_that_matches_no_snapshot_domain_adds_nothing_to_the_house() -> None:
+    tools = [_reflex_tool("home.garage_open"), _reflex_tool("home.scene_turn_on")]
+
+    assert render_house(_with_a_script(), tools) == "Living Room: TV Lamp off"
+
+
+def test_a_tool_domain_shows_only_what_the_house_may_control() -> None:
+    entities = _index(
+        _e("light.tv_lamp", "off", friendly_name="TV Lamp", area="Den"),
+        _e("script.ghost", "off", controllable=False, friendly_name="Ghost"),
+    )
+
+    assert render_house(entities, [_reflex_tool("home.script_turn_on")]) == "Den: TV Lamp off"
+
+
+def test_the_prompt_builder_shows_the_house_what_its_own_tools_act_on() -> None:
+    event = _change("light.tv_lamp", "off", "on")
+
+    def house(*tools: str) -> str:
+        prompt = build_state_change_prompt(
+            event=event,
+            preferences="",
+            tools=[_reflex_tool(t) for t in tools],
+            entities=_with_a_script(),
+            now=NIGHT_UTC,
+            tz_name="America/Chicago",
+            prose=repo_prose("state_change"),
+        )
+        return prompt.rpartition("## House\n")[2].partition("\n\n## ")[0]
+
+    assert house("home.light_turn_on") == "Living Room: TV Lamp off"
+    assert house("home.light_turn_on", "home.script_turn_on") == (
+        "Living Room: TV Lamp off\nOther: Cinema mode off"
+    )
+
+
+def test_split_tool_reads_the_longest_snapshot_domain_off_the_last_segment() -> None:
+    entities = _index(
+        _e("media_player.tv", "off"),
+        _e("light.lamp", "off"),
+        _e("script.cinema_mode", "off"),
+    )
+
+    assert split_tool("home.media_player_media_pause", entities) == ("media_player", "media_pause")
+    assert split_tool("light_turn_on", entities) == ("light", "turn_on")
+    assert split_tool("home.script_turn_on", entities) == ("script", "turn_on")
+    assert split_tool("home.scene_turn_on", entities) is None  # no scene in the snapshot
+    assert split_tool("home.light", entities) is None  # a domain alone is not a tool
 
 
 def test_house_without_live_state_says_so() -> None:

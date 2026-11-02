@@ -29,8 +29,8 @@ from core.reflex.answers import ASK_SOURCE
 from core.reflex.asks import gate, open_ask
 from core.reflex.availability import bridge_availability
 from core.reflex.outcome import publishes
-from core.reflex.prompt import HOUSE_DOMAINS, _name, render_change
-from core.reflex.reversal import _split_tool, resolve_targets
+from core.reflex.prompt import HOUSE_DOMAINS, _name, render_change, split_tool
+from core.reflex.reversal import resolve_targets
 from core.reflex.settings import load_settings
 from core.routing.risk import tool_risk
 from shared.redis_streams import REPLAY_MARKER_TTL_SECONDS
@@ -389,7 +389,7 @@ async def ask_or_hold(
         askable=risk in _ASKABLE_RISKS,
     )
     if outcome.kind == "asked":
-        split = _split_tool(action.tool_name, snapshot)
+        split = split_tool(action.tool_name, snapshot)
         ask = await open_ask(
             redis,
             notifier,
@@ -484,10 +484,12 @@ async def process_stream_entry(
     await record_change(redis, event, entry_id=entry_id)
 
     # Note what a person just changed, so Reflex keeps its hands off it. Only the devices
-    # Reflex sees and acts on (the House block's domains): every sensor update has the cause
-    # "outside", and noting those would fill the record with every sensor. Ahead of the gate,
-    # like the count above: a gated change is still the latest word on its device. Best-effort
-    # (note never raises), and idempotent for a redelivery.
+    # Reflex always shows and acts on (HOUSE_DOMAINS): every sensor update has the cause
+    # "outside", and noting those would fill the record with every sensor. A domain the House
+    # shows only because a tool acts on it (a script) is not noted, so a script a person just
+    # ran is not left alone (issue #415). Ahead of the gate, like the count above: a gated
+    # change is still the latest word on its device. Best-effort (note never raises), and
+    # idempotent for a redelivery.
     if person_changes is not None and event.entity_id.partition(".")[0] in HOUSE_DOMAINS:
         await person_changes.note(event, cause_of(event.context))
 
