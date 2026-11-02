@@ -45,6 +45,11 @@ def _b64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
+def _host(url: str) -> str:
+    """The push host a log line may name, parsed rather than spelled out as a literal."""
+    return urlsplit(url).hostname or ""
+
+
 @dataclass
 class Browser:
     """A subscribed browser: the receiver key and auth secret it subscribed with."""
@@ -387,8 +392,8 @@ async def test_skips_a_stored_row_whose_keys_are_not_a_subscription(
     assert [str(request.url) for request in service.requests] == [FCM]
     warnings = [line for line in logs if line.startswith("WARNING")]
     assert len(warnings) == 2
-    assert any("web.push.apple.com" in line for line in warnings)
-    assert any("updates.push.services.mozilla.com" in line for line in warnings)
+    assert any(repr(_host(APPLE)) in line for line in warnings)
+    assert any(repr(_host(MOZILLA)) in line for line in warnings)
 
 
 async def test_never_logs_the_endpoint_or_keys(
@@ -422,7 +427,7 @@ async def test_never_logs_the_endpoint_or_keys(
         for secret in secrets:
             assert secret not in line
     # What is logged instead: the field's first 12 characters and the push host.
-    assert any(sent.device_field[:12] in line and "web.push.apple.com" in line for line in logs)
+    assert any(sent.device_field[:12] in line and _host(APPLE) in line for line in logs)
     assert any(unreachable.device_field[:12] in line and "ERROR" in line for line in logs)
 
 
