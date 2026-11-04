@@ -9,7 +9,8 @@ the browser has dropped, and only then is the row pruned. Each row is validated 
 writers, and a row aimed off the allowlist would send the house wherever it points.
 
 The endpoint, ``p256dh`` and ``auth`` are credentials, so nothing here logs them: a line
-names the field's first 12 characters and the push host instead.
+names the field's first 12 characters and the push host instead. httpx logs each request's
+URL, which is the endpoint, so building an adapter installs ``redact_push_urls()``.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from core.notifications.devices import (
     is_web_push,
     push_host,
 )
+from core.notifications.http_logs import redact_push_urls
 from core.notifications.schema import Notification, Urgency
 from shared.streams import DEVICE_TOKENS_KEY
 
@@ -160,6 +162,7 @@ class WebPushChannelAdapter(ChannelAdapter):
         self._subject = subject
         self._client = client
         self._owns_client = False
+        redact_push_urls()
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         """Lazy-init httpx client with HTTP/2 support."""
