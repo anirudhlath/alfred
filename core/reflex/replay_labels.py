@@ -6,8 +6,9 @@ decides what a candidate's proposals come to against those labels. Both are pure
 state, the settings and the owner's time zone are parameters, and nothing here reads Redis or
 prints, so the command line (``core.reflex.replay``) does the reading and the printing.
 
-What this module returns, and the text it builds, is counts only. A label line holds the
-owner's house (its prompt, targets and changes) and stays in the file the command writes.
+``Scores`` and the text this module builds are counts only. A label line holds the owner's house
+(its prompt, targets and changes), and so does a ``CandidateAsk``: each stays in the file the
+command writes.
 """
 
 from __future__ import annotations
@@ -15,12 +16,13 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Final, Literal, get_args
+from typing import TYPE_CHECKING, Any, Final, Literal, get_args
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
 
-from bus.schemas.events import StateChangedEvent
+from bus.schemas.events import ReflexDecision, StateChangedEvent
+from core.attribution.cause import Cause  # noqa: TC001  # pydantic field type
 from core.reflex.asks import asked_key, asked_targets, in_quiet_hours
 from core.reflex.decision_log import DecisionRecord  # noqa: TC001  # pydantic field type
 from core.reflex.engine import decide_outcome
@@ -46,6 +48,10 @@ GATED: Final[tuple[str, ...]] = ("repeat", "quiet_hours")
 # holds any ask. On a ``repeat`` line the gate holds only the repeated ask (same tool and
 # targets, ``asked_key``), so an ask about anything else is wrong there.
 _JUDGED: Final[tuple[str, ...]] = tuple(why for why in WHYS if why != "quiet_hours")
+# What a candidate's answer can come to against its line (``Scores``'s counts).
+Counted = Literal["wrong", "held", "missed", "other", "matched", "reversing", "invalid"]
+# The answers that would really put something to the owner: the ones worth their judging.
+_PUT_TO_OWNER: Final[tuple[Counted, ...]] = ("wrong", "other", "matched")
 
 
 def share(part: int, whole: int, what: str = "", *, empty: str | None = "none answered") -> str:
@@ -210,6 +216,29 @@ def _recorded_key(line: Labelled, house: Mapping[str, LiveEntity]) -> str | None
     return _ask_key(recorded, house)
 
 
+def _counted_as(
+    line: Labelled, candidate: Decided, house: Mapping[str, LiveEntity]
+) -> Counted | None:
+    """What a candidate's decided answer comes to against *line*; None if it counts for nothing."""
+    match candidate.outcome.kind:
+        case "would_reverse":
+            return "reversing"
+        case "invalid":
+            return "invalid"
+        case "shadow" if line.label == "none":
+            held = line.why == "quiet_hours" or (
+                line.why == "repeat" and _ask_key(candidate, house) == _recorded_key(line, house)
+            )
+            return "held" if held else "wrong"
+        case "shadow":
+            same = _ask_key(candidate, house) == _recorded_key(line, house)
+            return "matched" if same else "other"
+        case _ if line.label == "ask":
+            return "missed"
+        case _:
+            return None
+
+
 def score_labels(
     answers: Sequence[tuple[Labelled, ReflexProposal]], house: Mapping[str, LiveEntity]
 ) -> Scores:
@@ -232,39 +261,65 @@ def score_labels(
     judged_none = sum(
         1 for line, _ in answers if line.label == "none" and line.why != "quiet_hours"
     )
-    wrong = held = missed = other = matched = reversing = invalid = 0
-    for line, proposal in answers:
-        candidate = decide_outcome(proposal, line.record.prompt, line.changes, house)
-        match candidate.outcome.kind:
-            case "would_reverse":
-                reversing += 1
-            case "invalid":
-                invalid += 1
-            case "shadow" if line.label == "none":
-                if line.why == "quiet_hours" or (
-                    line.why == "repeat"
-                    and _ask_key(candidate, house) == _recorded_key(line, house)
-                ):
-                    held += 1
-                else:
-                    wrong += 1
-            case "shadow":
-                if _ask_key(candidate, house) == _recorded_key(line, house):
-                    matched += 1
-                else:
-                    other += 1
-            case _ if line.label == "ask":
-                missed += 1
+    counts = Counter(
+        _counted_as(line, decide_outcome(proposal, line.record.prompt, line.changes, house), house)
+        for line, proposal in answers
+    )
     return Scores(
         scored=len(answers),
         labelled_ask=labelled_ask,
         judged_none=judged_none,
         gated_none=gated_none,
-        wrong=wrong,
-        held=held,
-        missed=missed,
-        other=other,
-        matched=matched,
-        reversing=reversing,
-        invalid=invalid,
+        wrong=counts["wrong"],
+        held=counts["held"],
+        missed=counts["missed"],
+        other=counts["other"],
+        matched=counts["matched"],
+        reversing=counts["reversing"],
+        invalid=counts["invalid"],
     )
+
+
+class CandidateAsk(BaseModel):
+    """One ask a candidate stands by: a line of the file the owner judges asks in.
+
+    The labels hold only the incumbent's asks, so a good ask it never made counts as wrong, and
+    only the owner can tell the two apart. The same ``time``, ``tool`` and ``targets`` from
+    another candidate is the same ask.
+    """
+
+    time: datetime
+    origin: Literal["state_change", "trigger_fired"]
+    event: dict[str, Any]  # what the record was decided about
+    cause: Cause | None
+    counted: Counted
+    decision: ReflexDecision
+    tool: str
+    targets: list[str]
+    reason: str | None
+
+
+def candidate_asks(
+    answers: Sequence[tuple[Labelled, ReflexProposal]], house: Mapping[str, LiveEntity]
+) -> list[CandidateAsk]:
+    """The answers ``score_labels`` counts as wrong, other or matched, in order, for judging."""
+    asks: list[CandidateAsk] = []
+    for line, proposal in answers:
+        candidate = decide_outcome(proposal, line.record.prompt, line.changes, house)
+        counted = _counted_as(line, candidate, house)
+        action = candidate.proposal.action
+        if counted in _PUT_TO_OWNER and action is not None:
+            asks.append(
+                CandidateAsk(
+                    time=line.record.time,
+                    origin=line.record.origin,
+                    event=line.record.event,
+                    cause=line.record.cause,
+                    counted=counted,
+                    decision=candidate.proposal.decision,
+                    tool=action.tool_name,
+                    targets=asked_targets(action, house),
+                    reason=candidate.proposal.reason,
+                )
+            )
+    return asks

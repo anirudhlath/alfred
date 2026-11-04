@@ -466,7 +466,7 @@ ask the recording did not make, which the rules would not have kept.
 ```
 python -m core.reflex.replay label --since 2026-10-26T23:35:00Z [--until ISO] --out labels.jsonl
 python -m core.reflex.replay label --records decisions.jsonl --out labels.jsonl
-python -m core.reflex.replay score --labels labels.jsonl [--model MODEL] [--output SHAPE]
+python -m core.reflex.replay score --labels labels.jsonl [--model MODEL] [--output SHAPE] [--asks FILE]
 ```
 
 - **A label is `ask` only when every rule holds.** Each record is decided again by today's
@@ -513,17 +513,29 @@ python -m core.reflex.replay score --labels labels.jsonl [--model MODEL] [--outp
   targets; a matched ask is the labelled one. A proposal that would reverse a person is counted
   as that, and one that is invalid (no decision, or a target that names nothing) as invalid,
   each as nothing else.
+- **`--asks`: what the counts cannot judge.** The labels hold only the incumbent's asks, so on a
+  line where it stayed quiet (`no_proposal`) any ask counts as wrong, however good: the count
+  cannot tell a useful new ask from a bad one, and a model that never asks scores best. `--asks
+  FILE` writes each ask counted `wrong`, `other` or `matched` (not one counted as held, one that
+  would reverse a person, or an invalid one), oldest first, one JSONL line each: `time`, `origin`,
+  `event`, `cause`, `counted`, `decision`, `tool`, `targets` and `reason`. An ask at night on a
+  line whose `why` is an earlier rule is in it, for the reason under `why` below: its `time` says
+  so. The owner judges them by hand. The same `time`, `tool` and
+  `targets` from another candidate is the same ask, so each needs judging once. The file holds
+  the owner's house, like a label file: mode 0600, off the repo. It is opened before the first
+  request, so a bad path costs no run, replaces any file already there, and cannot be the label
+  file. The printed counts do not change.
 - **`why` is the first rule that failed.** A record that fails several rules carries only the
   first, in the order above, so a `no_proposal`, `unresolved` or `reverses` line at night is
   also in quiet hours, and a candidate's ask there counts as wrong although the gate would have
-  held it. "Wrong" means wrong in substance (the rules say this ask should not be put to the
-  owner), not that it would have reached them.
+  held it. "Wrong" means the labels do not want this ask, not that it would have reached the
+  owner, nor that it was a bad one (`--asks` above).
 - **Output is counts only.** `label` prints the records labelled, the asks, and the `none`
   labels by reason. `score` prints the records scored of the total and the calls that failed,
   the wrong asks, the asks the gate would hold, the missed, other and matched asks (each of its
   own denominator), the proposals that would reverse a person, the invalid replies, and model
   latency p50 and p95. No entity id, name, area, prompt text or reason is printed. The
   would-reverse count must be 0; the exit status does not depend on it.
-- **Where the code is.** The rules and the counts (`label_records`, `score_labels`) are
-  `core/reflex/replay_labels.py`: pure, with the live state, settings and zone as parameters.
+- **Where the code is.** The rules, the counts and the asks to judge (`label_records`,
+  `score_labels`, `candidate_asks`) are `core/reflex/replay_labels.py`: pure, with the live state, settings and zone as parameters.
   `core/reflex/replay.py` reads, writes and prints.
