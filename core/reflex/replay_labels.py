@@ -228,7 +228,10 @@ def score_labels(
     """
     labelled_ask = sum(1 for line, _ in answers if line.label == "ask")
     gated_none = sum(1 for line, _ in answers if line.label == "none" and line.why in GATED)
-    judged_none = sum(1 for line, _ in answers if line.label == "none" and line.why in _JUDGED)
+    # Every none line but quiet hours, a hand-edited one with no why too: each can hold a wrong ask.
+    judged_none = sum(
+        1 for line, _ in answers if line.label == "none" and line.why != "quiet_hours"
+    )
     wrong = held = missed = other = matched = reversing = invalid = 0
     for line, proposal in answers:
         candidate = decide_outcome(proposal, line.record.prompt, line.changes, house)

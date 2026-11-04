@@ -645,6 +645,30 @@ async def test_score_refuses_a_hosted_model_before_it_asks_it_anything(
     assert "private" in capsys.readouterr().err
 
 
+@pytest.mark.usefixtures("restored_environ")
+async def test_score_refuses_a_hosted_model_even_with_nothing_to_score(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    labels = _jsonl(tmp_path / "labels.jsonl", [])
+
+    with pytest.raises(SystemExit) as stopped:
+        await replay.execute(parse_args(["score", "--labels", str(labels), "--model", "openai:m"]))
+
+    assert stopped.value.code not in (0, None)
+    assert "private" in capsys.readouterr().err
+
+
+@pytest.mark.usefixtures("restored_environ")
+def test_no_model_at_all_is_named_as_no_model(capsys: pytest.CaptureFixture[str]) -> None:
+    config = dataclasses.replace(AlfredConfig.from_env(), reflex_model="")
+
+    with pytest.raises(SystemExit) as stopped:
+        replay.build_agent(config, None, None)
+
+    assert stopped.value.code not in (0, None)
+    assert "no model" in capsys.readouterr().err
+
+
 # --- the output shape ---------------------------------------------------------------------
 
 

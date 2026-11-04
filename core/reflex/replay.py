@@ -85,6 +85,7 @@ if TYPE_CHECKING:
 
 # What a replayed call that raised (the server down, a timeout) is counted as.
 ERROR: Final = "error"
+_NO_MODEL: Final = "no model: set REFLEX_MODEL, or pass --model (vllm:<served name>)"
 # After this many failed calls in a row, stop rather than make a few hundred more, each of which
 # may wait out its timeout.
 MAX_CONSECUTIVE_ERRORS: Final = 5
@@ -400,6 +401,8 @@ def build_agent(
     apply_model_env(config)
     setting = "REFLEX_MODEL" if model is None else "--model"
     named = config.reflex_model if model is None else model
+    if not named.strip():
+        _fail(_NO_MODEL, 1)
     if not named.strip().startswith(LOCAL_PROVIDER):
         _fail(
             f"{setting} is not on the local {LOCAL_PROVIDER} provider. The replay sends the"
@@ -409,7 +412,7 @@ def build_agent(
         )
     resolved = resolve_model(setting, named)
     if resolved is None:
-        _fail("no model: set REFLEX_MODEL, or pass --model (vllm:<served name>)", 1)
+        _fail(_NO_MODEL, 1)
     return build_reflex_agent(resolved, config.reflex_output if output is None else output)
 
 
@@ -593,6 +596,7 @@ async def _label(args: LabelArgs) -> None:
 async def _score(args: ScoreArgs) -> None:
     """Decide every labelled prompt again and print how the asks compare with the labels."""
     config = AlfredConfig.from_env()
+    agent = build_agent(config, args.model, args.output)
     lines = read_labels_file(args.labels)
     if not lines:
         print("No labelled records to score.")
@@ -602,7 +606,6 @@ async def _score(args: ScoreArgs) -> None:
         house = await _house(redis)
     finally:
         await redis.aclose()
-    agent = build_agent(config, args.model, args.output)
     outcomes = await replay([line.record for line in lines], agent)
     print(summarize_scores(lines, outcomes, house))
     _stop_on_errors(outcomes, len(lines))

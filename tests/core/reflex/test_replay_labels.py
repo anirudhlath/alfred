@@ -388,6 +388,12 @@ def test_a_candidate_answer_lands_in_one_bucket(
     assert {name: n for name, n in asdict(scores).items() if n} == {"scored": 1, **counts}
 
 
+def test_a_hand_edited_none_line_with_no_why_can_hold_a_wrong_ask() -> None:
+    scores = score_labels([(_line("none", None), _LAMP_ASK)], HOUSE)
+
+    assert (scores.wrong, scores.judged_none) == (1, 1)
+
+
 def test_the_buckets_add_up_and_read_as_lines() -> None:
     scores = score_labels([(line, answer) for _, line, answer, _ in _BUCKETS], HOUSE)
 
