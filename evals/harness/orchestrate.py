@@ -34,8 +34,11 @@ from evals.harness.preflight import (
     alfred_commit,
     base_url,
     check_home_service,
+    check_key_transport,
     check_models,
     home_service_commit,
+    reflex_api_key,
+    same_upstream,
 )
 from evals.harness.proxy import LlmProxy
 from evals.harness.report import (
@@ -67,9 +70,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LOG_ROOT = REPO_ROOT / "evals" / "logs"
 # With --no-build the scorecard cannot know what the image holds; both commits say so.
 NOT_REBUILT = " (image not rebuilt)"
-# The API key of a hosted Reflex upstream. Read here, handed to the proxy and nowhere else:
-# not an option, not in RunOptions, RunMeta, the scorecard or a log.
-REFLEX_API_KEY_ENV = "ALFRED_EVALS_REFLEX_API_KEY"
 
 
 @dataclass(frozen=True)
@@ -126,20 +126,6 @@ class SuiteResults:
         if self.interrupted is not None:
             lines.append(f"suite {self.interrupted}: interrupted")
         return lines
-
-
-def reflex_api_key(env: Mapping[str, str]) -> str | None:
-    """The hosted Reflex upstream's key, or None when *env* holds none. A key that cannot be
-    a header value is a PreflightError that names the variable and never quotes the value."""
-    key = env.get(REFLEX_API_KEY_ENV, "").strip()
-    if not key:
-        return None
-    if not (key.isascii() and key.isprintable() and " " not in key):
-        raise PreflightError(
-            f"{REFLEX_API_KEY_ENV} is not a usable header value: "
-            "it holds a space, a control character or a non-ASCII character"
-        )
-    return key
 
 
 def _finished(logs: Sequence[EvalLog]) -> bool:
@@ -326,8 +312,10 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
     reflex_url = base_url(opts.reflex_upstream, "--reflex-upstream")
     embed_url = base_url(opts.embed_url, "--embed-url")
     # Any upstream but the vLLM the run is pointed at is a hosted one.
-    hosted = reflex_url != vllm_url
+    hosted = not same_upstream(reflex_url, vllm_url)
     key = reflex_api_key(os.environ) if hosted else None
+    if key is not None:
+        check_key_transport(reflex_url, "--reflex-upstream")
     async with httpx.AsyncClient(timeout=10) as client:
         # System 2 and Reflex may share a model; a hosted upstream is not asked for its
         # models: its list may need the key, and costs a call.

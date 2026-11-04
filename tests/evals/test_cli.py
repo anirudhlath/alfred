@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 from typer.testing import CliRunner
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from inspect_ai.model import Model
 
     from evals.harness.judge import JudgeVerdict
+    from evals.harness.orchestrate import RunOptions
 
 runner = CliRunner()
 
@@ -200,7 +201,7 @@ def test_evals_calibrate_names_a_malformed_calibration_file_in_one_line(
 def test_evals_run_exits_1_after_the_scorecard_when_a_suite_never_started(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, unstarted: list[str], exit_code: int
 ) -> None:
-    from evals.harness.orchestrate import RunOptions, RunOutcome
+    from evals.harness.orchestrate import RunOutcome
 
     seen: list[RunOptions] = []
 
@@ -229,7 +230,7 @@ def test_evals_run_exits_1_after_the_scorecard_when_a_suite_never_started(
 def test_evals_run_exits_130_after_the_scorecard_when_interrupted(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from evals.harness.orchestrate import RunCancelled, RunOptions
+    from evals.harness.orchestrate import RunCancelled
 
     async def fake_run_suites(opts: RunOptions) -> None:
         print("# Alfred eval scorecard")
@@ -264,7 +265,7 @@ def test_evals_run_exits_130_when_interrupted_before_any_suite_finished(
 def test_evals_run_binds_the_fakes_on_fixed_ports_unless_told_otherwise(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from evals.harness.orchestrate import RunOptions, RunOutcome
+    from evals.harness.orchestrate import RunOutcome
 
     seen: list[RunOptions] = []
 
@@ -309,7 +310,7 @@ def test_evals_run_prompt_label_needs_langfuse_settings_before_anything_boots(
 def test_evals_run_prompt_label_hands_the_run_its_langfuse_access(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from evals.harness.orchestrate import RunOptions, RunOutcome
+    from evals.harness.orchestrate import RunOutcome
 
     seen: list[RunOptions] = []
 
@@ -331,9 +332,9 @@ def test_evals_run_prompt_label_hands_the_run_its_langfuse_access(
     assert plain.langfuse is None
 
 
-def _run_options(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *args: str) -> Any:
+def _run_options(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *args: str) -> RunOptions:
     """The ``RunOptions`` ``alfred evals run`` hands a run (a fake one) given *args*."""
-    from evals.harness.orchestrate import RunOptions, RunOutcome
+    from evals.harness.orchestrate import RunOutcome
 
     seen: list[RunOptions] = []
 
@@ -483,3 +484,17 @@ def test_evals_list_shows_each_golden_with_its_variant_count(
         "4.4.lights-scenes,",
         "1.butler",
     ]
+
+
+def test_evals_calibrate_describes_its_model_as_the_judge_alone() -> None:
+    import typer.main
+
+    command = typer.main.get_command(evals_app)
+    helps = {
+        name: {param.name: param.help for param in sub.params}  # type: ignore[attr-defined]
+        for name, sub in command.commands.items()  # type: ignore[attr-defined]
+    }
+
+    assert "judge" in (helps["calibrate"]["model"] or "")
+    assert "System 2" not in (helps["calibrate"]["model"] or "")
+    assert "System 2" in (helps["run"]["model"] or "")

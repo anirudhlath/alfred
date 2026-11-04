@@ -22,6 +22,7 @@ DEFAULT_VLLM_URL = "http://localhost:8000/v1"
 ModelOpt = Annotated[
     str, typer.Option(help="vLLM served model: System 2, the Librarian and the judge")
 ]
+JudgeModelOpt = Annotated[str, typer.Option(help="vLLM served model that judges")]
 VllmUrlOpt = Annotated[str, typer.Option(help="vLLM base URL, with /v1")]
 
 DEFAULT_EMBED_URL = "http://localhost:8001"
@@ -43,7 +44,9 @@ ProxyPortOpt = Annotated[
 
 
 @evals_app.command()
-def calibrate(model: ModelOpt = DEFAULT_MODEL, vllm_url: VllmUrlOpt = DEFAULT_VLLM_URL) -> None:
+def calibrate(
+    model: JudgeModelOpt = DEFAULT_MODEL, vllm_url: VllmUrlOpt = DEFAULT_VLLM_URL
+) -> None:
     """Measure how often the judge agrees with the hand-labelled items."""
     import asyncio
     from http import HTTPStatus

@@ -13,7 +13,10 @@ Where a chat request goes depends on its role. System 1's can go to an upstream 
 (``reflex_upstream``, a hosted OpenAI-compatible server) and carry that upstream's API key;
 every other role, and every request that is not a chat completion, goes to ``upstream``.
 The key is only ever put on the request to the reflex upstream: it is not recorded, not
-logged, and not quoted in an error.
+logged, and not quoted in an error. A key must be fit to be a header value, or the proxy
+will not start: an HTTP library that refuses a header quotes it, and the quote reaches
+whoever reads the error. For the same reason a request to the reflex upstream that fails is
+answered with the failure's class alone.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ import httpx
 from aiohttp import web
 
 from evals.harness.evidence import LlmCall, Role, ToolCall
+from evals.harness.preflight import header_safe
 from shared.llm_roles import APPROVAL, LIBRARIAN, ROLE_HEADER, SYSTEM1, SYSTEM2
 
 if TYPE_CHECKING:
@@ -45,7 +49,6 @@ ROLES_BY_HEADER: dict[str, Role] = {
     APPROVAL: "approval",
 }
 _DROP_HEADERS = {"host", "content-length", "transfer-encoding", "connection"}
-_REDACTED = "<redacted>"
 # Requests upstream at once, chat and passthrough alike. vLLM is shared with production:
 # with the judge's JUDGE_CONNECTIONS, an eval run never has more than 4 there at once.
 MAX_UPSTREAM = 2
@@ -141,9 +144,16 @@ class LlmProxy:
         timeout_s: float = 300.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        if reflex_api_key and not reflex_upstream:
+            raise ValueError("reflex_api_key needs a reflex_upstream: a key is never sent to vLLM")
+        if reflex_api_key and not header_safe(reflex_api_key):
+            # Never say which character: the message must hold nothing of the key.
+            raise ValueError("reflex_api_key is not a usable header value")
         self.upstream = upstream.rstrip("/")
         # System 1's chat completions go here: ``upstream`` unless a reflex upstream is given.
         self._reflex_upstream = (reflex_upstream or upstream).rstrip("/")
+        # Whether System 1 has an upstream of its own, whose failures are reported by class.
+        self._reflex_apart = bool(reflex_upstream)
         # Sent to the reflex upstream and nowhere else; empty is no key at all.
         self._reflex_key = reflex_api_key or None
         self.host = host
@@ -253,11 +263,11 @@ class LlmProxy:
             headers["Authorization"] = f"Bearer {key}"
         return headers
 
-    def _failure(self, exc: Exception) -> str:
-        """What went wrong upstream, in words that cannot carry the key: an HTTP library
-        may quote a header value it refused to send."""
-        text = str(exc)
-        return text.replace(self._reflex_key, _REDACTED) if self._reflex_key else text
+    def _failure(self, exc: Exception, *, to_reflex: bool) -> str:
+        """What went wrong upstream. For the reflex upstream, the exception's class and
+        nothing it says: an HTTP library quotes the header value it refuses to send, with
+        control characters escaped, so no search for the key in its words would find it."""
+        return type(exc).__name__ if to_reflex and self._reflex_apart else str(exc)
 
     async def _chat(self, request: web.Request) -> web.Response:
         # In flight from the first byte, not the last: a call whose body is still being
@@ -319,7 +329,7 @@ class LlmProxy:
                 )
             except httpx.HTTPError as exc:
                 self.record(call_for(latency_ms=(time.monotonic() - started) * 1000, status=502))
-                return _error(502, f"upstream failed: {self._failure(exc)}")
+                return _error(502, f"upstream failed: {self._failure(exc, to_reflex=to_reflex)}")
         latency_ms = (time.monotonic() - started) * 1000
         try:
             text, tool_calls, prompt_tokens, completion_tokens = _parse(upstream.content)

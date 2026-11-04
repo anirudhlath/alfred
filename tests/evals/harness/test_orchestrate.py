@@ -1177,7 +1177,7 @@ async def _run_spied(
     return outcome.run_dir, proxies, stacks
 
 
-async def test_a_hosted_reflex_run_routes_system1_through_the_proxy_and_names_both_models(
+async def test_a_hosted_reflex_run_builds_the_proxy_with_the_upstream_and_key_and_names_both_models(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1238,3 +1238,63 @@ async def test_a_hosted_run_without_a_key_sends_none(
     _, [(_, kwargs)], _ = await _run_spied(tmp_path, monkeypatch, reflex_upstream=HOSTED_URL)
 
     assert kwargs["reflex_api_key"] is None
+
+
+async def test_a_key_is_refused_for_a_hosted_upstream_that_is_not_https_or_local(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _golden(tmp_path / "suites", "demo", "quiet")
+    _suites_at(monkeypatch, tmp_path / "suites")
+    monkeypatch.setenv(KEY_ENV, FAKE_KEY)
+    order: list[str] = []
+    _preflight_passes(monkeypatch, order)
+    # Whatever the run does past its checks ends here: no test may reach a stack.
+    _stop_after_models(monkeypatch)
+
+    with pytest.raises(PreflightError, match="--reflex-upstream") as err:
+        await run_suites(
+            _options(tmp_path / "logs", reflex_upstream="http://hosted.invalid/api/v1")
+        )
+
+    assert FAKE_KEY not in str(err.value) and "hosted.invalid" not in str(err.value)
+    assert order == [] and not (tmp_path / "logs").exists()
+
+
+async def test_a_hosted_upstream_over_plain_http_is_allowed_when_no_key_goes_with_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _golden(tmp_path / "suites", "demo", "quiet")
+    _suites_at(monkeypatch, tmp_path / "suites")
+    monkeypatch.delenv(KEY_ENV, raising=False)
+    _preflight_passes(monkeypatch, [])
+    _stop_after_models(monkeypatch)
+
+    with pytest.raises(PreflightError, match="stopped after the model checks"):
+        await run_suites(_options(tmp_path / "logs", reflex_upstream="http://hosted.invalid/v1"))
+
+
+async def test_an_upstream_spelled_in_another_case_is_still_the_one_vllm_is_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Local, so the Reflex model is checked on vLLM and a key left in the environment is
+    # not handed to the proxy.
+    monkeypatch.setenv(KEY_ENV, FAKE_KEY)
+    order: list[str] = []
+    _golden(tmp_path / "suites", "demo", "quiet")
+    _suites_at(monkeypatch, tmp_path / "suites")
+    _preflight_passes(monkeypatch, order)
+    _stop_after_models(monkeypatch)
+
+    with pytest.raises(PreflightError, match="stopped after the model checks"):
+        await run_suites(
+            _options(
+                tmp_path / "logs",
+                reflex_model="reflex-candidate",
+                reflex_upstream="HTTP://VLLM.test/v1/",
+            )
+        )
+
+    assert order[:2] == [
+        "models http://vllm.test/v1 judge-m",
+        "models http://vllm.test/v1 reflex-candidate",
+    ]
