@@ -1121,6 +1121,76 @@ async def test_score_names_nothing_of_the_house(
         assert private not in shown.out + shown.err
 
 
+async def test_score_writes_the_asks_it_would_put_to_the_owner_to_a_private_file(
+    house: AioRedis,
+    use_script: Callable[..., Script],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    use_script(*_scored_replies())
+    labels = _label_file(tmp_path / "labels.jsonl", _scored_lines())
+    asks = tmp_path / "asks.jsonl"
+
+    await replay.execute(parse_args(["score", "--labels", str(labels), "--asks", str(asks)]))
+
+    written = [json.loads(line) for line in asks.read_text().splitlines()]
+    assert [(ask["counted"], ask["targets"]) for ask in written] == [
+        ("wrong", [LAMP]),
+        ("other", [LAMP]),
+        ("matched", [PENDANTS]),
+    ]
+    assert stat.S_IMODE(os.stat(asks).st_mode) == 0o600
+    shown = capsys.readouterr()
+    assert "Wrong asks: 1 of 3" in shown.out  # the counts are as they are without the file
+    for private in PRIVATE_HOUSE:
+        assert private not in shown.out + shown.err
+
+
+async def test_score_stopped_by_errors_still_writes_the_asks_it_scored(
+    house: AioRedis,
+    use_script: Callable[..., Script],
+    tmp_path: Path,
+) -> None:
+    limit = replay.MAX_CONSECUTIVE_ERRORS
+    use_script(act_reply("Living Room Lamp"), *[RuntimeError("down")] * limit)
+    lines = [
+        _labelled("none", record_at(DAY + minutes(i)), "no_proposal") for i in range(limit + 2)
+    ]
+    labels = _label_file(tmp_path / "labels.jsonl", lines)
+    asks = tmp_path / "asks.jsonl"
+
+    with pytest.raises(SystemExit):
+        await replay.execute(parse_args(["score", "--labels", str(labels), "--asks", str(asks)]))
+
+    assert len(asks.read_text().splitlines()) == 1
+
+
+async def test_score_opens_the_asks_file_before_it_asks_the_model_anything(
+    house: AioRedis,
+    use_script: Callable[..., Script],
+    tmp_path: Path,
+) -> None:
+    script = use_script(NONE)
+    labels = _label_file(tmp_path / "labels.jsonl", [_labelled("ask", record_at(DAY))])
+    nowhere = tmp_path / "missing" / "asks.jsonl"
+
+    with pytest.raises(FileNotFoundError):
+        await replay.execute(parse_args(["score", "--labels", str(labels), "--asks", str(nowhere)]))
+
+    assert script.call_count == 0
+
+
+def test_the_asks_file_cannot_be_the_label_file(tmp_path: Path) -> None:
+    labels = _label_file(tmp_path / "labels.jsonl", _scored_lines())
+    same = tmp_path / "same.jsonl"
+    same.symlink_to(labels)
+
+    with pytest.raises(SystemExit) as stopped:
+        parse_args(["score", "--labels", str(labels), "--asks", str(same)])
+
+    assert stopped.value.code == 2
+
+
 async def test_score_judges_the_candidate_by_the_changes_the_line_was_labelled_with(
     house: AioRedis,
     use_script: Callable[..., Script],

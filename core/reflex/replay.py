@@ -3,7 +3,7 @@
     python -m core.reflex.replay run --since 2026-10-26T23:35:00Z [--until ISO] [options]
     python -m core.reflex.replay run --records decisions.jsonl [options]
     python -m core.reflex.replay label (--since ISO [--until ISO] | --records FILE) --out FILE
-    python -m core.reflex.replay score --labels FILE [--model MODEL] [--output SHAPE]
+    python -m core.reflex.replay score --labels FILE [--model MODEL] [--output SHAPE] [--asks FILE]
 
 Each record's exact prompt goes to the model, one record at a time, through the same agent
 and parser Reflex decides with (``core.reflex.agent``), with the tools the prompt showed
@@ -26,7 +26,9 @@ again and counts how the candidate's asks agree with the labels. The rules and t
 ``core.reflex.replay_labels``; this module reads, writes and prints. Both resolve targets
 against the live state read once at the start, so the house's services must be registered. A
 label file holds the owner's house: it is written readable only by its owner, and kept out of
-the repo.
+the repo. So does the file ``score --asks`` writes: every ask the candidate stands by that the
+gate would not hold on its line, for the owner to judge, because the labels hold only the
+incumbent's asks and count any other as wrong, however good.
 
 ``--model`` (default ``REFLEX_MODEL``) must be on the local ``vllm:`` provider: the prompts and a
 label file hold the owner's house, so ``run`` and ``score`` refuse a hosted model before any
@@ -64,6 +66,7 @@ from core.reflex.decision_log import DecisionLog, DecisionRecord
 from core.reflex.prompt import index_snapshot, parse_tools
 from core.reflex.replay_labels import (
     Labelled,
+    candidate_asks,
     label_records,
     score_labels,
     share,
@@ -229,6 +232,7 @@ class ScoreArgs:
     labels: Path
     model: str | None
     output: ReflexOutput | None
+    asks: Path | None
 
 
 def _moment(text: str) -> datetime:
@@ -352,6 +356,15 @@ def _parsers() -> tuple[argparse.ArgumentParser, dict[str, argparse.ArgumentPars
     )
     _add_model(score)
     _add_output(score)
+    score.add_argument(
+        "--asks",
+        type=Path,
+        metavar="FILE",
+        help=(
+            "write the candidate's asks, one JSONL line each, for the owner to judge by hand"
+            " (private, mode 0600; keep it out of the repo)"
+        ),
+    )
     return parser, {"run": run, "label": label, "score": score}
 
 
@@ -376,7 +389,9 @@ def parse_args(argv: Sequence[str] | None = None) -> Args | LabelArgs | ScoreArg
     if ns.command == "score":
         if not ns.labels.is_file():
             command.error(f"--labels: {ns.labels} is not a file")
-        return ScoreArgs(ns.labels, ns.model, ns.output)
+        if ns.asks is not None and ns.asks.exists() and ns.asks.samefile(ns.labels):
+            command.error("--asks: it would overwrite --labels; give it another file")
+        return ScoreArgs(ns.labels, ns.model, ns.output, ns.asks)
     _check_source(command, ns)
     if ns.command == "label":
         return LabelArgs(ns.since, ns.until, ns.records, ns.out)
@@ -497,6 +512,17 @@ def _line(outcome: Outcome) -> str:
     )
 
 
+def _answers(
+    lines: Sequence[Labelled], outcomes: Sequence[Outcome]
+) -> list[tuple[Labelled, ReflexProposal]]:
+    """Each answered line and its proposal; *outcomes* may be shorter, a failed call is left out."""
+    return [
+        (line, outcome.proposal)
+        for line, outcome in zip(lines, outcomes, strict=False)
+        if outcome.replayed != ERROR and outcome.proposal is not None
+    ]
+
+
 def summarize_scores(
     lines: Sequence[Labelled], outcomes: Sequence[Outcome], house: Mapping[str, LiveEntity]
 ) -> str:
@@ -505,18 +531,13 @@ def summarize_scores(
     The counts are ``score_labels``'s; this adds the header and the model's timing. *outcomes*
     may be shorter than *lines*, a run that stopped early, and a call that raised is not scored.
     """
-    answers = [
-        (line, outcome.proposal)
-        for line, outcome in zip(lines, outcomes, strict=False)
-        if outcome.replayed != ERROR and outcome.proposal is not None
-    ]
     answered = [o for o in outcomes if o.replayed != ERROR]
     failed = Counter(o.error for o in outcomes if o.replayed == ERROR)
     noun = "record" if len(lines) == 1 else "records"
     out = [
         f"Scored {len(outcomes)} of {len(lines)} {noun}, {sum(failed.values())} failed.",
         "",
-        *score_labels(answers, house).lines(),
+        *score_labels(_answers(lines, outcomes), house).lines(),
     ]
     out.extend(_timing_and_failures(answered, failed))
     return "\n".join(out)
@@ -606,7 +627,13 @@ async def _score(args: ScoreArgs) -> None:
         house = await _house(redis)
     finally:
         await redis.aclose()
-    outcomes = await replay([line.record for line in lines], agent)
+    with contextlib.ExitStack() as stack:
+        # Opened before the first request, so a bad path costs no run.
+        sink = stack.enter_context(_open_private(args.asks)) if args.asks is not None else None
+        outcomes = await replay([line.record for line in lines], agent)
+        if sink is not None:
+            for ask in candidate_asks(_answers(lines, outcomes), house):
+                sink.write(ask.model_dump_json() + "\n")
     print(summarize_scores(lines, outcomes, house))
     _stop_on_errors(outcomes, len(lines))
 

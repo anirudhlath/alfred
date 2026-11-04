@@ -16,6 +16,7 @@ import pytest
 from bus.schemas.events import ActionRequest, ReflexDecision, ReflexOutcome, ReflexProposal
 from core.reflex.replay_labels import (
     Labelled,
+    candidate_asks,
     label_records,
     score_labels,
     share,
@@ -431,3 +432,33 @@ def test_with_nothing_scored_the_lines_give_the_counts_and_no_percent() -> None:
         "Would reverse a person: 0 (must be 0)",
         "Invalid replies: none answered",
     ]
+
+
+# --- the asks a candidate would put to the owner ------------------------------------------
+
+
+def test_only_the_asks_that_would_reach_the_owner_are_kept_to_judge() -> None:
+    answers = [(line, answer) for _, line, answer, _ in _BUCKETS]
+
+    asks = candidate_asks(answers, HOUSE)
+
+    assert [ask.counted for ask in asks] == ["matched", "matched", "other", "wrong", "wrong"]
+
+
+def test_a_candidate_ask_holds_what_the_owner_judges_it_by() -> None:
+    line = Labelled.model_validate(
+        {
+            "label": "none",
+            "why": "no_proposal",
+            "changes": {},
+            "record": record_at(DAY, context=PERSON),
+        }
+    )
+
+    [ask] = candidate_asks([(line, _LAMP_ASK)], HOUSE)
+
+    assert (ask.time, ask.origin, ask.cause) == (DAY, "state_change", "person")
+    assert ask.event["entity_id"] == MOTION
+    assert (ask.event["old_state"], ask.event["new_state"]) == ("off", "on")
+    assert (ask.counted, ask.decision, ask.reason) == ("wrong", "act", "dark")
+    assert (ask.tool, ask.targets) == ("home.light_turn_on", [LAMP])
