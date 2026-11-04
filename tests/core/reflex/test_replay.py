@@ -21,22 +21,18 @@ from pydantic_ai.models.openai import OpenAIChatModel
 
 from bus.schemas.events import (
     ActionRequest,
-    ChangeContext,
     ReflexDecision,
-    ReflexOutcome,
     ReflexProposal,
     StateChangedEvent,
     TriggerFired,
 )
-from core.attribution.cause import cause_of
 from core.reflex import replay
 from core.reflex.decision_log import DecisionRecord
-from core.reflex.prompt import LiveEntity, build_state_change_prompt, build_trigger_prompt
+from core.reflex.prompt import build_state_change_prompt, build_trigger_prompt
 from core.reflex.prose import repo_prose
-from core.reflex.replay import ERROR, Labelled, Outcome, label_records, parse_args, summarize
-from core.reflex.reversal import PersonChange
+from core.reflex.replay import ERROR, Outcome, parse_args, summarize
+from core.reflex.replay_labels import Labelled
 from core.reflex.settings import ReflexSettings
-from core.reflex.tool_registry import ToolInfo
 from sdk.alfred_sdk.live_state import LiveStateEntry, live_state_key
 from shared.config import AlfredConfig
 from shared.streams import (
@@ -46,31 +42,33 @@ from shared.streams import (
     USER_TIMEZONE_KEY,
 )
 from tests.core.reflex.fakes import reflex_agent
+from tests.core.reflex.label_fakes import (
+    BEDROOM,
+    DAY,
+    HOUSE,
+    LAMP,
+    LAMP_ON,
+    MOTION,
+    PENDANTS,
+    act_reply,
+    minutes,
+    person_change,
+    record_at,
+    standard_log,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
 
+    from core.reflex.reversal import PersonChange
+    from core.reflex.tool_registry import ToolInfo
     from shared.types import AioRedis
     from tests.llm_fakes import Reply, Script
 
 T0 = datetime(2026, 10, 26, 23, 40, tzinfo=UTC)
 ISO = "2026-10-26T23:35:00Z"
 NOW = datetime(2026, 10, 27, 1, 0, tzinfo=UTC)
-
-LAMP_ON = ToolInfo(
-    name="home.light_turn_on",
-    description="light.turn_on",
-    feature_name="home",
-    feature_description="",
-    target_service="home-service",
-    audience="reflex",
-    input_schema={
-        "type": "object",
-        "properties": {"target": {"type": "string"}},
-        "required": ["target"],
-    },
-)
 
 # What must never reach the terminal: names, ids, reasons and the prompt's own words.
 PRIVATE = (
@@ -572,14 +570,6 @@ def test_without_any_model_the_replay_exits_non_zero() -> None:
 
 # --- labels and scores --------------------------------------------------------------------
 
-DAY = datetime(2026, 10, 27, 14, 0, tzinfo=UTC)  # mid-afternoon: outside the default quiet hours
-LAMP = "light.living_room_lamp"
-PENDANTS = "light.kitchen_pendants"
-BEDROOM = "light.bedroom_lamp"
-MOTION = "binary_sensor.kitchen_motion"  # not a device Reflex notes a person's change to
-PERSON = ChangeContext(id="ctx-person", user_id="user-1")
-ALFRED = ChangeContext(id="ctx-alfred", by_service=True)
-
 # What the label and score output must not name, on top of what `run`'s must not.
 PRIVATE_HOUSE = (
     *PRIVATE,
@@ -595,162 +585,9 @@ PRIVATE_HOUSE = (
 )
 
 
-def _entity(entity_id: str, name: str, area: str) -> LiveEntity:
-    return LiveEntity(
-        entity_id=entity_id,
-        domain=entity_id.split(".")[0],
-        controllable=True,
-        state="off",
-        attributes={"friendly_name": name, "area": area},
-    )
-
-
-HOUSE = {
-    e.entity_id: e
-    for e in (
-        _entity(LAMP, "Living Room Lamp", "Living Room"),
-        _entity(PENDANTS, "Kitchen Pendants", "Kitchen"),
-        _entity(BEDROOM, "Bedroom Lamp", "Bedroom"),
-    )
-}
-
-
-def _minutes(count: int) -> timedelta:
-    return timedelta(minutes=count)
-
-
-def _change(at: datetime) -> PersonChange:
-    return PersonChange(
-        time=at,
-        cause="person",
-        old_state="off",
-        new_state="on",
-        context_id="ctx-person",
-        attributes_only=False,
-    )
-
-
-def _decision(
-    at: datetime,
-    *,
-    entity: str = MOTION,
-    old: str | None = "off",
-    new: str = "on",
-    context: ChangeContext | None = None,
-    decision: ReflexDecision = "none",
-    target: str | None = None,
-    outcome: ReflexOutcome | None = None,
-    recent: dict[str, PersonChange] | None = None,
-) -> DecisionRecord:
-    """A decision about a state change at *at*; one with a *target* acts through the lamp tool."""
-    event = StateChangedEvent(
-        source="home-service",
-        domain="home",
-        entity_id=entity,
-        old_state=old,
-        new_state=new,
-        context=context,
-        timestamp=at - timedelta(seconds=2),
-    )
-    prompt = build_state_change_prompt(
-        event=event,
-        preferences="",
-        tools=[LAMP_ON],
-        entities=None,
-        now=at,
-        tz_name="UTC",
-        prose=repo_prose("state_change"),
-    )
-    action = (
-        None
-        if target is None
-        else ActionRequest(
-            source="reflex-engine",
-            target_service="home-service",
-            tool_name=LAMP_ON.name,
-            parameters={"target": target},
-        )
-    )
-    return DecisionRecord(
-        time=at,
-        origin="state_change",
-        event=event.model_dump(mode="json"),
-        cause=cause_of(context),
-        prompt=prompt,
-        proposal=ReflexProposal(decision=decision, reason="the lamp was left on", action=action),
-        outcome=outcome,
-        recent=recent or {},
-    )
-
-
-def _fired(at: datetime, *, decision: ReflexDecision, target: str) -> DecisionRecord:
-    """A decision about a fired trigger, which carries no state change to fold."""
-    event = TriggerFired(trigger_id="t-1", trigger_name="bedtime", trigger_type="time")
-    prompt = build_trigger_prompt(
-        event=event,
-        preferences="",
-        tools=[LAMP_ON],
-        entities=None,
-        now=at,
-        tz_name="UTC",
-        prose=repo_prose("trigger_fired"),
-    )
-    action = ActionRequest(
-        source="reflex-engine",
-        target_service="home-service",
-        tool_name=LAMP_ON.name,
-        parameters={"target": target},
-    )
-    return DecisionRecord(
-        time=at,
-        origin="trigger_fired",
-        event=event.model_dump(mode="json"),
-        cause=None,
-        prompt=prompt,
-        proposal=ReflexProposal(decision=decision, reason="the lamp was left on", action=action),
-    )
-
-
-def _verdicts(
-    records: Sequence[DecisionRecord],
-    settings: ReflexSettings | None = None,
-    tz_name: str = "UTC",
-) -> list[tuple[str, str | None]]:
-    labelled = label_records(records, HOUSE, settings or ReflexSettings(), tz_name)
-    return [(line.label, line.why) for line in labelled]
-
-
-def _act(target: str) -> str:
-    return json.dumps(
-        {
-            "decision": "act",
-            "tool_name": "home.light_turn_on",
-            "parameters": {"target": target},
-            "reason": "dark",
-        }
-    )
-
-
 def _label_file(path: Path, lines: Sequence[Labelled]) -> Path:
     path.write_text("".join(line.model_dump_json() + "\n" for line in lines))
     return path
-
-
-def _log() -> list[DecisionRecord]:
-    """A reversal, a repeat, quiet hours and asks, oldest first."""
-    return [
-        # A person turns the bedroom lamp on; nothing is proposed.
-        _decision(DAY, entity=BEDROOM, new="on", context=PERSON),
-        # Ten minutes on, the model would switch that same lamp: it reverses the person.
-        _decision(DAY + _minutes(10), decision="act", target="Bedroom Lamp"),
-        _decision(DAY + _minutes(20), decision="ask", target="Kitchen Pendants"),  # an ask
-        _decision(DAY + _minutes(30), decision="act", target="Living Room Lamp"),  # another target
-        _decision(DAY + _minutes(50), decision="act", target="Kitchen Pendants"),  # a repeat
-        _decision(DAY + _minutes(200), decision="act", target="Kitchen Pendants"),  # window over
-        _decision(DAY + _minutes(210), decision="act", target="Garage Light"),  # no such light
-        _decision(DAY + _minutes(215), decision="invalid"),  # the model's reply was no decision
-        _decision(DAY + _minutes(570), decision="act", target="Living Room Lamp"),  # 23:30
-    ]
 
 
 @pytest.fixture
@@ -779,186 +616,13 @@ async def house(server: fakeredis.FakeServer) -> AioRedis:
     return redis
 
 
-# --- labels: the rules --------------------------------------------------------------------
-
-
-def test_labels_cover_a_reversal_a_repeat_quiet_hours_and_asks() -> None:
-    assert _verdicts(_log()) == [
-        ("none", "no_proposal"),
-        ("none", "reverses"),
-        ("ask", None),
-        ("ask", None),
-        ("none", "repeat"),
-        ("ask", None),
-        ("none", "unresolved"),
-        ("none", "no_proposal"),
-        ("none", "quiet_hours"),
-    ]
-
-
-def test_a_label_carries_the_changes_it_was_judged_against() -> None:
-    log = _log()
-
-    labelled = label_records(log, HOUSE, ReflexSettings(), "UTC")
-
-    assert set(labelled[1].changes) == {BEDROOM}  # rebuilt from the log's earlier record
-    assert labelled[1].changes[BEDROOM].cause == "person"
-    assert labelled[5].changes == {}  # that change is past the window by then
-    assert labelled[1].record == log[1]
-
-
-def test_a_person_change_within_the_window_is_reversed_and_past_it_is_not() -> None:
-    def log(minutes: int) -> list[DecisionRecord]:
-        return [
-            _decision(DAY, entity=BEDROOM, context=PERSON),
-            _decision(DAY + _minutes(minutes), decision="act", target="Bedroom Lamp"),
-        ]
-
-    assert _verdicts(log(59))[1] == ("none", "reverses")
-    assert _verdicts(log(61))[1] == ("ask", None)
-    assert _verdicts(log(61), ReflexSettings(reverse_window_minutes=120))[1] == ("none", "reverses")
-
-
-def test_the_event_a_record_decided_about_counts_as_a_change_it_must_not_reverse() -> None:
-    # The runner notes a change before the engine reads what people just changed.
-    record = _decision(
-        DAY, entity=LAMP, new="on", context=PERSON, decision="act", target="Living Room Lamp"
-    )
-
-    assert _verdicts([record]) == [("none", "reverses")]
-
-
-def test_a_change_by_alfred_replaces_a_person_s_as_it_does_in_the_record() -> None:
-    records = [
-        _decision(DAY, entity=LAMP, new="on", context=PERSON),
-        _decision(DAY + _minutes(5), entity=LAMP, old="on", new="off", context=ALFRED),
-        _decision(DAY + _minutes(10), decision="act", target="Living Room Lamp"),
-    ]
-
-    assert _verdicts(records)[2] == ("ask", None)
-
-
-def test_a_change_to_something_reflex_does_not_note_is_not_folded() -> None:
-    records = [
-        _decision(DAY, entity=MOTION, context=PERSON),  # a sensor: never noted
-        _decision(DAY + _minutes(5), decision="act", target="Kitchen Pendants"),
-    ]
-
-    assert _verdicts(records)[1] == ("ask", None)
-
-
-def test_a_record_with_an_outcome_is_judged_by_the_changes_it_recorded() -> None:
-    shadow = ReflexOutcome(kind="shadow")
-    records = [
-        _decision(DAY, entity=BEDROOM, context=PERSON),  # the log shows a change to this lamp...
-        _decision(
-            DAY + _minutes(10),
-            decision="act",
-            target="Bedroom Lamp",
-            outcome=shadow,
-            recent={},  # ...but this record saw none, and is judged by what it saw
-        ),
-        _decision(
-            DAY + _minutes(20),
-            decision="act",
-            target="Living Room Lamp",
-            outcome=shadow,  # recorded as standing, though what it saw says otherwise
-            recent={LAMP: _change(DAY + _minutes(15))},
-        ),
-    ]
-
-    labelled = label_records(records, HOUSE, ReflexSettings(), "UTC")
-
-    assert [(x.label, x.why) for x in labelled] == [
-        ("none", "no_proposal"),
-        ("ask", None),
-        ("none", "reverses"),
-    ]
-    assert labelled[1].changes == {}
-    assert set(labelled[2].changes) == {LAMP}
-
-
-def test_the_recorded_outcome_is_never_trusted() -> None:
-    record = _decision(
-        DAY,
-        decision="act",
-        target="Kitchen Pendants",
-        outcome=ReflexOutcome(kind="would_reverse", reversed=[PENDANTS]),
-        recent={},
-    )
-
-    assert _verdicts([record]) == [("ask", None)]  # today's rule: nothing was changed
-
-
-def test_a_fired_trigger_is_labelled_and_folds_nothing() -> None:
-    records = [
-        _fired(DAY, decision="act", target="Kitchen Pendants"),
-        _fired(DAY + _minutes(5), decision="ask", target="Kitchen Pendants"),
-    ]
-
-    labelled = label_records(records, HOUSE, ReflexSettings(), "UTC")
-
-    assert [(x.label, x.why) for x in labelled] == [("ask", None), ("none", "repeat")]
-    assert labelled[0].changes == {}
-
-
-def test_a_repeat_is_the_same_tool_and_targets_within_the_repeat_hours() -> None:
-    two = [
-        _decision(DAY, decision="act", target="Kitchen Pendants"),
-        _decision(DAY + _minutes(10), decision="act", target="Kitchen Pendants"),
-    ]
-    by_area = [
-        _decision(DAY, decision="act", target="Kitchen Pendants"),
-        _decision(DAY + _minutes(10), decision="act", target=PENDANTS),  # the same light by id
-    ]
-
-    assert _verdicts(two)[1] == ("none", "repeat")
-    assert _verdicts(by_area)[1] == ("none", "repeat")  # compared on what it resolves to
-    assert _verdicts(two, ReflexSettings(repeat_hours=0))[1] == ("ask", None)  # none asked for
-    assert _verdicts(two, ReflexSettings(repeat_hours=0.1))[1] == ("ask", None)  # 6 minutes
-    assert _verdicts(two, ReflexSettings(repeat_hours=0.2))[1] == ("none", "repeat")  # 12
-
-
-def test_a_record_that_is_not_an_ask_does_not_start_a_repeat_window() -> None:
-    records = [
-        _decision(DAY, decision="act", target="Garage Light"),  # unresolved: labelled none
-        _decision(DAY + _minutes(5), decision="act", target="Kitchen Pendants"),
-    ]
-
-    assert _verdicts(records) == [("none", "unresolved"), ("ask", None)]
-
-
-def test_quiet_hours_are_the_owners_local_time() -> None:
-    record = _decision(
-        datetime(2026, 10, 27, 13, 0, tzinfo=UTC), decision="act", target="Kitchen Pendants"
-    )
-
-    assert _verdicts([record], tz_name="UTC") == [("ask", None)]
-    assert _verdicts([record], tz_name="America/Los_Angeles") == [("none", "quiet_hours")]  # 06:00
-
-
-def test_the_why_is_the_first_rule_that_failed() -> None:
-    late = DAY + _minutes(570)  # 23:30, in quiet hours
-    records = [
-        _decision(late, entity=BEDROOM, context=PERSON),
-        _decision(late + _minutes(5), decision="act", target="Bedroom Lamp"),  # both rules fail
-        _decision(late + _minutes(6), decision="act", target="Garage Light"),
-    ]
-
-    assert _verdicts(records)[1:] == [("none", "reverses"), ("none", "unresolved")]
-
-
-def test_an_act_with_no_action_names_nothing_to_ask_about() -> None:
-    assert _verdicts([_decision(DAY, decision="act")]) == [("none", "no_proposal")]
-
-
 # --- labels: the command ------------------------------------------------------------------
 
 
 async def test_label_writes_a_private_file_and_prints_counts_only(
     house: AioRedis, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    log = _log()
+    log = standard_log()
     records = _jsonl(tmp_path / "records.jsonl", log)
     out = tmp_path / "labels.jsonl"
     out.write_text("old\n")
@@ -992,9 +656,9 @@ async def test_label_reads_the_live_log_and_writes_nothing_to_redis(
     await _logged(
         house,
         [
-            _decision(DAY - _minutes(90), decision="act", target="Kitchen Pendants"),  # too early
-            *_log()[:3],
-            _decision(DAY + _minutes(300), decision="act", target="Kitchen Pendants"),  # at until
+            record_at(DAY - minutes(90), decision="act", target="Kitchen Pendants"),  # too early
+            *standard_log()[:3],
+            record_at(DAY + minutes(300), decision="act", target="Kitchen Pendants"),  # at until
         ],
     )
     before = (await house.dbsize(), await house.xlen(REFLEX_DECISION_LOG_STREAM))
@@ -1026,23 +690,23 @@ async def test_label_uses_the_stored_settings_and_zone(
     await house.set(REFLEX_SETTINGS_KEY, quiet.model_dump_json())
     await house.set(USER_TIMEZONE_KEY, "America/Los_Angeles")
     # 20:00 UTC is 13:00 there: quiet only by the stored window and the stored zone together.
-    asked_at = DAY + _minutes(360)
+    asked_at = DAY + minutes(360)
     records = _jsonl(
         tmp_path / "records.jsonl",
-        [_decision(asked_at, decision="act", target="Kitchen Pendants")],
+        [record_at(asked_at, decision="act", target="Kitchen Pendants")],
     )
     out = tmp_path / "labels.jsonl"
 
     await replay.execute(parse_args(["label", "--records", str(records), "--out", str(out)]))
 
     assert json.loads(out.read_text())["why"] == "quiet_hours"
-    assert "Labelled 1 records: 0 ask, 1 none." in capsys.readouterr().out
+    assert "Labelled 1 record: 0 ask, 1 none." in capsys.readouterr().out
 
 
 async def test_label_drops_an_event_recorded_twice(
     house: AioRedis, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    first = _decision(DAY, decision="act", target="Kitchen Pendants")
+    first = record_at(DAY, decision="act", target="Kitchen Pendants")
     records = _jsonl(tmp_path / "records.jsonl", [first, _again(first, seconds=30)])
     out = tmp_path / "labels.jsonl"
 
@@ -1050,14 +714,14 @@ async def test_label_drops_an_event_recorded_twice(
 
     shown = capsys.readouterr().out
     assert "Dropped 1 duplicate record." in shown
-    assert "Labelled 1 records: 1 ask, 0 none." in shown
+    assert "Labelled 1 record: 1 ask, 0 none." in shown
     assert len(out.read_text().splitlines()) == 1
 
 
 async def test_label_without_live_state_exits_one_and_writes_nothing(
     server: fakeredis.FakeServer, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    records = _jsonl(tmp_path / "records.jsonl", _log())
+    records = _jsonl(tmp_path / "records.jsonl", standard_log())
     out = tmp_path / "labels.jsonl"
 
     with pytest.raises(SystemExit) as stopped:
@@ -1072,7 +736,7 @@ async def test_a_line_that_is_not_a_record_stops_label_naming_its_number_only(
     house: AioRedis, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "records.jsonl"
-    path.write_text(f'{_log()[0].model_dump_json()}\n{{"prompt": "Kitchen Pendants"}}\n')
+    path.write_text(f'{standard_log()[0].model_dump_json()}\n{{"prompt": "Kitchen Pendants"}}\n')
 
     with pytest.raises(SystemExit) as stopped:
         await replay.execute(
@@ -1129,33 +793,33 @@ def _scored_lines() -> list[Labelled]:
     """Nine lines; with `_scored_replies` each lands in a different count."""
     ask = {"decision": "act", "target": "Kitchen Pendants"}
     lines = [
-        _labelled("none", _decision(DAY), "no_proposal"),  # the model will act: a wrong ask
-        _labelled("ask", _decision(DAY + _minutes(1), **ask)),  # the model will say none: missed
-        _labelled("ask", _decision(DAY + _minutes(2), **ask)),  # it will ask about another light
-        _labelled("ask", _decision(DAY + _minutes(3), **ask)),  # it will ask the same: matched
+        _labelled("none", record_at(DAY), "no_proposal"),  # the model will act: a wrong ask
+        _labelled("ask", record_at(DAY + minutes(1), **ask)),  # the model will say none: missed
+        _labelled("ask", record_at(DAY + minutes(2), **ask)),  # it will ask about another light
+        _labelled("ask", record_at(DAY + minutes(3), **ask)),  # it will ask the same: matched
         _labelled(  # it will act on a lamp a person just changed
             "none",
-            _decision(DAY + _minutes(4), decision="act", target="Living Room Lamp"),
+            record_at(DAY + minutes(4), decision="act", target="Living Room Lamp"),
             "reverses",
-            {LAMP: _change(DAY + _minutes(1))},
+            {LAMP: person_change(DAY + minutes(1))},
         ),
-        _labelled("ask", _decision(DAY + _minutes(5), **ask)),  # no decision: invalid
-        _labelled("ask", _decision(DAY + _minutes(6), **ask)),  # a light there is not: invalid
-        _labelled("none", _decision(DAY + _minutes(7)), "no_proposal"),  # none and none: right
-        _labelled("ask", _decision(DAY + _minutes(8), **ask)),  # the call fails
+        _labelled("ask", record_at(DAY + minutes(5), **ask)),  # no decision: invalid
+        _labelled("ask", record_at(DAY + minutes(6), **ask)),  # a light there is not: invalid
+        _labelled("none", record_at(DAY + minutes(7)), "no_proposal"),  # none and none: right
+        _labelled("ask", record_at(DAY + minutes(8), **ask)),  # the call fails
     ]
     return lines
 
 
 def _scored_replies() -> list[str | BaseException]:
     return [
-        _act("Living Room Lamp"),
+        act_reply("Living Room Lamp"),
         NONE,
-        _act("Living Room Lamp"),
-        _act("Kitchen Pendants"),
-        _act("Living Room Lamp"),
+        act_reply("Living Room Lamp"),
+        act_reply("Kitchen Pendants"),
+        act_reply("Living Room Lamp"),
         "this is not a decision",
-        _act("Garage Light"),
+        act_reply("Garage Light"),
         NONE,
         RuntimeError("Living Room Lamp down"),
     ]
@@ -1176,7 +840,8 @@ async def test_score_counts_wrong_missed_and_other_asks_and_the_rest(
     shown = capsys.readouterr().out
     assert [script.prompt(i) for i in range(9)] == [line.record.prompt for line in lines]
     assert "Scored 9 of 9 records, 1 failed." in shown
-    assert "Wrong asks: 1 of 3 labelled none (33.3%)" in shown
+    assert "Wrong asks: 1 of 3 labelled none (no_proposal, unresolved, reverses) (33.3%)" in shown
+    assert "Asks the gate would hold: 0 of 0 labelled none (repeat, quiet_hours)" in shown
     assert "Missed asks: 1 of 5 labelled ask (20.0%)" in shown
     assert "Other asks: 1 of 5 labelled ask (20.0%)" in shown
     assert "Matched asks: 1 of 5 labelled ask (20.0%)" in shown
@@ -1184,6 +849,35 @@ async def test_score_counts_wrong_missed_and_other_asks_and_the_rest(
     assert "Invalid replies: 2 of 8 (25.0%)" in shown
     assert "Model latency: p50" in shown and "p95" in shown
     assert "Failed calls: RuntimeError x1" in shown
+
+
+@pytest.mark.parametrize("why", ["repeat", "quiet_hours"])
+async def test_score_does_not_count_an_ask_the_gate_would_hold_as_a_wrong_ask(
+    why: str,
+    house: AioRedis,
+    use_script: Callable[..., Script],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The prompt shows the model neither the asks made lately nor quiet hours: production's
+    # gate holds those in code, so a model that proposes one is not wrong.
+    use_script(act_reply("Kitchen Pendants"), act_reply("Kitchen Pendants"), NONE)
+    record = record_at(DAY, decision="act", target="Kitchen Pendants")
+    labels = _label_file(
+        tmp_path / "labels.jsonl",
+        [
+            _labelled("none", record, why),  # the model asks: the gate would hold it
+            _labelled("none", record, "unresolved"),  # the model asks: wrong
+            _labelled("none", record, why),  # the model says none: nothing to count
+        ],
+    )
+
+    await replay.execute(parse_args(["score", "--labels", str(labels)]))
+
+    shown = capsys.readouterr().out
+    assert "Wrong asks: 1 of 1 labelled none (no_proposal, unresolved, reverses) (100.0%)" in shown
+    assert "Asks the gate would hold: 1 of 2 labelled none (repeat, quiet_hours) (50.0%)" in shown
+    assert "Missed asks: 0 of 0 labelled ask" in shown  # a gated none is not a missed ask either
 
 
 async def test_score_names_nothing_of_the_house(
@@ -1209,13 +903,13 @@ async def test_score_judges_the_candidate_by_the_changes_the_line_was_labelled_w
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    use_script(_act("Living Room Lamp"), _act("Living Room Lamp"))
-    record = _decision(DAY, decision="act", target="Kitchen Pendants")
+    use_script(act_reply("Living Room Lamp"), act_reply("Living Room Lamp"))
+    record = record_at(DAY, decision="act", target="Kitchen Pendants")
     labels = _label_file(
         tmp_path / "labels.jsonl",
         [
             _labelled("ask", record),  # no change: the lamp is fair game
-            _labelled("none", record, "reverses", {LAMP: _change(DAY - _minutes(5))}),
+            _labelled("none", record, "reverses", {LAMP: person_change(DAY - minutes(5))}),
         ],
     )
 
@@ -1224,17 +918,17 @@ async def test_score_judges_the_candidate_by_the_changes_the_line_was_labelled_w
     shown = capsys.readouterr().out
     assert "Other asks: 1 of 1 labelled ask" in shown
     assert "Would reverse a person: 1 (must be 0)" in shown
-    assert "Wrong asks: 0 of 1 labelled none" in shown
+    assert "Wrong asks: 0 of 1 labelled none (no_proposal, unresolved, reverses)" in shown
 
 
 async def test_a_candidate_that_would_reverse_a_person_does_not_change_the_exit_status(
     house: AioRedis, use_script: Callable[..., Script], tmp_path: Path
 ) -> None:
-    use_script(_act("Living Room Lamp"))
-    record = _decision(DAY, decision="act", target="Living Room Lamp")
+    use_script(act_reply("Living Room Lamp"))
+    record = record_at(DAY, decision="act", target="Living Room Lamp")
     labels = _label_file(
         tmp_path / "labels.jsonl",
-        [_labelled("none", record, "reverses", {LAMP: _change(DAY - _minutes(5))})],
+        [_labelled("none", record, "reverses", {LAMP: person_change(DAY - minutes(5))})],
     )
 
     await replay.execute(parse_args(["score", "--labels", str(labels)]))  # does not raise
@@ -1249,7 +943,7 @@ async def test_score_stops_after_consecutive_errors_naming_their_class_only(
     limit = replay.MAX_CONSECUTIVE_ERRORS
     script = use_script(*[RuntimeError("Kitchen Pendants down")] * (limit + 2))
     lines = [
-        _labelled("ask", _decision(DAY + _minutes(i), decision="act", target="Kitchen Pendants"))
+        _labelled("ask", record_at(DAY + minutes(i), decision="act", target="Kitchen Pendants"))
         for i in range(limit + 2)
     ]
     labels = _label_file(tmp_path / "labels.jsonl", lines)
@@ -1303,7 +997,7 @@ async def test_a_line_that_is_not_a_label_stops_score_naming_its_number_only(
 ) -> None:
     script = use_script()
     path = tmp_path / "labels.jsonl"
-    good = _labelled("none", _decision(DAY), "no_proposal").model_dump_json()
+    good = _labelled("none", record_at(DAY), "no_proposal").model_dump_json()
     path.write_text(f'{good}\n{{"label": "ask", "why": "Kitchen Pendants"}}\n')
 
     with pytest.raises(SystemExit) as stopped:
@@ -1322,7 +1016,7 @@ async def test_score_reads_the_file_label_wrote(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    records = _jsonl(tmp_path / "records.jsonl", _log())
+    records = _jsonl(tmp_path / "records.jsonl", standard_log())
     labels = tmp_path / "labels.jsonl"
     await replay.execute(parse_args(["label", "--records", str(records), "--out", str(labels)]))
     capsys.readouterr()
@@ -1333,3 +1027,4 @@ async def test_score_reads_the_file_label_wrote(
     shown = capsys.readouterr().out
     assert "Scored 9 of 9 records, 0 failed." in shown
     assert "Missed asks: 3 of 3 labelled ask (100.0%)" in shown
+    assert "Asks the gate would hold: 0 of 2 labelled none (repeat, quiet_hours) (0.0%)" in shown

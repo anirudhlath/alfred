@@ -22,6 +22,7 @@ from loguru import logger
 from bus.schemas.events import ReflexOutcome
 from core.notifications.schema import Urgency
 from core.reflex.answers import ASK_SOURCE, OpenAsk, settle_expired
+from core.reflex.reversal import resolve_targets
 from core.routing.pending import confirmation_metadata, store_pending_action
 from shared.streams import REFLEX_ASK_OPEN_KEY, REFLEX_ASKED_PREFIX, REFLEX_ASKS_PREFIX
 
@@ -29,9 +30,10 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from datetime import date
 
-    from bus.schemas.events import HeldReason, ReflexProposal
+    from bus.schemas.events import ActionRequest, HeldReason, ReflexProposal
     from core.notifications.dnd import DNDChecker
     from core.notifications.publisher import NotificationPublisher
+    from core.reflex.prompt import LiveEntity
     from core.reflex.settings import ReflexSettings
     from shared.types import AioRedis
 
@@ -47,6 +49,19 @@ _COUNT_TTL_SECONDS: Final = 2 * _DAY_SECONDS
 def asked_key(tool_name: str, targets: Sequence[str]) -> str:
     """The key that says Reflex asked about this tool and these targets lately."""
     return f"{REFLEX_ASKED_PREFIX}{tool_name}:{','.join(sorted(targets))}"
+
+
+def asked_targets(action: ActionRequest, snapshot: Mapping[str, LiveEntity]) -> list[str]:
+    """What an ask is about: the action's target resolved against the live state.
+
+    The engine has already resolved it (``resolved_action``): a proposal whose target names
+    nothing there never stands, so it is never asked about. An action with no usable target has
+    none.
+    """
+    target = action.parameters.get("target")
+    if not isinstance(target, str) or not target.strip():
+        return []
+    return resolve_targets(action.tool_name, target, snapshot)
 
 
 def asks_key(local_day: date) -> str:

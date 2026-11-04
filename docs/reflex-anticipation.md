@@ -441,13 +441,19 @@ python -m core.reflex.replay score --labels labels.jsonl [--model MODEL]
 - **`score` decides again and counts.** Each prompt is sent as recorded, one at a time, through
   the same loop and error handling as `run`. A candidate's proposal is judged by the same rule
   against the line's `changes`: a wrong ask is an ask (a `shadow` outcome) on a line labelled
-  `none`; a missed ask is no decision on a line labelled `ask`; another ask is an ask on an
+  `none` for `no_proposal`, `unresolved` or `reverses`; an ask on a line labelled `none` for
+  `repeat` or `quiet_hours` is counted apart, as an ask the gate would hold, because the
+  prompt shows the model neither the asks made lately nor quiet hours and the gate holds both
+  in code; a missed ask is no decision on a line labelled `ask`; another ask is an ask on an
   `ask` line about a different tool or targets; a matched ask is the labelled one. A proposal
   that would reverse a person is counted as that, and one that is invalid (no decision, or a
   target that names nothing) as invalid, each as nothing else.
 - **Output is counts only.** `label` prints the records labelled, the asks, and the `none`
   labels by reason. `score` prints the records scored of the total and the calls that failed,
-  the wrong, missed, other and matched asks (each of its own denominator), the proposals that
-  would reverse a person, the invalid replies, and model latency p50 and p95. No entity id,
-  name, area, prompt text or reason is printed. The would-reverse count must be 0; the exit
-  status does not depend on it.
+  the wrong asks, the asks the gate would hold, the missed, other and matched asks (each of its
+  own denominator), the proposals that would reverse a person, the invalid replies, and model
+  latency p50 and p95. No entity id, name, area, prompt text or reason is printed. The
+  would-reverse count must be 0; the exit status does not depend on it.
+- **Where the code is.** The rules and the counts (`label_records`, `score_labels`) are
+  `core/reflex/replay_labels.py`: pure, with the live state, settings and zone as parameters.
+  `core/reflex/replay.py` reads, writes and prints.

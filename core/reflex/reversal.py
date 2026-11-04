@@ -22,7 +22,7 @@ from loguru import logger
 from pydantic import BaseModel, field_validator
 
 from core.attribution.cause import Cause  # noqa: TC001  # pydantic field type
-from core.reflex.prompt import _area, _head, _name, split_tool
+from core.reflex.prompt import HOUSE_DOMAINS, _area, _head, _name, split_tool
 from shared.streams import REFLEX_PERSON_CHANGES_KEY, decode_stream_value
 
 if TYPE_CHECKING:
@@ -70,6 +70,17 @@ class PersonChange(BaseModel):
     @classmethod
     def _aware(cls, value: datetime) -> datetime:
         return _utc(value)
+
+
+def notes_person_change(entity_id: str) -> bool:
+    """Whether a change to *entity_id* is one Reflex notes: a device of a domain it always shows.
+
+    Only the devices Reflex always shows and acts on (``HOUSE_DOMAINS``) are noted: every
+    sensor update has the cause ``outside``, and noting those would fill the record with every
+    sensor. A domain the House shows only because a tool acts on it (a script) is not. The
+    runner asks this before it notes a change, and the replay asks it of a recorded one.
+    """
+    return entity_id.partition(".")[0] in HOUSE_DOMAINS
 
 
 # What ``revised_change`` makes of a record besides a new one: leave it, or delete it.

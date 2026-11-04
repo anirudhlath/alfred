@@ -22,9 +22,11 @@ read; keep it out of the repo.
 ``label`` marks each record ``ask`` or ``none`` by rules over the record alone (what it proposed,
 whether it reverses a person, whether it repeats an earlier ask, quiet hours), so a candidate
 model can be scored against the same labels each time. ``score`` decides every labelled prompt
-again and counts how the candidate's asks agree with the labels. Both resolve targets against
-the live state read once at the start, so the house's services must be registered. A label file
-holds the owner's house: it is written readable only by its owner, and kept out of the repo.
+again and counts how the candidate's asks agree with the labels. The rules and the counts are
+``core.reflex.replay_labels``; this module reads, writes and prints. Both resolve targets
+against the live state read once at the start, so the house's services must be registered. A
+label file holds the owner's house: it is written readable only by its owner, and kept out of
+the repo.
 
 A model server is not deterministic at temperature 0, so compare counts, never single records.
 """
@@ -41,22 +43,24 @@ import sys
 import time
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, NoReturn, TextIO, get_args
-from zoneinfo import ZoneInfo
+from typing import TYPE_CHECKING, Final, NoReturn, TextIO, get_args
 
 from pydantic import BaseModel
 
-from bus.schemas.events import ReflexDecision, StateChangedEvent
+from bus.schemas.events import ReflexDecision
 from core.reflex.agent import build_reflex_agent, decide
-from core.reflex.asks import asked_key, in_quiet_hours
 from core.reflex.context_reader import ContextReader
 from core.reflex.decision_log import DecisionLog, DecisionRecord
-from core.reflex.engine import decide_outcome
-from core.reflex.prompt import HOUSE_DOMAINS, index_snapshot, parse_tools
-from core.reflex.reversal import PersonChange, revised_change
-from core.reflex.runner import asked_targets
+from core.reflex.prompt import index_snapshot, parse_tools
+from core.reflex.replay_labels import (
+    Labelled,
+    label_records,
+    score_labels,
+    share,
+    summarize_labels,
+)
 from core.reflex.settings import load_settings
 from shared.agents import resolve_model
 from shared.config import AlfredConfig, apply_model_env
@@ -69,9 +73,7 @@ if TYPE_CHECKING:
     from pydantic_ai import Agent
 
     from bus.schemas.events import ReflexProposal
-    from core.reflex.outcome import Decided
     from core.reflex.prompt import LiveEntity
-    from core.reflex.settings import ReflexSettings
     from core.reflex.tool_registry import ToolInfo
     from shared.types import AioRedis
 
@@ -83,11 +85,6 @@ MAX_CONSECUTIVE_ERRORS: Final = 5
 DECISIONS: Final[tuple[str, ...]] = get_args(ReflexDecision)
 _COLUMNS: Final = (*DECISIONS, ERROR)
 _PROG: Final = "python -m core.reflex.replay"
-# The proposals that put something to the owner, as the label sees them.
-_ASKING: Final = ("act", "ask")
-# Why a record is labelled ``none``: the first of these rules that failed, in this order.
-Why = Literal["no_proposal", "unresolved", "reverses", "repeat", "quiet_hours"]
-WHYS: Final[tuple[str, ...]] = get_args(Why)
 
 
 @dataclass(frozen=True)
@@ -144,23 +141,10 @@ async def replay(
     return outcomes
 
 
-def _share(part: int, whole: int, what: str = "") -> str:
-    """``part of whole [what] (percent)``, for the calls that were answered."""
-    if not whole:
-        return "none answered"
-    return f"{part} of {whole}{' ' + what if what else ''} ({100 * part / whole:.1f}%)"
-
-
 def _percentile(sorted_values: Sequence[float], percent: int) -> float:
     """The nearest-rank percentile of an ascending, non-empty sequence."""
     rank = math.ceil(percent / 100 * len(sorted_values))
     return sorted_values[max(rank, 1) - 1]
-
-
-def _of(part: int, whole: int, what: str) -> str:
-    """``part of whole what (percent)``; with nothing to take a share of, just the counts."""
-    share = f" ({100 * part / whole:.1f}%)" if whole else ""
-    return f"{part} of {whole} {what}{share}"
 
 
 def _timing_and_failures(answered: Sequence[Outcome], failed: Counter[str | None]) -> list[str]:
@@ -196,12 +180,12 @@ def summarize(outcomes: Sequence[Outcome], *, total: int) -> str:
     lines.append("")
 
     agreed = sum(1 for o in answered if o.recorded == o.replayed)
-    lines.append(f"Agreement: {_share(agreed, len(answered))}")
+    lines.append(f"Agreement: {share(agreed, len(answered))}")
     replayed_invalid = sum(1 for o in answered if o.replayed == "invalid")
     recorded_invalid = sum(1 for o in answered if o.recorded == "invalid")
     lines.append(
-        f"Invalid replies: {_share(replayed_invalid, len(answered), 'replayed')};"
-        f" {_share(recorded_invalid, len(answered), 'recorded')}"
+        f"Invalid replies: {share(replayed_invalid, len(answered), 'replayed')};"
+        f" {share(recorded_invalid, len(answered), 'recorded')}"
     )
     lines.extend(_timing_and_failures(answered, failed))
     return "\n".join(lines)
@@ -472,168 +456,25 @@ def _line(outcome: Outcome) -> str:
     )
 
 
-class Labelled(BaseModel):
-    """One line of a label file: the label, why it is ``none``, and what it was judged against."""
-
-    label: Literal["ask", "none"]
-    why: Why | None  # the first rule that failed; None for an ask
-    changes: dict[str, PersonChange]  # what people had just changed, by entity id
-    record: DecisionRecord
-
-
-def _note_change(changes: dict[str, PersonChange], record: DecisionRecord) -> None:
-    """Take *record*'s event into *changes*, as the runner did before the engine read them.
-
-    The runner notes a state change to a device Reflex always shows (``HOUSE_DOMAINS``) ahead
-    of the decision, by the rule ``PersonChanges.note`` applies (``revised_change``). A
-    trigger has no state change, and an event that no longer parses is skipped.
-    """
-    if record.origin != "state_change":
-        return
-    try:
-        event = StateChangedEvent.model_validate(record.event)
-    except ValueError:
-        return
-    if event.entity_id.partition(".")[0] not in HOUSE_DOMAINS:
-        return
-    revised = revised_change(changes.get(event.entity_id), event, record.cause)
-    if isinstance(revised, PersonChange):
-        changes[event.entity_id] = revised
-    elif revised == "clear":
-        changes.pop(event.entity_id, None)
-
-
-def _ask_key(decided: Decided, house: Mapping[str, LiveEntity]) -> str | None:
-    """The key an ask about this decision's action would be remembered by, as the live ask's."""
-    action = decided.proposal.action
-    if action is None:
-        return None
-    return asked_key(action.tool_name, asked_targets(action, house))
-
-
-def label_records(
-    records: Sequence[DecisionRecord],
-    house: Mapping[str, LiveEntity],
-    settings: ReflexSettings,
-    tz_name: str,
-) -> list[Labelled]:
-    """Label *records*, oldest first, ``ask`` or ``none``, with the first rule that failed.
-
-    A record is an ``ask`` only when, in this order, its recorded proposal was an act or an
-    ask (else ``no_proposal``), its target resolves in *house* (else ``unresolved``), it would
-    reverse nothing a person just changed (else ``reverses``), no earlier ask about the same
-    tool and targets was labelled within ``repeat_hours`` (else ``repeat``) and its time falls
-    outside quiet hours in the zone *tz_name* (else ``quiet_hours``). The recorded outcome is
-    never trusted: every record is decided again by today's rule (``decide_outcome``).
-
-    What people had just changed is the record's own ``recent`` when it has an outcome (the two
-    arrived together). A record without one gets it rebuilt from the log: every earlier
-    record's event, and its own, which the runner noted before it decided, are taken in oldest
-    first, and the changes within ``reverse_window_minutes`` of the record's time are kept.
-    The log holds only the events that reached the model, so a rebuilt set can miss a change,
-    and the first records of a read have no earlier ones to rebuild from.
-    """
-    zone = ZoneInfo(tz_name)
-    window = timedelta(minutes=settings.reverse_window_minutes)
-    repeat = timedelta(hours=settings.repeat_hours)
-    seen: dict[str, PersonChange] = {}  # every change the log has shown so far
-    asked_at: dict[str, datetime] = {}  # when each ask key was last labelled an ask
-    labelled: list[Labelled] = []
-    for record in records:
-        _note_change(seen, record)
-        changes = (
-            record.recent
-            if record.outcome is not None
-            else {e: c for e, c in seen.items() if record.time - c.time <= window}
-        )
-        decided = decide_outcome(record.proposal, record.prompt, changes, house)
-        key = _ask_key(decided, house)
-        why: Why | None
-        if record.proposal.decision not in _ASKING or key is None:
-            why = "no_proposal"
-        elif decided.outcome.kind == "invalid":
-            why = "unresolved"
-        elif decided.outcome.kind == "would_reverse":
-            why = "reverses"
-        elif key in asked_at and record.time - asked_at[key] < repeat:
-            why = "repeat"
-        elif in_quiet_hours(
-            record.time.astimezone(zone).time(),
-            settings.quiet_hours_start,
-            settings.quiet_hours_end,
-        ):
-            why = "quiet_hours"
-        else:
-            why = None
-            asked_at[key] = record.time
-        labelled.append(
-            Labelled(
-                label="ask" if why is None else "none", why=why, changes=changes, record=record
-            )
-        )
-    return labelled
-
-
-def summarize_labels(labelled: Sequence[Labelled]) -> str:
-    """The counts of a labelling: no entity, name, prompt or reason is printed."""
-    asks = sum(1 for line in labelled if line.label == "ask")
-    why: Counter[str | None] = Counter(line.why for line in labelled)
-    return (
-        f"Labelled {len(labelled)} records: {asks} ask, {len(labelled) - asks} none.\n"
-        "None by reason: " + ", ".join(f"{name} {why[name]}" for name in WHYS)
-    )
-
-
 def summarize_scores(
     lines: Sequence[Labelled], outcomes: Sequence[Outcome], house: Mapping[str, LiveEntity]
 ) -> str:
     """How a candidate's asks compare with the labels: counts only, nothing of the house.
 
-    Each answered line is decided again with the changes it was labelled against
-    (``decide_outcome``). A candidate ask that stands (``shadow``) is a wrong ask when the
-    label is ``none``, and when the label is ``ask`` it is either the labelled one (same tool
-    and targets: matched) or another (other). A candidate ``none`` against an ``ask`` label is
-    missed. One that would reverse a person, or is invalid (no decision, or a target that
-    names nothing), is counted as that and as nothing else. *outcomes* may be shorter than
-    *lines*: a run that stopped early.
+    The counts are ``score_labels``'s; this adds the header and the model's timing. *outcomes*
+    may be shorter than *lines*, a run that stopped early, and a call that raised is not scored.
     """
-    scored = [
-        (line, outcome.proposal, outcome)
+    answers = [
+        (line, outcome.proposal)
         for line, outcome in zip(lines, outcomes, strict=False)
         if outcome.replayed != ERROR and outcome.proposal is not None
     ]
+    answered = [o for o in outcomes if o.replayed != ERROR]
     failed = Counter(o.error for o in outcomes if o.replayed == ERROR)
-    labelled_ask = sum(1 for line, _, _ in scored if line.label == "ask")
-    wrong = missed = other = matched = reversing = invalid = 0
-    for line, proposal, _ in scored:
-        candidate = decide_outcome(proposal, line.record.prompt, line.changes, house)
-        match candidate.outcome.kind:
-            case "would_reverse":
-                reversing += 1
-            case "invalid":
-                invalid += 1
-            case "shadow" if line.label == "none":
-                wrong += 1
-            case "shadow":
-                wanted = decide_outcome(
-                    line.record.proposal, line.record.prompt, line.changes, house
-                )
-                if _ask_key(candidate, house) == _ask_key(wanted, house):
-                    matched += 1
-                else:
-                    other += 1
-            case _ if line.label == "ask":
-                missed += 1
-    answered = [outcome for _, _, outcome in scored]
     out = [
         f"Scored {len(outcomes)} of {len(lines)} records, {sum(failed.values())} failed.",
         "",
-        f"Wrong asks: {_of(wrong, len(scored) - labelled_ask, 'labelled none')}",
-        f"Missed asks: {_of(missed, labelled_ask, 'labelled ask')}",
-        f"Other asks: {_of(other, labelled_ask, 'labelled ask')}",
-        f"Matched asks: {_of(matched, labelled_ask, 'labelled ask')}",
-        f"Would reverse a person: {reversing} (must be 0)",
-        f"Invalid replies: {_share(invalid, len(scored))}",
+        *score_labels(answers, house).lines(),
     ]
     out.extend(_timing_and_failures(answered, failed))
     return "\n".join(out)

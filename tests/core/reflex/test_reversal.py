@@ -22,6 +22,7 @@ from core.reflex.prompt import LiveEntity
 from core.reflex.reversal import (
     PersonChange,
     PersonChanges,
+    notes_person_change,
     overridden_entities,
     resolve_targets,
     resolved_action,
@@ -786,3 +787,22 @@ def test_revised_change_keeps_the_record_for_what_is_not_a_persons_change() -> N
     assert revised_change(stored, device_report, "outside") == "keep"
     assert revised_change(stored, older, "person") == "keep"  # older than the record
     assert revised_change(stored, same_action, "person") == "keep"  # its own context id
+
+
+@pytest.mark.parametrize(
+    ("entity_id", "noted"),
+    [
+        (LAMP, True),
+        (TV, True),
+        ("switch.hall_fan_plug", True),
+        ("lock.front_door", True),
+        ("binary_sensor.kitchen_motion", False),  # a sensor: every update says "outside"
+        ("script.goodnight", False),  # shown only because a tool acts on it (issue #415)
+        ("sun.sun", False),
+        ("nodomain", False),
+    ],
+)
+def test_reflex_notes_a_change_to_a_device_it_always_shows_and_to_nothing_else(
+    entity_id: str, noted: bool
+) -> None:
+    assert notes_person_change(entity_id) is noted
