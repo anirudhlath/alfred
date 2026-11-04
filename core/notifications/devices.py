@@ -11,7 +11,9 @@ against the known push services before it is stored: an endpoint anywhere else w
 Alfred send requests wherever a client pointed it. The endpoint, ``p256dh`` and ``auth``
 are credentials — anyone holding them can push to the device — so nothing here logs them,
 and a ``ValidationError``'s message never quotes them (``hide_input_in_errors``). An APNs
-device token is one too, and nothing here logs any of it.
+device token is one too, and nothing here logs any of it. Both sit in the URL of the
+request that pushes to the device, which httpx logs: ``core/notifications/http_logs.py``
+cuts those URLs to the host.
 
 The hash holds at most ``MAX_DEVICES_PER_FAMILY`` rows of each family, APNs and Web Push,
 counted apart: ``store_device()`` evicts the oldest of the newcomer's own family, so a
@@ -89,7 +91,8 @@ def decode_b64url(value: str, name: str) -> tuple[str, bytes]:
     return stripped, raw
 
 
-def _is_push_service(host: str) -> bool:
+def is_push_service(host: str) -> bool:
+    """Whether a lowercase hostname is on one of ``PUSH_SERVICE_HOSTS``."""
     return any(host == known or host.endswith("." + known) for known in PUSH_SERVICE_HOSTS)
 
 
@@ -154,7 +157,7 @@ class WebPushSubscription(BaseModel):
         if port not in (None, 443):
             raise ValueError("endpoint must use port 443")
         host = parts.hostname
-        if host is None or not _DNS_NAME.fullmatch(host) or not _is_push_service(host):
+        if host is None or not _DNS_NAME.fullmatch(host) or not is_push_service(host):
             raise ValueError("endpoint is not on a known push service")
         return value
 
