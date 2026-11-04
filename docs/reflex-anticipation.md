@@ -362,35 +362,44 @@ Thu 8 Oct, 15:10 (afternoon) · sun up · partlycloudy
 ## Output shapes
 
 `REFLEX_OUTPUT` (`text`, `tool`, `native` or `json`; blank means `text`, anything else stops
-Reflex at startup, naming the variable and the four values) chooses how the model is asked to
-reply. Production runs `text`. The others exist to compare candidate models: a model that
-writes a JSON line badly may call a tool well, or the other way round.
+every Alfred service at startup, naming the variable and the four values) chooses how the model
+is asked to reply. Production runs `text`. The others exist to compare candidate models: a
+model that writes a JSON line badly may call a tool well, or the other way round.
 
 | Shape | What the request carries |
 |---|---|
 | `text` | Today's request: the reply is plain text, and the call's `response_format` is a JSON schema built from the tools the prompt showed (`reply_format()`), which the server holds the model to. The text is parsed by `parse_decision` |
 | `tool` | The reply is the arguments of an output tool, forced with `tool_choice: required` |
-| `native` | A `json_schema` `response_format`, with the same schema also in a system message |
+| `native` | A `json_schema` `response_format`, sent once: the request `text` sends, with the reply read as JSON by Pydantic AI instead of as text by `parse_decision` |
 | `json` | A `json_object` `response_format` (any JSON object), with the schema in a system message |
 
-The reply is a `ReflexReply` in the three structured shapes, with the fields of the reply line
-in its order: `decision`, `reason`, `tool_name`, `parameters`. What stays the same in all
-four: the prompt (it is still the single user message), temperature 0, the 150-token cap, the
-30 s timeout, the `system1` header, `retries=0`, and the enum. Each call builds its reply model
-from the tools the prompt showed, so `tool_name` is one of exactly those (only "none" when it
-showed none) whichever shape is in use. A schema with one tool states it as a constant rather
-than an enum. In `tool` and `native` the schema is in the request, where the server can hold
-the model to it; in `json` the server guarantees only a JSON object, so the enum is enforced
-by the validation after the reply.
+Every shape asks for the same reply, the one `reply_format()` describes, so no shape is
+measured against a weaker request. `reply_schema()` hands Pydantic AI that schema as it is
+built for the call, as a `StructuredDict` passed to that run alone: `"none"` or an act or ask
+with all four of `decision`, `reason`, `tool_name` and `parameters` required, the `tool_name`
+an enum of exactly the tools the prompt showed (only "none" when it showed none), and no extra
+key on either. It adds `type: object` at the top, which Pydantic AI requires, and an explicit
+`additionalProperties: true` at the top and on `parameters`: the vLLM profile closes every
+object that does not say it is open, which would leave the top level no key to write and
+`parameters` none to hold. What stays the same in all four: the prompt (it is still the single
+user message), temperature 0, the 150-token cap, the 30 s timeout, the `system1` header and
+`retries=0`. In `tool`, `native` and `text` the schema is in the request, where the server can
+hold the model to it; in `json` the server guarantees only a JSON object, so the schema is
+enforced by the checks after the reply.
 
 After the reply is read, the shapes meet again: `parse_decision` and the structured shapes
 both end in `proposal_from_parsed` (`core/reflex/decision.py`), so a reply gets the same checks
-whatever its shape (a tool the prompt did not show, an act with no tool, a `parameters` that is
-not an object). The one difference is what an `invalid` proposal keeps. A `text` reply that is
-not a decision keeps the text. A structured reply that fails the schema (an unknown tool, an
-unknown decision) never becomes a reply: it is `invalid` with the problem "no reply:" and the
-validation's name, and its `raw` is empty. A structured reply that passes the schema but fails
-a later check keeps the reply as JSON.
+whatever its shape (an unknown decision, a tool the prompt did not show, an act with no tool, a
+`parameters` that is not an object). A structured reply that is an object but breaks them is
+`invalid` with that problem and the reply as JSON in `raw`, as a `text` reply is.
+
+Only a reply that is no object fails earlier: not JSON, cut off at the token cap, or text where
+the `tool` shape required a tool call. `decide` makes it `invalid` too, and keeps what it can of
+it. `raw` is the model's last response (its text, or a tool call's arguments), as `text` keeps
+its reply. `problem` is `no reply:`, Pydantic's message and where and what kind of error it
+found (`reply: json_invalid`, `reply: dict_type`), never the reply: the runner logs `problem`,
+and the reply is private. A text reply to the `tool` shape has no such error, so its `problem`
+is the message alone and the text is in `raw`.
 
 Compare shapes on one recorded set with [`replay --output`](#replay), or on the goldens with
 `alfred evals run --reflex-output` ([evals.md](evals.md#trying-another-reflex-model)). The

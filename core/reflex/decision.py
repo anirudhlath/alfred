@@ -54,7 +54,7 @@ def proposal_from_parsed(
     """The proposal for a reply already read as an object: every check that follows the JSON.
 
     ``parse_decision`` calls it with what it parsed; so does every structured output shape
-    (``core.reflex.agent``), with the reply model's dump. ``raw`` is the reply as the model
+    (``core.reflex.agent``), with the reply object. ``raw`` is the reply as the model
     wrote it, kept by an ``invalid`` proposal.
     """
     decision = parsed.get("decision")

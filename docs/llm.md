@@ -38,7 +38,7 @@ A model is a Pydantic AI model string; there is no model factory.
 | `LIBRARIAN_MODEL` | `SYSTEM2_MODEL` | the same forms |
 | `APPROVAL_MODEL` | `SYSTEM2_MODEL` | the same forms; reads the owner's reply to a pending confirmation (see [Approvals](#approvals)) |
 | `REFLEX_MODEL` | `vllm:` + `OPENAI_COMPAT_MODEL`, when that is set | the same forms; the model Reflex decides with (see [System 1](#system-1-reflex)) |
-| `REFLEX_OUTPUT` | `text` | `text`, `tool`, `native` or `json`: how Reflex asks that model to reply (see [System 1](#system-1-reflex)). Any other value stops Reflex at startup |
+| `REFLEX_OUTPUT` | `text` | `text`, `tool`, `native` or `json`: how Reflex asks that model to reply (see [System 1](#system-1-reflex)). Any other value stops every Alfred service at startup |
 | `VLLM_BASE_URL` | the first set of `OPENAI_BASE_URL` (legacy only, see below), `OPENAI_COMPAT_HOST`, `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended | where `vllm:` models are served |
 | `OPENROUTER_API_KEY` | `CLAUDE_API_KEY` | the key `openrouter:` models use |
 | `SYSTEM2_MAX_TOKENS` | `CLAUDE_MAX_TOKENS`, else 2048 | System 2's per-request output cap |

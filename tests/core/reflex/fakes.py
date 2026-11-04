@@ -8,17 +8,12 @@ from core.reflex.agent import build_reflex_agent
 from tests.llm_fakes import Script
 
 if TYPE_CHECKING:
-    from pydantic_ai import Agent
-
-    from bus.schemas.events import ReflexProposal
-    from core.reflex.tool_registry import ToolInfo
+    from core.reflex.agent import ReflexAgent
     from shared.config import ReflexOutput
     from tests.llm_fakes import Reply
 
 
-def reflex_agent(
-    *replies: Reply, output: ReflexOutput = "text"
-) -> tuple[Agent[list[ToolInfo], ReflexProposal], Script]:
+def reflex_agent(*replies: Reply, output: ReflexOutput = "text") -> tuple[ReflexAgent, Script]:
     """The Reflex agent, asking for its reply in *output*, over a ``Script`` that answers in order.
 
     The script records every request, so a test reads the prompt the engine sent from

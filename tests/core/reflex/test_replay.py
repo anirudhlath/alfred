@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 
 import fakeredis
 import pytest
-from pydantic_ai import NativeOutput, PromptedOutput, TextOutput, ToolOutput
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from bus.schemas.events import (
@@ -62,8 +61,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
 
-    from pydantic_ai import Agent
-
+    from core.reflex.agent import ReflexAgent
     from core.reflex.reversal import PersonChange
     from core.reflex.tool_registry import ToolInfo
     from shared.config import ReflexOutput
@@ -575,17 +573,6 @@ def test_without_any_model_the_replay_exits_non_zero() -> None:
 
 # --- the output shape ---------------------------------------------------------------------
 
-OUTPUT_MARKERS = {
-    "text": TextOutput,
-    "tool": ToolOutput,
-    "native": NativeOutput,
-    "json": PromptedOutput,
-}
-
-
-def test_every_output_shape_has_a_marker_here() -> None:
-    assert set(OUTPUT_MARKERS) == set(REFLEX_OUTPUTS)
-
 
 @pytest.mark.parametrize("shape", REFLEX_OUTPUTS)
 def test_the_output_option_is_read_on_run_and_score(shape: str, tmp_path: Path) -> None:
@@ -623,7 +610,7 @@ def test_the_output_option_sets_the_agents_shape(shape: ReflexOutput) -> None:
 
     agent = replay.build_agent(config, None, shape)
 
-    assert isinstance(agent.output_type, OUTPUT_MARKERS[shape])
+    assert agent.output_shape == shape
 
 
 @pytest.mark.usefixtures("restored_environ")
@@ -634,7 +621,7 @@ def test_without_the_output_option_the_agent_takes_the_configured_shape() -> Non
 
     agent = replay.build_agent(config, None, None)
 
-    assert isinstance(agent.output_type, NativeOutput)
+    assert agent.output_shape == "native"
 
 
 @pytest.mark.parametrize("command", ["run", "score"])
@@ -647,9 +634,7 @@ async def test_the_command_builds_its_agent_in_the_shape_asked_for(
     agent, _ = reflex_agent(NONE)
     built: list[tuple[str | None, str | None]] = []
 
-    def build(
-        _config: AlfredConfig, model: str | None, output: str | None
-    ) -> Agent[list[ToolInfo], ReflexProposal]:
+    def build(_config: AlfredConfig, model: str | None, output: str | None) -> ReflexAgent:
         built.append((model, output))
         return agent
 

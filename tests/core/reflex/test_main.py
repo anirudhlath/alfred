@@ -9,13 +9,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis
 import pytest
-from pydantic_ai import NativeOutput, PromptedOutput, TextOutput, ToolOutput
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from core.reflex import __main__ as reflex_main
 from core.reflex.__main__ import build_agent, warmup_steps
 from core.reflex.prose import fetch_prose
-from shared.config import AlfredConfig, ReflexOutput
+from shared.config import REFLEX_OUTPUTS, AlfredConfig, ReflexOutput
 from shared.prompts.names import REFLEX_RULES, REFLEX_STATE_CHANGE, REFLEX_TRIGGER
 from shared.prompts.store import PromptStore
 from tests.shared.prompts.fakes import FakeLangfuse
@@ -38,18 +37,8 @@ def test_the_agent_is_built_over_the_configured_model() -> None:
 
 
 @pytest.mark.usefixtures("restored_environ")
-@pytest.mark.parametrize(
-    ("output", "marker"),
-    [
-        ("text", TextOutput),
-        ("tool", ToolOutput),
-        ("native", NativeOutput),
-        ("json", PromptedOutput),
-    ],
-)
-def test_the_agent_is_built_in_the_configured_output_shape(
-    output: ReflexOutput, marker: type
-) -> None:
+@pytest.mark.parametrize("output", REFLEX_OUTPUTS)
+def test_the_agent_is_built_in_the_configured_output_shape(output: ReflexOutput) -> None:
     config = dataclasses.replace(
         AlfredConfig.from_env(), reflex_model="vllm:test-model", reflex_output=output
     )
@@ -57,7 +46,7 @@ def test_the_agent_is_built_in_the_configured_output_shape(
     agent = build_agent(config)
 
     assert agent is not None
-    assert isinstance(agent.output_type, marker)
+    assert agent.output_shape == output
 
 
 @pytest.mark.usefixtures("restored_environ")

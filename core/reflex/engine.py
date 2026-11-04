@@ -36,9 +36,8 @@ from shared.traced import traced
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from pydantic_ai import Agent
-
     from bus.schemas.events import ReflexProposal, StateChangedEvent, TriggerFired
+    from core.reflex.agent import ReflexAgent
     from core.reflex.context_reader import ContextReader
     from core.reflex.prompt import LiveEntity, ReflexProse
     from core.reflex.reversal import PersonChange, PersonChanges
@@ -115,7 +114,7 @@ class ReflexEngine:
         context_reader: ContextReader | None = None,
         memory_reader: MemoryReader | None = None,
         *,
-        agent: Agent[list[ToolInfo], ReflexProposal],
+        agent: ReflexAgent,
         clock: Callable[[], datetime] = _utc_now,
         prompts: PromptStore | None = None,
         redis: AioRedis | None = None,

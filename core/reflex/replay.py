@@ -74,11 +74,9 @@ from shared.usertime import get_user_timezone
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
-    from pydantic_ai import Agent
-
     from bus.schemas.events import ReflexProposal
+    from core.reflex.agent import ReflexAgent
     from core.reflex.prompt import LiveEntity
-    from core.reflex.tool_registry import ToolInfo
     from shared.types import AioRedis
 
 # What a replayed call that raised (the server down, a timeout) is counted as.
@@ -104,9 +102,7 @@ class Outcome:
     proposal: ReflexProposal | None = None  # what the model proposed; held for score, never printed
 
 
-async def _decide_one(
-    agent: Agent[list[ToolInfo], ReflexProposal], record: DecisionRecord
-) -> Outcome:
+async def _decide_one(agent: ReflexAgent, record: DecisionRecord) -> Outcome:
     recorded = record.proposal.decision
     try:
         tools = parse_tools(record.prompt)
@@ -122,7 +118,7 @@ async def _decide_one(
 
 async def replay(
     records: Sequence[DecisionRecord],
-    agent: Agent[list[ToolInfo], ReflexProposal],
+    agent: ReflexAgent,
     *,
     on_outcome: Callable[[Outcome], None] | None = None,
 ) -> list[Outcome]:
@@ -383,7 +379,7 @@ def _fail(message: str, code: int) -> NoReturn:
 
 def build_agent(
     config: AlfredConfig, model: str | None, output: ReflexOutput | None
-) -> Agent[list[ToolInfo], ReflexProposal]:
+) -> ReflexAgent:
     """The Reflex agent over *model* and *output*, or over ``REFLEX_MODEL`` and ``REFLEX_OUTPUT``.
 
     Exits non-zero when no model resolves; ``resolve_model`` logs why. Tracing is not

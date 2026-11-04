@@ -85,7 +85,7 @@ Reflex, System 2 and the Librarian take a Pydantic AI model string,
 | `LIBRARIAN_MODEL` | `SYSTEM2_MODEL` |
 | `APPROVAL_MODEL` | `SYSTEM2_MODEL` (reads a reply to a pending confirmation as yes, no or neither) |
 | `REFLEX_MODEL` | `vllm:` + `OPENAI_COMPAT_MODEL`, when that is set. Reflex stays off when neither is |
-| `REFLEX_OUTPUT` | `text`. How Reflex asks its model to reply (`text`, `tool`, `native` or `json`); any other value stops Reflex at startup. Leave it unset in production |
+| `REFLEX_OUTPUT` | `text`. How Reflex asks its model to reply (`text`, `tool`, `native` or `json`); any other value stops every Alfred service at startup. Leave it unset in production |
 | `VLLM_BASE_URL` | where `vllm:` models are served: the first set of `OPENAI_BASE_URL` (legacy `openai/` `CLAUDE_MODEL` only), `OPENAI_COMPAT_HOST`, `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended, `localhost` rewritten like the other host variables |
 
 > **Upgrading a deploy that still sets `CLAUDE_MODEL`:** it keeps working. Each process
