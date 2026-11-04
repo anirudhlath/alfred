@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx2
 import pytest
+from pydantic_ai import NativeOutput, PromptedOutput, ToolOutput
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import override_allow_model_requests
@@ -417,6 +418,27 @@ def _values(schema: dict[str, Any]) -> list[str]:
 def test_the_shapes_are_the_ones_the_setting_allows() -> None:
     assert REFLEX_OUTPUTS == ("text", "tool", "native", "json")
     assert set(STRUCTURED) == set(REFLEX_OUTPUTS) - {"text"}
+
+
+@pytest.mark.parametrize(
+    ("shape", "kind"), [("tool", ToolOutput), ("native", NativeOutput), ("json", PromptedOutput)]
+)
+def test_each_structured_shape_asks_for_its_own_kind_of_output(
+    shape: ReflexOutput, kind: type
+) -> None:
+    assert isinstance(agent_module._structured_output(shape, TOOLS), kind)
+
+
+def test_the_text_shape_has_no_structured_output_to_fall_back_to() -> None:
+    # `text` sends reply_format and reads the text: asking for its output would send a schema
+    # in the prompt instead, which is the `json` shape, silently.
+    with pytest.raises(ValueError, match="text"):
+        agent_module._structured_output("text", TOOLS)
+
+
+def test_a_shape_nobody_handles_is_an_error_not_a_default() -> None:
+    with pytest.raises(AssertionError):
+        agent_module._structured_output("yaml", TOOLS)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("shape", REFLEX_OUTPUTS)

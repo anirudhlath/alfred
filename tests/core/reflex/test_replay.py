@@ -571,6 +571,80 @@ def test_without_any_model_the_replay_exits_non_zero() -> None:
     assert stopped.value.code not in (0, None)
 
 
+HOSTED = [
+    "openrouter:some/model",
+    "openai:some-model",
+    "anthropic:some-model",
+    "gateway/x:y",
+    "served-name",
+]
+
+
+@pytest.mark.usefixtures("restored_environ")
+@pytest.mark.parametrize("model", HOSTED)
+def test_a_model_that_is_not_on_the_local_provider_is_refused_with_the_reason(
+    model: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def resolved(*_: object) -> None:
+        raise AssertionError("the model was resolved before it was refused")
+
+    monkeypatch.setattr(replay, "resolve_model", resolved)
+    config = dataclasses.replace(AlfredConfig.from_env(), reflex_model="vllm:configured-model")
+
+    with pytest.raises(SystemExit) as stopped:
+        replay.build_agent(config, model, None)
+
+    assert stopped.value.code not in (0, None)
+    err = capsys.readouterr().err
+    assert "vllm:" in err and "private" in err
+    assert model not in err
+
+
+@pytest.mark.usefixtures("restored_environ")
+def test_a_configured_model_is_held_to_the_same_rule_and_named_as_the_setting() -> None:
+    config = dataclasses.replace(AlfredConfig.from_env(), reflex_model="openrouter:some/model")
+
+    with pytest.raises(SystemExit) as stopped:
+        replay.build_agent(config, None, None)
+
+    assert stopped.value.code not in (0, None)
+
+
+@pytest.mark.usefixtures("restored_environ")
+def test_the_local_provider_is_allowed_however_it_is_spelled_around() -> None:
+    config = dataclasses.replace(
+        AlfredConfig.from_env(), reflex_model="  vllm:configured-model ", reflex_output="text"
+    )
+
+    assert replay.build_agent(config, None, None).model.model_name == "configured-model"
+
+
+@pytest.mark.usefixtures("restored_environ")
+async def test_run_refuses_a_hosted_model_before_it_reads_a_record(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    records = _jsonl(tmp_path / "records.jsonl", _three())
+
+    with pytest.raises(SystemExit) as stopped:
+        await replay.execute(parse_args(["run", "--records", str(records), "--model", "openai:m"]))
+
+    assert stopped.value.code not in (0, None)
+    assert "private" in capsys.readouterr().err
+
+
+@pytest.mark.usefixtures("restored_environ")
+async def test_score_refuses_a_hosted_model_before_it_asks_it_anything(
+    house: AioRedis, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    labels = _label_file(tmp_path / "labels.jsonl", [_labelled("none", _state_change(0, "none"))])
+
+    with pytest.raises(SystemExit) as stopped:
+        await replay.execute(parse_args(["score", "--labels", str(labels), "--model", "openai:m"]))
+
+    assert stopped.value.code not in (0, None)
+    assert "private" in capsys.readouterr().err
+
+
 # --- the output shape ---------------------------------------------------------------------
 
 
@@ -925,8 +999,9 @@ async def test_score_counts_wrong_missed_and_other_asks_and_the_rest(
     shown = capsys.readouterr().out
     assert [script.prompt(i) for i in range(9)] == [line.record.prompt for line in lines]
     assert "Scored 9 of 9 records, 1 failed." in shown
-    assert "Wrong asks: 1 of 3 labelled none (no_proposal, unresolved, reverses) (33.3%)" in shown
-    assert "Asks the gate would hold: 0 of 0 labelled none (repeat, quiet_hours)" in shown
+    wrong = "Wrong asks: 1 of 3 labelled none for no_proposal, unresolved, reverses, repeat (33.3%)"
+    assert wrong in shown
+    assert "Asks the gate would hold: 0 of 0 labelled none for repeat, quiet_hours" in shown
     assert "Missed asks: 1 of 5 labelled ask (20.0%)" in shown
     assert "Other asks: 1 of 5 labelled ask (20.0%)" in shown
     assert "Matched asks: 1 of 5 labelled ask (20.0%)" in shown
@@ -936,9 +1011,10 @@ async def test_score_counts_wrong_missed_and_other_asks_and_the_rest(
     assert "Failed calls: RuntimeError x1" in shown
 
 
-@pytest.mark.parametrize("why", ["repeat", "quiet_hours"])
+@pytest.mark.parametrize(("why", "judged"), [("repeat", 3), ("quiet_hours", 1)])
 async def test_score_does_not_count_an_ask_the_gate_would_hold_as_a_wrong_ask(
     why: str,
+    judged: int,
     house: AioRedis,
     use_script: Callable[..., Script],
     tmp_path: Path,
@@ -960,9 +1036,48 @@ async def test_score_does_not_count_an_ask_the_gate_would_hold_as_a_wrong_ask(
     await replay.execute(parse_args(["score", "--labels", str(labels)]))
 
     shown = capsys.readouterr().out
-    assert "Wrong asks: 1 of 1 labelled none (no_proposal, unresolved, reverses) (100.0%)" in shown
-    assert "Asks the gate would hold: 1 of 2 labelled none (repeat, quiet_hours) (50.0%)" in shown
+    wrong = f"Wrong asks: 1 of {judged} labelled none for no_proposal, unresolved, reverses, repeat"
+    assert f"{wrong} ({100 / judged:.1f}%)" in shown  # a repeat line is one a wrong ask can be on
+    assert "Asks the gate would hold: 1 of 2 labelled none for repeat, quiet_hours (50.0%)" in shown
     assert "Missed asks: 0 of 0 labelled ask" in shown  # a gated none is not a missed ask either
+
+
+async def test_score_holds_a_repeat_only_for_the_ask_that_was_repeated(
+    house: AioRedis,
+    use_script: Callable[..., Script],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The gate's repeat key is the tool and the targets: an ask about another light would
+    # really be put to the owner.
+    use_script(act_reply("Kitchen Pendants"), act_reply("Living Room Lamp"))
+    record = record_at(DAY, decision="act", target="Kitchen Pendants")
+    labels = _label_file(
+        tmp_path / "labels.jsonl",
+        [_labelled("none", record, "repeat"), _labelled("none", record, "repeat")],
+    )
+
+    await replay.execute(parse_args(["score", "--labels", str(labels)]))
+
+    shown = capsys.readouterr().out
+    assert "Wrong asks: 1 of 2 labelled none for no_proposal, unresolved, reverses, repeat" in shown
+    assert "Asks the gate would hold: 1 of 2 labelled none for repeat, quiet_hours (50.0%)" in shown
+
+
+async def test_score_says_record_for_one_record(
+    house: AioRedis,
+    use_script: Callable[..., Script],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    use_script(NONE)
+    labels = _label_file(
+        tmp_path / "labels.jsonl", [_labelled("none", record_at(DAY), "no_proposal")]
+    )
+
+    await replay.execute(parse_args(["score", "--labels", str(labels)]))
+
+    assert "Scored 1 of 1 record, 0 failed." in capsys.readouterr().out
 
 
 async def test_score_names_nothing_of_the_house(
@@ -1003,7 +1118,7 @@ async def test_score_judges_the_candidate_by_the_changes_the_line_was_labelled_w
     shown = capsys.readouterr().out
     assert "Other asks: 1 of 1 labelled ask" in shown
     assert "Would reverse a person: 1 (must be 0)" in shown
-    assert "Wrong asks: 0 of 1 labelled none (no_proposal, unresolved, reverses)" in shown
+    assert "Wrong asks: 0 of 1 labelled none for no_proposal, unresolved, reverses, repeat" in shown
 
 
 async def test_a_candidate_that_would_reverse_a_person_does_not_change_the_exit_status(
@@ -1112,4 +1227,4 @@ async def test_score_reads_the_file_label_wrote(
     shown = capsys.readouterr().out
     assert "Scored 9 of 9 records, 0 failed." in shown
     assert "Missed asks: 3 of 3 labelled ask (100.0%)" in shown
-    assert "Asks the gate would hold: 0 of 2 labelled none (repeat, quiet_hours) (0.0%)" in shown
+    assert "Asks the gate would hold: 0 of 2 labelled none for repeat, quiet_hours (0.0%)" in shown

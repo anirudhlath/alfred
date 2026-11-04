@@ -307,7 +307,8 @@ def vllm_family_known(served_name: str) -> bool:
 # server's JSON-schema response format, a schema in the prompt), to compare candidates by
 # their counts (``docs/reflex-anticipation.md``, "Output shapes"). Lives here, not in
 # ``core.reflex.agent``, so a typo fails when config loads, in every process, as one
-# ``RuntimeError``; the agent's tests assert the shapes it knows are these.
+# ``RuntimeError``. The agent matches every shape here (``assert_never``, which mypy checks), so
+# adding one is a type error there until it is handled; its tests pin the list.
 ReflexOutput = Literal["text", "tool", "native", "json"]
 REFLEX_OUTPUTS: tuple[ReflexOutput, ...] = get_args(ReflexOutput)
 DEFAULT_REFLEX_OUTPUT: ReflexOutput = "text"

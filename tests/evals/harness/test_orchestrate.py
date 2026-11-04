@@ -1139,6 +1139,7 @@ async def test_a_key_that_cannot_be_a_header_value_is_refused_without_echoing_it
     monkeypatch.setenv(KEY_ENV, key)
     order: list[str] = []
     _preflight_passes(monkeypatch, order)
+    _stop_after_models(monkeypatch)
 
     with pytest.raises(PreflightError, match=KEY_ENV) as err:
         await run_suites(_options(tmp_path / "logs", reflex_upstream=HOSTED_URL))

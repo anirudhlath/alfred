@@ -243,7 +243,9 @@ Every bus call is bounded, so a container frozen with its socket open fails the 
 
 `collect.py` turns bus entries into evidence. `reflex.py` turns System 1's recorded replies
 into Reflex's decisions, with Reflex's own `parse_decision` and the same tools its prompt
-showed. An entry `collect.py` recognises (a TriggerCreated, a TriggerFired, an
+showed. It reads the reply where the output shape put it: for the `tool` shape, the arguments
+of the recorded call to the output tool (through `proposal_from_parsed`, the checks that follow
+the JSON), else the text. An entry `collect.py` recognises (a TriggerCreated, a TriggerFired, an
 `ActionRequest`, a notification) but cannot read is a harness error, so the sample scores
 `E`, not a check's "none created". So is the triggers process registering in the sample's
 window: it registers only when it starts, after reloading every trigger snapshot, which
@@ -1242,7 +1244,7 @@ goldens are public. Everything about it is fake or fenced.
 | `evals/harness/driver.py` | `play()`: one variant against a running stack; `build_request()` |
 | `evals/harness/bus.py` | `ContainerBus`: what the driver reads from the container and does through it (see [The bus](#the-bus)) |
 | `evals/harness/collect.py` | Bus entries into evidence: triggers created and fired, notifications sent and deferred |
-| `evals/harness/reflex.py` | System 1's recorded calls into Reflex's decisions, with Reflex's `parse_decision`; its decision-log records into `LoggedDecision`s |
+| `evals/harness/reflex.py` | System 1's recorded calls into Reflex's decisions, with Reflex's `parse_decision` (or, for a `tool`-shape reply, `proposal_from_parsed` over the output tool's arguments); its decision-log records into `LoggedDecision`s |
 | `evals/harness/evidence.py` | `Evidence` and its parts: the checks' only input |
 | `evals/harness/checks/` | `home.py`, `llm.py`, `reply.py`, `latency.py`, `reflex.py`, `triggers.py`, `notifications.py`, `matching.py`, `judge_spec.py`, `result.py`; the registry in `__init__.py` |
 | `evals/harness/judge.py` | `Judge`, `make_judge_model()`, `judge_check()`, calibration sets and report, `TRUST_THRESHOLD` |

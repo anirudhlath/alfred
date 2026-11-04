@@ -4,14 +4,21 @@ Reflex sends the model's reply straight to ``core.reflex.decision.parse_decision
 with the reflex-audience tools its prompt showed (``core/reflex/engine.py``). The harness
 does the same with the same tools. So an act naming a tool Reflex could not use is
 ``invalid`` here too.
+
+Where the reply is depends on the output shape Reflex asked in (``REFLEX_OUTPUT``). In the
+``tool`` shape it is the arguments of the output tool the proxy recorded, and the text is
+empty; every other shape replies in the text. Both end in the checks Reflex makes after the
+JSON (``proposal_from_parsed``).
 """
 
 from __future__ import annotations
 
+import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
-from core.reflex.decision import parse_decision
+from core.reflex.agent import REPLY_FORMAT_NAME
+from core.reflex.decision import parse_decision, proposal_from_parsed
 from core.reflex.prompt import parse_event, state_change_line
 from evals.harness.checks.llm import message_text
 from evals.harness.evidence import LoggedDecision, ReflexCall, ReflexEvent
@@ -19,6 +26,7 @@ from evals.harness.evidence import LoggedDecision, ReflexCall, ReflexEvent
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    from bus.schemas.events import ReflexProposal
     from core.reflex.decision_log import DecisionRecord
     from core.reflex.prompt import RenderedEvent
     from core.reflex.tool_registry import ToolInfo
@@ -126,6 +134,27 @@ def targets(world: World, tool: str | None, parameters: dict[str, Any]) -> list[
     return out
 
 
+# The key the proxy keeps arguments it could not read as an object under (``proxy._parse``).
+_UNREAD: Final = "_raw"
+
+
+def proposal_of(call: LlmCall, tools: Sequence[ToolInfo]) -> ReflexProposal:
+    """The proposal Reflex takes from *call*'s reply, wherever the output shape put it.
+
+    A call to the output tool (``REPLY_FORMAT_NAME``) is the reply, whatever text is beside
+    it: its arguments are the reply object. Arguments the proxy could not read are the model's
+    text as written and are parsed as text, so they are ``invalid`` as Reflex would find them.
+    Any other call is read from its text.
+    """
+    reply = next((c for c in call.tool_calls if c.name == REPLY_FORMAT_NAME), None)
+    if reply is None:
+        return parse_decision(call.response_text or "", tools)
+    if set(reply.arguments) == {_UNREAD}:
+        unread = reply.arguments[_UNREAD]
+        return parse_decision(unread if isinstance(unread, str) else json.dumps(unread), tools)
+    return proposal_from_parsed(reply.arguments, json.dumps(reply.arguments), tools)
+
+
 def reflex_calls(
     llm_calls: list[LlmCall], tools: Sequence[ToolInfo], world: World
 ) -> list[ReflexCall]:
@@ -157,7 +186,7 @@ def reflex_calls(
                 )
             )
             continue
-        proposal = parse_decision(call.response_text or "", tools)
+        proposal = proposal_of(call, tools)
         action = proposal.action
         tool = None if action is None else action.tool_name
         parameters = {} if action is None else dict(action.parameters)

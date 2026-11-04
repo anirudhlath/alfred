@@ -28,6 +28,10 @@ against the live state read once at the start, so the house's services must be r
 label file holds the owner's house: it is written readable only by its owner, and kept out of
 the repo.
 
+``--model`` (default ``REFLEX_MODEL``) must be on the local ``vllm:`` provider: the prompts and a
+label file hold the owner's house, so ``run`` and ``score`` refuse a hosted model before any
+request is made.
+
 ``--output`` (default ``REFLEX_OUTPUT``) picks how the model is asked to reply, ``text``, ``tool``,
 ``native`` or ``json`` (``core.reflex.agent``), so one recorded set can be decided in each shape and
 the counts compared.
@@ -87,6 +91,9 @@ MAX_CONSECUTIVE_ERRORS: Final = 5
 DECISIONS: Final[tuple[str, ...]] = get_args(ReflexDecision)
 _COLUMNS: Final = (*DECISIONS, ERROR)
 _PROG: Final = "python -m core.reflex.replay"
+# The only provider a replay may use (``shared.agents.resolve_model``'s prefix for the local
+# server): the recorded prompts and the house's changes are private.
+LOCAL_PROVIDER: Final = "vllm:"
 
 
 @dataclass(frozen=True)
@@ -263,7 +270,10 @@ def _add_model(command: argparse.ArgumentParser) -> None:
     command.add_argument(
         "--model",
         metavar="MODEL",
-        help="the model to decide with, e.g. vllm:<served name> (default: REFLEX_MODEL)",
+        help=(
+            f"the model to decide with, on the local server: {LOCAL_PROVIDER}<served name> "
+            "(default: REFLEX_MODEL)"
+        ),
     )
 
 
@@ -382,12 +392,22 @@ def build_agent(
 ) -> ReflexAgent:
     """The Reflex agent over *model* and *output*, or over ``REFLEX_MODEL`` and ``REFLEX_OUTPUT``.
 
-    Exits non-zero when no model resolves; ``resolve_model`` logs why. Tracing is not
-    started, so the agent's spans go nowhere: a replayed prompt is never exported.
+    Exits non-zero when the model is not on the local ``vllm:`` provider, before any provider
+    is built: the recorded prompts and the house's changes are private, and a hosted model
+    would be sent them. Exits non-zero too when no model resolves; ``resolve_model`` logs why.
+    Tracing is not started, so the agent's spans go nowhere: a replayed prompt is never exported.
     """
     apply_model_env(config)
     setting = "REFLEX_MODEL" if model is None else "--model"
-    resolved = resolve_model(setting, config.reflex_model if model is None else model)
+    named = config.reflex_model if model is None else model
+    if not named.strip().startswith(LOCAL_PROVIDER):
+        _fail(
+            f"{setting} is not on the local {LOCAL_PROVIDER} provider. The replay sends the"
+            " recorded prompts and the house's changes, which are private, only to the local"
+            f" server: give a model as {LOCAL_PROVIDER}<served name>",
+            1,
+        )
+    resolved = resolve_model(setting, named)
     if resolved is None:
         _fail("no model: set REFLEX_MODEL, or pass --model (vllm:<served name>)", 1)
     return build_reflex_agent(resolved, config.reflex_output if output is None else output)
@@ -489,8 +509,9 @@ def summarize_scores(
     ]
     answered = [o for o in outcomes if o.replayed != ERROR]
     failed = Counter(o.error for o in outcomes if o.replayed == ERROR)
+    noun = "record" if len(lines) == 1 else "records"
     out = [
-        f"Scored {len(outcomes)} of {len(lines)} records, {sum(failed.values())} failed.",
+        f"Scored {len(outcomes)} of {len(lines)} {noun}, {sum(failed.values())} failed.",
         "",
         *score_labels(answers, house).lines(),
     ]

@@ -14,6 +14,7 @@ from bus.schemas.events import (
     TriggerFired,
 )
 from core.notifications.schema import Notification, Urgency
+from core.reflex.agent import REPLY_FORMAT_NAME
 from core.reflex.decision_log import DecisionRecord
 from core.reflex.tool_registry import ToolInfo
 from core.triggers.models import TRIGGER_ENGINE_SOURCE, TRIGGER_TITLE_PREFIX
@@ -27,7 +28,7 @@ from evals.harness.collect import (
     trigger_records,
 )
 from evals.harness.errors import HarnessError
-from evals.harness.evidence import LlmCall, LoggedDecision, ReflexEvent
+from evals.harness.evidence import LlmCall, LoggedDecision, ReflexEvent, ToolCall
 from evals.harness.reflex import (
     local_hour,
     logged_decisions,
@@ -514,6 +515,57 @@ def test_reflex_calls_parse_system1_replies_the_way_reflex_does() -> None:
     assert first.done == 3.7
     assert "not one of Reflex's tools" in (calls[2].problem or "")
     assert calls[3].problem == "no reply (HTTP 502)"
+
+
+def s1_tool(arguments: dict[str, object], name: str = REPLY_FORMAT_NAME) -> LlmCall:
+    """A System 1 call answered the way the ``tool`` shape asks for: a tool call, no text."""
+    return s1(None).model_copy(update={"tool_calls": [ToolCall(name=name, arguments=arguments)]})
+
+
+def test_a_tool_shape_reply_is_read_from_the_recorded_tool_call() -> None:
+    """In the ``tool`` shape the reply is the output tool's arguments and the text is empty:
+    reading only the text would score every such reply invalid."""
+    world = load_world("apartment")
+    act = {
+        "decision": "act",
+        "tool_name": "home.light_turn_off",
+        "parameters": {"target": "Living Room"},
+        "reason": "the TV started at night",
+    }
+    calls = reflex_calls(
+        [
+            s1_tool(act),
+            s1_tool({"decision": "none", "reason": "nothing to do"}, name=REPLY_FORMAT_NAME),
+            s1_tool({"decision": "act", "tool_name": "home.lock_unlock", "parameters": {}}),
+        ],
+        [REFLEX_TOOL],
+        world,
+    )
+    assert [c.decision for c in calls] == ["act", "none", "invalid"]
+    first = calls[0]
+    assert first.tool == "home.light_turn_off" and "living_room" in first.targets
+    assert first.reason == "the TV started at night"
+    assert first.parameters == {"target": "Living Room"}
+    assert "not one of Reflex's tools" in (calls[2].problem or "")
+
+
+def test_a_tool_shape_reply_whose_arguments_did_not_parse_is_invalid() -> None:
+    """The proxy keeps arguments it could not read as ``{"_raw": raw}``. The tool call is the
+    reply, so a text beside it does not make one."""
+    broken = s1_tool({"_raw": '{"decision": "act", "tool_na'})
+    beside = broken.model_copy(update={"response_text": json.dumps({"decision": "none"})})
+    calls = reflex_calls([broken, beside], [REFLEX_TOOL], load_world("apartment"))
+    assert [c.decision for c in calls] == ["invalid", "invalid"]
+    assert [c.problem for c in calls] == ["not JSON", "not JSON"]
+
+
+def test_a_tool_call_by_any_other_name_leaves_the_text_to_be_read() -> None:
+    none = json.dumps({"decision": "none"})
+    call = s1(none).model_copy(
+        update={"tool_calls": [ToolCall(name="home.light_turn_off", arguments={"target": "x"})]}
+    )
+    [seen] = reflex_calls([call], [REFLEX_TOOL], load_world("apartment"))
+    assert seen.decision == "none"
 
 
 def test_reflex_calls_come_back_in_request_order() -> None:

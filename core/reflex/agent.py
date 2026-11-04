@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import copy
 import json
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, assert_never
 
 from pydantic import ValidationError
 from pydantic_ai import (
@@ -192,16 +192,25 @@ def _structured_output(
     """What a structured *shape* asks for in a call that showed *tools*: ``reply_schema``.
 
     A ``StructuredDict`` reads the reply as an object and nothing more, so every other check
-    is ``proposal_from_parsed``'s, the same one ``text`` makes.
+    is ``proposal_from_parsed``'s, the same one ``text`` makes. ``text`` is not structured: it
+    sends ``reply_format`` instead, so asking for its output is an error, and so is a shape
+    this function does not know.
     """
     reply = StructuredDict(reply_schema(tools), name=REPLY_FORMAT_NAME)
-    if shape == "tool":
-        return ToolOutput(reply, name=REPLY_FORMAT_NAME)
-    if shape == "native":
-        # The vLLM profile would also put the schema in a system message. The server already
-        # holds the reply to it, as it does for ``text``, so the request carries it once.
-        return NativeOutput(reply, name=REPLY_FORMAT_NAME, template=False)
-    return PromptedOutput(reply, name=REPLY_FORMAT_NAME)
+    match shape:
+        case "tool":
+            return ToolOutput(reply, name=REPLY_FORMAT_NAME)
+        case "native":
+            # The vLLM profile would also put the schema in a system message. The server
+            # already holds the reply to it, as it does for ``text``, so the request carries
+            # it once.
+            return NativeOutput(reply, name=REPLY_FORMAT_NAME, template=False)
+        case "json":
+            return PromptedOutput(reply, name=REPLY_FORMAT_NAME)
+        case "text":
+            raise ValueError("the text shape sends reply_format and has no structured output")
+        case _:
+            assert_never(shape)
 
 
 @track_tokens(model=TOKENS_MODEL_LABEL)

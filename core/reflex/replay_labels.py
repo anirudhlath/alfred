@@ -42,7 +42,10 @@ WHYS: Final[tuple[str, ...]] = get_args(Why)
 # The two limits production's ask gate holds in code. The prompt carries neither the asks made
 # lately nor quiet hours, so a model cannot be faulted for proposing what they hold back.
 GATED: Final[tuple[str, ...]] = ("repeat", "quiet_hours")
-_JUDGED: Final[tuple[str, ...]] = tuple(why for why in WHYS if why not in GATED)
+# The lines a candidate's ask can be wrong on: every ``none`` but quiet hours', where the gate
+# holds any ask. On a ``repeat`` line the gate holds only the repeated ask (same tool and
+# targets, ``asked_key``), so an ask about anything else is wrong there.
+_JUDGED: Final[tuple[str, ...]] = tuple(why for why in WHYS if why != "quiet_hours")
 
 
 def share(part: int, whole: int, what: str = "", *, empty: str | None = "none answered") -> str:
@@ -175,10 +178,10 @@ class Scores:
 
     scored: int  # the lines the candidate answered
     labelled_ask: int
-    judged_none: int  # labelled none for a reason the candidate can see (not GATED)
+    judged_none: int  # labelled none where an ask can be wrong (_JUDGED: all but quiet_hours)
     gated_none: int  # labelled none for a limit the gate holds in code (GATED)
-    wrong: int  # an ask on a judged_none line
-    held: int  # an ask on a gated_none line: the gate would hold it, so it is not wrong
+    wrong: int  # an ask on a judged_none line, but the repeated ask on a repeat line
+    held: int  # an ask the gate would hold (quiet_hours: any; repeat: the repeated one)
     missed: int  # no ask on an ask line
     other: int  # an ask on an ask line, about another tool or targets
     matched: int  # the labelled ask
@@ -187,8 +190,8 @@ class Scores:
 
     def lines(self) -> list[str]:
         """The counts as text, one line each: nothing of the house."""
-        judged = f"labelled none ({', '.join(_JUDGED)})"
-        gated = f"labelled none ({', '.join(GATED)})"
+        judged = f"labelled none for {', '.join(_JUDGED)}"
+        gated = f"labelled none for {', '.join(GATED)}"
         asks = "labelled ask"
         return [
             f"Wrong asks: {share(self.wrong, self.judged_none, judged, empty=None)}",
@@ -201,6 +204,12 @@ class Scores:
         ]
 
 
+def _recorded_key(line: Labelled, house: Mapping[str, LiveEntity]) -> str | None:
+    """The key the line's recorded proposal asks about, as ``label_records`` read it."""
+    recorded = decide_outcome(line.record.proposal, line.record.prompt, line.changes, house)
+    return _ask_key(recorded, house)
+
+
 def score_labels(
     answers: Sequence[tuple[Labelled, ReflexProposal]], house: Mapping[str, LiveEntity]
 ) -> Scores:
@@ -209,14 +218,17 @@ def score_labels(
     Each proposal is decided again with the changes its line was labelled against
     (``decide_outcome``). One that would reverse a person, or is invalid (no decision, or a
     target that names nothing), is counted as that and as nothing else. A candidate ask that
-    stands (``shadow``) on a line labelled ``none`` is a wrong ask, unless the line was
-    labelled for a limit the gate holds in code (``GATED``: the prompt shows the model neither
-    the asks made lately nor quiet hours): that is an ask the gate would hold. On a line
-    labelled ``ask`` it is either the labelled one (same tool and targets: matched) or another
-    (other). A candidate ``none`` against an ``ask`` label is missed.
+    stands (``shadow``) on a line labelled ``none`` is a wrong ask, unless the gate would hold
+    it (``GATED``: the prompt shows the model neither the asks made lately nor quiet hours).
+    The gate holds any ask in quiet hours, but a repeat only for the same tool and targets
+    (``asked_key``): on a ``repeat`` line the ask about the recorded one's key is held, and an
+    ask about anything else would really be put to the owner, so it is wrong. On a line labelled
+    ``ask`` it is either the labelled one (same tool and targets: matched) or another (other).
+    A candidate ``none`` against an ``ask`` label is missed.
     """
     labelled_ask = sum(1 for line, _ in answers if line.label == "ask")
     gated_none = sum(1 for line, _ in answers if line.label == "none" and line.why in GATED)
+    judged_none = sum(1 for line, _ in answers if line.label == "none" and line.why in _JUDGED)
     wrong = held = missed = other = matched = reversing = invalid = 0
     for line, proposal in answers:
         candidate = decide_outcome(proposal, line.record.prompt, line.changes, house)
@@ -226,15 +238,15 @@ def score_labels(
             case "invalid":
                 invalid += 1
             case "shadow" if line.label == "none":
-                if line.why in GATED:
+                if line.why == "quiet_hours" or (
+                    line.why == "repeat"
+                    and _ask_key(candidate, house) == _recorded_key(line, house)
+                ):
                     held += 1
                 else:
                     wrong += 1
             case "shadow":
-                wanted = decide_outcome(
-                    line.record.proposal, line.record.prompt, line.changes, house
-                )
-                if _ask_key(candidate, house) == _ask_key(wanted, house):
+                if _ask_key(candidate, house) == _recorded_key(line, house):
                     matched += 1
                 else:
                     other += 1
@@ -243,7 +255,7 @@ def score_labels(
     return Scores(
         scored=len(answers),
         labelled_ask=labelled_ask,
-        judged_none=len(answers) - labelled_ask - gated_none,
+        judged_none=judged_none,
         gated_none=gated_none,
         wrong=wrong,
         held=held,
