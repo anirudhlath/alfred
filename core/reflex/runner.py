@@ -326,7 +326,7 @@ async def ensure_consumer_group(
             raise
 
 
-def _asked_targets(action: ActionRequest, snapshot: Mapping[str, LiveEntity]) -> list[str]:
+def asked_targets(action: ActionRequest, snapshot: Mapping[str, LiveEntity]) -> list[str]:
     """What an ask is about: the action's target resolved against the live state.
 
     The engine has already resolved it (``resolved_action``): a proposal whose target names
@@ -376,7 +376,7 @@ async def ask_or_hold(
     risk = await tool_risk(redis, action.target_service, action.tool_name)
     tz_name = await get_user_timezone(redis)
     now = clock()
-    targets = _asked_targets(action, snapshot)
+    targets = asked_targets(action, snapshot)
     outcome = await gate(
         redis,
         settings,

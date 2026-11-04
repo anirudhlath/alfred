@@ -398,3 +398,56 @@ python -m core.reflex.replay run --records decisions.jsonl [--limit N] [--model 
 
 A model server is not deterministic at temperature 0: compare counts across a few hundred
 records, never single answers.
+
+### Labels and scores
+
+Two more commands judge a model by what it asks the owner, not only by whether it agrees with
+the recording. `label` decides, from the records alone, which of them an ask was right for;
+`score` decides the labelled prompts again with a candidate model and counts where its asks
+differ from the labels.
+
+```
+python -m core.reflex.replay label --since 2026-10-26T23:35:00Z [--until ISO] --out labels.jsonl
+python -m core.reflex.replay label --records decisions.jsonl --out labels.jsonl
+python -m core.reflex.replay score --labels labels.jsonl [--model MODEL]
+```
+
+- **A label is `ask` only when every rule holds.** Each record is decided again by today's
+  rule (the engine's `decide_outcome`); the recorded outcome is never trusted. In this order:
+  the recorded proposal was an act or an ask (else `no_proposal`); its target resolves in the
+  live state (else `unresolved`); it would reverse nothing a person just changed (else
+  `reverses`); no earlier record labelled `ask` has the same tool and targets within
+  `repeat_hours` (else `repeat`); and its time falls outside quiet hours in the owner's zone
+  (else `quiet_hours`). Every other record is `none`, with the first rule that failed as
+  `why`. The daily cap and the one open ask are not label rules: they are limits on asking,
+  not on whether an ask was right.
+- **Live state, read once.** Both commands read the live snapshot once at the start and resolve
+  every target against it; with no live state they exit with status 1. `label` also reads the
+  stored settings and the owner's timezone once.
+- **What people had just changed.** A record with an outcome (`outcome` is not null) has its
+  own `recent`, used as recorded. An older record has none, so the changes are rebuilt by
+  folding the log, oldest first, through the rule `PersonChanges.note` applies: each record's
+  own event (the runner notes it before the engine decides) and its cause, for the house
+  devices Reflex always shows, keeping the changes within `reverse_window_minutes` of the
+  record's time. The log holds only the events that reached the model, so a rebuilt set can
+  miss a change, and the fold and the repeat window begin at the first record read: read from
+  earlier than the period that matters.
+- **The label file.** One JSONL line per record, oldest first, each event once:
+  `{"label": "ask" | "none", "why": ..., "changes": {...}, "record": {...}}`. `changes` is what
+  the record was judged against, so `score` needs only this file. It holds the owner's house,
+  so it is created readable only by its owner (mode 0600) and stays off the repo. The
+  convention is `~/code/alfred-deploy/reflex-replay/`, a directory outside the repo; nothing
+  enforces it. The owner reviews the `ask` lines privately.
+- **`score` decides again and counts.** Each prompt is sent as recorded, one at a time, through
+  the same loop and error handling as `run`. A candidate's proposal is judged by the same rule
+  against the line's `changes`: a wrong ask is an ask (a `shadow` outcome) on a line labelled
+  `none`; a missed ask is no decision on a line labelled `ask`; another ask is an ask on an
+  `ask` line about a different tool or targets; a matched ask is the labelled one. A proposal
+  that would reverse a person is counted as that, and one that is invalid (no decision, or a
+  target that names nothing) as invalid, each as nothing else.
+- **Output is counts only.** `label` prints the records labelled, the asks, and the `none`
+  labels by reason. `score` prints the records scored of the total and the calls that failed,
+  the wrong, missed, other and matched asks (each of its own denominator), the proposals that
+  would reverse a person, the invalid replies, and model latency p50 and p95. No entity id,
+  name, area, prompt text or reason is printed. The would-reverse count must be 0; the exit
+  status does not depend on it.

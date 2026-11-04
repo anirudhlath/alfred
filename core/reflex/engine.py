@@ -65,7 +65,7 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _decided(
+def decide_outcome(
     proposal: ReflexProposal,
     prompt: str,
     recent: dict[str, PersonChange],
@@ -73,11 +73,12 @@ def _decided(
 ) -> Decided:
     """The proposal, its outcome and what it was decided from, live state included.
 
-    An action whose target names nothing in the live state (with none, nothing at all) is
-    ``invalid``, kept as the model wrote it: what it would act on cannot be checked. Otherwise its
-    target is the one ``resolved_action`` gives, an entity ID where the model named an entity as
-    the prompt does, and anything it would act on that a person just changed makes it
-    ``would_reverse``.
+    The one road from a model's answer to its outcome: Reflex decides through it, and so does
+    the replay when it labels and scores recorded decisions. An action whose target names
+    nothing in the live state (with none, nothing at all) is ``invalid``, kept as the model
+    wrote it: what it would act on cannot be checked. Otherwise its target is the one
+    ``resolved_action`` gives, an entity ID where the model named an entity as the prompt does,
+    and anything it would act on that a person just changed makes it ``would_reverse``.
     """
     snapshot = entities or {}
     overridden: list[str] = []
@@ -210,7 +211,7 @@ class ReflexEngine:
             leave_alone=list(recent),
         )
         proposal = await decide(self._agent, prompt, tools)
-        return _decided(proposal, prompt, recent, entities)
+        return decide_outcome(proposal, prompt, recent, entities)
 
     @traced(name="reflex.process_trigger_fired")
     @track_latency(category="reflex")
@@ -230,4 +231,4 @@ class ReflexEngine:
             leave_alone=list(recent),
         )
         proposal = await decide(self._agent, prompt, tools)
-        return _decided(proposal, prompt, recent, entities)
+        return decide_outcome(proposal, prompt, recent, entities)

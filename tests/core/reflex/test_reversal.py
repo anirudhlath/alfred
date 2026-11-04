@@ -25,12 +25,14 @@ from core.reflex.reversal import (
     overridden_entities,
     resolve_targets,
     resolved_action,
+    revised_change,
 )
 from shared.streams import REFLEX_PERSON_CHANGES_KEY
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from core.attribution.cause import Cause
     from shared.types import AioRedis
 
 _NOW = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
@@ -731,3 +733,56 @@ async def test_recent_lets_a_redis_error_propagate() -> None:
 
     with pytest.raises(redis_exceptions.ConnectionError):
         await changes.recent(_WINDOW)
+
+
+# --- revised_change: the rule note applies, as a pure function ----------------------------------
+
+
+def test_revised_change_makes_a_persons_change_the_record() -> None:
+    event = _event(LAMP, "on", "off")
+
+    revised = revised_change(None, event, "person")
+
+    assert revised == PersonChange(
+        time=event.timestamp,
+        cause="person",
+        old_state="on",
+        new_state="off",
+        context_id="ctx-person",
+        attributes_only=False,
+    )
+
+
+@pytest.mark.parametrize("cause", ["alfred", "automation"])
+def test_revised_change_clears_the_record_when_alfred_or_an_automation_changes_it(
+    cause: Cause,
+) -> None:
+    stored = PersonChange(
+        time=_NOW - timedelta(minutes=20),
+        cause="person",
+        old_state="on",
+        new_state="off",
+        context_id=None,
+        attributes_only=False,
+    )
+
+    assert revised_change(stored, _event(LAMP, "off", "on"), cause) == "clear"
+    assert revised_change(None, _event(LAMP, "off", "on"), cause) == "clear"
+
+
+def test_revised_change_keeps_the_record_for_what_is_not_a_persons_change() -> None:
+    stored = PersonChange(
+        time=_NOW - timedelta(minutes=5),
+        cause="person",
+        old_state="on",
+        new_state="off",
+        context_id="ctx-person",
+        attributes_only=False,
+    )
+    device_report = _event(LAMP, "off", "off", context=_OUTSIDE)
+    older = _event(LAMP, "off", "on", ago=timedelta(minutes=30))
+    same_action = _event(LAMP, "off", "off", ago=timedelta(minutes=1))
+
+    assert revised_change(stored, device_report, "outside") == "keep"
+    assert revised_change(stored, older, "person") == "keep"  # older than the record
+    assert revised_change(stored, same_action, "person") == "keep"  # its own context id

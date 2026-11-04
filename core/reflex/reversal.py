@@ -16,7 +16,7 @@ snapshot has, and names no tool.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 
 from loguru import logger
 from pydantic import BaseModel, field_validator
@@ -72,6 +72,65 @@ class PersonChange(BaseModel):
         return _utc(value)
 
 
+# What ``revised_change`` makes of a record besides a new one: leave it, or delete it.
+_KEEP: Final = "keep"
+_CLEAR: Final = "clear"
+Revision = PersonChange | Literal["keep", "clear"]
+
+
+def _counts(event: StateChangedEvent, cause: Cause | None) -> bool:
+    """Whether a change can touch the record at all: a device report cannot (``revised_change``)."""
+    attributes_only = event.old_state == event.new_state
+    return not (attributes_only and cause != "person" and cause not in _SUPERSEDING)
+
+
+def revised_change(
+    stored: PersonChange | None, event: StateChangedEvent, cause: Cause | None
+) -> Revision:
+    """What one state change makes of an entity's record: the rule ``note`` applies, pure.
+
+    *stored* is the entity's record before the change. The answer is the new record, ``"clear"``
+    (delete the record) or ``"keep"`` (leave it as it is).
+
+    A state change by a person, or by one nobody can name (``outside``, or no context at
+    all), becomes the entity's record. A change by Alfred or an automation deletes it: that
+    change is the latest word on the entity, and what a person did before it is no longer
+    theirs to be left alone. An attributes-only change (the old and new state are the same:
+    a brightness, a volume) counts only when an HA user made it. The event carries no old
+    attributes, so a device report (a bulb or player giving its brightness, position or
+    metadata) cannot be told apart from an outside app's slider, and recording one would
+    replace a person's change and refresh its time; an attributes-only change with any other
+    cause leaves the record as it is. A person's attributes-only change that shares the
+    record's context id is the same action reporting itself and leaves the record as it is
+    too. An event older than the record is ignored whichever way it would have gone, so a
+    replayed old event never overwrites or clears a newer record.
+    """
+    if not _counts(event, cause):
+        return _KEEP
+    when = _utc(event.timestamp)
+    if stored is not None and when < stored.time:
+        return _KEEP
+    if cause in _SUPERSEDING:
+        return _CLEAR
+    attributes_only = event.old_state == event.new_state
+    context_id = event.context.id if event.context else None
+    if (
+        attributes_only
+        and stored is not None
+        and context_id is not None
+        and stored.context_id == context_id
+    ):
+        return _KEEP
+    return PersonChange(
+        time=when,
+        cause=cause,
+        old_state=event.old_state,
+        new_state=event.new_state,
+        context_id=context_id,
+        attributes_only=attributes_only,
+    )
+
+
 class PersonChanges:
     """The record of what people just changed, one field per entity in a Redis hash."""
 
@@ -80,51 +139,21 @@ class PersonChanges:
         self._clock = clock
 
     async def note(self, event: StateChangedEvent, cause: Cause | None) -> None:
-        """Take one state change into the record. Best-effort: never raises.
+        """Take one state change into the record, by ``revised_change``. Best-effort: never raises.
 
-        A state change by a person, or by one nobody can name (``outside``, or no context at
-        all), becomes the entity's record. A change by Alfred or an automation deletes it: that
-        change is the latest word on the entity, and what a person did before it is no longer
-        theirs to be left alone. An attributes-only change (the old and new state are the same:
-        a brightness, a volume) counts only when an HA user made it. The event carries no old
-        attributes, so a device report (a bulb or player giving its brightness, position or
-        metadata) cannot be told apart from an outside app's slider, and recording one would
-        replace a person's change and refresh its time; an attributes-only change with any other
-        cause leaves the record as it is. A person's attributes-only change that shares the
-        record's context id is the same action reporting itself and leaves the record as it is
-        too. An event older than the record is ignored whichever way it would have gone, so a
-        replayed old event never overwrites or clears a newer record.
+        A change that cannot touch the record (``revised_change``'s first rule) is not read
+        against it: the state loop sees every device report.
         """
         try:
-            attributes_only = event.old_state == event.new_state
-            if attributes_only and cause != "person" and cause not in _SUPERSEDING:
+            if not _counts(event, cause):
                 return
-            when = _utc(event.timestamp)
-            stored = await self._stored(event.entity_id)
-            if stored is not None and when < stored.time:
-                return
-            if cause in _SUPERSEDING:
+            revised = revised_change(await self._stored(event.entity_id), event, cause)
+            if isinstance(revised, PersonChange):
+                await self._redis.hset(
+                    REFLEX_PERSON_CHANGES_KEY, event.entity_id, revised.model_dump_json()
+                )
+            elif revised == _CLEAR:
                 await self._redis.hdel(REFLEX_PERSON_CHANGES_KEY, event.entity_id)
-                return
-            context_id = event.context.id if event.context else None
-            if (
-                attributes_only
-                and stored is not None
-                and context_id is not None
-                and stored.context_id == context_id
-            ):
-                return
-            change = PersonChange(
-                time=when,
-                cause=cause,
-                old_state=event.old_state,
-                new_state=event.new_state,
-                context_id=context_id,
-                attributes_only=attributes_only,
-            )
-            await self._redis.hset(
-                REFLEX_PERSON_CHANGES_KEY, event.entity_id, change.model_dump_json()
-            )
         except Exception as e:
             logger.warning(
                 "Reflex could not note the change to {} ({}): {}", event.entity_id, cause, e
