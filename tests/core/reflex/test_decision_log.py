@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis
 import pytest
+from loguru import logger
 from redis import exceptions as redis_exceptions
 
 from bus.schemas.events import (
@@ -173,6 +174,37 @@ async def test_read_skips_a_row_it_cannot_parse() -> None:
     records = await log.read(since=_EPOCH)
 
     assert [r.prompt for r in records] == ["first", "last"]
+
+
+async def test_an_entry_it_cannot_read_is_logged_without_its_content() -> None:
+    redis = fakeredis.FakeAsyncRedis()
+    log = DecisionLog(redis, clock=lambda: _NOW)
+    await log.record("state_change", _change(None), decided(_PROPOSAL, prompt="first"))
+    stored = (await redis.xrange(REFLEX_DECISION_LOG_STREAM))[0][1]
+    good = json.loads(stored[b"decision"])
+    # A bad time under an entity id, a prompt of the wrong type, and a line cut off mid-way:
+    # pydantic's own text quotes the input, and its locations name the dict keys.
+    wrong = {
+        **good,
+        "prompt": ["light.secret_lamp"],
+        "recent": {"light.secret_lamp": {"time": "secret-when", "cause": "person"}},
+    }
+    cut = json.dumps(good)[:80].replace(good["prompt"][:10], "light.secret_lamp")
+    await redis.xadd(REFLEX_DECISION_LOG_STREAM, {"decision": json.dumps(wrong)})
+    await redis.xadd(REFLEX_DECISION_LOG_STREAM, {"decision": cut + " light.secret_lamp"})
+    messages: list[str] = []
+    sink = logger.add(messages.append, level="WARNING", format="{message}")
+    try:
+        records = await log.read(since=_EPOCH)
+    finally:
+        logger.remove(sink)
+
+    assert [r.prompt for r in records] == ["first"]
+    assert len(messages) == 2  # each unreadable entry said so
+    for message in messages:
+        assert "Skipping" in message
+        for private in ("light.secret_lamp", "secret-when", "first"):
+            assert private not in message
 
 
 async def test_record_keeps_the_stream_within_its_age_bound() -> None:

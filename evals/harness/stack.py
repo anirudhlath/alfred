@@ -36,7 +36,11 @@ from evals.harness.net import (
     container_reachable,
     in_container_url,
 )
-from shared.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
+from shared.config import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_INVOLUNTARY_RECALL_THRESHOLD,
+    DEFAULT_REFLEX_OUTPUT,
+)
 from shared.redis_streams import create_redis
 
 if TYPE_CHECKING:
@@ -44,6 +48,7 @@ if TYPE_CHECKING:
 
     from evals.harness.evidence import Role
     from evals.harness.proxy import LlmProxy
+    from shared.config import ReflexOutput
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
@@ -97,7 +102,8 @@ def langfuse_access(env: Mapping[str, str], label: str) -> LangfuseAccess:
 
 @dataclass(frozen=True)
 class StackConfig:
-    model: str
+    model: str  # System 2's, the Librarian's and the judge's
+    reflex_model: str  # System 1's; the proxy decides which upstream serves it
     vllm_url: str  # host view, with /v1
     embed_url: str  # host view, without /v1
     embed_model: str
@@ -107,6 +113,7 @@ class StackConfig:
     reply_timeout_s: float = 120.0
     keep: bool = False
     langfuse: LangfuseAccess | None = None
+    reflex_output: ReflexOutput = DEFAULT_REFLEX_OUTPUT  # how Reflex's reply is asked for
 
 
 def container_env(cfg: StackConfig, *, proxy_port: int, fake_ha_port: int) -> dict[str, str]:
@@ -114,7 +121,8 @@ def container_env(cfg: StackConfig, *, proxy_port: int, fake_ha_port: int) -> di
     ``--prompt-label``, the Langfuse settings the CLI read."""
     proxy = in_container_url(proxy_port)
     env = {
-        "REFLEX_MODEL": f"vllm:{cfg.model}",
+        "REFLEX_MODEL": f"vllm:{cfg.reflex_model}",
+        "REFLEX_OUTPUT": cfg.reflex_output,
         "SYSTEM2_MODEL": f"vllm:{cfg.model}",
         "LIBRARIAN_MODEL": f"vllm:{cfg.model}",
         "VLLM_BASE_URL": f"{proxy}/v1",

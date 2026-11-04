@@ -359,6 +359,52 @@ Thu 8 Oct, 15:10 (afternoon) · sun up · partlycloudy
   `PUT /api/admin/attention/{domain}` (see [autonomy.md](autonomy.md)); the `{domain}` there
   is the attention set's, the event's domain (`home`), not the entity's (`sun`, `weather`).
 
+## Output shapes
+
+`REFLEX_OUTPUT` (`text`, `tool`, `native` or `json`; blank means `text`, anything else stops
+every Alfred service at startup, naming the variable and the four values) chooses how the model
+is asked to reply. Production runs `text`. The others exist to compare candidate models: a
+model that writes a JSON line badly may call a tool well, or the other way round.
+
+| Shape | What the request carries |
+|---|---|
+| `text` | Today's request: the reply is plain text, and the call's `response_format` is a JSON schema built from the tools the prompt showed (`reply_format()`), which the server holds the model to. The text is parsed by `parse_decision` |
+| `tool` | The reply is the arguments of an output tool, forced with `tool_choice: required` |
+| `native` | A `json_schema` `response_format`, sent once: the same schema `text` sends, with the additions named below, and the reply read as JSON by Pydantic AI instead of as text by `parse_decision` |
+| `json` | A `json_object` `response_format` (any JSON object), with the schema in a system message |
+
+Every shape asks for the same reply, the one `reply_format()` describes, so no shape is
+measured against a weaker request. `reply_schema()` hands Pydantic AI that schema as it is
+built for the call, as a `StructuredDict` passed to that run alone: `"none"` or an act or ask
+with all four of `decision`, `reason`, `tool_name` and `parameters` required, the `tool_name`
+an enum of exactly the tools the prompt showed (only "none" when it showed none), and no extra
+key on either. It adds `type: object` at the top, which Pydantic AI requires, and an explicit
+`additionalProperties: true` at the top and on `parameters`: the vLLM profile closes every
+object that does not say it is open, which would leave the top level no key to write and
+`parameters` none to hold. `native` also sends `"strict": false` beside the schema. What stays
+the same in all four: the prompt (it is still the single user message), temperature 0, the
+150-token cap, the 30 s timeout, the `system1` header and `retries=0`. In `tool`, `native` and
+`text` the schema is in the request, where the server can hold the model to it; in `json` the
+server guarantees only a JSON object, so the schema is enforced by the checks after the reply.
+
+After the reply is read, the shapes meet again: `parse_decision` and the structured shapes
+both end in `proposal_from_parsed` (`core/reflex/decision.py`), so a reply gets the same checks
+whatever its shape (an unknown decision, a tool the prompt did not show, an act with no tool, a
+`parameters` that is not an object). A structured reply that is an object but breaks them is
+`invalid` with that problem and the reply as JSON in `raw`, as a `text` reply is.
+
+Only a reply that is no object fails earlier: not JSON, cut off at the token cap, or text where
+the `tool` shape required a tool call. `decide` makes it `invalid` too, and keeps what it can of
+it. `raw` is the model's last response (its text, or a tool call's arguments), as `text` keeps
+its reply. `problem` is `no reply:`, Pydantic's message and where and what kind of error it
+found (`reply: json_invalid`, `reply: dict_type`), never the reply: the runner logs `problem`,
+and the reply is private. A text reply to the `tool` shape has no such error, so its `problem`
+is the message alone and the text is in `raw`.
+
+Compare shapes on one recorded set with [`replay --output`](#replay), or on the goldens with
+`alfred evals run --reflex-output` ([evals.md](evals.md#trying-another-reflex-model)). The
+scorecard names the shape beside the Reflex model.
+
 ## Replay
 
 `python -m core.reflex.replay run` decides recorded prompts again, through the same agent and
@@ -366,8 +412,8 @@ parser Reflex uses, and prints how the new decisions compare with the recorded o
 model is compared on real traffic before the owner switches Reflex to it.
 
 ```
-python -m core.reflex.replay run --since 2026-10-26T23:35:00Z [--until ISO] [--limit N] [--model MODEL] [--out FILE]
-python -m core.reflex.replay run --records decisions.jsonl [--limit N] [--model MODEL] [--out FILE]
+python -m core.reflex.replay run --since 2026-10-26T23:35:00Z [--until ISO] [--limit N] [--model MODEL] [--output SHAPE] [--out FILE]
+python -m core.reflex.replay run --records decisions.jsonl [--limit N] [--model MODEL] [--output SHAPE] [--out FILE]
 ```
 
 - **Source: exactly one of two.** `--since` reads the live decision log
@@ -381,7 +427,16 @@ python -m core.reflex.replay run --records decisions.jsonl [--limit N] [--model 
   dropped.
 - **The prompt as recorded.** Each record's exact prompt is sent, with the tools that prompt
   listed (read back from it by `parse_tools`), so a record is judged on what the model saw then.
-- **Model.** `--model` (for example `vllm:<served name>`) or, by default, `REFLEX_MODEL`.
+- **Model.** `--model` (for example `vllm:<served name>`) or, by default, `REFLEX_MODEL`, and
+  it must be on the local `vllm:` provider. The recorded prompts and the label file hold the
+  owner's house, so `run` and `score` refuse any other provider (`openrouter:`, `openai:` and
+  the rest) with an error that says why, before they build one or send anything. A hosted
+  candidate is for the generic goldens only
+  ([evals.md](evals.md#trying-another-reflex-model)); replaying the private set against one
+  would take a code change, which is the intent.
+- **Output shape.** `--output text|tool|native|json` or, by default, `REFLEX_OUTPUT`
+  ([Output shapes](#output-shapes)). The same recorded prompts can be replayed once per shape
+  and the counts compared.
 - **Read-only.** The replay writes nothing to Redis, publishes nothing and starts no tracing, so
   nothing it asks reaches an observation, a counter or a span.
 - **Output is counts only.** A header line (records replayed, calls that failed), a recorded by
@@ -398,3 +453,77 @@ python -m core.reflex.replay run --records decisions.jsonl [--limit N] [--model 
 
 A model server is not deterministic at temperature 0: compare counts across a few hundred
 records, never single answers.
+
+### Labels and scores
+
+Two more commands judge a model by what it asks the owner, not only by whether it agrees with
+the recording. `label` keeps the recorded asks that pass the rules below, from the records
+alone, and labels every other record `none`; `score` decides the labelled prompts again with a
+candidate model and counts where its asks differ from the labels. The labels are the
+incumbent's asks that pass the rules, so a candidate's "wrong" asks are asks beyond those: an
+ask the recording did not make, which the rules would not have kept.
+
+```
+python -m core.reflex.replay label --since 2026-10-26T23:35:00Z [--until ISO] --out labels.jsonl
+python -m core.reflex.replay label --records decisions.jsonl --out labels.jsonl
+python -m core.reflex.replay score --labels labels.jsonl [--model MODEL] [--output SHAPE]
+```
+
+- **A label is `ask` only when every rule holds.** Each record is decided again by today's
+  rule (the engine's `decide_outcome`); the recorded outcome is never trusted. In this order:
+  the recorded proposal was an act or an ask (else `no_proposal`); its target resolves in the
+  live state (else `unresolved`); it would reverse nothing a person just changed (else
+  `reverses`); no earlier record labelled `ask` has the same tool and targets within
+  `repeat_hours` (else `repeat`); and its time falls outside quiet hours in the owner's zone
+  (else `quiet_hours`). Every other record is `none`, with the first rule that failed as
+  `why`. The daily cap and the one open ask are not label rules: they are limits on asking,
+  not on whether an ask was right.
+- **Live state, read once.** Both commands read the live snapshot once at the start and resolve
+  every target against it; with no live state they exit with status 1. `label` also reads the
+  stored settings and the owner's timezone once.
+- **What people had just changed.** A record with an outcome (`outcome` is not null) has its
+  own `recent`, used as recorded. An older record has none, so the changes are rebuilt by
+  folding the log, oldest first, through the rule `PersonChanges.note` applies: each record's
+  own event (the runner notes it before the engine decides) and its cause, for the house
+  devices Reflex always shows, keeping the changes within `reverse_window_minutes` of the
+  record's time. The log holds only the events that reached the model, so a rebuilt set can
+  miss a change, and the fold and the repeat window begin at the first record read: read from
+  earlier than the period that matters.
+- **The label file.** One JSONL line per record, oldest first, each event once:
+  `{"label": "ask" | "none", "why": ..., "changes": {...}, "record": {...}}`. `changes` is what
+  the record was judged against, so `score` needs only this file. It holds the owner's house,
+  so it is created readable only by its owner (mode 0600) and stays off the repo. The
+  convention is `~/code/alfred-deploy/reflex-replay/`, a directory outside the repo; nothing
+  enforces it. The owner reviews the `ask` lines privately, and may edit the file by hand:
+  turn an `ask` into a `none` (and change its `why`), or change a `why`. A `none` line cannot
+  be turned into an `ask`: `score` matches a candidate's ask against the recorded proposal's
+  tool and targets, and a record that proposed nothing has none, so every ask on that line
+  would count as another ask.
+- **`score` decides again and counts.** Each prompt is sent as recorded, one at a time, through
+  the same loop and error handling as `run`. A candidate's proposal is judged by the same rule
+  against the line's `changes`: a wrong ask is an ask (a `shadow` outcome) on a line labelled
+  `none` that the gate would not hold; an ask the gate would hold is counted apart, because the
+  prompt shows the model neither the asks made lately nor quiet hours and the gate holds both
+  in code. In quiet hours the gate holds any ask, so on a `quiet_hours` line every ask is held.
+  The repeat limit holds only the same tool and targets (`asked_key`), so on a `repeat` line an
+  ask about the recorded proposal's tool and targets is held, and an ask about anything else
+  would really be put to the owner: it is wrong. A `repeat` line is therefore in both
+  denominators (a wrong ask can be on it, and so can a held one). A missed ask is no decision
+  on a line labelled `ask`; another ask is an ask on an `ask` line about a different tool or
+  targets; a matched ask is the labelled one. A proposal that would reverse a person is counted
+  as that, and one that is invalid (no decision, or a target that names nothing) as invalid,
+  each as nothing else.
+- **`why` is the first rule that failed.** A record that fails several rules carries only the
+  first, in the order above, so a `no_proposal`, `unresolved` or `reverses` line at night is
+  also in quiet hours, and a candidate's ask there counts as wrong although the gate would have
+  held it. "Wrong" means wrong in substance (the rules say this ask should not be put to the
+  owner), not that it would have reached them.
+- **Output is counts only.** `label` prints the records labelled, the asks, and the `none`
+  labels by reason. `score` prints the records scored of the total and the calls that failed,
+  the wrong asks, the asks the gate would hold, the missed, other and matched asks (each of its
+  own denominator), the proposals that would reverse a person, the invalid replies, and model
+  latency p50 and p95. No entity id, name, area, prompt text or reason is printed. The
+  would-reverse count must be 0; the exit status does not depend on it.
+- **Where the code is.** The rules and the counts (`label_records`, `score_labels`) are
+  `core/reflex/replay_labels.py`: pure, with the live state, settings and zone as parameters.
+  `core/reflex/replay.py` reads, writes and prints.

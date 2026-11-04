@@ -24,11 +24,13 @@ from core.reflex.answers import OpenAsk, ReflexAnswer
 from core.reflex.asks import (
     ask_text,
     asked_key,
+    asked_targets,
     asks_key,
     gate,
     in_quiet_hours,
     open_ask,
 )
+from core.reflex.prompt import LiveEntity
 from core.reflex.settings import ReflexSettings
 from core.routing.pending import pending_key, read_pending
 from shared.streams import DND_STATE_KEY, REFLEX_ANSWERS_STREAM, REFLEX_ASK_OPEN_KEY
@@ -572,6 +574,42 @@ def clock(value: str) -> time:
 )
 def test_in_quiet_hours(local: str, start: str, end: str, quiet: bool) -> None:
     assert in_quiet_hours(clock(local), start, end) is quiet
+
+
+def _ask_about(target: object) -> ActionRequest:
+    return ActionRequest(
+        source="reflex-engine",
+        target_service="home-service",
+        tool_name=TOOL,
+        parameters={} if target is None else {"target": target},
+    )
+
+
+_LAMP_SNAPSHOT = {
+    LAMP: LiveEntity(
+        entity_id=LAMP,
+        domain="light",
+        controllable=True,
+        state="off",
+        attributes={"friendly_name": "Lamp", "area": "Hall"},
+    )
+}
+
+
+@pytest.mark.parametrize(
+    ("target", "targets"),
+    [
+        (LAMP, [LAMP]),  # an entity id
+        ("Lamp", [LAMP]),  # a friendly name, as home-service resolves it
+        ("Hall", [LAMP]),  # an area names every entity of the domain in it
+        ("Garage", []),  # names nothing
+        ("  ", []),  # blank
+        (None, []),  # no target
+        (7, []),  # not a string
+    ],
+)
+def test_an_ask_is_about_what_its_target_resolves_to(target: object, targets: list[str]) -> None:
+    assert asked_targets(_ask_about(target), _LAMP_SNAPSHOT) == targets
 
 
 # --- open_ask ---------------------------------------------------------------------------------

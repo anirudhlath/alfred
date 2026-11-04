@@ -51,6 +51,7 @@ def test_blank_values_mean_the_default() -> None:
             "SYSTEM2_TIMEOUT_S",
             "OPENROUTER_API_KEY",
             "CLAUDE_MODEL",
+            "REFLEX_OUTPUT",
         ],
         " ",
     )

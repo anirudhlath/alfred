@@ -8,6 +8,15 @@ edit cannot break attribution.
 
 The recorder never changes a reply: a chat request goes upstream as the bytes Alfred sent,
 and the reply comes back as upstream sent it, whether or not the recorder could read it.
+
+Where a chat request goes depends on its role. System 1's can go to an upstream of its own
+(``reflex_upstream``, a hosted OpenAI-compatible server) and carry that upstream's API key;
+every other role, and every request that is not a chat completion, goes to ``upstream``.
+The key is only ever put on the request to the reflex upstream: it is not recorded, not
+logged, and not quoted in an error. A key must be fit to be a header value, or the proxy
+will not start: an HTTP library that refuses a header quotes it, and the quote reaches
+whoever reads the error. For the same reason a request to the reflex upstream that fails is
+answered with the failure's class alone.
 """
 
 from __future__ import annotations
@@ -24,6 +33,7 @@ import httpx
 from aiohttp import web
 
 from evals.harness.evidence import LlmCall, Role, ToolCall
+from evals.harness.preflight import header_safe
 from shared.llm_roles import APPROVAL, LIBRARIAN, ROLE_HEADER, SYSTEM1, SYSTEM2
 
 if TYPE_CHECKING:
@@ -126,13 +136,26 @@ class LlmProxy:
         self,
         upstream: str,
         *,
+        reflex_upstream: str | None = None,
+        reflex_api_key: str | None = None,
         host: str = "127.0.0.1",
         port: int = 0,
         max_concurrency: int = MAX_UPSTREAM,
         timeout_s: float = 300.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        if reflex_api_key and not reflex_upstream:
+            raise ValueError("reflex_api_key needs a reflex_upstream: a key is never sent to vLLM")
+        if reflex_api_key and not header_safe(reflex_api_key):
+            # Never say which character: the message must hold nothing of the key.
+            raise ValueError("reflex_api_key is not a usable header value")
         self.upstream = upstream.rstrip("/")
+        # System 1's chat completions go here: ``upstream`` unless a reflex upstream is given.
+        self._reflex_upstream = (reflex_upstream or upstream).rstrip("/")
+        # Whether System 1 has an upstream of its own, whose failures are reported by class.
+        self._reflex_apart = bool(reflex_upstream)
+        # Sent to the reflex upstream and nowhere else; empty is no key at all.
+        self._reflex_key = reflex_api_key or None
         self.host = host
         self._port = port
         self.calls: list[LlmCall] = []
@@ -231,8 +254,20 @@ class LlmProxy:
             return False
         return True
 
-    def _headers(self, request: web.Request) -> dict[str, str]:
-        return {k: v for k, v in request.headers.items() if k.lower() not in _DROP_HEADERS}
+    def _headers(self, request: web.Request, key: str | None = None) -> dict[str, str]:
+        """The headers Alfred sent, less the hop-by-hop ones. With *key*, it takes the place
+        of any Authorization header Alfred sent."""
+        drop = _DROP_HEADERS if key is None else _DROP_HEADERS | {"authorization"}
+        headers = {k: v for k, v in request.headers.items() if k.lower() not in drop}
+        if key is not None:
+            headers["Authorization"] = f"Bearer {key}"
+        return headers
+
+    def _failure(self, exc: Exception, *, to_reflex: bool) -> str:
+        """What went wrong upstream. For the reflex upstream, the exception's class and
+        nothing it says: an HTTP library quotes the header value it refuses to send, with
+        control characters escaped, so no search for the key in its words would find it."""
+        return type(exc).__name__ if to_reflex and self._reflex_apart else str(exc)
 
     async def _chat(self, request: web.Request) -> web.Response:
         # In flight from the first byte, not the last: a call whose body is still being
@@ -267,33 +302,34 @@ class LlmProxy:
             for tool in _list(body.get("tools"))
             if isinstance(name := _obj(_obj(tool).get("function")).get("name"), str)
         ]
-        flight.role = role_of(request.headers.get(ROLE_HEADER))
+        role = flight.role = role_of(request.headers.get(ROLE_HEADER))
         self._wake()  # a waiter on another role's calls need not wait on this one
         call_for = partial(
             LlmCall,
             t=flight.t,
-            role=flight.role,
+            role=role,
             request_body=body,
             messages=messages,
             tools_offered=tools,
         )
-        return await self._forward_and_record(request, raw, call_for)
+        return await self._forward_and_record(request, raw, call_for, role)
 
     async def _forward_and_record(
-        self, request: web.Request, raw: bytes, call_for: partial[LlmCall]
+        self, request: web.Request, raw: bytes, call_for: partial[LlmCall], role: Role
     ) -> web.Response:
         assert self._client is not None
+        to_reflex = role == "system1"
         async with self._sem:
             started = time.monotonic()
             try:
                 upstream = await self._client.post(
-                    f"{self.upstream}/v1/chat/completions",
+                    f"{self._reflex_upstream if to_reflex else self.upstream}/v1/chat/completions",
                     content=raw,
-                    headers=self._headers(request),
+                    headers=self._headers(request, self._reflex_key if to_reflex else None),
                 )
             except httpx.HTTPError as exc:
                 self.record(call_for(latency_ms=(time.monotonic() - started) * 1000, status=502))
-                return _error(502, f"upstream failed: {exc}")
+                return _error(502, f"upstream failed: {self._failure(exc, to_reflex=to_reflex)}")
         latency_ms = (time.monotonic() - started) * 1000
         try:
             text, tool_calls, prompt_tokens, completion_tokens = _parse(upstream.content)

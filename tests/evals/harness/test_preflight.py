@@ -8,12 +8,17 @@ import httpx
 import pytest
 
 from evals.harness.preflight import (
+    REFLEX_API_KEY_ENV,
     PreflightError,
     alfred_commit,
     base_url,
     check_home_service,
+    check_key_transport,
     check_models,
+    header_safe,
     home_service_commit,
+    reflex_api_key,
+    same_upstream,
 )
 
 if TYPE_CHECKING:
@@ -226,3 +231,96 @@ def test_home_service_commit_that_cannot_be_read_is_unknown_with_a_warning(
     with caplog.at_level(logging.WARNING, logger="evals.harness.preflight"):
         assert home_service_commit(tmp_path / "nope") == "unknown"
     assert "not a git checkout" in caplog.text
+
+
+# A made-up key: no test here reaches a network.
+FAKE_KEY = "fake-reflex-key-0123"
+UNUSABLE_KEYS = [
+    "two words",
+    "tab\tinside",
+    "café",
+    "line\nbreak-0123",
+    "cr\rhere",
+    "nul\x00",
+    "\x7f",
+]
+
+
+@pytest.mark.parametrize("key", [FAKE_KEY, "sk-or-v1_AbC.dEf~+/=", ""])
+def test_header_safe_accepts_what_a_token_looks_like(key: str) -> None:
+    assert header_safe(key)
+
+
+@pytest.mark.parametrize("key", UNUSABLE_KEYS)
+def test_header_safe_refuses_a_space_a_control_or_a_non_ascii_character(key: str) -> None:
+    assert not header_safe(key)
+
+
+@pytest.mark.parametrize("env", [{}, {REFLEX_API_KEY_ENV: ""}, {REFLEX_API_KEY_ENV: " \t "}])
+def test_no_reflex_api_key_when_the_variable_is_unset_or_blank(env: dict[str, str]) -> None:
+    assert reflex_api_key(env) is None
+
+
+def test_the_reflex_api_key_is_stripped() -> None:
+    assert reflex_api_key({REFLEX_API_KEY_ENV: f"  {FAKE_KEY}\n"}) == FAKE_KEY
+
+
+@pytest.mark.parametrize("key", UNUSABLE_KEYS[:5])
+def test_an_unusable_reflex_api_key_names_the_variable_and_never_the_key(key: str) -> None:
+    with pytest.raises(PreflightError, match=REFLEX_API_KEY_ENV) as err:
+        reflex_api_key({REFLEX_API_KEY_ENV: key})
+    message = str(err.value)
+    assert key not in message and repr(key) not in message and repr(key)[1:-1] not in message
+
+
+@pytest.mark.parametrize(
+    ("one", "other", "same"),
+    [
+        ("http://localhost:8000/v1", "http://localhost:8000/v1", True),
+        ("HTTP://LocalHost:8000/v1", "http://localhost:8000/v1", True),
+        ("http://localhost:8000/v1", "http://localhost:8000/v1/", True),
+        # Different spellings of a host stay different upstreams.
+        ("http://localhost:8000/v1", "http://127.0.0.1:8000/v1", False),
+        ("http://localhost:8000/v1", "http://localhost:8001/v1", False),
+        ("http://localhost:8000/v1", "https://localhost:8000/v1", False),
+        ("http://localhost:8000/v1", "http://localhost:8000/other/v1", False),
+        ("https://hosted.invalid/api/v1", "http://localhost:8000/v1", False),
+    ],
+)
+def test_same_upstream_ignores_the_case_of_the_scheme_and_host_only(
+    one: str, other: str, same: bool
+) -> None:
+    assert same_upstream(one, other) is same
+    assert same_upstream(other, one) is same
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://hosted.invalid/api/v1",
+        "HTTPS://Hosted.Invalid/api/v1",
+        "http://localhost:8000/v1",
+        "http://127.0.0.1:8000/v1",
+        "http://[::1]:8000/v1",
+        "http://192.0.2.7:9000/v1",
+    ],
+    ids=["https", "https-upper", "localhost", "loopback", "loopback-v6", "private"],
+)
+def test_a_key_may_go_over_https_or_to_a_loopback_or_private_host(url: str) -> None:
+    check_key_transport(url, "--reflex-upstream")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://hosted.invalid/api/v1",
+        "HTTP://Hosted.Invalid/api/v1",
+        "http://user:pw@hosted.invalid/v1",
+    ],
+)
+def test_a_key_is_never_sent_in_clear_text_to_a_host_that_is_not_local(url: str) -> None:
+    with pytest.raises(PreflightError, match="--reflex-upstream") as err:
+        check_key_transport(url, "--reflex-upstream")
+    # It names the option and the fix; the address (which may carry credentials) stays out.
+    assert "https" in str(err.value) and "hosted.invalid" not in str(err.value)
+    assert "pw" not in str(err.value)

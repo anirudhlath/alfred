@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, StrictInt, TypeAdapter, ValidationError
 from evals.harness.checks.judge_spec import JudgeCategory
 from evals.harness.checks.result import CheckResult
 from evals.harness.evidence import Evidence, Role
+from shared.config import DEFAULT_REFLEX_OUTPUT, ReflexOutput
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 SCORER_NAME = "scenario_scorer"
 Value = Literal["C", "I", "N", "E"]
 Status = Literal["shipped", "pending"]
+ReflexUpstream = Literal["local", "hosted"]
 CELL_CHARS = 200  # room for the sample id each failing entry starts with
 UNKNOWN = "—"
 _CHECKS = TypeAdapter(list[CheckResult])
@@ -120,7 +122,13 @@ class RoleUsage(BaseModel):
 
 class RunMeta(BaseModel):
     run_dir: str
-    model: str
+    model: str  # System 2's, the Librarian's and the judge's
+    reflex_model: str
+    # Whether Reflex's upstream is the vLLM the run was pointed at, or another one. Never
+    # its address: a scorecard is shared, and an address can carry credentials.
+    reflex_upstream: ReflexUpstream
+    # How Reflex's reply was asked for. Scorecards from before the shapes read as text.
+    reflex_output: ReflexOutput = DEFAULT_REFLEX_OUTPUT
     alfred_commit: str
     home_service_commit: str
     epochs: int
@@ -498,7 +506,9 @@ def render_markdown(card: Scorecard) -> str:
     lines = [
         f"# Alfred eval scorecard — {m.finished_at:%Y-%m-%d %H:%M} UTC",
         "",
-        f"model `{m.model}` · Alfred `{_short(m.alfred_commit)}` · "
+        f"System 2 `{m.model}` · Reflex `{m.reflex_model}` "
+        f"({m.reflex_upstream}, {m.reflex_output} output) · "
+        f"Alfred `{_short(m.alfred_commit)}` · "
         f"home-service `{_short(m.home_service_commit)}` · {m.epochs} epochs · {_judge_trust(m)}",
         "",
     ]

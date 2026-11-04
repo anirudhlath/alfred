@@ -64,10 +64,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
     from datetime import datetime
 
-    from pydantic_ai import Agent
-
-    from bus.schemas.events import ReflexProposal
-    from core.reflex.tool_registry import ToolInfo
+    from core.reflex.agent import ReflexAgent
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
@@ -86,7 +83,7 @@ EVENTS_GROUP = "reflex-trigger-fired"
 EVENTS_CONSUMER = "worker-1"
 
 
-def build_agent(config: AlfredConfig) -> Agent[list[ToolInfo], ReflexProposal] | None:
+def build_agent(config: AlfredConfig) -> ReflexAgent | None:
     """The Reflex agent over ``REFLEX_MODEL``, or None, with one ERROR, when that names none.
 
     Call after ``init_tracing``, which the agent's instrumentation reads.
@@ -99,7 +96,7 @@ def build_agent(config: AlfredConfig) -> Agent[list[ToolInfo], ReflexProposal] |
             "REFLEX_MODEL, or OPENAI_COMPAT_MODEL for the vllm:<that name> default, and restart"
         )
         return None
-    return build_reflex_agent(model)
+    return build_reflex_agent(model, config.reflex_output)
 
 
 def warmup_steps(prompts: PromptStore) -> dict[str, Callable[[], Awaitable[object]]]:
@@ -335,7 +332,7 @@ async def flush_telemetry_periodically(config: AlfredConfig, interval: float = 3
             logger.info("Flushed %d telemetry entries", len(entries))
 
 
-async def run(config: AlfredConfig, agent: Agent[list[ToolInfo], ReflexProposal]) -> None:
+async def run(config: AlfredConfig, agent: ReflexAgent) -> None:
     """Main Reflex Runner event loop."""
     _install_signal_handlers()
 

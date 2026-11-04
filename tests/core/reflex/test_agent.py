@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import re
@@ -10,7 +11,9 @@ from typing import TYPE_CHECKING, Any
 
 import httpx2
 import pytest
+from pydantic_ai import NativeOutput, PromptedOutput, ToolOutput
 from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import override_allow_model_requests
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.vllm import VLLMProvider
@@ -21,12 +24,18 @@ from core.reflex.agent import build_reflex_agent, decide, reply_format
 from core.reflex.tool_registry import ToolInfo
 from sdk.alfred_sdk.telemetry import get_telemetry_buffer
 from shared.agents import resolve_model
+from shared.config import REFLEX_OUTPUTS
 from shared.prompts.names import REFLEX_RULES
 from shared.prompts.template import repo_text
 from tests.core.reflex.fakes import reflex_agent
+from tests.llm_fakes import tool_call
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from pydantic_ai.models.function import AgentInfo
+
+    from shared.config import ReflexOutput
 
 PROMPT = "Decide about one change.\n\nTools:\n- home.light_turn_on(target)\n\n## What changed\nx"
 
@@ -227,8 +236,9 @@ def test_the_reply_format_is_the_reply_the_rules_prompt_asks_for() -> None:
 class Upstream:
     """An OpenAI-compatible server that answers every request and keeps what it was sent."""
 
-    def __init__(self, *, status: int = 200) -> None:
+    def __init__(self, *, status: int = 200, message: dict[str, Any] | None = None) -> None:
         self.status = status
+        self.message = message or {"role": "assistant", "content": '{"decision": "none"}'}
         self.requests: list[httpx2.Request] = []
 
     def handler(self, request: httpx2.Request) -> httpx2.Response:
@@ -246,7 +256,7 @@ class Upstream:
                     {
                         "index": 0,
                         "finish_reason": "stop",
-                        "message": {"role": "assistant", "content": '{"decision": "none"}'},
+                        "message": self.message,
                     }
                 ],
                 "usage": {"prompt_tokens": 11, "completion_tokens": 5, "total_tokens": 16},
@@ -339,3 +349,479 @@ async def test_tokens_are_recorded_under_the_research_series_label(upstream: Ups
     assert entry["prompt_tokens"] == 11
     assert entry["completion_tokens"] == 5
     assert entry["total_tokens"] == 16
+
+
+# --- the other output shapes ----------------------------------------------------------
+
+STRUCTURED = ["tool", "native", "json"]
+COVER = dataclasses.replace(TOOLS[0], name="home.cover_open")
+
+ASK_OBJECT: dict[str, Any] = json.loads(ASK)
+NONE_OBJECT: dict[str, Any] = {"decision": "none"}
+
+ACT_OR_ASK: dict[str, Any] = REPLY_FORMAT["json_schema"]["schema"]["anyOf"][1]
+
+# The text shape's anyOf as one object schema, which is how a structured shape sends it
+# (Pydantic AI wants an object at the top). `additionalProperties: true` is spelled out at the
+# top and on `parameters`: the vLLM profile closes every object that does not say so, which
+# would leave the top level no key to write and `parameters` none to hold.
+REPLY_OBJECT: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": True,
+    "anyOf": [
+        NONE_REPLY,
+        {
+            **ACT_OR_ASK,
+            "properties": {
+                **ACT_OR_ASK["properties"],
+                "parameters": {"type": "object", "additionalProperties": True},
+            },
+        },
+    ],
+}
+
+# The same, after the vLLM profile's transformer: an object always has `properties`. Nothing
+# else changes, so every field stays required where `text` requires it and no key opens up.
+WIRE_REPLY_OBJECT: dict[str, Any] = {
+    **REPLY_OBJECT,
+    "properties": {},
+    "anyOf": [
+        NONE_REPLY,
+        {
+            **REPLY_OBJECT["anyOf"][1],
+            "properties": {
+                **ACT_OR_ASK["properties"],
+                "parameters": {"type": "object", "additionalProperties": True, "properties": {}},
+            },
+        },
+    ],
+}
+
+USER_MESSAGE = {"role": "user", "content": PROMPT}
+
+
+def _object_schema(info: AgentInfo) -> dict[str, Any]:
+    """The schema of the reply a request asked for, from wherever its shape put it."""
+    if info.output_tools:
+        return info.output_tools[0].parameters_json_schema
+    output = info.model_request_parameters.output_object
+    assert output is not None, "the request carries no output schema"
+    return output.json_schema
+
+
+def _values(schema: dict[str, Any]) -> list[str]:
+    """What a field's schema allows: its enum, or its one constant."""
+    allowed: list[str] = schema["enum"] if "enum" in schema else [schema["const"]]
+    return allowed
+
+
+def test_the_shapes_are_the_ones_the_setting_allows() -> None:
+    assert REFLEX_OUTPUTS == ("text", "tool", "native", "json")
+    assert set(STRUCTURED) == set(REFLEX_OUTPUTS) - {"text"}
+
+
+@pytest.mark.parametrize(
+    ("shape", "kind"), [("tool", ToolOutput), ("native", NativeOutput), ("json", PromptedOutput)]
+)
+def test_each_structured_shape_asks_for_its_own_kind_of_output(
+    shape: ReflexOutput, kind: type
+) -> None:
+    assert isinstance(agent_module._structured_output(shape, TOOLS), kind)
+
+
+def test_the_text_shape_has_no_structured_output_to_fall_back_to() -> None:
+    # `text` sends reply_format and reads the text: asking for its output would send a schema
+    # in the prompt instead, which is the `json` shape, silently.
+    with pytest.raises(ValueError, match="text"):
+        agent_module._structured_output("text", TOOLS)
+
+
+def test_a_shape_nobody_handles_is_an_error_not_a_default() -> None:
+    with pytest.raises(AssertionError):
+        agent_module._structured_output("yaml", TOOLS)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("shape", REFLEX_OUTPUTS)
+def test_the_agent_carries_its_shape(shape: ReflexOutput) -> None:
+    agent, _ = reflex_agent(output=shape)
+
+    assert agent.output_shape == shape
+
+
+def test_the_default_shape_is_text() -> None:
+    agent, _ = reflex_agent()
+
+    assert agent.output_shape == "text"
+
+
+@pytest.mark.parametrize("shape", STRUCTURED)
+async def test_a_run_that_bypasses_decide_asks_for_no_schema_of_its_own(
+    shape: ReflexOutput,
+) -> None:
+    """The shape is asked for by ``decide``, per call: the agent alone is the text agent."""
+    agent, script = reflex_agent(ASK, output=shape)
+
+    run = await agent.run(PROMPT, deps=TOOLS)
+
+    assert run.output.decision == "ask"
+    assert script.requests[0][1].output_tools == []
+    assert script.requests[0][1].model_request_parameters.output_object is None
+
+
+@pytest.mark.parametrize("shape", STRUCTURED)
+async def test_a_reply_in_each_shape_is_a_proposal(shape: ReflexOutput) -> None:
+    agent, script = reflex_agent(ASK_OBJECT, output=shape)
+
+    proposal = await decide(agent, PROMPT, TOOLS)
+
+    assert proposal.decision == "ask"
+    assert proposal.reason == "dark"
+    assert proposal.action is not None
+    assert proposal.action.source == "reflex-engine"
+    assert proposal.action.target_service == "home-service"
+    assert proposal.action.tool_name == "home.light_turn_on"
+    assert proposal.action.parameters == {"target": "Lamp"}
+    assert script.call_count == 1
+
+
+@pytest.mark.parametrize("shape", STRUCTURED)
+async def test_a_none_reply_in_each_shape_is_none(shape: ReflexOutput) -> None:
+    agent, _ = reflex_agent(NONE_OBJECT, output=shape)
+
+    proposal = await decide(agent, PROMPT, TOOLS)
+
+    assert proposal.decision == "none"
+    assert proposal.action is None
+
+
+@pytest.mark.parametrize("shape", [*STRUCTURED, "text"])
+async def test_a_tool_that_is_not_one_of_the_calls_tools_is_invalid_in_every_shape(
+    shape: ReflexOutput,
+) -> None:
+    reply: Any = ASK if shape == "text" else ASK_OBJECT
+    agent, script = reflex_agent(reply, output=shape)
+
+    proposal = await decide(agent, PROMPT, [COVER])
+
+    assert proposal.decision == "invalid"
+    assert proposal.action is None
+    # The same check, whatever the shape: one conversion after the JSON.
+    assert proposal.problem == "tool 'home.light_turn_on' is not one of Reflex's tools"
+    assert json.loads(proposal.raw or "") == json.loads(ASK)
+    assert script.call_count == 1
+
+
+def test_the_structured_schema_is_the_text_shapes_reply_with_two_open_ends() -> None:
+    assert agent_module.reply_schema(TOOLS) == REPLY_OBJECT
+    assert agent_module.reply_schema([]) == NONE_REPLY  # nothing to open: only "none"
+    assert reply_format(TOOLS)["json_schema"]["schema"] == REPLY_FORMAT["json_schema"]["schema"]
+
+
+def test_the_schema_of_one_call_does_not_leak_into_the_next() -> None:
+    first = agent_module.reply_schema(TOOLS)
+    first["anyOf"].clear()
+
+    assert agent_module.reply_schema(TOOLS) == REPLY_OBJECT
+    assert reply_format(TOOLS) == REPLY_FORMAT
+
+
+def test_the_vllm_profile_leaves_the_reply_satisfiable(upstream: Upstream) -> None:
+    """Its transformer closes every object that does not say it is open: the two ends must."""
+    transformer = _vllm(upstream).profile.get("json_schema_transformer")
+    assert transformer is not None
+
+    sent = transformer(copy.deepcopy(agent_module.reply_schema(TOOLS)), strict=None).walk()
+    closed = transformer(
+        {"type": "object", "anyOf": [NONE_REPLY, ACT_OR_ASK]}, strict=None
+    ).walk()  # the anyOf with no ends spelled out
+
+    assert sent == WIRE_REPLY_OBJECT
+    assert closed["additionalProperties"] is False  # no key could be written
+    assert closed["anyOf"][1]["properties"]["parameters"]["additionalProperties"] is False
+
+
+@pytest.mark.parametrize("shape", STRUCTURED)
+async def test_with_no_tools_the_only_reply_is_none_in_every_shape(shape: ReflexOutput) -> None:
+    agent, script = reflex_agent(ASK_OBJECT, NONE_OBJECT, output=shape)
+
+    asked = await decide(agent, PROMPT, [])
+    none = await decide(agent, PROMPT, [])
+
+    assert asked.decision == "invalid"
+    assert none.decision == "none"
+    schema = _object_schema(script.requests[0][1])
+    assert _values(schema["properties"]["decision"]) == ["none"]
+    assert schema["required"] == ["decision"]
+    assert schema["additionalProperties"] is False
+
+
+@pytest.mark.parametrize("shape", STRUCTURED)
+async def test_the_reply_must_name_one_of_the_tools_of_this_call_in_every_shape(
+    shape: ReflexOutput,
+) -> None:
+    """The enum and the required fields are the text shape's, so no shape is asked for less."""
+    agent, script = reflex_agent(NONE_OBJECT, NONE_OBJECT, output=shape)
+
+    await decide(agent, PROMPT, [*TOOLS, COVER])
+    await decide(agent, PROMPT, TOOLS)
+
+    first, second = (_object_schema(script.requests[i][1])["anyOf"] for i in (0, 1))
+    for none, choose in (first, second):
+        assert none == NONE_REPLY
+        assert choose["required"] == ["decision", "reason", "tool_name", "parameters"]
+        assert choose["additionalProperties"] is False
+        assert _values(choose["properties"]["decision"]) == ["act", "ask"]
+    assert first[1]["properties"]["tool_name"] == {
+        "enum": ["home.cover_open", "home.light_turn_on"]
+    }
+    assert second[1]["properties"]["tool_name"] == {"enum": ["home.light_turn_on"]}
+
+
+@pytest.mark.parametrize("shape", STRUCTURED)
+async def test_only_the_text_shape_sends_the_response_format(shape: ReflexOutput) -> None:
+    """The other shapes get their schema from Pydantic AI's output machinery, once."""
+    agent, script = reflex_agent(NONE_OBJECT, output=shape)
+
+    await decide(agent, PROMPT, TOOLS)
+
+    settings = script.settings()
+    assert "extra_body" not in settings
+    assert settings["temperature"] == 0.0
+    assert settings["max_tokens"] == 150
+    assert settings["timeout"] == 30.0
+    assert settings["extra_headers"] == {"X-Alfred-Role": "system1"}
+
+
+# --- a structured reply that is no reply ----------------------------------------------
+
+PRIVATE = "private words"
+
+
+@pytest.mark.parametrize(
+    ("shape", "reply", "raw", "problem"),
+    [
+        pytest.param(
+            "native",
+            PRIVATE,
+            PRIVATE,
+            "no reply: Exceeded maximum output retries (0) (reply: json_invalid)",
+            id="native-not-json",
+        ),
+        pytest.param(
+            "json",
+            PRIVATE,
+            PRIVATE,
+            "no reply: Exceeded maximum output retries (0) (reply: json_invalid)",
+            id="json-not-json",
+        ),
+        pytest.param(
+            "native",
+            '{"decision": "act", "reason": "da',
+            '{"decision": "act", "reason": "da',
+            "no reply: Exceeded maximum output retries (0) (reply: json_invalid)",
+            id="native-cut-off-at-the-cap",
+        ),
+        pytest.param(
+            "json",
+            f'["{PRIVATE}"]',
+            f'["{PRIVATE}"]',
+            "no reply: Exceeded maximum output retries (0) (reply: dict_type)",
+            id="json-not-an-object",
+        ),
+        pytest.param(
+            "tool",
+            tool_call("reflex_reply", PRIVATE),
+            PRIVATE,
+            "no reply: Exceeded maximum output retries (0) (reply: json_invalid)",
+            id="tool-arguments-not-json",
+        ),
+        pytest.param(
+            "tool",
+            tool_call("reflex_reply", f'["{PRIVATE}"]'),
+            f'["{PRIVATE}"]',
+            "no reply: Exceeded maximum output retries (0) (reply: dict_type)",
+            id="tool-arguments-not-an-object",
+        ),
+        pytest.param(
+            "tool",
+            PRIVATE,
+            PRIVATE,
+            "no reply: Exceeded maximum output retries (0)",
+            id="tool-no-tool-call",
+        ),
+    ],
+)
+async def test_a_structured_reply_that_is_no_reply_is_invalid_keeps_the_raw_reply_and_says_why(
+    shape: ReflexOutput, reply: Any, raw: str, problem: str
+) -> None:
+    agent, script = reflex_agent(reply, output=shape)
+
+    proposal = await decide(agent, PROMPT, TOOLS)
+
+    assert proposal.decision == "invalid"
+    assert proposal.raw == raw
+    assert proposal.problem == problem
+    assert PRIVATE not in (proposal.problem or "")  # the runner logs it; the reply is private
+    assert script.call_count == 1
+
+
+@pytest.mark.parametrize("shape", STRUCTURED)
+async def test_a_reply_the_schema_does_not_police_is_checked_after_the_json(
+    shape: ReflexOutput,
+) -> None:
+    """The server holds the reply to the schema; a server that does not is caught here."""
+    agent, script = reflex_agent({"decision": "maybe"}, output=shape)
+
+    proposal = await decide(agent, PROMPT, TOOLS)
+
+    assert proposal.decision == "invalid"
+    assert proposal.problem == "unknown decision 'maybe'"
+    assert json.loads(proposal.raw or "") == {"decision": "maybe"}
+    assert script.call_count == 1
+
+
+@pytest.mark.parametrize("shape", STRUCTURED)
+async def test_a_reply_the_schema_allows_is_still_checked_and_keeps_the_reply_as_raw(
+    shape: ReflexOutput,
+) -> None:
+    agent, _ = reflex_agent({"decision": "act", "reason": "dark"}, output=shape)
+
+    proposal = await decide(agent, PROMPT, TOOLS)
+
+    assert proposal.decision == "invalid"
+    assert proposal.problem == "act without a tool"
+    assert json.loads(proposal.raw or "") == {"decision": "act", "reason": "dark"}
+
+
+async def test_an_empty_text_reply_keeps_an_empty_raw_reply() -> None:
+    agent, _ = reflex_agent(ModelResponse(parts=[]), output="native")
+
+    proposal = await decide(agent, PROMPT, TOOLS)
+
+    assert proposal.decision == "invalid"
+    assert proposal.raw == ""
+    assert (proposal.problem or "").startswith("no reply: ")
+
+
+# --- the other shapes, on the wire ----------------------------------------------------
+
+
+def _tool_call_message(arguments: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "reflex_reply", "arguments": json.dumps(arguments)},
+            }
+        ],
+    }
+
+
+def _body_schema(body: dict[str, Any], shape: ReflexOutput, upstream: Upstream) -> dict[str, Any]:
+    """The schema a request carries, read from wherever its shape put it."""
+    schema: dict[str, Any]
+    if shape == "tool":
+        [tool] = body["tools"]
+        schema = tool["function"]["parameters"]
+    elif shape == "native":
+        schema = body["response_format"]["json_schema"]["schema"]
+    else:
+        # The system message is the profile's own template around the schema: read the schema
+        # out of it by that template, so a change of its wording does not break the test.
+        before, _, after = _vllm(upstream).profile["prompted_output_template"].partition("{schema}")
+        [system, _] = body["messages"]
+        assert system["role"] == "system"
+        assert system["content"].startswith(before)
+        assert system["content"].endswith(after)
+        schema = json.loads(system["content"].removeprefix(before).removesuffix(after))
+    return schema
+
+
+def _body(**shape: Any) -> dict[str, Any]:
+    """What every structured request carries besides its shape: the settings, the prompt."""
+    return {
+        "model": "test-model",
+        "stream": False,
+        "max_completion_tokens": 150,
+        "temperature": 0.0,
+        **shape,
+    }
+
+
+async def test_the_tool_shape_is_pinned_on_the_wire(upstream: Upstream) -> None:
+    upstream.message = _tool_call_message(NONE_OBJECT)
+
+    await decide(build_reflex_agent(_vllm(upstream), "tool"), PROMPT, TOOLS)
+
+    assert upstream.headers["x-alfred-role"] == "system1"
+    assert upstream.body == _body(
+        messages=[USER_MESSAGE],
+        tool_choice="required",
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "reflex_reply",
+                    "description": "The final response which ends this conversation",
+                    "parameters": WIRE_REPLY_OBJECT,
+                },
+            }
+        ],
+    )
+
+
+async def test_the_native_shape_is_pinned_on_the_wire_and_sends_the_schema_once(
+    upstream: Upstream,
+) -> None:
+    """The vLLM profile would add the schema to a system message too: the server already holds
+    the reply to it, as it does for ``text``, so the prompt is the only message."""
+    await decide(build_reflex_agent(_vllm(upstream), "native"), PROMPT, TOOLS)
+
+    assert upstream.headers["x-alfred-role"] == "system1"
+    assert upstream.body == _body(
+        messages=[USER_MESSAGE],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": "reflex_reply", "schema": WIRE_REPLY_OBJECT, "strict": False},
+        },
+    )
+
+
+async def test_the_json_shape_is_pinned_on_the_wire_with_the_schema_in_the_prompt(
+    upstream: Upstream,
+) -> None:
+    await decide(build_reflex_agent(_vllm(upstream), "json"), PROMPT, TOOLS)
+
+    body = upstream.body
+    [system, _] = body["messages"]
+    assert _body_schema(body, "json", upstream) == {**WIRE_REPLY_OBJECT, "title": "reflex_reply"}
+    assert upstream.headers["x-alfred-role"] == "system1"
+    assert body == _body(messages=[system, USER_MESSAGE], response_format={"type": "json_object"})
+
+
+@pytest.mark.parametrize("shape", STRUCTURED)
+async def test_each_shape_names_the_tools_of_its_own_call_on_the_wire(
+    shape: ReflexOutput, upstream: Upstream
+) -> None:
+    if shape == "tool":
+        upstream.message = _tool_call_message(NONE_OBJECT)
+
+    await decide(build_reflex_agent(_vllm(upstream), shape), PROMPT, [*TOOLS, COVER])
+
+    [_, choose] = _body_schema(upstream.body, shape, upstream)["anyOf"]
+    assert choose["properties"]["tool_name"] == {"enum": ["home.cover_open", "home.light_turn_on"]}
+    assert choose["required"] == ["decision", "reason", "tool_name", "parameters"]
+
+
+async def test_the_text_shape_is_the_default_and_sends_the_same_bytes(
+    upstream: Upstream,
+) -> None:
+    await decide(build_reflex_agent(_vllm(upstream)), PROMPT, TOOLS)
+    await decide(build_reflex_agent(_vllm(upstream), "text"), PROMPT, TOOLS)
+
+    first, second = upstream.requests
+    assert first.content == second.content
+    assert json.loads(first.content)["response_format"] == REPLY_FORMAT

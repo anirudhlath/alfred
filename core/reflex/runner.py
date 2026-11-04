@@ -26,11 +26,11 @@ from bus.schemas.events import ReflexObservation, ReflexOutcome, StateChangedEve
 from core.attribution.cause import cause_of
 from core.attribution.log import record_change
 from core.reflex.answers import ASK_SOURCE
-from core.reflex.asks import gate, open_ask
+from core.reflex.asks import asked_targets, gate, open_ask
 from core.reflex.availability import bridge_availability
 from core.reflex.outcome import publishes
-from core.reflex.prompt import HOUSE_DOMAINS, _name, render_change, split_tool
-from core.reflex.reversal import resolve_targets
+from core.reflex.prompt import _name, render_change, split_tool
+from core.reflex.reversal import notes_person_change
 from core.reflex.settings import load_settings
 from core.routing.risk import tool_risk
 from shared.redis_streams import REPLAY_MARKER_TTL_SECONDS
@@ -58,7 +58,6 @@ if TYPE_CHECKING:
     from core.reflex.decision_log import DecisionLog
     from core.reflex.engine import ReflexEngine
     from core.reflex.outcome import Decided
-    from core.reflex.prompt import LiveEntity
     from core.reflex.reversal import PersonChanges
     from core.routing.domain_router import DomainAgent
 
@@ -326,19 +325,6 @@ async def ensure_consumer_group(
             raise
 
 
-def _asked_targets(action: ActionRequest, snapshot: Mapping[str, LiveEntity]) -> list[str]:
-    """What an ask is about: the action's target resolved against the live state.
-
-    The engine has already resolved it (``resolved_action``): a proposal whose target names
-    nothing there never stands, so it is never asked about. An action with no usable target has
-    none.
-    """
-    target = action.parameters.get("target")
-    if not isinstance(target, str) or not target.strip():
-        return []
-    return resolve_targets(action.tool_name, target, snapshot)
-
-
 async def ask_or_hold(
     redis: AioRedis,
     notifier: NotificationPublisher | None,
@@ -376,7 +362,7 @@ async def ask_or_hold(
     risk = await tool_risk(redis, action.target_service, action.tool_name)
     tz_name = await get_user_timezone(redis)
     now = clock()
-    targets = _asked_targets(action, snapshot)
+    targets = asked_targets(action, snapshot)
     outcome = await gate(
         redis,
         settings,
@@ -484,13 +470,13 @@ async def process_stream_entry(
     await record_change(redis, event, entry_id=entry_id)
 
     # Note what a person just changed, so Reflex keeps its hands off it. Only the devices
-    # Reflex always shows and acts on (HOUSE_DOMAINS): every sensor update has the cause
+    # Reflex always shows and acts on (notes_person_change): every sensor update has the cause
     # "outside", and noting those would fill the record with every sensor. A domain the House
     # shows only because a tool acts on it (a script) is not noted, so a script a person just
     # ran is not left alone (issue #415). Ahead of the gate, like the count above: a gated
     # change is still the latest word on its device. Best-effort (note never raises), and
     # idempotent for a redelivery.
-    if person_changes is not None and event.entity_id.partition(".")[0] in HOUSE_DOMAINS:
+    if person_changes is not None and notes_person_change(event.entity_id):
         await person_changes.note(event, cause_of(event.context))
 
     # Attention gate — only attention-set members on real transitions reach

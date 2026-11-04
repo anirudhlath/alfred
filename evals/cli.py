@@ -13,13 +13,17 @@ import typer
 
 from evals.harness.display import Display
 from evals.harness.net import DEFAULT_FAKE_HA_PORT, DEFAULT_PROXY_PORT
+from shared.config import DEFAULT_REFLEX_OUTPUT, REFLEX_OUTPUTS, ReflexOutput
 
 evals_app = typer.Typer(no_args_is_help=True, help="Evaluate Alfred against its PRD.")
 
 DEFAULT_MODEL = "gemma-4-26b-a4b"
 DEFAULT_VLLM_URL = "http://localhost:8000/v1"
 
-ModelOpt = Annotated[str, typer.Option(help="vLLM served model, used in every role")]
+ModelOpt = Annotated[
+    str, typer.Option(help="vLLM served model: System 2, the Librarian and the judge")
+]
+JudgeModelOpt = Annotated[str, typer.Option(help="vLLM served model that judges")]
 VllmUrlOpt = Annotated[str, typer.Option(help="vLLM base URL, with /v1")]
 
 DEFAULT_EMBED_URL = "http://localhost:8001"
@@ -41,7 +45,9 @@ ProxyPortOpt = Annotated[
 
 
 @evals_app.command()
-def calibrate(model: ModelOpt = DEFAULT_MODEL, vllm_url: VllmUrlOpt = DEFAULT_VLLM_URL) -> None:
+def calibrate(
+    model: JudgeModelOpt = DEFAULT_MODEL, vllm_url: VllmUrlOpt = DEFAULT_VLLM_URL
+) -> None:
     """Measure how often the judge agrees with the hand-labelled items."""
     import asyncio
     from http import HTTPStatus
@@ -123,7 +129,26 @@ def run(
     include_pending: PendingOpt = False,
     epochs: Annotated[int, typer.Option(min=1, help="Runs per golden")] = 3,
     model: ModelOpt = DEFAULT_MODEL,
+    reflex_model: Annotated[
+        str | None,
+        typer.Option(help="Reflex's served model (default: --model)"),
+    ] = None,
     vllm_url: VllmUrlOpt = DEFAULT_VLLM_URL,
+    reflex_upstream: Annotated[
+        str | None,
+        typer.Option(
+            help="Base URL, with /v1, that serves Reflex (default: --vllm-url). Any other is "
+            "hosted: its models are not checked, and Reflex's calls carry "
+            "$ALFRED_EVALS_REFLEX_API_KEY when it is set"
+        ),
+    ] = None,
+    reflex_output: Annotated[
+        ReflexOutput,
+        typer.Option(
+            help="How Reflex's reply is asked for, as REFLEX_OUTPUT: "
+            f"{', '.join(REFLEX_OUTPUTS)}. The scorecard names it"
+        ),
+    ] = DEFAULT_REFLEX_OUTPUT,
     embed_url: Annotated[str, typer.Option(help="Embedding server, without /v1")] = (
         DEFAULT_EMBED_URL
     ),
@@ -183,7 +208,10 @@ def run(
         include_pending=include_pending,
         epochs=epochs,
         model=model,
+        reflex_model=reflex_model or model,
         vllm_url=vllm_url,
+        reflex_upstream=reflex_upstream or vllm_url,
+        reflex_output=reflex_output,
         embed_url=embed_url,
         embed_model=embed_model,
         home_service=hs,

@@ -268,7 +268,7 @@ def _probe_served_models(
 
 
 def _check_reflex(env: dict[str, str], online: bool) -> DoctorCheck:
-    from shared.config import resolve_llm_settings
+    from shared.config import DEFAULT_REFLEX_OUTPUT, resolve_llm_settings
 
     leftovers = _leftover_reflex_settings(env)
     note = (
@@ -294,6 +294,8 @@ def _check_reflex(env: dict[str, str], online: bool) -> DoctorCheck:
             "(want REFLEX_MODEL=vllm:<served-name>)",
         )
     status, detail = _check_model("REFLEX_MODEL", llm.reflex_model, llm)
+    if llm.reflex_output != DEFAULT_REFLEX_OUTPUT:
+        detail = f"{detail}; REFLEX_OUTPUT={llm.reflex_output}"
     provider, _, served_name = llm.reflex_model.partition(":")
     # Only a vllm: model is served by the local server; OpenRouter's key is Conscious's probe.
     if not online or status == "fail" or provider != "vllm":

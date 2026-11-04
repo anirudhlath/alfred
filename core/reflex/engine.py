@@ -36,9 +36,8 @@ from shared.traced import traced
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from pydantic_ai import Agent
-
     from bus.schemas.events import ReflexProposal, StateChangedEvent, TriggerFired
+    from core.reflex.agent import ReflexAgent
     from core.reflex.context_reader import ContextReader
     from core.reflex.prompt import LiveEntity, ReflexProse
     from core.reflex.reversal import PersonChange, PersonChanges
@@ -65,7 +64,7 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _decided(
+def decide_outcome(
     proposal: ReflexProposal,
     prompt: str,
     recent: dict[str, PersonChange],
@@ -73,11 +72,12 @@ def _decided(
 ) -> Decided:
     """The proposal, its outcome and what it was decided from, live state included.
 
-    An action whose target names nothing in the live state (with none, nothing at all) is
-    ``invalid``, kept as the model wrote it: what it would act on cannot be checked. Otherwise its
-    target is the one ``resolved_action`` gives, an entity ID where the model named an entity as
-    the prompt does, and anything it would act on that a person just changed makes it
-    ``would_reverse``.
+    The one road from a model's answer to its outcome: Reflex decides through it, and so does
+    the replay when it labels and scores recorded decisions. An action whose target names
+    nothing in the live state (with none, nothing at all) is ``invalid``, kept as the model
+    wrote it: what it would act on cannot be checked. Otherwise its target is the one
+    ``resolved_action`` gives, an entity ID where the model named an entity as the prompt does,
+    and anything it would act on that a person just changed makes it ``would_reverse``.
     """
     snapshot = entities or {}
     overridden: list[str] = []
@@ -114,7 +114,7 @@ class ReflexEngine:
         context_reader: ContextReader | None = None,
         memory_reader: MemoryReader | None = None,
         *,
-        agent: Agent[list[ToolInfo], ReflexProposal],
+        agent: ReflexAgent,
         clock: Callable[[], datetime] = _utc_now,
         prompts: PromptStore | None = None,
         redis: AioRedis | None = None,
@@ -210,7 +210,7 @@ class ReflexEngine:
             leave_alone=list(recent),
         )
         proposal = await decide(self._agent, prompt, tools)
-        return _decided(proposal, prompt, recent, entities)
+        return decide_outcome(proposal, prompt, recent, entities)
 
     @traced(name="reflex.process_trigger_fired")
     @track_latency(category="reflex")
@@ -230,4 +230,4 @@ class ReflexEngine:
             leave_alone=list(recent),
         )
         proposal = await decide(self._agent, prompt, tools)
-        return _decided(proposal, prompt, recent, entities)
+        return decide_outcome(proposal, prompt, recent, entities)

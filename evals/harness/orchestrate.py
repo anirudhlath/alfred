@@ -34,8 +34,11 @@ from evals.harness.preflight import (
     alfred_commit,
     base_url,
     check_home_service,
+    check_key_transport,
     check_models,
     home_service_commit,
+    reflex_api_key,
+    same_upstream,
 )
 from evals.harness.proxy import LlmProxy
 from evals.harness.report import (
@@ -50,6 +53,7 @@ from evals.harness.scenario import ScenarioError, expand_variants, load_suites, 
 from evals.harness.stack import Stack, StackConfig, StackError, probe_host_ports
 from evals.harness.tasks import RunContext, build_task
 from evals.harness.world import load_world
+from shared.config import DEFAULT_REFLEX_OUTPUT
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -61,6 +65,7 @@ if TYPE_CHECKING:
     from evals.harness.judge import CalibrationReport
     from evals.harness.scenario import ScenarioVariant
     from evals.harness.stack import LangfuseAccess
+    from shared.config import ReflexOutput
 
 logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -75,8 +80,10 @@ class RunOptions:
     tags: list[str]
     include_pending: bool
     epochs: int
-    model: str
-    vllm_url: str
+    model: str  # System 2's, the Librarian's and the judge's
+    reflex_model: str  # System 1's
+    vllm_url: str  # with /v1
+    reflex_upstream: str  # with /v1; vllm_url unless Reflex is served elsewhere
     embed_url: str
     embed_model: str
     home_service: Path
@@ -88,6 +95,7 @@ class RunOptions:
     fake_ha_port: int  # 0: any free port
     proxy_port: int  # 0: any free port
     langfuse: LangfuseAccess | None = None
+    reflex_output: ReflexOutput = DEFAULT_REFLEX_OUTPUT  # how Reflex's reply is asked for
 
 
 @dataclass(frozen=True)
@@ -304,10 +312,21 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
     whatever ran. Suites whose stack failed to start are named in the outcome."""
     plan = build_plan(opts)
     vllm_url = base_url(opts.vllm_url, "--vllm-url")
+    reflex_url = base_url(opts.reflex_upstream, "--reflex-upstream")
     embed_url = base_url(opts.embed_url, "--embed-url")
+    # Any upstream but the vLLM the run is pointed at is a hosted one.
+    hosted = not same_upstream(reflex_url, vllm_url)
+    key = reflex_api_key(os.environ) if hosted else None
+    if key is not None:
+        check_key_transport(reflex_url, "--reflex-upstream")
     async with httpx.AsyncClient(timeout=10) as client:
-        await check_models(client, vllm_url, opts.model)
+        # System 2 and Reflex may share a model; a hosted upstream is not asked for its
+        # models: its list may need the key, and costs a call.
+        for model in dict.fromkeys([opts.model] if hosted else [opts.model, opts.reflex_model]):
+            await check_models(client, vllm_url, model)
         await check_models(client, f"{embed_url}/v1", opts.embed_model)
+    if hosted:
+        logger.warning("the Reflex model is not checked: its upstream is not --vllm-url (hosted)")
     if opts.build:
         hs_commit = check_home_service(opts.home_service, allow_stale=opts.allow_stale_home_service)
     else:
@@ -326,9 +345,16 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
     judge = Judge(make_judge_model(opts.model, vllm_url))
 
     fake_ha = FakeHA(load_world("apartment"), host=gateway, port=opts.fake_ha_port)
-    proxy = LlmProxy(vllm_url.removesuffix("/v1"), host=gateway, port=opts.proxy_port)
+    proxy = LlmProxy(
+        vllm_url.removesuffix("/v1"),
+        reflex_upstream=reflex_url.removesuffix("/v1") if hosted else None,
+        reflex_api_key=key,
+        host=gateway,
+        port=opts.proxy_port,
+    )
     cfg = StackConfig(
         model=opts.model,
+        reflex_model=opts.reflex_model,
         vllm_url=vllm_url,
         embed_url=embed_url,
         embed_model=opts.embed_model,
@@ -336,6 +362,7 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
         home_service_dir=opts.home_service,
         keep=opts.keep,
         langfuse=opts.langfuse,
+        reflex_output=opts.reflex_output,
     )
 
     def make_ctx(stack: Stack, variants: Sequence[ScenarioVariant]) -> RunContext:
@@ -382,6 +409,9 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
     meta = RunMeta(
         run_dir=str(run_dir),
         model=opts.model,
+        reflex_model=opts.reflex_model,
+        reflex_upstream="hosted" if hosted else "local",
+        reflex_output=opts.reflex_output,
         alfred_commit=commit,
         home_service_commit=hs_commit,
         epochs=opts.epochs,

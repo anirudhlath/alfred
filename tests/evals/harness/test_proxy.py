@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 import httpx
 import pytest
+from aiohttp import web
 
 from evals.harness import proxy as proxy_module
 from evals.harness.evidence import LlmCall
@@ -632,3 +633,263 @@ async def test_mirrors_the_upstream_media_type(
     async with serving(handle) as p, httpx.AsyncClient() as client:
         r = await client.post(f"{p.url}{path}", json={"model": "m", "messages": []})
     assert r.status_code == 200 and r.headers["content-type"] == expected
+
+
+# A made-up key and made-up hosts: no test here reaches a network.
+FAKE_KEY = "fake-reflex-key-0123"
+VLLM_HOST = "vllm.test"
+HOSTED_HOST = "hosted.invalid"
+
+
+@asynccontextmanager
+async def routing(
+    handle: Callable[[httpx.Request], httpx.Response],
+    *,
+    reflex_upstream: str | None = f"https://{HOSTED_HOST}/api",
+    reflex_api_key: str | None = FAKE_KEY,
+) -> AsyncIterator[LlmProxy]:
+    p = LlmProxy(
+        f"http://{VLLM_HOST}",
+        reflex_upstream=reflex_upstream,
+        reflex_api_key=reflex_api_key,
+        transport=upstream(handle),
+    )
+    await p.start()
+    try:
+        yield p
+    finally:
+        await p.stop()
+
+
+def _recording_upstream(seen: list[httpx.Request]) -> Callable[[httpx.Request], httpx.Response]:
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=COMPLETION)
+
+    return handle
+
+
+async def test_a_system1_call_goes_to_the_reflex_upstream_with_the_key_and_no_other_does() -> None:
+    seen: list[httpx.Request] = []
+    body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+    sent_by_alfred = {"Authorization": "Bearer what-alfred-sent"}
+    async with routing(_recording_upstream(seen)) as p, httpx.AsyncClient() as client:
+        for role in (SYSTEM1, SYSTEM2, LIBRARIAN, APPROVAL):
+            headers = {ROLE_HEADER: role, **sent_by_alfred}
+            r = await client.post(f"{p.url}/v1/chat/completions", json=body, headers=headers)
+            assert r.status_code == 200 and r.json() == COMPLETION
+        unmarked = await client.post(
+            f"{p.url}/v1/chat/completions", json=body, headers=sent_by_alfred
+        )
+        assert unmarked.status_code == 200
+
+    system1, *others = seen
+    assert str(system1.url) == f"https://{HOSTED_HOST}/api/v1/chat/completions"
+    # The key replaces the Authorization header Alfred sent, whatever its case.
+    assert system1.headers.get_list("authorization") == [f"Bearer {FAKE_KEY}"]
+    assert system1.headers[ROLE_HEADER] == SYSTEM1
+    assert json.loads(system1.content) == body
+    assert [str(o.url) for o in others] == [f"http://{VLLM_HOST}/v1/chat/completions"] * 4
+    # Every other role gets vLLM, with the header it sent and not the key.
+    assert [o.headers.get_list("authorization") for o in others] == [
+        ["Bearer what-alfred-sent"]
+    ] * 4
+    assert [c.role for c in p.calls] == ["system1", "system2", "librarian", "approval", "unknown"]
+
+
+async def test_the_key_is_nowhere_in_the_record_a_reply_or_the_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    seen: list[httpx.Request] = []
+    with caplog.at_level(logging.DEBUG):
+        async with routing(_recording_upstream(seen)) as p, httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{p.url}/v1/chat/completions",
+                json={"model": "m", "messages": []},
+                headers={ROLE_HEADER: SYSTEM1},
+            )
+    assert [req.headers["authorization"] for req in seen] == [f"Bearer {FAKE_KEY}"]
+    [call] = p.calls
+    assert call.role == "system1"
+    assert FAKE_KEY not in call.model_dump_json()
+    assert FAKE_KEY not in r.text and FAKE_KEY not in str(dict(r.headers))
+    assert FAKE_KEY not in caplog.text
+
+
+UNSAFE_KEY = "line\nbreak-0123"  # h11 refuses it, and quotes it with the newline escaped
+
+
+@pytest.mark.parametrize("key", ["two words", "tab\tinside", "café", UNSAFE_KEY])
+def test_a_key_that_cannot_be_a_header_value_is_refused_without_quoting_it(key: str) -> None:
+    with pytest.raises(ValueError) as err:
+        LlmProxy(
+            f"http://{VLLM_HOST}", reflex_upstream=f"https://{HOSTED_HOST}", reflex_api_key=key
+        )
+    message = str(err.value)
+    assert "key" in message
+    assert key not in message and repr(key) not in message and repr(key)[1:-1] not in message
+
+
+@pytest.mark.parametrize("reflex_upstream", [None, ""], ids=["none", "empty"])
+def test_a_key_with_no_reflex_upstream_is_refused_so_it_can_never_go_to_vllm(
+    reflex_upstream: str | None,
+) -> None:
+    with pytest.raises(ValueError, match="reflex_upstream") as err:
+        LlmProxy(f"http://{VLLM_HOST}", reflex_upstream=reflex_upstream, reflex_api_key=FAKE_KEY)
+    assert FAKE_KEY not in str(err.value)
+
+
+@asynccontextmanager
+async def _local_server() -> AsyncIterator[str]:
+    """A real server on a loopback port that answers any chat completion: what a request
+    reaches when nothing is faked between the proxy and the HTTP library."""
+
+    async def answer(request: web.Request) -> web.Response:
+        return web.json_response(COMPLETION)
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", answer)
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0).start()
+    try:
+        yield f"http://127.0.0.1:{int(runner.addresses[0][1])}"
+    finally:
+        await runner.cleanup()
+
+
+async def test_a_refusal_by_the_http_library_reaches_the_caller_as_its_class_alone() -> None:
+    # The constructor keeps an unsafe key out, so the refusal is reached by putting one in
+    # after it. Nothing is faked from there on: h11 itself refuses the header.
+    async with _local_server() as reflex_url, httpx.AsyncClient() as client:
+        with pytest.raises(httpx.LocalProtocolError) as refusal:
+            await client.post(
+                f"{reflex_url}/v1/chat/completions",
+                content=b"{}",
+                headers={"Authorization": f"Bearer {UNSAFE_KEY}"},
+            )
+        # What the library says is what must not reach anyone: it quotes the key, with the
+        # newline escaped, so no substring match on the raw key would find it.
+        assert "break-0123" in str(refusal.value) and UNSAFE_KEY not in str(refusal.value)
+
+        p = LlmProxy(f"http://{VLLM_HOST}", reflex_upstream=reflex_url, reflex_api_key=FAKE_KEY)
+        await p.start()
+        try:
+            p._reflex_key = UNSAFE_KEY
+            r = await client.post(
+                f"{p.url}/v1/chat/completions",
+                json={"model": "m", "messages": []},
+                headers={ROLE_HEADER: SYSTEM1},
+            )
+        finally:
+            await p.stop()
+
+    assert r.status_code == 502
+    assert r.json()["error"]["message"] == "upstream failed: LocalProtocolError"
+    assert "break" not in r.text
+    [call] = p.calls
+    assert call.status == 502 and "break" not in call.model_dump_json()
+
+
+async def test_a_transport_error_on_the_reflex_path_is_reported_by_its_class_alone() -> None:
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"cannot reach {request.url}")
+
+    async with routing(refuse) as p, httpx.AsyncClient() as client:
+        r = await client.post(
+            f"{p.url}/v1/chat/completions",
+            json={"model": "m", "messages": []},
+            headers={ROLE_HEADER: SYSTEM1},
+        )
+    assert r.status_code == 502
+    assert r.json()["error"]["message"] == "upstream failed: ConnectError"
+    assert HOSTED_HOST not in r.text and FAKE_KEY not in r.text
+
+
+@pytest.mark.parametrize(
+    ("role", "reflex_upstream"),
+    [(SYSTEM2, f"https://{HOSTED_HOST}/api"), (SYSTEM1, None)],
+    ids=["other-role", "no-reflex-upstream"],
+)
+async def test_a_failure_that_never_touched_the_reflex_upstream_is_worded_as_before(
+    role: str, reflex_upstream: str | None
+) -> None:
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    async with (
+        routing(refuse, reflex_upstream=reflex_upstream, reflex_api_key=None) as p,
+        httpx.AsyncClient() as client,
+    ):
+        r = await client.post(
+            f"{p.url}/v1/chat/completions",
+            json={"model": "m", "messages": []},
+            headers={ROLE_HEADER: role},
+        )
+    assert r.status_code == 502
+    assert r.json()["error"]["message"] == "upstream failed: connection refused"
+
+
+async def test_passthrough_always_goes_to_vllm_without_the_key() -> None:
+    seen: list[httpx.Request] = []
+    async with routing(_recording_upstream(seen)) as p, httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{p.url}/v1/models", headers={ROLE_HEADER: SYSTEM1, "Authorization": "Bearer theirs"}
+        )
+    assert r.status_code == 200 and p.calls == []
+    [req] = seen
+    assert str(req.url) == f"http://{VLLM_HOST}/v1/models"
+    assert req.headers.get_list("authorization") == ["Bearer theirs"]
+
+
+@pytest.mark.parametrize("key", [None, ""], ids=["unset", "empty"])
+async def test_without_a_key_the_reflex_upstream_gets_the_header_alfred_sent(
+    key: str | None,
+) -> None:
+    seen: list[httpx.Request] = []
+    async with (
+        routing(_recording_upstream(seen), reflex_api_key=key) as p,
+        httpx.AsyncClient() as client,
+    ):
+        await client.post(
+            f"{p.url}/v1/chat/completions",
+            json={"model": "m", "messages": []},
+            headers={ROLE_HEADER: SYSTEM1, "Authorization": "Bearer what-alfred-sent"},
+        )
+        await client.post(
+            f"{p.url}/v1/chat/completions",
+            json={"model": "m", "messages": []},
+            headers={ROLE_HEADER: SYSTEM1},
+        )
+    with_header, without = seen
+    assert str(with_header.url) == f"https://{HOSTED_HOST}/api/v1/chat/completions"
+    assert with_header.headers.get_list("authorization") == ["Bearer what-alfred-sent"]
+    assert "authorization" not in without.headers
+
+
+async def test_every_role_goes_to_vllm_when_no_reflex_upstream_is_given() -> None:
+    seen: list[httpx.Request] = []
+    async with (
+        routing(_recording_upstream(seen), reflex_upstream=None, reflex_api_key=None) as p,
+        httpx.AsyncClient() as client,
+    ):
+        for role in (SYSTEM1, SYSTEM2):
+            await client.post(
+                f"{p.url}/v1/chat/completions",
+                json={"model": "m", "messages": []},
+                headers={ROLE_HEADER: role},
+            )
+    assert {str(r.url) for r in seen} == {f"http://{VLLM_HOST}/v1/chat/completions"}
+
+
+@pytest.mark.parametrize("name", ["Authorization", "authorization", "AUTHORIZATION"])
+async def test_the_key_replaces_alfreds_authorization_header_whatever_its_case(name: str) -> None:
+    seen: list[httpx.Request] = []
+    async with routing(_recording_upstream(seen)) as p, httpx.AsyncClient() as client:
+        await client.post(
+            f"{p.url}/v1/chat/completions",
+            json={"model": "m", "messages": []},
+            headers={ROLE_HEADER: SYSTEM1, name: "Bearer what-alfred-sent"},
+        )
+    [req] = seen
+    assert req.headers.get_list("authorization") == [f"Bearer {FAKE_KEY}"]

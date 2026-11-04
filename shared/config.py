@@ -10,7 +10,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, get_args
 
 from dotenv import load_dotenv
 
@@ -301,6 +301,36 @@ def vllm_family_known(served_name: str) -> bool:
     return any(c.startswith(VLLM_KNOWN_FAMILIES) for c in (name, name.rsplit("/", 1)[-1]))
 
 
+# How Reflex asks for its reply (``REFLEX_OUTPUT``). ``text`` asks for a JSON reply as text under
+# a response format built for the call, which is what runs in production; ``tool``, ``native``
+# and ``json`` ask through Pydantic AI's structured-output machinery (an output tool, the
+# server's JSON-schema response format, a schema in the prompt), to compare candidates by
+# their counts (``docs/reflex-anticipation.md``, "Output shapes"). Lives here, not in
+# ``core.reflex.agent``, so a typo fails when config loads, in every process, as one
+# ``RuntimeError``. The agent matches every shape here (``assert_never``, which mypy checks), so
+# adding one is a type error there until it is handled; its tests pin the list.
+ReflexOutput = Literal["text", "tool", "native", "json"]
+REFLEX_OUTPUTS: tuple[ReflexOutput, ...] = get_args(ReflexOutput)
+DEFAULT_REFLEX_OUTPUT: ReflexOutput = "text"
+
+
+def normalize_reflex_output(raw: str) -> ReflexOutput:
+    """Normalise and validate ``REFLEX_OUTPUT``; blank means the default.
+
+    Raises:
+        RuntimeError: the value is not one of ``REFLEX_OUTPUTS``; the message names the
+            variable and the allowed values.
+    """
+    shape = raw.strip().lower() or DEFAULT_REFLEX_OUTPUT
+    allowed = next((output for output in REFLEX_OUTPUTS if output == shape), None)
+    if allowed is None:
+        raise RuntimeError(
+            f"Unknown REFLEX_OUTPUT {raw!r} (read as {shape!r}; expected one of: "
+            f"{', '.join(REFLEX_OUTPUTS)})"
+        )
+    return allowed
+
+
 def _positive_int(name: str, raw: str, default: int) -> int:
     """Parse a positive whole number, naming the variable in every failure."""
     text = raw.strip()
@@ -323,6 +353,7 @@ class LlmSettings:
     librarian_model: str
     approval_model: str
     reflex_model: str
+    reflex_output: ReflexOutput
     vllm_base_url: str
     openrouter_api_key: str
     system2_max_tokens: int
@@ -336,8 +367,8 @@ def resolve_llm_settings(env: Mapping[str, str]) -> LlmSettings:
     its merged ``.env`` by the same rule the services apply.
 
     Raises:
-        RuntimeError: a token cap or timeout is not a positive number; the message names
-            the variable.
+        RuntimeError: a token cap or timeout is not a positive number, or ``REFLEX_OUTPUT`` is
+            not a known shape; the message names the variable.
     """
 
     def get(name: str) -> str:
@@ -369,6 +400,7 @@ def resolve_llm_settings(env: Mapping[str, str]) -> LlmSettings:
         librarian_model=get("LIBRARIAN_MODEL") or system2,
         approval_model=get("APPROVAL_MODEL") or system2,
         reflex_model=get("REFLEX_MODEL") or (f"vllm:{served}" if served else ""),
+        reflex_output=normalize_reflex_output(get("REFLEX_OUTPUT")),
         vllm_base_url=normalize_vllm_base_url(base_url),
         openrouter_api_key=get("OPENROUTER_API_KEY") or get("CLAUDE_API_KEY"),
         system2_max_tokens=_positive_int(tokens_name, get(tokens_name), DEFAULT_SYSTEM2_MAX_TOKENS),
@@ -435,6 +467,8 @@ class AlfredConfig:
     approval_model: str = DEFAULT_SYSTEM2_MODEL
     # System 1 (Reflex): "" when neither REFLEX_MODEL nor OPENAI_COMPAT_MODEL is set.
     reflex_model: str = ""
+    # How Reflex asks for its reply: REFLEX_OUTPUT, "text" unless the owner compares another.
+    reflex_output: ReflexOutput = DEFAULT_REFLEX_OUTPUT
     vllm_base_url: str = ""
     openrouter_api_key: str = ""
     system2_max_tokens: int = DEFAULT_SYSTEM2_MAX_TOKENS
@@ -550,6 +584,7 @@ class AlfredConfig:
             librarian_model=llm.librarian_model,
             approval_model=llm.approval_model,
             reflex_model=llm.reflex_model,
+            reflex_output=llm.reflex_output,
             vllm_base_url=llm.vllm_base_url,
             openrouter_api_key=llm.openrouter_api_key,
             system2_max_tokens=llm.system2_max_tokens,

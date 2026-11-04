@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
@@ -11,12 +12,15 @@ import httpx
 from evals.harness._proc import run_checked
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _GIT_TIMEOUT_S = 120.0
+# The API key of a hosted Reflex upstream. Read here, handed to the proxy and nowhere else:
+# not an option, not in RunOptions, RunMeta, the scorecard or a log.
+REFLEX_API_KEY_ENV = "ALFRED_EVALS_REFLEX_API_KEY"
 
 
 class PreflightError(RuntimeError):
@@ -38,6 +42,69 @@ def base_url(url: str, option: str) -> str:
     except ValueError as exc:
         raise PreflightError(f"{option} {url!r} has an invalid port ({exc})") from exc
     return stripped
+
+
+def same_upstream(one: str, other: str) -> bool:
+    """Whether *one* and *other* (both through ``base_url``) name the same server. The scheme
+    and host are not case-sensitive; no other spelling is equated (``localhost`` is not
+    ``127.0.0.1``)."""
+
+    def parts(url: str) -> tuple[object, ...]:
+        split = urlsplit(url)
+        return (
+            split.scheme.lower(),
+            split.username,
+            split.password,
+            (split.hostname or "").lower(),
+            split.port,
+            split.path.rstrip("/"),
+            split.query,
+        )
+
+    return parts(one) == parts(other)
+
+
+def header_safe(value: str) -> bool:
+    """Whether *value* can be an HTTP header value as is: ASCII, printable, no space. The one
+    check on an API key, made at the run's start and again by the proxy, so the HTTP library
+    never gets a key it would refuse and quote."""
+    return value.isascii() and value.isprintable() and " " not in value
+
+
+def reflex_api_key(env: Mapping[str, str]) -> str | None:
+    """The hosted Reflex upstream's key, or None when *env* holds none. A key that cannot be
+    a header value is a PreflightError that names the variable and never quotes the value."""
+    key = env.get(REFLEX_API_KEY_ENV, "").strip()
+    if not key:
+        return None
+    if not header_safe(key):
+        raise PreflightError(
+            f"{REFLEX_API_KEY_ENV} is not a usable header value: "
+            "it holds a space, a control character or a non-ASCII character"
+        )
+    return key
+
+
+def check_key_transport(url: str, option: str) -> None:
+    """A PreflightError naming *option* unless an API key may be sent to *url* (through
+    ``base_url``): over https, or to a host on this machine or this network. Neither the URL,
+    which may carry credentials, nor the key is in the message."""
+    parts = urlsplit(url)
+    if parts.scheme.lower() == "https":
+        return
+    host = (parts.hostname or "").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and (address.is_loopback or address.is_private):
+        return
+    raise PreflightError(
+        f"{option} is not https:// and not a local address, and {REFLEX_API_KEY_ENV} is set: "
+        "the key would cross the network in clear text. Use an https:// URL, or unset the key"
+    )
 
 
 async def check_models(client: httpx.AsyncClient, base_url: str, model: str) -> None:

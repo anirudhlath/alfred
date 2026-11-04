@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 
 from alfred_cli.main import app
 from evals.__main__ import build_parser
+from evals.cli import DEFAULT_MODEL, DEFAULT_VLLM_URL, evals_app
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
     from inspect_ai.model import Model
 
     from evals.harness.judge import JudgeVerdict
+    from evals.harness.orchestrate import RunOptions
 
 runner = CliRunner()
 
@@ -199,7 +201,7 @@ def test_evals_calibrate_names_a_malformed_calibration_file_in_one_line(
 def test_evals_run_exits_1_after_the_scorecard_when_a_suite_never_started(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, unstarted: list[str], exit_code: int
 ) -> None:
-    from evals.harness.orchestrate import RunOptions, RunOutcome
+    from evals.harness.orchestrate import RunOutcome
 
     seen: list[RunOptions] = []
 
@@ -228,7 +230,7 @@ def test_evals_run_exits_1_after_the_scorecard_when_a_suite_never_started(
 def test_evals_run_exits_130_after_the_scorecard_when_interrupted(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from evals.harness.orchestrate import RunCancelled, RunOptions
+    from evals.harness.orchestrate import RunCancelled
 
     async def fake_run_suites(opts: RunOptions) -> None:
         print("# Alfred eval scorecard")
@@ -263,7 +265,7 @@ def test_evals_run_exits_130_when_interrupted_before_any_suite_finished(
 def test_evals_run_binds_the_fakes_on_fixed_ports_unless_told_otherwise(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from evals.harness.orchestrate import RunOptions, RunOutcome
+    from evals.harness.orchestrate import RunOutcome
 
     seen: list[RunOptions] = []
 
@@ -308,7 +310,7 @@ def test_evals_run_prompt_label_needs_langfuse_settings_before_anything_boots(
 def test_evals_run_prompt_label_hands_the_run_its_langfuse_access(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from evals.harness.orchestrate import RunOptions, RunOutcome
+    from evals.harness.orchestrate import RunOutcome
 
     seen: list[RunOptions] = []
 
@@ -328,6 +330,131 @@ def test_evals_run_prompt_label_hands_the_run_its_langfuse_access(
     labelled, plain = seen
     assert labelled.langfuse is not None and labelled.langfuse.label == "latest"
     assert plain.langfuse is None
+
+
+def _run_options(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *args: str) -> RunOptions:
+    """The ``RunOptions`` ``alfred evals run`` hands a run (a fake one) given *args*."""
+    from evals.harness.orchestrate import RunOutcome
+
+    seen: list[RunOptions] = []
+
+    async def fake_run_suites(opts: RunOptions) -> RunOutcome:
+        seen.append(opts)
+        return RunOutcome(run_dir=tmp_path, unstarted=[])
+
+    monkeypatch.setattr("evals.harness.orchestrate.run_suites", fake_run_suites)
+    base = ["evals", "run", "--no-build", "--home-service", str(tmp_path)]
+    result = runner.invoke(app, [*base, *args])
+    assert result.exit_code == 0, result.output
+    [opts] = seen
+    return opts
+
+
+@pytest.mark.parametrize(
+    ("args", "model", "reflex_model"),
+    [
+        ([], DEFAULT_MODEL, DEFAULT_MODEL),
+        (["--model", "system2-model"], "system2-model", "system2-model"),
+        (["--reflex-model", "reflex-candidate"], DEFAULT_MODEL, "reflex-candidate"),
+        (
+            ["--model", "system2-model", "--reflex-model", "reflex-candidate"],
+            "system2-model",
+            "reflex-candidate",
+        ),
+    ],
+    ids=["default", "model-only", "reflex-only", "both"],
+)
+def test_evals_run_reflex_model_defaults_to_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    args: list[str],
+    model: str,
+    reflex_model: str,
+) -> None:
+    opts = _run_options(monkeypatch, tmp_path, *args)
+
+    assert (opts.model, opts.reflex_model) == (model, reflex_model)
+
+
+@pytest.mark.parametrize(
+    ("args", "vllm_url", "reflex_upstream"),
+    [
+        ([], DEFAULT_VLLM_URL, DEFAULT_VLLM_URL),
+        (["--vllm-url", "http://vllm.test/v1"], "http://vllm.test/v1", "http://vllm.test/v1"),
+        (
+            ["--reflex-upstream", "https://hosted.invalid/api/v1"],
+            DEFAULT_VLLM_URL,
+            "https://hosted.invalid/api/v1",
+        ),
+        (
+            ["--vllm-url", "http://vllm.test/v1", "--reflex-upstream", "https://hosted.invalid/v1"],
+            "http://vllm.test/v1",
+            "https://hosted.invalid/v1",
+        ),
+    ],
+    ids=["default", "vllm-url-only", "reflex-upstream-only", "both"],
+)
+def test_evals_run_reflex_upstream_defaults_to_the_vllm_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    args: list[str],
+    vllm_url: str,
+    reflex_upstream: str,
+) -> None:
+    opts = _run_options(monkeypatch, tmp_path, *args)
+
+    assert (opts.vllm_url, opts.reflex_upstream) == (vllm_url, reflex_upstream)
+
+
+@pytest.mark.parametrize(
+    ("args", "reflex_output"),
+    [
+        ([], "text"),
+        (["--reflex-output", "text"], "text"),
+        (["--reflex-output", "tool"], "tool"),
+        (["--reflex-output", "native"], "native"),
+        (["--reflex-output", "json"], "json"),
+    ],
+)
+def test_evals_run_reflex_output_defaults_to_text(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, args: list[str], reflex_output: str
+) -> None:
+    opts = _run_options(monkeypatch, tmp_path, *args)
+
+    assert opts.reflex_output == reflex_output
+
+
+def test_evals_run_refuses_a_reflex_output_it_does_not_know(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    booted: list[object] = []
+
+    async def fake_run_suites(opts: object) -> None:
+        booted.append(opts)
+
+    monkeypatch.setattr("evals.harness.orchestrate.run_suites", fake_run_suites)
+
+    result = runner.invoke(
+        app,
+        ["evals", "run", "--no-build", "--home-service", str(tmp_path), "--reflex-output", "xml"],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert booted == []
+
+
+def test_evals_run_help_names_the_reflex_options_and_the_key_variable() -> None:
+    import typer.main
+
+    # Read from the options, not the rendered help, which cuts a long word short.
+    command = typer.main.get_command(evals_app)
+    run_options = command.commands["run"].params  # type: ignore[attr-defined]
+    helps = {param.name: param.help for param in run_options}
+
+    assert "--model" in (helps["reflex_model"] or "")
+    assert "--vllm-url" in (helps["reflex_upstream"] or "")
+    assert "ALFRED_EVALS_REFLEX_API_KEY" in (helps["reflex_upstream"] or "")
+    assert "REFLEX_OUTPUT" in (helps["reflex_output"] or "")
 
 
 def _fake_judge_model(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[tuple[str, str]]:
@@ -395,3 +522,17 @@ def test_evals_list_shows_each_golden_with_its_variant_count(
         "4.4.lights-scenes,",
         "1.butler",
     ]
+
+
+def test_evals_calibrate_describes_its_model_as_the_judge_alone() -> None:
+    import typer.main
+
+    command = typer.main.get_command(evals_app)
+    helps = {
+        name: {param.name: param.help for param in sub.params}  # type: ignore[attr-defined]
+        for name, sub in command.commands.items()  # type: ignore[attr-defined]
+    }
+
+    assert "judge" in (helps["calibrate"]["model"] or "")
+    assert "System 2" not in (helps["calibrate"]["model"] or "")
+    assert "System 2" in (helps["run"]["model"] or "")

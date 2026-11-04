@@ -24,11 +24,15 @@ The suite proves three things that unit tests cannot:
    to tests, or to a stated reason it involves no LLM, and a pytest check keeps that map
    complete as the PRD changes.
 
-**Every LLM role runs on vLLM.** System 1 (Reflex), System 2 (Conscious), the Librarian and
-the judge all use the vLLM-served model (`gemma-4-26b-a4b` by default), and embeddings come
-from the local embedding server (`BAAI/bge-m3`). A run costs nothing per call. Production's
-System 2 runs a different model, so System 2 scores describe the eval model; `--model`
-changes it for every role at once.
+**Every LLM role runs on vLLM, by default.** System 1 (Reflex), System 2 (Conscious), the
+Librarian and the judge all use the vLLM-served model (`gemma-4-26b-a4b` by default), and
+embeddings come from the local embedding server (`BAAI/bge-m3`). A run costs nothing per
+call. Production's System 2 runs a different model, so System 2 scores describe the eval
+model; `--model` changes it for System 2, the Librarian and the judge, and Reflex follows
+it. Reflex alone can run on another model (`--reflex-model`), on a hosted
+OpenAI-compatible server (`--reflex-upstream`), and with another reply shape
+(`--reflex-output`), to compare candidate Reflex models; see
+[Trying another Reflex model](#trying-another-reflex-model).
 
 The harness is built on [Inspect AI](https://inspect.aisi.org.uk): one Inspect task per
 suite, epochs for model noise, and Inspect's local log viewer for every failure.
@@ -110,6 +114,17 @@ arguments, token counts and latency. It never changes a request or a reply. Othe
 pass through unrecorded, and
 streaming requests are refused. At most 2 requests are upstream at once, recorded or passed
 through (`MAX_UPSTREAM`), because the vLLM server is shared with production.
+
+The role also picks the upstream. Every chat completion goes to vLLM, except System 1's
+when `--reflex-upstream` names another server: those go there instead, and carry
+`Authorization: Bearer $ALFRED_EVALS_REFLEX_API_KEY` in place of any Authorization header
+Alfred sent, when that variable is set. Passthrough requests always go to vLLM, and no
+other role is ever sent the key, and the proxy refuses to start with a key it has no
+Reflex upstream to send to, or one that cannot be a header value. The key is not recorded
+with the call, not logged and not quoted in an error. A failed request to the Reflex
+upstream reaches the caller as `502 upstream failed: <exception class>` and nothing more,
+because an HTTP library that refuses a header quotes it; a failure of any other request
+keeps its full text.
 
 **The driver** (`evals/harness/driver.py`) is the Inspect solver. It plays one variant of a
 golden: for each `user` step it `XADD`s a `UserRequest` to `alfred:user:requests` with a
@@ -228,7 +243,9 @@ Every bus call is bounded, so a container frozen with its socket open fails the 
 
 `collect.py` turns bus entries into evidence. `reflex.py` turns System 1's recorded replies
 into Reflex's decisions, with Reflex's own `parse_decision` and the same tools its prompt
-showed. An entry `collect.py` recognises (a TriggerCreated, a TriggerFired, an
+showed. It reads the reply where the output shape put it: for the `tool` shape, the arguments
+of the recorded call to the output tool (through `proposal_from_parsed`, the checks that follow
+the JSON), else the text. An entry `collect.py` recognises (a TriggerCreated, a TriggerFired, an
 `ActionRequest`, a notification) but cannot read is a harness error, so the sample scores
 `E`, not a check's "none created". So is the triggers process registering in the sample's
 window: it registers only when it starts, after reloading every trigger snapshot, which
@@ -415,8 +432,11 @@ uv run alfred evals run --include-pending --no-build --keep
 | `--tag` | none | Only goldens carrying this tag (repeatable; any match) |
 | `--include-pending` | off | Also run `pending` goldens |
 | `--epochs` | 3 | Runs per sample |
-| `--model` | `gemma-4-26b-a4b` | vLLM served model, used in every LLM role and as the judge |
+| `--model` | `gemma-4-26b-a4b` | vLLM served model for System 2, the Librarian and the judge; Reflex too, unless `--reflex-model` is given |
+| `--reflex-model` | `--model` | The model Reflex (System 1) runs on. The container still reaches it as `REFLEX_MODEL=vllm:<served name>` through the proxy, whichever upstream serves it; System 2's settings do not change |
+| `--reflex-output` | `text` | How Reflex's reply is asked for: `text`, `tool`, `native` or `json`; the container gets it as `REFLEX_OUTPUT`. See [Trying another Reflex model](#trying-another-reflex-model) |
 | `--vllm-url` | `http://localhost:8000/v1` | vLLM base URL, with `/v1`. Trailing slashes are dropped; a URL that is not `http(s)://` with a host and a valid port stops the run in preflight |
+| `--reflex-upstream` | `--vllm-url` | Base URL, with `/v1`, of the server that serves Reflex; checked like `--vllm-url`. Any URL other than `--vllm-url` (after trailing slashes are dropped, and ignoring the case of the scheme and host) counts as hosted. See [Trying another Reflex model](#trying-another-reflex-model) |
 | `--embed-url` | `http://localhost:8001` | Embedding server, without `/v1`; checked like `--vllm-url` |
 | `--embed-model` | `BAAI/bge-m3` | Embedding model (bge-m3 also sets its recall floor, 0.575) |
 | `--home-service` | `$ALFRED_EVALS_HOME_SERVICE`, else the sibling repo | home-service checkout to bundle |
@@ -427,6 +447,60 @@ uv run alfred evals run --include-pending --no-build --keep
 | `--fake-ha-port` | 18123 | Port the fake Home Assistant listens on, on the bridge gateway; `0` takes any free port. See [Host firewall](#host-firewall) |
 | `--proxy-port` | 18100 | Port the LLM proxy listens on, on the bridge gateway; `0` takes any free port |
 | `--prompt-label` | none | Serve every role's prompts (Reflex, System 2, the Librarian, the approval classifier) from Langfuse at this label instead of the repo defaults. See [Testing a prompt in Langfuse](#testing-a-prompt-in-langfuse) |
+
+### Trying another Reflex model
+
+Reflex is the one role whose model is worth comparing across candidates, so it has its own
+model and, optionally, its own server. System 2, the Librarian and the judge stay on
+`--model` and `--vllm-url`.
+
+```bash
+# Reflex on another model that the same vLLM serves:
+uv run alfred evals run reflex --reflex-model <served name>
+
+# Reflex on a hosted OpenAI-compatible server:
+export ALFRED_EVALS_REFLEX_API_KEY=<the hosted API key>
+uv run alfred evals run reflex --reflex-model <served name> --reflex-upstream <hosted base URL>
+```
+
+`--reflex-output` changes how Reflex's reply is asked for, whichever model and server it
+uses: `text` (the default, and what production runs), `tool`, `native` or `json`
+([Output shapes](reflex-anticipation.md#output-shapes)). The run hands it to the container
+as `REFLEX_OUTPUT`.
+
+```bash
+uv run alfred evals run reflex --reflex-model <served name> --reflex-output tool
+```
+
+`<hosted base URL>` takes the form of `--vllm-url`: the OpenAI-compatible base, `/v1`
+included, such as `https://<host>/api/v1`. The proxy strips the `/v1` and appends
+`/v1/chat/completions`, as it does for vLLM.
+
+- **Routing.** Alfred's container is unchanged: it sends every call to the proxy, which
+  sends System 1's to `--reflex-upstream` and everything else to vLLM (see **The LLM
+  recorder proxy** under [Architecture](#architecture)). Reflex's calls are recorded and
+  scored as ever.
+- **The key.** `ALFRED_EVALS_REFLEX_API_KEY` is read from the environment of the
+  `alfred evals run` process and is used only when `--reflex-upstream` is hosted; with the
+  default upstream it is ignored, so a key exported for a hosted run never reaches a local
+  server. Unset or empty means no key is sent, and Alfred's own Authorization header goes
+  through untouched. A key with a space, a control character or a non-ASCII character stops
+  the run in preflight, naming the variable, never its value. A key is also refused for an
+  `http://` upstream that is not on this machine or its network (loopback, a private
+  address or `localhost`), because it would cross the network in clear text; use `https://`.
+  The key appears in no log, call record, error message, `report.md` or `report.json`.
+- **Preflight.** With the default upstream, vLLM must list both `--model` and
+  `--reflex-model` (one check when they are the same). With a hosted one, vLLM is asked
+  only for `--model`: a hosted model list may need the key and costs a call, so the run
+  logs a warning that the Reflex model was not checked, and a model the hosted server does
+  not serve shows up as System 1 calls that come back with an error.
+- **The scorecard.** The header names the System 2 model and the Reflex model, whether
+  Reflex ran `local` or `hosted` (never the upstream's address), and the reply shape:
+  ``System 2 `<served name>` · Reflex `<served name>` (hosted, tool output)``. `report.json`
+  holds the same in `meta.model`, `meta.reflex_model`, `meta.reflex_upstream` and
+  `meta.reflex_output` (a scorecard from before the shapes reads as `text`).
+- **What leaves the machine.** A hosted Reflex is sent the prompts and the (invented)
+  apartment's state, like any hosted model; nothing in them is real (see [Safety](#safety)).
 
 ### Testing a prompt in Langfuse
 
@@ -459,7 +533,8 @@ The candidate workflow:
    that fails validation stops the run here.
 2. **Preflight**, before anything is built:
    - `--vllm-url` and `--embed-url` are well-formed (trailing slashes dropped);
-   - vLLM lists `--model`, and the embedding server lists `--embed-model`;
+   - vLLM lists `--model` (and `--reflex-model`, unless `--reflex-upstream` names another
+     server: that one is not asked), and the embedding server lists `--embed-model`;
    - the home-service checkout is clean and at `origin/main` (its commit goes on the
      scorecard); with `--no-build` it is only described;
    - the Alfred commit, with `+dirty` when the tree has uncommitted or untracked files
@@ -532,7 +607,8 @@ A check is **counted** unless it is a judge check in an untrusted category.
 
 Sections, in order:
 
-1. **Header.** Model, Alfred commit, home-service commit, epochs, and the judge's trust:
+1. **Header.** The System 2 model, the Reflex model and whether Reflex ran `local` or
+   `hosted`, Alfred commit, home-service commit, epochs, and the judge's trust:
    which categories are trusted, untrusted, stale (calibrated on hand-labelled items that
    have changed since, with the command to recalibrate) and uncalibrated, each in its own
    part. Only with no calibration for the model at all does it say every judge check is
@@ -980,7 +1056,7 @@ wins.
 
 ### The model
 
-The judge is the same vLLM model as every other role, reached through Inspect's own
+The judge is the same vLLM model as System 2 (`--model`), reached through Inspect's own
 OpenAI-compatible provider under vLLM's service name (`openai-api/vllm/<model>`,
 `JUDGE_PROVIDER` in `evals/harness/judge.py`). Not Inspect's `vllm` provider: that one starts
 a vLLM server of its own when it has no address, and the judge only ever talks to the server
@@ -1132,6 +1208,10 @@ goldens are public. Everything about it is fake or fenced.
   fake HA and the proxy listen on the docker bridge's gateway on fixed ports (18123 and
   18100 by default), reachable from containers but not from the LAN. A firewall rule that
   opens them should admit the bridge's subnet only ([Host firewall](#host-firewall)).
+- **A hosted Reflex key stays in the proxy.** `ALFRED_EVALS_REFLEX_API_KEY` goes from the
+  `alfred evals run` process to the proxy and onto System 1's requests to the hosted
+  upstream, and nowhere else: not into the container's environment, the call records, the
+  logs, an error message or the scorecard. The scorecard says `hosted`, not where.
 - **A capped share of vLLM.** The proxy holds at most 2 requests upstream at once
   (`MAX_UPSTREAM`, chat and passthrough alike) and the judge at most 2 (`JUDGE_CONNECTIONS`),
   so a run never has more than 4 there at once; samples run one at a time.
@@ -1153,18 +1233,18 @@ goldens are public. Everything about it is fake or fenced.
 | `alfred_cli/main.py` | The `alfred` console script; mounts the `evals` group |
 | `evals/cli.py` | `alfred evals calibrate\|list\|run\|memory` |
 | `evals/harness/orchestrate.py` | `run_suites()`: plan, preflight, build, one stack and Inspect task per suite, scorecard |
-| `evals/harness/preflight.py` | Model lists, home-service and Alfred commits, `PreflightError` |
+| `evals/harness/preflight.py` | Model lists, home-service and Alfred commits, the Reflex API key and where it may be sent, `PreflightError` |
 | `evals/harness/net.py` | The docker bridge gateway; how the container spells host URLs (`host.docker.internal`); the fakes' default ports |
 | `evals/harness/stack.py` | `Stack`: boot with `alfredctl up --eval`, readiness, `send()`, restart, teardown; `container_env()`; `probe_host_ports()`, the reachability probe |
 | `evals/harness/fake_ha.py` | `FakeHA`: the Home Assistant WebSocket double |
 | `evals/harness/world.py` | `World` schema and `load_world()` |
 | `evals/harness/worlds/` | World fixtures (`apartment.yaml`) |
-| `evals/harness/proxy.py` | `LlmProxy`: the recording pass-through to vLLM; `ROLES_BY_HEADER` |
+| `evals/harness/proxy.py` | `LlmProxy`: the recording pass-through to vLLM, and System 1's route to a hosted Reflex upstream; `ROLES_BY_HEADER` |
 | `evals/harness/scenario.py` | The golden schema, the loader, variants and selection |
 | `evals/harness/driver.py` | `play()`: one variant against a running stack; `build_request()` |
 | `evals/harness/bus.py` | `ContainerBus`: what the driver reads from the container and does through it (see [The bus](#the-bus)) |
 | `evals/harness/collect.py` | Bus entries into evidence: triggers created and fired, notifications sent and deferred |
-| `evals/harness/reflex.py` | System 1's recorded calls into Reflex's decisions, with Reflex's `parse_decision`; its decision-log records into `LoggedDecision`s |
+| `evals/harness/reflex.py` | System 1's recorded calls into Reflex's decisions, with Reflex's `parse_decision` (or, for a `tool`-shape reply, `proposal_from_parsed` over the output tool's arguments); its decision-log records into `LoggedDecision`s |
 | `evals/harness/evidence.py` | `Evidence` and its parts: the checks' only input |
 | `evals/harness/checks/` | `home.py`, `llm.py`, `reply.py`, `latency.py`, `reflex.py`, `triggers.py`, `notifications.py`, `matching.py`, `judge_spec.py`, `result.py`; the registry in `__init__.py` |
 | `evals/harness/judge.py` | `Judge`, `make_judge_model()`, `judge_check()`, calibration sets and report, `TRUST_THRESHOLD` |

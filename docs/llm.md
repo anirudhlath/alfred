@@ -38,6 +38,7 @@ A model is a Pydantic AI model string; there is no model factory.
 | `LIBRARIAN_MODEL` | `SYSTEM2_MODEL` | the same forms |
 | `APPROVAL_MODEL` | `SYSTEM2_MODEL` | the same forms; reads the owner's reply to a pending confirmation (see [Approvals](#approvals)) |
 | `REFLEX_MODEL` | `vllm:` + `OPENAI_COMPAT_MODEL`, when that is set | the same forms; the model Reflex decides with (see [System 1](#system-1-reflex)) |
+| `REFLEX_OUTPUT` | `text` | `text`, `tool`, `native` or `json`: how Reflex asks that model to reply (see [System 1](#system-1-reflex)). Any other value stops every Alfred service at startup |
 | `VLLM_BASE_URL` | the first set of `OPENAI_BASE_URL` (legacy only, see below), `OPENAI_COMPAT_HOST`, `LMSTUDIO_HOST`, else `http://localhost:1234`; `/v1` appended | where `vllm:` models are served |
 | `OPENROUTER_API_KEY` | `CLAUDE_API_KEY` | the key `openrouter:` models use |
 | `SYSTEM2_MAX_TOKENS` | `CLAUDE_MAX_TOKENS`, else 2048 | System 2's per-request output cap |
@@ -94,6 +95,13 @@ or in Langfuse, changes nothing unless `reply_format` changes with it. A transpo
 or provider failure propagates, so the stream entry stays pending and the reclaim pass replays
 it. Reflex's prose comes from the prompt store (see [Prompts](#prompts)). It calls no tool and
 no other role: nothing in the decision path waits on System 2.
+
+`REFLEX_OUTPUT` picks how that reply is asked for. `text`, the default and the only one
+production uses, is what the paragraph above describes. `tool`, `native` and `json` ask
+Pydantic AI for structured output instead (a tool call, a `json_schema` response format, a
+JSON object with the schema in the prompt), so candidate models can be compared on the shape
+each does best. Every shape keeps the per-call enum of tool names, the parse-time checks and
+the settings above; see [Output shapes](reflex-anticipation.md#output-shapes).
 
 ## System 2
 
