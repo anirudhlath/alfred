@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import pytest  # noqa: TC002
+import pytest
 
-from shared.config import AlfredConfig
+from shared.config import REFLEX_OUTPUTS, AlfredConfig, resolve_llm_settings
 
 
 def test_blank_openai_compat_host_falls_back_to_lmstudio(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -63,3 +63,48 @@ def test_with_both_blank_there_is_no_reflex_model(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("REFLEX_MODEL", "")
     monkeypatch.setenv("OPENAI_COMPAT_MODEL", "")
     assert AlfredConfig.from_env().reflex_model == ""
+
+
+# --- REFLEX_OUTPUT --------------------------------------------------------------------
+
+
+def test_the_output_shape_defaults_to_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REFLEX_OUTPUT", raising=False)
+    assert AlfredConfig.from_env().reflex_output == "text"
+    assert AlfredConfig().reflex_output == "text"
+    assert resolve_llm_settings({}).reflex_output == "text"
+
+
+@pytest.mark.parametrize("raw", ["", "  "])
+def test_a_blank_output_shape_is_the_default(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    """`.env.example` ships the key blank, and "" is not absent."""
+    monkeypatch.setenv("REFLEX_OUTPUT", raw)
+    assert AlfredConfig.from_env().reflex_output == "text"
+
+
+@pytest.mark.parametrize(
+    ("raw", "want"), [(" Tool ", "tool"), ("NATIVE", "native"), ("json", "json")]
+)
+def test_an_output_shape_is_normalised(
+    monkeypatch: pytest.MonkeyPatch, raw: str, want: str
+) -> None:
+    monkeypatch.setenv("REFLEX_OUTPUT", raw)
+    assert AlfredConfig.from_env().reflex_output == want
+
+
+def test_every_allowed_shape_is_accepted() -> None:
+    assert [
+        resolve_llm_settings({"REFLEX_OUTPUT": s}).reflex_output for s in REFLEX_OUTPUTS
+    ] == list(REFLEX_OUTPUTS)
+
+
+def test_an_unknown_output_shape_is_a_startup_error_naming_the_variable_and_the_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("REFLEX_OUTPUT", "xml")
+
+    with pytest.raises(RuntimeError, match="REFLEX_OUTPUT") as raised:
+        AlfredConfig.from_env()
+
+    assert "'xml'" in str(raised.value)
+    assert "text, tool, native, json" in str(raised.value)

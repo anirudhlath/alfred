@@ -9,27 +9,49 @@ the model write a reply that is "none" or names one of them (``tests/core/reflex
 pins it on the wire). ``parse_decision`` still checks the reply: a server that ignores the
 format sends whatever the model wrote.
 
+That is the ``text`` output shape, the one that runs in production. The others (``tool``,
+``native``, ``json``) ask for the same reply through Pydantic AI's structured output instead,
+so candidates can be compared by their counts: an output tool, the server's JSON-schema
+response format, or a schema in the prompt. Each keeps the per-call enum of tool names, as
+a reply model built for the call from the tools (``reply_model``) and passed to that run
+alone, and each ends in ``proposal_from_parsed``, the checks ``parse_decision`` makes after
+the JSON. Only ``text`` sends ``reply_format``.
+
 The agent is built once per process. Its dependencies are the tools the prompt showed, which
-``parse_decision`` validates the reply against.
+the reply is validated against.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Final
+from functools import lru_cache
+from typing import TYPE_CHECKING, Any, Final, Literal
 
-from pydantic_ai import Agent, RunContext, TextOutput
+from pydantic import BaseModel, Field, create_model
+from pydantic_ai import (
+    Agent,
+    NativeOutput,
+    PromptedOutput,
+    RunContext,
+    TextOutput,
+    ToolOutput,
+)
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from pydantic_ai.settings import ModelSettings
 
 from bus.schemas.events import ReflexProposal
-from core.reflex.decision import parse_decision
+from core.reflex.decision import parse_decision, proposal_from_parsed
 from core.reflex.tool_registry import ToolInfo
 from sdk.alfred_sdk.telemetry import track_tokens
 from shared.agents import instrumentation, role_headers
+from shared.config import DEFAULT_REFLEX_OUTPUT
 from shared.llm_roles import SYSTEM1
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
+    from pydantic_ai.output import OutputSpec
+    from pydantic_ai.usage import RunUsage
+
+    from shared.config import ReflexOutput
 
 AGENT_NAME: Final = "reflex"
 
@@ -45,8 +67,16 @@ REQUEST_TIMEOUT_S: Final = 30.0
 # series continues (`.claude/rules/research-protocol.md`).
 TOKENS_MODEL_LABEL: Final = "openai-compat"
 
-# The name the response format gives its schema.
+# The name every shape gives its schema (the response format's, the output tool's).
 REPLY_FORMAT_NAME: Final = "reflex_reply"
+
+# The structured shapes, by the marker Pydantic AI asks for each with.
+OutputMarker = type[ToolOutput[Any]] | type[NativeOutput[Any]] | type[PromptedOutput[Any]]
+OUTPUT_SHAPES: Final[dict[ReflexOutput, OutputMarker]] = {
+    "tool": ToolOutput,
+    "native": NativeOutput,
+    "json": PromptedOutput,
+}
 
 _NONE_REPLY: Final[dict[str, Any]] = {
     "type": "object",
@@ -74,7 +104,7 @@ def reply_format(tools: list[ToolInfo]) -> dict[str, Any]:
         "properties": {
             "decision": {"enum": ["act", "ask"]},
             "reason": {"type": "string"},
-            "tool_name": {"enum": sorted({tool.name for tool in tools})},
+            "tool_name": {"enum": list(tool_names(tools))},
             "parameters": {"type": "object"},
         },
         "required": ["decision", "reason", "tool_name", "parameters"],
@@ -87,24 +117,94 @@ def _json_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return {"type": "json_schema", "json_schema": {"name": REPLY_FORMAT_NAME, "schema": schema}}
 
 
+def tool_names(tools: list[ToolInfo]) -> tuple[str, ...]:
+    """The names a reply may give, sorted as the prompt lists them: the one enum of every shape."""
+    return tuple(sorted({tool.name for tool in tools}))
+
+
+class ReflexReply(BaseModel):
+    """The reply the ``reflex-rules`` prompt asks for, as the structured shapes read it.
+
+    Field for field the reply line: ``{"decision": "none"}``, or an act or ask with its
+    reason, tool and parameters, in the order the line and ``reply_format`` give them. A
+    model does not say which fields each decision needs, so only ``decision`` is required:
+    an act or ask that leaves out its tool is made ``invalid`` by the checks that follow
+    (``proposal_from_parsed``), with the reply kept. ``tool_name`` is any string here;
+    ``reply_model`` narrows it to the tools of one call, as ``reply_format`` does.
+    """
+
+    decision: Literal["none", "act", "ask"]
+    reason: str | None = None
+    tool_name: str | None = None
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+def reply_model(tools: list[ToolInfo]) -> type[ReflexReply]:
+    """``ReflexReply`` for a call that showed *tools*: ``tool_name`` is one of them.
+
+    The same tools give the same class, so the schema the server sees is stable and it can
+    reuse what it built. With no tools the only reply is "none".
+    """
+    return _reply_model(tool_names(tools))
+
+
+@lru_cache(maxsize=32)
+def _reply_model(names: tuple[str, ...]) -> type[ReflexReply]:
+    if not names:
+        return create_model(
+            "ReflexReply",
+            __base__=ReflexReply,
+            decision=(Literal["none"], ...),
+            tool_name=(None, None),
+        )
+    # Literal[names] with names only known at run time: the subscript spelled out, typed Any.
+    one_of: Any = Literal.__getitem__(names)
+    return create_model("ReflexReply", __base__=ReflexReply, tool_name=(one_of | None, None))
+
+
+def proposal_from_reply(reply: ReflexReply, tools: list[ToolInfo]) -> ReflexProposal:
+    """The proposal for a structured reply: ``parse_decision``'s checks on the reply's fields.
+
+    A proposal that fails them keeps the reply as the model wrote it, the fields it set.
+    """
+    return proposal_from_parsed(
+        reply.model_dump(), reply.model_dump_json(exclude_unset=True), tools
+    )
+
+
 async def _parse(ctx: RunContext[list[ToolInfo]], text: str) -> ReflexProposal:
     # Async so it runs on the event loop: Pydantic AI runs a sync output function in a
     # worker thread, a hop on every decision for a parse that never blocks.
     return parse_decision(text, ctx.deps)
 
 
-def build_reflex_agent(model: Model) -> Agent[list[ToolInfo], ReflexProposal]:
-    """The agent that decides with *model*.
+async def _proposal(ctx: RunContext[list[ToolInfo]], reply: ReflexReply) -> ReflexProposal:
+    return proposal_from_reply(reply, ctx.deps)
+
+
+def build_reflex_agent(
+    model: Model, output: ReflexOutput = DEFAULT_REFLEX_OUTPUT
+) -> Agent[list[ToolInfo], ReflexProposal]:
+    """The agent that decides with *model*, asking for its reply in the *output* shape.
 
     No retries: Pydantic AI would otherwise ask again after an empty reply, and Reflex has
     one chance inside its latency budget. ``instrumentation()`` reads the tracer provider,
     so call this after ``init_tracing``.
+
+    A structured shape's output type here names the shape and makes the agent whole on its
+    own, but its ``tool_name`` takes any string: ``infer`` replaces it, for every run, with
+    the same shape over ``reply_model(tools)``.
     """
+    output_type: OutputSpec[ReflexProposal] = (
+        TextOutput[ReflexProposal](_parse)
+        if output == "text"
+        else OUTPUT_SHAPES[output](_proposal, name=REPLY_FORMAT_NAME)
+    )
     return Agent(
         model,
         name=AGENT_NAME,
         deps_type=list[ToolInfo],
-        output_type=TextOutput[ReflexProposal](_parse),
+        output_type=output_type,
         retries=0,
         model_settings=ModelSettings(
             temperature=0.0,
@@ -124,20 +224,36 @@ async def infer(
     """One run, with the token counts ``track_tokens`` records and the proposal it made.
 
     ``track_tokens`` only reads a returned dict, so the counts travel with the proposal.
-    The name is the research series' ``function`` column. The response format goes in the
-    run's settings because it differs by call; it has no ``ModelSettings`` field, and
-    ``extra_body`` lands in the request as written. The agent sets no ``extra_body`` of its
-    own: the run's would replace it whole.
+    The name is the research series' ``function`` column. What differs by call goes in
+    the run: the ``text`` shape's response format in its settings (it has no ``ModelSettings``
+    field, and ``extra_body`` lands in the request as written; the agent sets no
+    ``extra_body`` of its own, since the run's would replace it whole), and a structured
+    shape's reply model as the run's output type.
     """
-    format_settings = ModelSettings(extra_body={"response_format": reply_format(tools)})
-    result = await agent.run(prompt, deps=tools, model_settings=format_settings)
-    usage = result.usage
+    proposal, usage = await _run(agent, prompt, tools)
     return {
-        "proposal": result.output,
+        "proposal": proposal,
         "prompt_tokens": usage.input_tokens,
         "completion_tokens": usage.output_tokens,
         "total_tokens": usage.total_tokens,
     }
+
+
+async def _run(
+    agent: Agent[list[ToolInfo], ReflexProposal], prompt: str, tools: list[ToolInfo]
+) -> tuple[ReflexProposal, RunUsage]:
+    marker = next(
+        (marker for marker in OUTPUT_SHAPES.values() if isinstance(agent.output_type, marker)),
+        None,
+    )
+    if marker is None:  # the text shape
+        format_settings = ModelSettings(extra_body={"response_format": reply_format(tools)})
+        text_run = await agent.run(prompt, deps=tools, model_settings=format_settings)
+        return text_run.output, text_run.usage
+    output_type = marker(reply_model(tools), name=REPLY_FORMAT_NAME)
+    run = await agent.run(prompt, deps=tools, output_type=output_type)
+    reply: ReflexReply = run.output
+    return proposal_from_reply(reply, tools), run.usage
 
 
 async def decide(

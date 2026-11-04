@@ -65,6 +65,19 @@ def test_container_env_gives_reflex_its_own_model_and_leaves_the_others(tmp_path
     assert env["SYSTEM2_MODEL"] == env["LIBRARIAN_MODEL"] == f"vllm:{cfg(tmp_path).model}"
 
 
+@pytest.mark.parametrize("shape", ["text", "tool", "native", "json"])
+def test_container_env_gives_reflex_its_output_shape(tmp_path: Path, shape: str) -> None:
+    env = container_env(cfg(tmp_path, reflex_output=shape), proxy_port=9100, fake_ha_port=9200)
+
+    assert env["REFLEX_OUTPUT"] == shape
+
+
+def test_container_env_asks_reflex_for_text_unless_told_otherwise(tmp_path: Path) -> None:
+    env = container_env(cfg(tmp_path), proxy_port=9100, fake_ha_port=9200)
+
+    assert env["REFLEX_OUTPUT"] == "text"
+
+
 def test_container_env_serves_repo_prompts_by_default(tmp_path: Path) -> None:
     env = container_env(cfg(tmp_path), proxy_port=9100, fake_ha_port=9200)
     assert "LANGFUSE_HOST" not in env and "ALFRED_PROMPT_LABEL" not in env

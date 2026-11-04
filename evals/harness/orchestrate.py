@@ -53,6 +53,7 @@ from evals.harness.scenario import ScenarioError, expand_variants, load_suites, 
 from evals.harness.stack import Stack, StackConfig, StackError, probe_host_ports
 from evals.harness.tasks import RunContext, build_task
 from evals.harness.world import load_world
+from shared.config import DEFAULT_REFLEX_OUTPUT
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -64,6 +65,7 @@ if TYPE_CHECKING:
     from evals.harness.judge import CalibrationReport
     from evals.harness.scenario import ScenarioVariant
     from evals.harness.stack import LangfuseAccess
+    from shared.config import ReflexOutput
 
 logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -93,6 +95,7 @@ class RunOptions:
     fake_ha_port: int  # 0: any free port
     proxy_port: int  # 0: any free port
     langfuse: LangfuseAccess | None = None
+    reflex_output: ReflexOutput = DEFAULT_REFLEX_OUTPUT  # how Reflex's reply is asked for
 
 
 @dataclass(frozen=True)
@@ -359,6 +362,7 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
         home_service_dir=opts.home_service,
         keep=opts.keep,
         langfuse=opts.langfuse,
+        reflex_output=opts.reflex_output,
     )
 
     def make_ctx(stack: Stack, variants: Sequence[ScenarioVariant]) -> RunContext:
@@ -407,6 +411,7 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
         model=opts.model,
         reflex_model=opts.reflex_model,
         reflex_upstream="hosted" if hosted else "local",
+        reflex_output=opts.reflex_output,
         alfred_commit=commit,
         home_service_commit=hs_commit,
         epochs=opts.epochs,

@@ -1202,7 +1202,7 @@ async def test_a_hosted_reflex_run_builds_the_proxy_with_the_upstream_and_key_an
         "hosted",
     )
     header = (run_dir / "report.md").read_text(encoding="utf-8").splitlines()[2]
-    assert "System 2 `judge-m` · Reflex `reflex-candidate` (hosted)" in header
+    assert "System 2 `judge-m` · Reflex `reflex-candidate` (hosted, text output)" in header
     # Where the key goes is the proxy's business: no record of the run may hold it, or the
     # upstream's address.
     records = [
@@ -1228,6 +1228,29 @@ async def test_a_run_whose_reflex_shares_vllm_never_hands_the_proxy_a_key(
     meta = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))["meta"]
     assert (meta["reflex_model"], meta["reflex_upstream"]) == ("judge-m", "local")
     assert FAKE_KEY not in (run_dir / "report.json").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("shape", ["text", "tool", "native", "json"])
+async def test_the_reply_shape_goes_to_the_stack_and_the_scorecard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    run_dir, _, [stack] = await _run_spied(tmp_path, monkeypatch, reflex_output=shape)
+
+    assert stack.cfg.reflex_output == shape
+    meta = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))["meta"]
+    assert meta["reflex_output"] == shape
+    header = (run_dir / "report.md").read_text(encoding="utf-8").splitlines()[2]
+    assert f"Reflex `judge-m` (local, {shape} output)" in header
+
+
+async def test_a_run_asks_reflex_for_text_unless_told_otherwise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir, _, [stack] = await _run_spied(tmp_path, monkeypatch)
+
+    assert stack.cfg.reflex_output == "text"
+    meta = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))["meta"]
+    assert meta["reflex_output"] == "text"
 
 
 async def test_a_hosted_run_without_a_key_sends_none(

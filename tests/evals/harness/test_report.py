@@ -383,10 +383,28 @@ def test_header_names_the_model_of_each_role_and_only_where_reflex_runs(upstream
     md = render_markdown(summarize([], meta))
     header = md.splitlines()[2]
     assert header.startswith(
-        f"System 2 `system2-model` · Reflex `reflex-candidate` ({upstream}) · "
+        f"System 2 `system2-model` · Reflex `reflex-candidate` ({upstream}, text output) · "
     )
     # Where Reflex ran is a word, never an address.
     assert "http" not in md
+
+
+@pytest.mark.parametrize("shape", ["text", "tool", "native", "json"])
+def test_header_and_json_name_the_shape_of_reflexs_reply(shape: str) -> None:
+    meta = META.model_copy(update={"reflex_model": "reflex-candidate", "reflex_output": shape})
+
+    card = summarize([], meta)
+
+    header = render_markdown(card).splitlines()[2]
+    assert f"Reflex `reflex-candidate` (local, {shape} output)" in header
+    assert card.model_dump(mode="json")["meta"]["reflex_output"] == shape
+
+
+def test_a_scorecard_written_before_the_shapes_existed_still_loads_as_text() -> None:
+    stored = META.model_dump(mode="json")
+    del stored["reflex_output"]
+
+    assert RunMeta.model_validate(stored).reflex_output == "text"
 
 
 def test_the_scorecard_json_holds_both_models_and_where_reflex_ran() -> None:

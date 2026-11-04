@@ -13,6 +13,7 @@ import typer
 
 from evals.harness.display import Display
 from evals.harness.net import DEFAULT_FAKE_HA_PORT, DEFAULT_PROXY_PORT
+from shared.config import DEFAULT_REFLEX_OUTPUT, REFLEX_OUTPUTS, ReflexOutput
 
 evals_app = typer.Typer(no_args_is_help=True, help="Evaluate Alfred against its PRD.")
 
@@ -141,6 +142,13 @@ def run(
             "$ALFRED_EVALS_REFLEX_API_KEY when it is set"
         ),
     ] = None,
+    reflex_output: Annotated[
+        ReflexOutput,
+        typer.Option(
+            help="How Reflex's reply is asked for, as REFLEX_OUTPUT: "
+            f"{', '.join(REFLEX_OUTPUTS)}. The scorecard names it"
+        ),
+    ] = DEFAULT_REFLEX_OUTPUT,
     embed_url: Annotated[str, typer.Option(help="Embedding server, without /v1")] = (
         DEFAULT_EMBED_URL
     ),
@@ -203,6 +211,7 @@ def run(
         reflex_model=reflex_model or model,
         vllm_url=vllm_url,
         reflex_upstream=reflex_upstream or vllm_url,
+        reflex_output=reflex_output,
         embed_url=embed_url,
         embed_model=embed_model,
         home_service=hs,

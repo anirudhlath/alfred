@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 import pytest
 
-from core.reflex.decision import parse_decision
+from core.reflex.decision import parse_decision, proposal_from_parsed
 from core.reflex.tool_registry import ToolInfo
+
+if TYPE_CHECKING:
+    from bus.schemas.events import ReflexProposal
 
 TOOLS = [
     ToolInfo(
@@ -154,3 +158,55 @@ def test_the_pre_285_action_shape_is_invalid_not_executed() -> None:
 
     assert proposal.decision == "invalid"
     assert proposal.problem == "unknown decision None"
+
+
+# --- the checks after the JSON is parsed: one function, shared by every output shape -------
+
+
+def _comparable(proposal: ReflexProposal) -> dict[str, object]:
+    """The proposal without the ids and time each action is stamped with."""
+    return proposal.model_dump(exclude={"action": {"event_id", "request_id", "timestamp"}})
+
+
+@pytest.mark.parametrize("decision", ["none", "act", "ask"])
+def test_a_parsed_object_makes_the_proposal_the_text_makes(decision: str) -> None:
+    raw = _act(decision=decision)
+
+    parsed = proposal_from_parsed(json.loads(raw), raw, TOOLS)
+
+    assert _comparable(parsed) == _comparable(parse_decision(raw, TOOLS))
+
+
+@pytest.mark.parametrize(
+    ("parsed", "problem"),
+    [
+        ({"decision": "maybe"}, "unknown decision 'maybe'"),
+        ({"decision": "act", "reason": "x"}, "act without a tool"),
+        (
+            json.loads(_act(tool_name="home.lock_unlock")),
+            "tool 'home.lock_unlock' is not one of Reflex's tools",
+        ),
+        (json.loads(_act(parameters=["Living Room"])), "parameters is not an object"),
+    ],
+)
+def test_a_parsed_object_is_checked_and_an_invalid_one_keeps_the_raw_text(
+    parsed: dict[str, object], problem: str
+) -> None:
+    proposal = proposal_from_parsed(parsed, "the reply as written", TOOLS)
+
+    assert proposal.decision == "invalid"
+    assert proposal.problem == problem
+    assert proposal.raw == "the reply as written"
+    assert proposal.action is None
+
+
+def test_a_structured_none_reply_with_its_empty_fields_is_none() -> None:
+    """What a model written out in full says: the fields a "none" does not use are blank."""
+    parsed = {"decision": "none", "reason": None, "tool_name": None, "parameters": {}}
+
+    proposal = proposal_from_parsed(parsed, json.dumps(parsed), TOOLS)
+
+    assert proposal.decision == "none"
+    assert proposal.reason is None
+    assert proposal.action is None
+    assert proposal.raw is None

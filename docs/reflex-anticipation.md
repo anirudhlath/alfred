@@ -359,6 +359,43 @@ Thu 8 Oct, 15:10 (afternoon) · sun up · partlycloudy
   `PUT /api/admin/attention/{domain}` (see [autonomy.md](autonomy.md)); the `{domain}` there
   is the attention set's, the event's domain (`home`), not the entity's (`sun`, `weather`).
 
+## Output shapes
+
+`REFLEX_OUTPUT` (`text`, `tool`, `native` or `json`; blank means `text`, anything else stops
+Reflex at startup, naming the variable and the four values) chooses how the model is asked to
+reply. Production runs `text`. The others exist to compare candidate models: a model that
+writes a JSON line badly may call a tool well, or the other way round.
+
+| Shape | What the request carries |
+|---|---|
+| `text` | Today's request: the reply is plain text, and the call's `response_format` is a JSON schema built from the tools the prompt showed (`reply_format()`), which the server holds the model to. The text is parsed by `parse_decision` |
+| `tool` | The reply is the arguments of an output tool, forced with `tool_choice: required` |
+| `native` | A `json_schema` `response_format`, with the same schema also in a system message |
+| `json` | A `json_object` `response_format` (any JSON object), with the schema in a system message |
+
+The reply is a `ReflexReply` in the three structured shapes, with the fields of the reply line
+in its order: `decision`, `reason`, `tool_name`, `parameters`. What stays the same in all
+four: the prompt (it is still the single user message), temperature 0, the 150-token cap, the
+30 s timeout, the `system1` header, `retries=0`, and the enum. Each call builds its reply model
+from the tools the prompt showed, so `tool_name` is one of exactly those (only "none" when it
+showed none) whichever shape is in use. A schema with one tool states it as a constant rather
+than an enum. In `tool` and `native` the schema is in the request, where the server can hold
+the model to it; in `json` the server guarantees only a JSON object, so the enum is enforced
+by the validation after the reply.
+
+After the reply is read, the shapes meet again: `parse_decision` and the structured shapes
+both end in `proposal_from_parsed` (`core/reflex/decision.py`), so a reply gets the same checks
+whatever its shape (a tool the prompt did not show, an act with no tool, a `parameters` that is
+not an object). The one difference is what an `invalid` proposal keeps. A `text` reply that is
+not a decision keeps the text. A structured reply that fails the schema (an unknown tool, an
+unknown decision) never becomes a reply: it is `invalid` with the problem "no reply:" and the
+validation's name, and its `raw` is empty. A structured reply that passes the schema but fails
+a later check keeps the reply as JSON.
+
+Compare shapes on one recorded set with [`replay --output`](#replay), or on the goldens with
+`alfred evals run --reflex-output` ([evals.md](evals.md#trying-another-reflex-model)). The
+scorecard names the shape beside the Reflex model.
+
 ## Replay
 
 `python -m core.reflex.replay run` decides recorded prompts again, through the same agent and
@@ -366,8 +403,8 @@ parser Reflex uses, and prints how the new decisions compare with the recorded o
 model is compared on real traffic before the owner switches Reflex to it.
 
 ```
-python -m core.reflex.replay run --since 2026-10-26T23:35:00Z [--until ISO] [--limit N] [--model MODEL] [--out FILE]
-python -m core.reflex.replay run --records decisions.jsonl [--limit N] [--model MODEL] [--out FILE]
+python -m core.reflex.replay run --since 2026-10-26T23:35:00Z [--until ISO] [--limit N] [--model MODEL] [--output SHAPE] [--out FILE]
+python -m core.reflex.replay run --records decisions.jsonl [--limit N] [--model MODEL] [--output SHAPE] [--out FILE]
 ```
 
 - **Source: exactly one of two.** `--since` reads the live decision log
@@ -382,6 +419,9 @@ python -m core.reflex.replay run --records decisions.jsonl [--limit N] [--model 
 - **The prompt as recorded.** Each record's exact prompt is sent, with the tools that prompt
   listed (read back from it by `parse_tools`), so a record is judged on what the model saw then.
 - **Model.** `--model` (for example `vllm:<served name>`) or, by default, `REFLEX_MODEL`.
+- **Output shape.** `--output text|tool|native|json` or, by default, `REFLEX_OUTPUT`
+  ([Output shapes](#output-shapes)). The same recorded prompts can be replayed once per shape
+  and the counts compared.
 - **Read-only.** The replay writes nothing to Redis, publishes nothing and starts no tracing, so
   nothing it asks reaches an observation, a counter or a span.
 - **Output is counts only.** A header line (records replayed, calls that failed), a recorded by
@@ -409,7 +449,7 @@ differ from the labels.
 ```
 python -m core.reflex.replay label --since 2026-10-26T23:35:00Z [--until ISO] --out labels.jsonl
 python -m core.reflex.replay label --records decisions.jsonl --out labels.jsonl
-python -m core.reflex.replay score --labels labels.jsonl [--model MODEL]
+python -m core.reflex.replay score --labels labels.jsonl [--model MODEL] [--output SHAPE]
 ```
 
 - **A label is `ask` only when every rule holds.** Each record is decided again by today's

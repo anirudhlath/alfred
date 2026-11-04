@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import fakeredis
 import pytest
+from pydantic_ai import NativeOutput, PromptedOutput, TextOutput, ToolOutput
 from pydantic_ai.models.openai import OpenAIChatModel
 
 from bus.schemas.events import (
@@ -30,11 +31,11 @@ from core.reflex import replay
 from core.reflex.decision_log import DecisionRecord
 from core.reflex.prompt import build_state_change_prompt, build_trigger_prompt
 from core.reflex.prose import repo_prose
-from core.reflex.replay import ERROR, Outcome, parse_args, summarize
+from core.reflex.replay import ERROR, Args, Outcome, ScoreArgs, parse_args, summarize
 from core.reflex.replay_labels import Labelled
 from core.reflex.settings import ReflexSettings
 from sdk.alfred_sdk.live_state import LiveStateEntry, live_state_key
-from shared.config import AlfredConfig
+from shared.config import REFLEX_OUTPUTS, AlfredConfig
 from shared.streams import (
     REFLEX_DECISION_LOG_STREAM,
     REFLEX_SETTINGS_KEY,
@@ -61,8 +62,11 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
 
+    from pydantic_ai import Agent
+
     from core.reflex.reversal import PersonChange
     from core.reflex.tool_registry import ToolInfo
+    from shared.config import ReflexOutput
     from shared.types import AioRedis
     from tests.llm_fakes import Reply, Script
 
@@ -179,7 +183,7 @@ def use_script(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Script]:
 
     def use(*replies: Reply) -> Script:
         agent, script = reflex_agent(*replies)
-        monkeypatch.setattr(replay, "build_agent", lambda _config, _model: agent)
+        monkeypatch.setattr(replay, "build_agent", lambda _config, _model, _output: agent)
         return script
 
     return use
@@ -310,6 +314,7 @@ def test_latency_percentiles_are_nearest_rank() -> None:
         ["run", "--since", ISO, "--until", "2026-10-26T23:00:00Z"],
         ["run", "--since", ISO, "--limit", "0"],
         ["run", "--records", "missing.jsonl"],
+        ["run", "--since", ISO, "--output", "xml"],
     ],
 )
 def test_a_wrong_command_line_is_a_usage_error(argv: list[str], tmp_path: Path) -> None:
@@ -552,7 +557,7 @@ def test_the_model_option_overrides_the_configured_one() -> None:
         vllm_base_url="http://vllm.test:8000/v1",
     )
 
-    agent = replay.build_agent(config, "vllm:other-model")
+    agent = replay.build_agent(config, "vllm:other-model", None)
 
     assert isinstance(agent.model, OpenAIChatModel)
     assert agent.model.model_name == "other-model"
@@ -563,9 +568,103 @@ def test_without_any_model_the_replay_exits_non_zero() -> None:
     config = dataclasses.replace(AlfredConfig.from_env(), reflex_model="")
 
     with pytest.raises(SystemExit) as stopped:
-        replay.build_agent(config, None)
+        replay.build_agent(config, None, None)
 
     assert stopped.value.code not in (0, None)
+
+
+# --- the output shape ---------------------------------------------------------------------
+
+OUTPUT_MARKERS = {
+    "text": TextOutput,
+    "tool": ToolOutput,
+    "native": NativeOutput,
+    "json": PromptedOutput,
+}
+
+
+def test_every_output_shape_has_a_marker_here() -> None:
+    assert set(OUTPUT_MARKERS) == set(REFLEX_OUTPUTS)
+
+
+@pytest.mark.parametrize("shape", REFLEX_OUTPUTS)
+def test_the_output_option_is_read_on_run_and_score(shape: str, tmp_path: Path) -> None:
+    records = _jsonl(tmp_path / "records.jsonl", [_state_change(0, "none")])
+    labels = _jsonl(tmp_path / "labels.jsonl", [])
+
+    run = parse_args(["run", "--records", str(records), "--output", shape])
+    score = parse_args(["score", "--labels", str(labels), "--output", shape])
+
+    assert isinstance(run, Args)
+    assert isinstance(score, ScoreArgs)
+    assert (run.output, score.output) == (shape, shape)
+
+
+def test_without_the_output_option_the_shape_is_left_to_the_configuration(
+    tmp_path: Path,
+) -> None:
+    records = _jsonl(tmp_path / "records.jsonl", [_state_change(0, "none")])
+    labels = _jsonl(tmp_path / "labels.jsonl", [])
+
+    run = parse_args(["run", "--records", str(records)])
+    score = parse_args(["score", "--labels", str(labels)])
+
+    assert isinstance(run, Args)
+    assert isinstance(score, ScoreArgs)
+    assert (run.output, score.output) == (None, None)
+
+
+@pytest.mark.usefixtures("restored_environ")
+@pytest.mark.parametrize("shape", REFLEX_OUTPUTS)
+def test_the_output_option_sets_the_agents_shape(shape: ReflexOutput) -> None:
+    config = dataclasses.replace(
+        AlfredConfig.from_env(), reflex_model="vllm:configured-model", reflex_output="text"
+    )
+
+    agent = replay.build_agent(config, None, shape)
+
+    assert isinstance(agent.output_type, OUTPUT_MARKERS[shape])
+
+
+@pytest.mark.usefixtures("restored_environ")
+def test_without_the_output_option_the_agent_takes_the_configured_shape() -> None:
+    config = dataclasses.replace(
+        AlfredConfig.from_env(), reflex_model="vllm:configured-model", reflex_output="native"
+    )
+
+    agent = replay.build_agent(config, None, None)
+
+    assert isinstance(agent.output_type, NativeOutput)
+
+
+@pytest.mark.parametrize("command", ["run", "score"])
+async def test_the_command_builds_its_agent_in_the_shape_asked_for(
+    command: str,
+    house: AioRedis,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    agent, _ = reflex_agent(NONE)
+    built: list[tuple[str | None, str | None]] = []
+
+    def build(
+        _config: AlfredConfig, model: str | None, output: str | None
+    ) -> Agent[list[ToolInfo], ReflexProposal]:
+        built.append((model, output))
+        return agent
+
+    monkeypatch.setattr(replay, "build_agent", build)
+    record = _state_change(0, "none")
+    if command == "run":
+        records = _jsonl(tmp_path / "records.jsonl", [record])
+        argv = ["run", "--records", str(records)]
+    else:
+        labels = _label_file(tmp_path / "labels.jsonl", [_labelled("none", record)])
+        argv = ["score", "--labels", str(labels)]
+
+    await replay.execute(parse_args([*argv, "--model", "vllm:served", "--output", "tool"]))
+
+    assert built == [("vllm:served", "tool")]
 
 
 # --- labels and scores --------------------------------------------------------------------
@@ -762,6 +861,7 @@ async def test_a_line_that_is_not_a_record_stops_label_naming_its_number_only(
         ["score"],
         ["score", "--model", "vllm:served"],
         ["score", "--labels", "missing.jsonl"],
+        ["score", "--labels", "labels.jsonl", "--output", "xml"],
     ],
 )
 def test_a_wrong_label_or_score_command_line_is_a_usage_error(

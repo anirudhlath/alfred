@@ -99,7 +99,7 @@ def build_agent(config: AlfredConfig) -> Agent[list[ToolInfo], ReflexProposal] |
             "REFLEX_MODEL, or OPENAI_COMPAT_MODEL for the vllm:<that name> default, and restart"
         )
         return None
-    return build_reflex_agent(model)
+    return build_reflex_agent(model, config.reflex_output)
 
 
 def warmup_steps(prompts: PromptStore) -> dict[str, Callable[[], Awaitable[object]]]:

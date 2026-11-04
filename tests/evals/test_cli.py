@@ -406,6 +406,43 @@ def test_evals_run_reflex_upstream_defaults_to_the_vllm_url(
     assert (opts.vllm_url, opts.reflex_upstream) == (vllm_url, reflex_upstream)
 
 
+@pytest.mark.parametrize(
+    ("args", "reflex_output"),
+    [
+        ([], "text"),
+        (["--reflex-output", "text"], "text"),
+        (["--reflex-output", "tool"], "tool"),
+        (["--reflex-output", "native"], "native"),
+        (["--reflex-output", "json"], "json"),
+    ],
+)
+def test_evals_run_reflex_output_defaults_to_text(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, args: list[str], reflex_output: str
+) -> None:
+    opts = _run_options(monkeypatch, tmp_path, *args)
+
+    assert opts.reflex_output == reflex_output
+
+
+def test_evals_run_refuses_a_reflex_output_it_does_not_know(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    booted: list[object] = []
+
+    async def fake_run_suites(opts: object) -> None:
+        booted.append(opts)
+
+    monkeypatch.setattr("evals.harness.orchestrate.run_suites", fake_run_suites)
+
+    result = runner.invoke(
+        app,
+        ["evals", "run", "--no-build", "--home-service", str(tmp_path), "--reflex-output", "xml"],
+    )
+
+    assert result.exit_code == 2, result.output
+    assert booted == []
+
+
 def test_evals_run_help_names_the_reflex_options_and_the_key_variable() -> None:
     import typer.main
 
@@ -417,6 +454,7 @@ def test_evals_run_help_names_the_reflex_options_and_the_key_variable() -> None:
     assert "--model" in (helps["reflex_model"] or "")
     assert "--vllm-url" in (helps["reflex_upstream"] or "")
     assert "ALFRED_EVALS_REFLEX_API_KEY" in (helps["reflex_upstream"] or "")
+    assert "REFLEX_OUTPUT" in (helps["reflex_output"] or "")
 
 
 def _fake_judge_model(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[tuple[str, str]]:

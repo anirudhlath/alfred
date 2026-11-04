@@ -36,7 +36,11 @@ from evals.harness.net import (
     container_reachable,
     in_container_url,
 )
-from shared.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_INVOLUNTARY_RECALL_THRESHOLD
+from shared.config import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_INVOLUNTARY_RECALL_THRESHOLD,
+    DEFAULT_REFLEX_OUTPUT,
+)
 from shared.redis_streams import create_redis
 
 if TYPE_CHECKING:
@@ -44,6 +48,7 @@ if TYPE_CHECKING:
 
     from evals.harness.evidence import Role
     from evals.harness.proxy import LlmProxy
+    from shared.config import ReflexOutput
     from shared.types import AioRedis
 
 logger = logging.getLogger(__name__)
@@ -108,6 +113,7 @@ class StackConfig:
     reply_timeout_s: float = 120.0
     keep: bool = False
     langfuse: LangfuseAccess | None = None
+    reflex_output: ReflexOutput = DEFAULT_REFLEX_OUTPUT  # how Reflex's reply is asked for
 
 
 def container_env(cfg: StackConfig, *, proxy_port: int, fake_ha_port: int) -> dict[str, str]:
@@ -116,6 +122,7 @@ def container_env(cfg: StackConfig, *, proxy_port: int, fake_ha_port: int) -> di
     proxy = in_container_url(proxy_port)
     env = {
         "REFLEX_MODEL": f"vllm:{cfg.reflex_model}",
+        "REFLEX_OUTPUT": cfg.reflex_output,
         "SYSTEM2_MODEL": f"vllm:{cfg.model}",
         "LIBRARIAN_MODEL": f"vllm:{cfg.model}",
         "VLLM_BASE_URL": f"{proxy}/v1",

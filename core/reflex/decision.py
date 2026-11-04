@@ -45,7 +45,18 @@ def parse_decision(raw: str, tools: Sequence[ToolInfo]) -> ReflexProposal:
         return _invalid(raw, "not JSON")
     if not isinstance(parsed, dict):
         return _invalid(raw, "not a JSON object")
+    return proposal_from_parsed(parsed, raw, tools)
 
+
+def proposal_from_parsed(
+    parsed: dict[str, Any], raw: str, tools: Sequence[ToolInfo]
+) -> ReflexProposal:
+    """The proposal for a reply already read as an object: every check that follows the JSON.
+
+    ``parse_decision`` calls it with what it parsed; so does every structured output shape
+    (``core.reflex.agent``), with the reply model's dump. ``raw`` is the reply as the model
+    wrote it, kept by an ``invalid`` proposal.
+    """
     decision = parsed.get("decision")
     if decision is None and parsed.get("action") == "none":
         return ReflexProposal(decision="none")  # the pre-#285 reply shape

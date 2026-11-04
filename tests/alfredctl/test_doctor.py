@@ -96,6 +96,31 @@ def test_a_reflex_model_that_is_not_a_model_string_fails(
     assert "REFLEX_MODEL=gemma-x is not a model string" in _detail(checks, _REFLEX)
 
 
+def test_the_default_output_shape_is_not_reported(tmp_path: Path, _clean_llm_env: None) -> None:
+    env = _write_env(tmp_path, _REFLEX_BASE + "OPENAI_COMPAT_MODEL=gemma-x\n")
+    assert "REFLEX_OUTPUT" not in _detail(doctor.run_checks(env, online=False), _REFLEX)
+
+
+@pytest.mark.parametrize("shape", ["tool", "native", "json"])
+def test_another_output_shape_is_reported(tmp_path: Path, _clean_llm_env: None, shape: str) -> None:
+    env = _write_env(
+        tmp_path, _REFLEX_BASE + f"OPENAI_COMPAT_MODEL=gemma-x\nREFLEX_OUTPUT={shape.upper()}\n"
+    )
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, _REFLEX) == "pass"
+    assert f"REFLEX_OUTPUT={shape}" in _detail(checks, _REFLEX)
+
+
+def test_an_unknown_output_shape_fails_naming_the_variable_and_the_values(
+    tmp_path: Path, _clean_llm_env: None
+) -> None:
+    env = _write_env(tmp_path, _REFLEX_BASE + "OPENAI_COMPAT_MODEL=gemma-x\nREFLEX_OUTPUT=xml\n")
+    checks = doctor.run_checks(env, online=False)
+    assert _status(checks, _REFLEX) == "fail"
+    detail = _detail(checks, _REFLEX)
+    assert "REFLEX_OUTPUT" in detail and "text, tool, native, json" in detail
+
+
 def test_doctor_warns_about_leftover_ollama_settings(tmp_path: Path, _clean_llm_env: None) -> None:
     env = _write_env(
         tmp_path,
@@ -626,6 +651,7 @@ def _clean_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "SYSTEM2_TIMEOUT_S",
         "REFLEX_MODEL",
         "REFLEX_BACKEND",
+        "REFLEX_OUTPUT",
         "OPENAI_COMPAT_MODEL",
         "LMSTUDIO_HOST",
     ):

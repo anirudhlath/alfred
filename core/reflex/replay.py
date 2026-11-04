@@ -3,7 +3,7 @@
     python -m core.reflex.replay run --since 2026-10-26T23:35:00Z [--until ISO] [options]
     python -m core.reflex.replay run --records decisions.jsonl [options]
     python -m core.reflex.replay label (--since ISO [--until ISO] | --records FILE) --out FILE
-    python -m core.reflex.replay score --labels FILE [--model MODEL]
+    python -m core.reflex.replay score --labels FILE [--model MODEL] [--output SHAPE]
 
 Each record's exact prompt goes to the model, one record at a time, through the same agent
 and parser Reflex decides with (``core.reflex.agent``), with the tools the prompt showed
@@ -27,6 +27,10 @@ again and counts how the candidate's asks agree with the labels. The rules and t
 against the live state read once at the start, so the house's services must be registered. A
 label file holds the owner's house: it is written readable only by its owner, and kept out of
 the repo.
+
+``--output`` (default ``REFLEX_OUTPUT``) picks how the model is asked to reply, ``text``, ``tool``,
+``native`` or ``json`` (``core.reflex.agent``), so one recorded set can be decided in each shape and
+the counts compared.
 
 A model server is not deterministic at temperature 0, so compare counts, never single records.
 """
@@ -63,7 +67,7 @@ from core.reflex.replay_labels import (
 )
 from core.reflex.settings import load_settings
 from shared.agents import resolve_model
-from shared.config import AlfredConfig, apply_model_env
+from shared.config import REFLEX_OUTPUTS, AlfredConfig, ReflexOutput, apply_model_env
 from shared.redis_streams import create_redis
 from shared.usertime import get_user_timezone
 
@@ -200,6 +204,7 @@ class Args:
     records: Path | None
     limit: int | None
     model: str | None
+    output: ReflexOutput | None
     out: Path | None
 
 
@@ -219,6 +224,7 @@ class ScoreArgs:
 
     labels: Path
     model: str | None
+    output: ReflexOutput | None
 
 
 def _moment(text: str) -> datetime:
@@ -265,6 +271,18 @@ def _add_model(command: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_output(command: argparse.ArgumentParser) -> None:
+    command.add_argument(
+        "--output",
+        choices=REFLEX_OUTPUTS,
+        metavar="SHAPE",
+        help=(
+            f"how the model's reply is asked for: {', '.join(REFLEX_OUTPUTS)} "
+            "(default: REFLEX_OUTPUT)"
+        ),
+    )
+
+
 def _parsers() -> tuple[argparse.ArgumentParser, dict[str, argparse.ArgumentParser]]:
     parser = argparse.ArgumentParser(
         prog=_PROG, description="Replay recorded Reflex decisions through a model."
@@ -287,6 +305,7 @@ def _parsers() -> tuple[argparse.ArgumentParser, dict[str, argparse.ArgumentPars
         help="replay at most N records, the oldest first (default: all)",
     )
     _add_model(run)
+    _add_output(run)
     run.add_argument(
         "--out",
         type=Path,
@@ -325,6 +344,7 @@ def _parsers() -> tuple[argparse.ArgumentParser, dict[str, argparse.ArgumentPars
         "--labels", type=Path, required=True, metavar="FILE", help="a file `label` wrote"
     )
     _add_model(score)
+    _add_output(score)
     return parser, {"run": run, "label": label, "score": score}
 
 
@@ -349,11 +369,11 @@ def parse_args(argv: Sequence[str] | None = None) -> Args | LabelArgs | ScoreArg
     if ns.command == "score":
         if not ns.labels.is_file():
             command.error(f"--labels: {ns.labels} is not a file")
-        return ScoreArgs(ns.labels, ns.model)
+        return ScoreArgs(ns.labels, ns.model, ns.output)
     _check_source(command, ns)
     if ns.command == "label":
         return LabelArgs(ns.since, ns.until, ns.records, ns.out)
-    return Args(ns.since, ns.until, ns.records, ns.limit, ns.model, ns.out)
+    return Args(ns.since, ns.until, ns.records, ns.limit, ns.model, ns.output, ns.out)
 
 
 def _fail(message: str, code: int) -> NoReturn:
@@ -361,8 +381,10 @@ def _fail(message: str, code: int) -> NoReturn:
     raise SystemExit(code)
 
 
-def build_agent(config: AlfredConfig, model: str | None) -> Agent[list[ToolInfo], ReflexProposal]:
-    """The Reflex agent over *model*, or over ``REFLEX_MODEL`` when none is given.
+def build_agent(
+    config: AlfredConfig, model: str | None, output: ReflexOutput | None
+) -> Agent[list[ToolInfo], ReflexProposal]:
+    """The Reflex agent over *model* and *output*, or over ``REFLEX_MODEL`` and ``REFLEX_OUTPUT``.
 
     Exits non-zero when no model resolves; ``resolve_model`` logs why. Tracing is not
     started, so the agent's spans go nowhere: a replayed prompt is never exported.
@@ -372,7 +394,7 @@ def build_agent(config: AlfredConfig, model: str | None) -> Agent[list[ToolInfo]
     resolved = resolve_model(setting, config.reflex_model if model is None else model)
     if resolved is None:
         _fail("no model: set REFLEX_MODEL, or pass --model (vllm:<served name>)", 1)
-    return build_reflex_agent(resolved)
+    return build_reflex_agent(resolved, config.reflex_output if output is None else output)
 
 
 def _read_jsonl[M: BaseModel](path: Path, model: type[M], what: str) -> list[M]:
@@ -509,7 +531,7 @@ async def _house(redis: AioRedis) -> dict[str, LiveEntity]:
 async def _run(args: Args) -> None:
     """Load the records, replay them and print the counts."""
     config = AlfredConfig.from_env()
-    agent = build_agent(config, args.model)
+    agent = build_agent(config, args.model, args.output)
     # Oldest first, so --limit keeps the oldest whatever order a file was written in; before the
     # limit, so --limit N replays N events.
     records = _distinct(await _load(args, config))
@@ -563,7 +585,7 @@ async def _score(args: ScoreArgs) -> None:
         house = await _house(redis)
     finally:
         await redis.aclose()
-    agent = build_agent(config, args.model)
+    agent = build_agent(config, args.model, args.output)
     outcomes = await replay([line.record for line in lines], agent)
     print(summarize_scores(lines, outcomes, house))
     _stop_on_errors(outcomes, len(lines))

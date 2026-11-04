@@ -29,8 +29,9 @@ Librarian and the judge all use the vLLM-served model (`gemma-4-26b-a4b` by defa
 embeddings come from the local embedding server (`BAAI/bge-m3`). A run costs nothing per
 call. Production's System 2 runs a different model, so System 2 scores describe the eval
 model; `--model` changes it for System 2, the Librarian and the judge, and Reflex follows
-it. Reflex alone can run on another model (`--reflex-model`), and on a hosted
-OpenAI-compatible server (`--reflex-upstream`), to compare candidate Reflex models; see
+it. Reflex alone can run on another model (`--reflex-model`), on a hosted
+OpenAI-compatible server (`--reflex-upstream`), and with another reply shape
+(`--reflex-output`), to compare candidate Reflex models; see
 [Trying another Reflex model](#trying-another-reflex-model).
 
 The harness is built on [Inspect AI](https://inspect.aisi.org.uk): one Inspect task per
@@ -431,6 +432,7 @@ uv run alfred evals run --include-pending --no-build --keep
 | `--epochs` | 3 | Runs per sample |
 | `--model` | `gemma-4-26b-a4b` | vLLM served model for System 2, the Librarian and the judge; Reflex too, unless `--reflex-model` is given |
 | `--reflex-model` | `--model` | The model Reflex (System 1) runs on. The container still reaches it as `REFLEX_MODEL=vllm:<served name>` through the proxy, whichever upstream serves it; System 2's settings do not change |
+| `--reflex-output` | `text` | How Reflex's reply is asked for: `text`, `tool`, `native` or `json`; the container gets it as `REFLEX_OUTPUT`. See [Trying another Reflex model](#trying-another-reflex-model) |
 | `--vllm-url` | `http://localhost:8000/v1` | vLLM base URL, with `/v1`. Trailing slashes are dropped; a URL that is not `http(s)://` with a host and a valid port stops the run in preflight |
 | `--reflex-upstream` | `--vllm-url` | Base URL, with `/v1`, of the server that serves Reflex; checked like `--vllm-url`. Any URL other than `--vllm-url` (after trailing slashes are dropped, and ignoring the case of the scheme and host) counts as hosted. See [Trying another Reflex model](#trying-another-reflex-model) |
 | `--embed-url` | `http://localhost:8001` | Embedding server, without `/v1`; checked like `--vllm-url` |
@@ -459,6 +461,15 @@ export ALFRED_EVALS_REFLEX_API_KEY=<the hosted API key>
 uv run alfred evals run reflex --reflex-model <served name> --reflex-upstream <hosted base URL>
 ```
 
+`--reflex-output` changes how Reflex's reply is asked for, whichever model and server it
+uses: `text` (the default, and what production runs), `tool`, `native` or `json`
+([Output shapes](reflex-anticipation.md#output-shapes)). The run hands it to the container
+as `REFLEX_OUTPUT`.
+
+```bash
+uv run alfred evals run reflex --reflex-model <served name> --reflex-output tool
+```
+
 `<hosted base URL>` takes the form of `--vllm-url`: the OpenAI-compatible base, `/v1`
 included, such as `https://<host>/api/v1`. The proxy strips the `/v1` and appends
 `/v1/chat/completions`, as it does for vLLM.
@@ -481,10 +492,11 @@ included, such as `https://<host>/api/v1`. The proxy strips the `/v1` and append
   only for `--model`: a hosted model list may need the key and costs a call, so the run
   logs a warning that the Reflex model was not checked, and a model the hosted server does
   not serve shows up as System 1 calls that come back with an error.
-- **The scorecard.** The header names the System 2 model and the Reflex model, and
-  whether Reflex ran `local` or `hosted`, never the upstream's address:
-  ``System 2 `<served name>` · Reflex `<served name>` (hosted)``. `report.json` holds the
-  same in `meta.model`, `meta.reflex_model` and `meta.reflex_upstream`.
+- **The scorecard.** The header names the System 2 model and the Reflex model, whether
+  Reflex ran `local` or `hosted` (never the upstream's address), and the reply shape:
+  ``System 2 `<served name>` · Reflex `<served name>` (hosted, tool output)``. `report.json`
+  holds the same in `meta.model`, `meta.reflex_model`, `meta.reflex_upstream` and
+  `meta.reflex_output` (a scorecard from before the shapes reads as `text`).
 - **What leaves the machine.** A hosted Reflex is sent the prompts and the (invented)
   apartment's state, like any hosted model; nothing in them is real (see [Safety](#safety)).
 

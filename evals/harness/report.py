@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, StrictInt, TypeAdapter, ValidationError
 from evals.harness.checks.judge_spec import JudgeCategory
 from evals.harness.checks.result import CheckResult
 from evals.harness.evidence import Evidence, Role
+from shared.config import DEFAULT_REFLEX_OUTPUT, ReflexOutput
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -126,6 +127,8 @@ class RunMeta(BaseModel):
     # Whether Reflex's upstream is the vLLM the run was pointed at, or another one. Never
     # its address: a scorecard is shared, and an address can carry credentials.
     reflex_upstream: ReflexUpstream
+    # How Reflex's reply was asked for. Scorecards from before the shapes read as text.
+    reflex_output: ReflexOutput = DEFAULT_REFLEX_OUTPUT
     alfred_commit: str
     home_service_commit: str
     epochs: int
@@ -503,7 +506,8 @@ def render_markdown(card: Scorecard) -> str:
     lines = [
         f"# Alfred eval scorecard — {m.finished_at:%Y-%m-%d %H:%M} UTC",
         "",
-        f"System 2 `{m.model}` · Reflex `{m.reflex_model}` ({m.reflex_upstream}) · "
+        f"System 2 `{m.model}` · Reflex `{m.reflex_model}` "
+        f"({m.reflex_upstream}, {m.reflex_output} output) · "
         f"Alfred `{_short(m.alfred_commit)}` · "
         f"home-service `{_short(m.home_service_commit)}` · {m.epochs} epochs · {_judge_trust(m)}",
         "",
