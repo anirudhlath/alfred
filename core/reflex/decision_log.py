@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from bus.schemas.events import ReflexOutcome, ReflexProposal, StateChangedEvent
 from core.attribution.cause import Cause, cause_of
@@ -67,6 +67,19 @@ class DecisionRecord(BaseModel):
     proposal: ReflexProposal
     outcome: ReflexOutcome | None = None  # what the proposal came to
     recent: dict[str, PersonChange] = {}  # what people had just changed, by entity id
+
+
+def _fault(error: ValueError) -> str:
+    """What is wrong with an entry that cannot be read, with none of its content.
+
+    An entry holds prompts and entity ids, and pydantic's text quotes the input it refused and
+    names the keys of a dict in its locations, so only each error's top-level field and kind
+    are given.
+    """
+    if not isinstance(error, ValidationError):
+        return type(error).__name__
+    faults = {f"{(err['loc'] or ('the entry',))[0]}: {err['type']}" for err in error.errors()}
+    return "; ".join(sorted(faults))
 
 
 class DecisionLog:
@@ -131,14 +144,15 @@ class DecisionLog:
         )
         records: list[DecisionRecord] = []
         for entry_id, fields in entries:
+            entry = decode_stream_value(entry_id)
             raw = fields.get(_FIELD.encode()) or fields.get(_FIELD)
+            if raw is None:
+                logger.warning("Skipping decision log entry {}: no {!r} field", entry, _FIELD)
+                continue
             try:
-                if raw is None:
-                    raise ValueError(f"no {_FIELD!r} field")
                 record = DecisionRecord.model_validate_json(decode_stream_value(raw))
             except ValueError as e:
-                entry = decode_stream_value(entry_id)
-                logger.warning("Skipping unreadable decision log entry {}: {}", entry, e)
+                logger.warning("Skipping unreadable decision log entry {}: {}", entry, _fault(e))
                 continue
             if record.time >= since and (until is None or record.time < until):
                 records.append(record)
