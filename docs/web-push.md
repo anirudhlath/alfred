@@ -358,6 +358,11 @@ push to the browser. None is logged, and no route returns one.
   ([`admin-api.md`](admin-api.md), "Devices").
 - `WebPushSubscription` sets `hide_input_in_errors`, so a `ValidationError`'s message never
   quotes them.
+- httpx logs every request it sends at INFO, and a push's URL is its endpoint.
+  `redact_push_urls()` (`core/notifications/http_logs.py`), installed when either push
+  adapter is built, puts a filter on httpx's logger that cuts each URL on a push service to
+  its scheme and host: `HTTP Request: POST https://web.push.apple.com/… "HTTP/2 201 Created"`.
+  The APNs adapter's URLs end in the device token and are cut the same way.
 
 ## Operations
 

@@ -19,6 +19,8 @@ if "ALFRED_DATA_DIR" not in os.environ:
     os.environ["ALFRED_DATA_DIR"] = _tmp_data_dir
     atexit.register(shutil.rmtree, _tmp_data_dir, ignore_errors=True)
 
+import logging
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import keyring
@@ -28,6 +30,9 @@ import pytest
 from pydantic_ai import models as _pydantic_ai_models
 
 from bus.schemas.events import StateChangedEvent
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # No test reaches a real model. A test that forgets its FunctionModel fails loudly here
 # instead of calling the network.
@@ -63,6 +68,28 @@ class InMemoryKeyring(keyring.backend.KeyringBackend):
 def _mock_keyring() -> None:
     """Install fresh in-memory keyring backend before each test."""
     keyring.set_keyring(InMemoryKeyring())
+
+
+@pytest.fixture
+def httpx_log_lines() -> Iterator[list[str]]:
+    """Every line httpx's logger lets through during the test, after its filters ran.
+
+    httpx logs each request it sends at INFO, which the root level hides in tests, so the
+    logger's own level is lowered for the test and read with a handler of its own.
+    """
+    lines: list[str] = []
+
+    class _Lines(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            lines.append(record.getMessage())
+
+    httpx_logger = logging.getLogger("httpx")
+    handler, level = _Lines(), httpx_logger.level
+    httpx_logger.addHandler(handler)
+    httpx_logger.setLevel(logging.INFO)
+    yield lines
+    httpx_logger.removeHandler(handler)
+    httpx_logger.setLevel(level)
 
 
 @pytest.fixture(autouse=True)

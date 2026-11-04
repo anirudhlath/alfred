@@ -1,6 +1,7 @@
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from core.notifications.adapters.apns import APNS_SANDBOX_URL, APNsChannelAdapter
@@ -230,3 +231,22 @@ def test_apns_adapter_sandbox_from_env() -> None:
             os.environ.pop("APNS_SANDBOX", None)
         else:
             os.environ["APNS_SANDBOX"] = orig
+
+
+@pytest.mark.asyncio
+async def test_apns_request_log_names_only_the_host(
+    mock_redis: AsyncMock, notification: Notification, httpx_log_lines: list[str]
+) -> None:
+    """httpx logs each request's URL, and an APNs URL ends in the device token."""
+    adapter = APNsChannelAdapter(
+        redis=mock_redis, team_id="T", key_id="K", private_key="pk", bundle_id="com.test"
+    )
+    transport = httpx.MockTransport(lambda request: httpx.Response(200))
+    async with httpx.AsyncClient(transport=transport) as client:
+        adapter._client = client
+        with patch.object(adapter, "_get_auth_token", return_value="mock-jwt-token"):
+            await adapter.deliver(notification)
+
+    assert httpx_log_lines  # httpx logged the request
+    assert all("abc123" not in line for line in httpx_log_lines)
+    assert any("https://api.push.apple.com/…" in line for line in httpx_log_lines)

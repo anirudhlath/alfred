@@ -1,4 +1,8 @@
-"""APNs channel adapter — pushes notifications to iOS devices via APNs."""
+"""APNs channel adapter — pushes notifications to iOS devices via APNs.
+
+Each request's URL ends in the device token, a credential, and httpx logs every URL it
+requests, so building an adapter installs ``redact_push_urls()``.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ from loguru import logger
 
 from core.notifications.channels import ChannelAdapter, ChannelRegistry
 from core.notifications.devices import decode_device, is_web_push
+from core.notifications.http_logs import redact_push_urls
 from core.notifications.schema import Notification, Urgency
 from shared.env import is_truthy_flag
 from shared.streams import DEVICE_TOKENS_KEY
@@ -58,6 +63,7 @@ class APNsChannelAdapter(ChannelAdapter):
         self._client: httpx.AsyncClient | None = None
         self._token: str | None = None
         self._token_expires: float = 0
+        redact_push_urls()
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         """Lazy-init httpx client with HTTP/2 support."""

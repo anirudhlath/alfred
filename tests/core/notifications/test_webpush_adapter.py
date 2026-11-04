@@ -397,7 +397,7 @@ async def test_skips_a_stored_row_whose_keys_are_not_a_subscription(
 
 
 async def test_never_logs_the_endpoint_or_keys(
-    redis: fakeredis.FakeAsyncRedis, logs: list[str]
+    redis: fakeredis.FakeAsyncRedis, logs: list[str], httpx_log_lines: list[str]
 ) -> None:
     sent, gone, failing, unreachable = (
         Browser(APPLE),
@@ -419,11 +419,12 @@ async def test_never_logs_the_endpoint_or_keys(
         await adapter.deliver(_notification())
 
     assert logs  # each outcome logged something
+    assert httpx_log_lines  # and httpx logged each request it sent
     secrets = [KEYS.private_pem.splitlines()[1]]
     for browser in (sent, gone, failing, unreachable):
         path = browser.endpoint.split("/", 3)[3]
         secrets += [browser.endpoint, path, browser.p256dh, _b64url(browser.auth)]
-    for line in logs:
+    for line in logs + httpx_log_lines:
         for secret in secrets:
             assert secret not in line
     # What is logged instead: the field's first 12 characters and the push host.
