@@ -67,6 +67,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 LOG_ROOT = REPO_ROOT / "evals" / "logs"
 # With --no-build the scorecard cannot know what the image holds; both commits say so.
 NOT_REBUILT = " (image not rebuilt)"
+# The API key of a hosted Reflex upstream. Read here, handed to the proxy and nowhere else:
+# not an option, not in RunOptions, RunMeta, the scorecard or a log.
+REFLEX_API_KEY_ENV = "ALFRED_EVALS_REFLEX_API_KEY"
 
 
 @dataclass(frozen=True)
@@ -75,8 +78,10 @@ class RunOptions:
     tags: list[str]
     include_pending: bool
     epochs: int
-    model: str
-    vllm_url: str
+    model: str  # System 2's, the Librarian's and the judge's
+    reflex_model: str  # System 1's
+    vllm_url: str  # with /v1
+    reflex_upstream: str  # with /v1; vllm_url unless Reflex is served elsewhere
     embed_url: str
     embed_model: str
     home_service: Path
@@ -121,6 +126,20 @@ class SuiteResults:
         if self.interrupted is not None:
             lines.append(f"suite {self.interrupted}: interrupted")
         return lines
+
+
+def reflex_api_key(env: Mapping[str, str]) -> str | None:
+    """The hosted Reflex upstream's key, or None when *env* holds none. A key that cannot be
+    a header value is a PreflightError that names the variable and never quotes the value."""
+    key = env.get(REFLEX_API_KEY_ENV, "").strip()
+    if not key:
+        return None
+    if not (key.isascii() and key.isprintable() and " " not in key):
+        raise PreflightError(
+            f"{REFLEX_API_KEY_ENV} is not a usable header value: "
+            "it holds a space, a control character or a non-ASCII character"
+        )
+    return key
 
 
 def _finished(logs: Sequence[EvalLog]) -> bool:
@@ -304,10 +323,19 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
     whatever ran. Suites whose stack failed to start are named in the outcome."""
     plan = build_plan(opts)
     vllm_url = base_url(opts.vllm_url, "--vllm-url")
+    reflex_url = base_url(opts.reflex_upstream, "--reflex-upstream")
     embed_url = base_url(opts.embed_url, "--embed-url")
+    # Any upstream but the vLLM the run is pointed at is a hosted one.
+    hosted = reflex_url != vllm_url
+    key = reflex_api_key(os.environ) if hosted else None
     async with httpx.AsyncClient(timeout=10) as client:
-        await check_models(client, vllm_url, opts.model)
+        # System 2 and Reflex may share a model; a hosted upstream is not asked for its
+        # models: its list may need the key, and costs a call.
+        for model in dict.fromkeys([opts.model] if hosted else [opts.model, opts.reflex_model]):
+            await check_models(client, vllm_url, model)
         await check_models(client, f"{embed_url}/v1", opts.embed_model)
+    if hosted:
+        logger.warning("the Reflex model is not checked: its upstream is not --vllm-url (hosted)")
     if opts.build:
         hs_commit = check_home_service(opts.home_service, allow_stale=opts.allow_stale_home_service)
     else:
@@ -326,9 +354,16 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
     judge = Judge(make_judge_model(opts.model, vllm_url))
 
     fake_ha = FakeHA(load_world("apartment"), host=gateway, port=opts.fake_ha_port)
-    proxy = LlmProxy(vllm_url.removesuffix("/v1"), host=gateway, port=opts.proxy_port)
+    proxy = LlmProxy(
+        vllm_url.removesuffix("/v1"),
+        reflex_upstream=reflex_url.removesuffix("/v1") if hosted else None,
+        reflex_api_key=key,
+        host=gateway,
+        port=opts.proxy_port,
+    )
     cfg = StackConfig(
         model=opts.model,
+        reflex_model=opts.reflex_model,
         vllm_url=vllm_url,
         embed_url=embed_url,
         embed_model=opts.embed_model,
@@ -382,6 +417,8 @@ async def run_suites(opts: RunOptions) -> RunOutcome:
     meta = RunMeta(
         run_dir=str(run_dir),
         model=opts.model,
+        reflex_model=opts.reflex_model,
+        reflex_upstream="hosted" if hosted else "local",
         alfred_commit=commit,
         home_service_commit=hs_commit,
         epochs=opts.epochs,

@@ -20,7 +20,7 @@ from bus.schemas.events import AlfredResponse, UserRequest
 from core.conscious.identity import IDENTITY_SIR
 from evals.harness.evidence import LlmCall
 from evals.harness.fake_ha import FakeHA
-from evals.harness.net import container_reachable
+from evals.harness.net import container_reachable, in_container_url
 from evals.harness.proxy import LlmProxy
 from evals.harness.stack import (
     Docker,
@@ -50,7 +50,19 @@ def cfg(tmp_path: Path, **kw) -> StackConfig:  # type: ignore[no-untyped-def]
         home_service_dir=tmp_path,
         boot_timeout_s=5.0,
     )
-    return StackConfig(**{**base, **kw})
+    fields = {**base, **kw}
+    fields.setdefault("reflex_model", fields["model"])  # Reflex follows the model, unless told
+    return StackConfig(**fields)
+
+
+def test_container_env_gives_reflex_its_own_model_and_leaves_the_others(tmp_path: Path) -> None:
+    env = container_env(
+        cfg(tmp_path, reflex_model="reflex-candidate"), proxy_port=9100, fake_ha_port=9200
+    )
+    # Reflex still reaches its model through the proxy, which decides where the call goes.
+    assert env["REFLEX_MODEL"] == "vllm:reflex-candidate"
+    assert env["VLLM_BASE_URL"] == f"{in_container_url(9100)}/v1"
+    assert env["SYSTEM2_MODEL"] == env["LIBRARIAN_MODEL"] == f"vllm:{cfg(tmp_path).model}"
 
 
 def test_container_env_serves_repo_prompts_by_default(tmp_path: Path) -> None:

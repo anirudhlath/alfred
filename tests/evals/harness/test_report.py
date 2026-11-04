@@ -31,6 +31,8 @@ if TYPE_CHECKING:
 META = RunMeta(
     run_dir="/tmp/run",
     model="m",
+    reflex_model="m",
+    reflex_upstream="local",
     alfred_commit="abc1234",
     home_service_commit="def5678",
     epochs=3,
@@ -367,6 +369,34 @@ def test_header_says_when_the_judge_has_no_calibration() -> None:
     header = render_markdown(summarize([], meta)).splitlines()[2]
     assert "no judge calibration for m — every judge check is untrusted" in header
     assert "judge trusted" not in header
+
+
+@pytest.mark.parametrize("upstream", ["local", "hosted"])
+def test_header_names_the_model_of_each_role_and_only_where_reflex_runs(upstream: str) -> None:
+    meta = META.model_copy(
+        update={
+            "model": "system2-model",
+            "reflex_model": "reflex-candidate",
+            "reflex_upstream": upstream,
+        }
+    )
+    md = render_markdown(summarize([], meta))
+    header = md.splitlines()[2]
+    assert header.startswith(
+        f"System 2 `system2-model` · Reflex `reflex-candidate` ({upstream}) · "
+    )
+    # Where Reflex ran is a word, never an address.
+    assert "http" not in md
+
+
+def test_the_scorecard_json_holds_both_models_and_where_reflex_ran() -> None:
+    meta = META.model_copy(update={"reflex_model": "reflex-candidate", "reflex_upstream": "hosted"})
+    stored = summarize([], meta).model_dump(mode="json")["meta"]
+    assert (stored["model"], stored["reflex_model"], stored["reflex_upstream"]) == (
+        "m",
+        "reflex-candidate",
+        "hosted",
+    )
 
 
 @pytest.mark.parametrize(

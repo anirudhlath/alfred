@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from typer.testing import CliRunner
 
 from alfred_cli.main import app
 from evals.__main__ import build_parser
+from evals.cli import DEFAULT_MODEL, DEFAULT_VLLM_URL, evals_app
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -328,6 +329,93 @@ def test_evals_run_prompt_label_hands_the_run_its_langfuse_access(
     labelled, plain = seen
     assert labelled.langfuse is not None and labelled.langfuse.label == "latest"
     assert plain.langfuse is None
+
+
+def _run_options(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *args: str) -> Any:
+    """The ``RunOptions`` ``alfred evals run`` hands a run (a fake one) given *args*."""
+    from evals.harness.orchestrate import RunOptions, RunOutcome
+
+    seen: list[RunOptions] = []
+
+    async def fake_run_suites(opts: RunOptions) -> RunOutcome:
+        seen.append(opts)
+        return RunOutcome(run_dir=tmp_path, unstarted=[])
+
+    monkeypatch.setattr("evals.harness.orchestrate.run_suites", fake_run_suites)
+    base = ["evals", "run", "--no-build", "--home-service", str(tmp_path)]
+    result = runner.invoke(app, [*base, *args])
+    assert result.exit_code == 0, result.output
+    [opts] = seen
+    return opts
+
+
+@pytest.mark.parametrize(
+    ("args", "model", "reflex_model"),
+    [
+        ([], DEFAULT_MODEL, DEFAULT_MODEL),
+        (["--model", "system2-model"], "system2-model", "system2-model"),
+        (["--reflex-model", "reflex-candidate"], DEFAULT_MODEL, "reflex-candidate"),
+        (
+            ["--model", "system2-model", "--reflex-model", "reflex-candidate"],
+            "system2-model",
+            "reflex-candidate",
+        ),
+    ],
+    ids=["default", "model-only", "reflex-only", "both"],
+)
+def test_evals_run_reflex_model_defaults_to_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    args: list[str],
+    model: str,
+    reflex_model: str,
+) -> None:
+    opts = _run_options(monkeypatch, tmp_path, *args)
+
+    assert (opts.model, opts.reflex_model) == (model, reflex_model)
+
+
+@pytest.mark.parametrize(
+    ("args", "vllm_url", "reflex_upstream"),
+    [
+        ([], DEFAULT_VLLM_URL, DEFAULT_VLLM_URL),
+        (["--vllm-url", "http://vllm.test/v1"], "http://vllm.test/v1", "http://vllm.test/v1"),
+        (
+            ["--reflex-upstream", "https://hosted.invalid/api/v1"],
+            DEFAULT_VLLM_URL,
+            "https://hosted.invalid/api/v1",
+        ),
+        (
+            ["--vllm-url", "http://vllm.test/v1", "--reflex-upstream", "https://hosted.invalid/v1"],
+            "http://vllm.test/v1",
+            "https://hosted.invalid/v1",
+        ),
+    ],
+    ids=["default", "vllm-url-only", "reflex-upstream-only", "both"],
+)
+def test_evals_run_reflex_upstream_defaults_to_the_vllm_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    args: list[str],
+    vllm_url: str,
+    reflex_upstream: str,
+) -> None:
+    opts = _run_options(monkeypatch, tmp_path, *args)
+
+    assert (opts.vllm_url, opts.reflex_upstream) == (vllm_url, reflex_upstream)
+
+
+def test_evals_run_help_names_the_reflex_options_and_the_key_variable() -> None:
+    import typer.main
+
+    # Read from the options, not the rendered help, which cuts a long word short.
+    command = typer.main.get_command(evals_app)
+    run_options = command.commands["run"].params  # type: ignore[attr-defined]
+    helps = {param.name: param.help for param in run_options}
+
+    assert "--model" in (helps["reflex_model"] or "")
+    assert "--vllm-url" in (helps["reflex_upstream"] or "")
+    assert "ALFRED_EVALS_REFLEX_API_KEY" in (helps["reflex_upstream"] or "")
 
 
 def _fake_judge_model(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[tuple[str, str]]:

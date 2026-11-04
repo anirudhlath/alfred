@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 SCORER_NAME = "scenario_scorer"
 Value = Literal["C", "I", "N", "E"]
 Status = Literal["shipped", "pending"]
+ReflexUpstream = Literal["local", "hosted"]
 CELL_CHARS = 200  # room for the sample id each failing entry starts with
 UNKNOWN = "—"
 _CHECKS = TypeAdapter(list[CheckResult])
@@ -120,7 +121,11 @@ class RoleUsage(BaseModel):
 
 class RunMeta(BaseModel):
     run_dir: str
-    model: str
+    model: str  # System 2's, the Librarian's and the judge's
+    reflex_model: str
+    # Whether Reflex's upstream is the vLLM the run was pointed at, or another one. Never
+    # its address: a scorecard is shared, and an address can carry credentials.
+    reflex_upstream: ReflexUpstream
     alfred_commit: str
     home_service_commit: str
     epochs: int
@@ -498,7 +503,8 @@ def render_markdown(card: Scorecard) -> str:
     lines = [
         f"# Alfred eval scorecard — {m.finished_at:%Y-%m-%d %H:%M} UTC",
         "",
-        f"model `{m.model}` · Alfred `{_short(m.alfred_commit)}` · "
+        f"System 2 `{m.model}` · Reflex `{m.reflex_model}` ({m.reflex_upstream}) · "
+        f"Alfred `{_short(m.alfred_commit)}` · "
         f"home-service `{_short(m.home_service_commit)}` · {m.epochs} epochs · {_judge_trust(m)}",
         "",
     ]

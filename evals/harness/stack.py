@@ -97,7 +97,8 @@ def langfuse_access(env: Mapping[str, str], label: str) -> LangfuseAccess:
 
 @dataclass(frozen=True)
 class StackConfig:
-    model: str
+    model: str  # System 2's, the Librarian's and the judge's
+    reflex_model: str  # System 1's; the proxy decides which upstream serves it
     vllm_url: str  # host view, with /v1
     embed_url: str  # host view, without /v1
     embed_model: str
@@ -114,7 +115,7 @@ def container_env(cfg: StackConfig, *, proxy_port: int, fake_ha_port: int) -> di
     ``--prompt-label``, the Langfuse settings the CLI read."""
     proxy = in_container_url(proxy_port)
     env = {
-        "REFLEX_MODEL": f"vllm:{cfg.model}",
+        "REFLEX_MODEL": f"vllm:{cfg.reflex_model}",
         "SYSTEM2_MODEL": f"vllm:{cfg.model}",
         "LIBRARIAN_MODEL": f"vllm:{cfg.model}",
         "VLLM_BASE_URL": f"{proxy}/v1",
