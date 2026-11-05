@@ -1,5 +1,6 @@
 import { IDBFactory } from "fake-indexeddb";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { clearBadge } from "@/lib/badge";
 // The shipped bytes, as sw.test.ts reads them.
 import source from "../../public/sw.js?raw";
 // The same file and the kill switch, each as its exact bytes: see FIRED.
@@ -272,5 +273,48 @@ describe.skipIf(FIRED)("the icon's count", () => {
     expect(worker.shown).toHaveLength(1);
     // Windows are told once it has answered, and it never did.
     expect(worker.posted).toEqual([]);
+  });
+});
+
+/**
+ * The pin between worker and page. sw.js is hand-written and not bundled, so
+ * lib/badge.ts repeats its database, store and key by name, and its open and
+ * upgrade by hand. A name that drifts on either side fails here: the page's clear
+ * lands somewhere the worker never reads, or the worker cannot read what the page
+ * made.
+ */
+describe.skipIf(FIRED)("the page and the worker share a count", () => {
+  /** The page, on the worker's store, in a browser that can badge. */
+  function pageOn(factory: IDBFactory): void {
+    vi.stubGlobal("indexedDB", factory);
+    for (const name of ["setAppBadge", "clearAppBadge"]) {
+      const value = vi.fn(() => Promise.resolve());
+      Object.defineProperty(navigator, name, { configurable: true, value });
+    }
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, "setAppBadge");
+    Reflect.deleteProperty(navigator, "clearAppBadge");
+  });
+
+  it("the page's clear zeroes the worker's count", async () => {
+    const factory = new IDBFactory();
+    pageOn(factory);
+    const worker = counting({ indexedDB: factory });
+    await worker.push(NOTICE);
+    await worker.push(NOTICE);
+    await clearBadge();
+    await worker.push(NOTICE);
+    expect(worker.badges).toEqual([1, 2, 1]);
+  });
+
+  it("the worker reads a database the page created", async () => {
+    const factory = new IDBFactory();
+    pageOn(factory);
+    await clearBadge();
+    const worker = counting({ indexedDB: factory });
+    await worker.push(NOTICE);
+    expect(worker.badges).toEqual([1]);
   });
 });

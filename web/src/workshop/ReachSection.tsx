@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import { InstallGate } from "@/gates/InstallGate";
 import { StandaloneGate } from "@/gates/StandaloneGate";
+import { badgeSupported } from "@/lib/badge";
 import type { ServiceState } from "@/lib/system";
 import { Layer } from "@/shell/Layer";
 import { usePush, type Reach } from "@/shell/usePush";
@@ -59,6 +60,12 @@ const LINES: Record<Reach["kind"], { sub: string; right: Right }> = {
   },
 };
 
+/**
+ * What the number on the icon counts, on the `on` line where the icon can show
+ * one: the plan's deviation D8, since the handoff's own clause would be false.
+ */
+const BADGE_CLAUSE = " · badge = notifications since you last opened";
+
 /** Where the switch went, once iOS has it (`Alfred.dc.html:394`, verbatim). */
 const DENIED_NOTE =
   "Settings › Alfred › Notifications › Allow. iOS holds this switch now; nothing in here can flip it, and Alfred will not raise it again.";
@@ -102,7 +109,8 @@ export function ReachSection({ sessions }: { sessions: Sessions }) {
   const base = useId();
   const subId = `${base}-sub`;
   const noteId = `${base}-note`;
-  const { sub, right } = LINES[reach.kind];
+  const { sub: line, right } = LINES[reach.kind];
+  const sub = reach.kind === "on" && badgeSupported() ? `${line}${BADGE_CLAUSE}` : line;
   // A refusal's way back, or the failure as it was said: a browser's own
   // timeout sentence included, since new words here would be new copy.
   const note =
