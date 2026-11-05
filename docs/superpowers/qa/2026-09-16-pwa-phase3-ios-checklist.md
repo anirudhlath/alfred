@@ -314,9 +314,9 @@ shown, so everything you have not visited yet is still unread.
 - [ ] No control claims an outcome the server only queued
 - [ ] No empty list claims the house is empty unless the read that says so has landed.
       There is no exception to this on any of the four benches
-- [ ] There is no Reach card, no push toggle and no notification permission prompt
-      anywhere. Web Push is phase 5, and an inert card would be the defect the phase-2
-      placeholder tabs were
+- [ ] Since phase 5, System has a Reach card and the app can raise iOS's notification
+      permission prompt; the phase-5 checklist (`2026-10-29-pwa-phase5-ios-checklist.md`)
+      runs them, not this one
 
 ---
 

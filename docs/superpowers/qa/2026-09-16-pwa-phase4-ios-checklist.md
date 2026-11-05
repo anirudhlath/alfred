@@ -60,7 +60,9 @@ inset in standalone mode) still hold, and nothing here re-measures them.
       stays. A blank-and-repaint a few seconds in is the page reloading when the first
       worker claims it, which is a defect. Chromium fires `controllerchange` once there and
       the app ignores that one; if Safari fires it twice, the second would reload. Record
-      what you saw either way
+      what you saw either way. Once you have signed in on an iPhone, `You came in the front
+      way.` also rises by itself (phase 5's slice 2, run by the phase-5 checklist). `Not yet`
+      closes it, and nothing below depends on it
 - [ ] **A throttled install** (optional: it needs the Developer menu). Delete the app and
       set Network Link Conditioner to "3G" (or "Very Bad Network"). Add the app again and
       open it, and leave it on the Room for two minutes. Then Airplane mode, kill the app
@@ -312,12 +314,11 @@ written, record what Safari offered instead.
 
 ## Nothing lies
 
-- [ ] Since phase 5's slice 1, System › Reach and the `install` and `standalone` gates
-      exist, and the standalone gate raises iOS's notification permission prompt; the
-      phase-5 checklist (`2026-10-29-pwa-phase5-ios-checklist.md`) runs them, not this
-      one. The Room shows no home-screen prompt row and raises no notification permission
-      prompt: those arrive with phase 5's slice 2, and an inert one would be the defect the
-      phase-2 placeholder tabs were
+- [ ] Since phase 5, System › Reach and the `install` and `standalone` gates exist, the
+      Room shows a home-screen prompt row beside a waiting Door in an iPhone's Safari tab,
+      and the standalone gate, which raises iOS's notification permission prompt, opens by
+      itself from the Room on an iPhone's launch. The phase-5 checklist
+      (`2026-10-29-pwa-phase5-ios-checklist.md`) runs them, not this one
 - [ ] No launch above showed `signed out` before the house had answered: with no network
       or no answer, the sign-in gate never appeared
 - [ ] The update note appeared only when a changed `sw.js` was waiting, never after an
