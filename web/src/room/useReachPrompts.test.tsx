@@ -453,6 +453,18 @@ describe("useReachPrompts' row", () => {
     expect(result.current.row).toMatchObject({ at: B.action.timestamp });
   });
 
+  it("comes back across a reload for the next Door, at that Door's time", async () => {
+    const first = launch([A]);
+    await shown(first.result);
+    act(() => first.result.current.notNow());
+    first.unmount();
+
+    const { result } = launch([A, B]);
+    await shown(result);
+
+    expect(result.current.row).toMatchObject({ at: B.action.timestamp });
+  });
+
   it("does not come back for a Door already waiting", async () => {
     const { result, rerender } = launch([A, B]);
     await shown(result);

@@ -103,7 +103,8 @@ export function useReachPrompts(pending: TrackedAction[], now: number): ReachPro
   const offering = iPhone && context === "tab" && waiting.length > 0;
   const key = useHouseKey(eligible || offering);
 
-  // A string, so a Door tick neither re-creates the row nor re-sorts the thread for it.
+  // A string, so for a readable stamp a Door tick neither re-creates the row nor re-sorts
+  // the thread for it. An unreadable stamp follows the clock, so there it does both.
   const at = offering && key.has ? doorTime(waiting[0], now) : null;
   const row = useMemo<TimelineItem | null>(
     () => (at === null ? null : { kind: "reach", id: "reach:prompt", at }),
