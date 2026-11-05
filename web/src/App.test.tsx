@@ -602,6 +602,58 @@ describe("App", () => {
       expect(screen.queryByRole("dialog", { name: "You came in the front way" })).toBeNull(),
     );
   });
+
+  it("a waiting Door in an iPhone tab offers the install path", async () => {
+    // 21:20 local, the thread's day, with the fuse of a Door asked a minute ago running.
+    vi.setSystemTime(new Date(2026, 8, 7, 21, 20));
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE);
+    routes["/api/actions/pending"] = {
+      actions: [
+        {
+          ...pendingActionFixture,
+          timestamp: new Date(2026, 8, 7, 21, 19).toISOString(),
+          expires_at: new Date(2026, 8, 7, 21, 24).toISOString(),
+        },
+      ],
+    };
+    const text =
+      "That door is waiting on you below. Had this tab been closed, I would have had no way to tell you. Add me to the home screen and I can knock when something cannot wait.";
+    render(<App />);
+
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    expect(screen.getByText("notifications · unavailable in Safari · 21:19")).toBeInTheDocument();
+    const log = screen.getByRole("log", { name: "Conversation" });
+
+    fireEvent.click(within(log).getByRole("button", { name: "Show me how" }));
+    const gate = await screen.findByRole("dialog", { name: "Add me to the home screen" });
+    expect(
+      within(gate).getByRole("heading", { name: "Add me to the home screen." }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(gate).getByRole("button", { name: "Not now" }));
+    act(() => vi.advanceTimersByTime(400));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Add me to the home screen" })).toBeNull(),
+    );
+    expect(screen.getByText(text)).toBeInTheDocument();
+
+    const lines = () => Array.from(log.firstElementChild?.children ?? [], (row) => row.textContent);
+    const thread = lines();
+    fireEvent.click(within(log).getByRole("button", { name: "Not now" }));
+
+    expect(screen.queryByText(text)).toBeNull();
+    // The row went, and no line took its place (the spec's D11).
+    expect(lines()).toEqual(thread.filter((line) => !line?.includes(text)));
+  });
+
+  it("no such offer off an iPhone", async () => {
+    routes["/api/actions/pending"] = { actions: [pendingActionFixture] };
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /^Lock unlock/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show me how" })).toBeNull();
+    expect(fetched()).not.toContain("/api/push/public-key");
+  });
 });
 
 describe("App — the socket's word", () => {

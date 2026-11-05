@@ -163,7 +163,7 @@ export interface UseRoomOptions {
   /**
    * The server's session idle timeout, from `Overview.session.idle_minutes`
    * (`sessionIdleMs`). The history and `deviceActs` are windowed to the current
-   * session (`sessionWindow`); live rows and tombstones never are.
+   * session (`sessionWindow`); live rows, tombstones and the prompt never are.
    */
   idleMs?: number;
   /**
@@ -172,6 +172,11 @@ export interface UseRoomOptions {
    * turns, never hold it open.
    */
   deviceActs?: TimelineItem[];
+  /**
+   * The prompt row (`useReachPrompts`), standing as long as its Door does however
+   * old that is, so never windowed.
+   */
+  prompt?: TimelineItem | null;
 }
 
 export interface RoomValue {
@@ -187,6 +192,7 @@ export function useRoom({
   tombstones,
   idleMs = SESSION_IDLE_MS,
   deviceActs,
+  prompt,
 }: UseRoomOptions): RoomValue {
   const { chat, online, subscribeOnline } = useConnection();
   const [live, setLive] = useState<TimelineItem[]>(readUnsent);
@@ -408,10 +414,11 @@ export function useRoom({
     const merged = [
       ...sessionWindow([...(history ?? []), ...(deviceActs ?? [])], now, idleMs),
       ...(tombstones ?? []),
+      ...(prompt ? [prompt] : []),
       ...live,
     ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
     return withDividers(liftRepliesAboveTransients(merged), now, idleMs);
-  }, [history, deviceActs, tombstones, live, now, idleMs]);
+  }, [history, deviceActs, tombstones, prompt, live, now, idleMs]);
 
   return { items, thinking: thinkingAt !== null, sendText, sendAudio };
 }

@@ -2,8 +2,10 @@ import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { TrackedAction } from "@/lib/actions";
 import { fetchPublicKey, permission, reachContext } from "@/lib/push";
-import { gateAnswered, markGateAnswered } from "@/lib/reach-local";
+import { gateAnswered, markGateAnswered, readAnsweredDoors } from "@/lib/reach-local";
+import { pendingActionFixture } from "@/test/fixtures";
 import { makeClient } from "@/test/push-client";
 import { PUSH_KEY_QUERY_KEY, useReachPrompts } from "./useReachPrompts";
 
@@ -17,13 +19,32 @@ const IPHONE =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1";
 const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15";
 const KEY = "BHouseKey";
+const NOW = Date.parse("2026-09-07T07:42:00Z");
+
+/** What the Room hands the hook on a render; left out, what the launch began with. */
+interface Doors {
+  pending?: TrackedAction[];
+  now?: number;
+}
 
 /** A launch: the hook on a client of its own, as a reload starts with an empty cache. */
-function launch(client: QueryClient = makeClient()) {
+function launch(pending: TrackedAction[] = []) {
+  const client = makeClient();
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  return { ...renderHook(() => useReachPrompts(), { wrapper }), client };
+  return {
+    ...renderHook(
+      ({ pending: doors = pending, now = NOW }: Doors = {}) => useReachPrompts(doors, now),
+      { wrapper },
+    ),
+    client,
+  };
+}
+
+/** A Door waiting on the owner. */
+function door(id: string, timestamp: string): TrackedAction {
+  return { action: { ...pendingActionFixture, request_id: id, timestamp }, phase: "pending" };
 }
 
 function on(userAgent: string): void {
@@ -247,5 +268,247 @@ describe("useReachPrompts' gate", () => {
     rerender();
 
     expect(result.current.gate).toBeNull();
+  });
+});
+
+describe("useReachPrompts' row", () => {
+  const A = door("door-a", "2026-09-07T07:41:00Z");
+  const B = door("door-b", "2026-09-07T07:44:00Z");
+
+  /** The row is up: the key has been read and said yes. */
+  async function shown(result: { current: { row: unknown } }) {
+    await waitFor(() => expect(result.current.row).not.toBeNull());
+  }
+
+  beforeEach(() => {
+    vi.mocked(reachContext).mockReturnValue("tab");
+  });
+
+  it("shows one row, at the Door's time, once the house's key is read", async () => {
+    const { result } = launch([A]);
+
+    await waitFor(() =>
+      expect(result.current.row).toMatchObject({ kind: "reach", at: A.action.timestamp }),
+    );
+  });
+
+  it("does not read the key until a Door waits", async () => {
+    const { result, rerender } = launch();
+
+    await settle();
+    expect(fetchPublicKey).not.toHaveBeenCalled();
+    expect(result.current.row).toBeNull();
+
+    rerender({ pending: [A] });
+
+    await shown(result);
+    expect(fetchPublicKey).toHaveBeenCalledTimes(1);
+  });
+
+  it("no row while the read is pending", async () => {
+    const answerKey = holdKey();
+    const { result } = launch([A]);
+
+    await settle();
+    expect(fetchPublicKey).toHaveBeenCalledTimes(1);
+    expect(result.current.row).toBeNull();
+
+    await act(async () => answerKey(KEY));
+    await shown(result);
+  });
+
+  it("no row when the read fails", async () => {
+    vi.mocked(fetchPublicKey).mockRejectedValue(new Error("no route to the house"));
+    const { result, client } = launch([A]);
+
+    await keyAnswered(client, "error");
+
+    expect(result.current.row).toBeNull();
+    expect(fetchPublicKey).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads a failed key again for the next Door, and not on a tick", async () => {
+    vi.mocked(fetchPublicKey).mockRejectedValue(new Error("no route to the house"));
+    const { result, client, rerender } = launch([A]);
+    await keyAnswered(client, "error");
+
+    rerender({ pending: [A], now: NOW + 1000 });
+    await settle();
+    expect(fetchPublicKey).toHaveBeenCalledTimes(1);
+
+    vi.mocked(fetchPublicKey).mockResolvedValue(KEY);
+    rerender({ pending: [] });
+    rerender({ pending: [B] });
+
+    await shown(result);
+    expect(fetchPublicKey).toHaveBeenCalledTimes(2);
+  });
+
+  it("no row with no key", async () => {
+    vi.mocked(fetchPublicKey).mockResolvedValue(null);
+    const { result, client } = launch([A]);
+
+    await keyAnswered(client);
+
+    expect(result.current.row).toBeNull();
+  });
+
+  it("no row off an iPhone", async () => {
+    on(MAC);
+    const { result } = launch([A]);
+
+    await settle();
+
+    expect(result.current.row).toBeNull();
+    expect(fetchPublicKey).not.toHaveBeenCalled();
+  });
+
+  it("no row in the installed app", async () => {
+    vi.mocked(reachContext).mockReturnValue("capable");
+    const { result } = launch([A]);
+
+    // The gate needs the key too, so by now the key has answered yes.
+    await waitFor(() => expect(result.current.gate).toBe("standalone"));
+
+    expect(result.current.row).toBeNull();
+  });
+
+  it("leaves with the last Door", async () => {
+    const { result, rerender } = launch([A]);
+    await shown(result);
+
+    rerender({ pending: [] });
+
+    expect(result.current.row).toBeNull();
+  });
+
+  it("one row for several Doors, at the oldest's time", async () => {
+    const { result } = launch([A, B]);
+
+    await shown(result);
+
+    expect(result.current.row).toMatchObject({ at: A.action.timestamp });
+  });
+
+  it("Not now removes it, and that holds across a reload", async () => {
+    const first = launch([A]);
+    await shown(first.result);
+
+    act(() => first.result.current.notNow());
+    expect(first.result.current.row).toBeNull();
+    first.unmount();
+
+    const { result } = launch([A]);
+
+    await settle();
+    expect(result.current.row).toBeNull();
+    // Nothing waits that `Not now` has not answered, so the key is not even asked for.
+    expect(fetchPublicKey).toHaveBeenCalledTimes(1);
+  });
+
+  it("one tap answers every Door then waiting", async () => {
+    const first = launch([A, B]);
+    await shown(first.result);
+
+    act(() => first.result.current.notNow());
+    first.unmount();
+
+    const { result } = launch([A, B]);
+
+    await settle();
+    expect(result.current.row).toBeNull();
+    expect(fetchPublicKey).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers the Doors waiting at the tap, not those of an earlier render", async () => {
+    const { result, rerender } = launch([A]);
+    await shown(result);
+
+    rerender({ pending: [A, B] });
+    act(() => result.current.notNow());
+
+    expect(result.current.row).toBeNull();
+    expect(readAnsweredDoors()).toEqual(["door-a", "door-b"]);
+  });
+
+  it("replaces the answered list, so it cannot grow", async () => {
+    const { result, rerender } = launch([A]);
+    await shown(result);
+    act(() => result.current.notNow());
+
+    rerender({ pending: [B] });
+    await shown(result);
+    act(() => result.current.notNow());
+
+    expect(readAnsweredDoors()).toEqual(["door-b"]);
+  });
+
+  it("comes back with a new Door, at that Door's time", async () => {
+    const { result, rerender } = launch([A]);
+    await shown(result);
+    act(() => result.current.notNow());
+
+    rerender({ pending: [A, B] });
+
+    expect(result.current.row).toMatchObject({ at: B.action.timestamp });
+  });
+
+  it("does not come back for a Door already waiting", async () => {
+    const { result, rerender } = launch([A, B]);
+    await shown(result);
+    act(() => result.current.notNow());
+
+    rerender({ pending: [B] });
+
+    expect(result.current.row).toBeNull();
+  });
+
+  it("Not now holds for this run when the store throws", async () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+    });
+    const { result, rerender } = launch([A]);
+    await shown(result);
+
+    act(() => result.current.notNow());
+    expect(result.current.row).toBeNull();
+    expect(readAnsweredDoors()).toEqual([]);
+
+    rerender({ pending: [A], now: NOW + 1000 });
+    expect(result.current.row).toBeNull();
+  });
+
+  it("a Door with an unreadable time is placed at the Door clock", async () => {
+    const { result } = launch([door("door-a", "garbage")]);
+
+    await shown(result);
+
+    expect(result.current.row).toMatchObject({ at: new Date(NOW).toISOString() });
+  });
+
+  it("a Door tick leaves the row and its buttons' callbacks as they were", async () => {
+    const { result, rerender } = launch([A]);
+    await shown(result);
+    const { row, notNow, showMe } = result.current;
+
+    // `door.pending` is a new list on every tick, of the same Doors.
+    rerender({ pending: [A], now: NOW + 1000 });
+
+    expect(result.current.row).toBe(row);
+    expect(result.current.notNow).toBe(notNow);
+    expect(result.current.showMe).toBe(showMe);
+  });
+
+  it("the install gate stays open when the last Door leaves", async () => {
+    const { result, rerender } = launch([A]);
+    await shown(result);
+
+    act(() => result.current.showMe());
+    expect(result.current.gate).toBe("install");
+
+    rerender({ pending: [] });
+
+    expect(result.current.gate).toBe("install");
+    expect(result.current.row).toBeNull();
   });
 });

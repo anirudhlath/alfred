@@ -29,7 +29,9 @@ export type TimelineItem =
     }
   | { kind: "tombstone"; id: string; at: string; title: string; meta: string }
   | { kind: "transcribing"; id: string; at: string; seconds: number }
-  | { kind: "thinking"; id: string; at: string; detail: string };
+  | { kind: "thinking"; id: string; at: string; detail: string }
+  /** The prompt row, offering the home screen beside a waiting Door (`useReachPrompts`). */
+  | { kind: "reach"; id: string; at: string };
 
 /** The four streams the Room reads. Anything else belongs to the Workshop. */
 export const ROOM_STREAMS = [
@@ -196,8 +198,8 @@ function startOfDay(date: Date): number {
  *
  * The house's own rows (notifications, reflex acts) and this device's Act rows
  * (`useReachActRows`) are not conversation; they stay for the day, or from the
- * session's start if that came earlier. Everything else (tombstones, live rows,
- * the unsent queue) is the caller's, never windowed here.
+ * session's start if that came earlier. Everything else (tombstones, the prompt,
+ * live rows, the unsent queue) is the caller's, never windowed here.
  *
  * `now` is only the reference for "idle" and "today": a turn stamped after it
  * (the server's clock, a phone a few seconds behind) is current.

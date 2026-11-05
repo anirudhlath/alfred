@@ -1,10 +1,18 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { ReachGate } from "@/gates/ReachGates";
+import type { TrackedAction } from "@/lib/actions";
 import { onIPhone } from "@/lib/device";
 import type { TimelineItem } from "@/lib/history";
 import { fetchPublicKey, permission, reachContext, type ReachContext } from "@/lib/push";
-import { gateAnswered, REACH_ACTS_KEY, reachActRow, readReachActs } from "@/lib/reach-local";
+import {
+  gateAnswered,
+  REACH_ACTS_KEY,
+  reachActRow,
+  readAnsweredDoors,
+  readReachActs,
+  writeAnsweredDoors,
+} from "@/lib/reach-local";
 
 /**
  * The iOS dialog's answers as the Room's rows. Storage is read once, when the cache
@@ -31,7 +39,8 @@ export const PUSH_KEY_QUERY_KEY = ["push", "public-key"] as const;
 /**
  * Whether the house has a Web Push key, asked only once it is `wanted`. A prompt
  * promising a knock needs one to keep that promise. `answered` covers a read that
- * failed, with `has` false: there is no retry, since the next launch reads anew.
+ * failed, with `has` false: there is no retry, since the next launch reads anew, as
+ * does the next Door once a tab has stopped wanting it.
  */
 export function useHouseKey(wanted: boolean): { answered: boolean; has: boolean } {
   const { data, isFetched } = useQuery({
@@ -46,18 +55,40 @@ export function useHouseKey(wanted: boolean): { answered: boolean; has: boolean 
 }
 
 export interface ReachPrompts {
-  /** The gate the Room has up: for now, only the one that opens itself. */
+  /** The prompt row, of kind `reach`, while it has something true to say. */
+  row: TimelineItem | null;
+  /** The row's `Not now`: answers every Door waiting at that moment. */
+  notNow: () => void;
+  /** The row's `Show me how`: opens the install gate. */
+  showMe: () => void;
+  /** The gate the Room has up: the one the row opened, or the one that opens itself. */
   gate: ReachGate | null;
   closeGate: () => void;
 }
 
+/** The row's time. An unreadable stamp has no place in the thread's sort or its day dividers. */
+function doorTime({ action }: TrackedAction, now: number): string {
+  return Number.isNaN(Date.parse(action.timestamp))
+    ? new Date(now).toISOString()
+    : action.timestamp;
+}
+
 /**
- * What the Room raises about notifications without being asked: the standalone
- * gate, once on launch, in the installed app on an iPhone (the spec's D9) with the
- * permission still `default`, a button not yet tapped and a key on the house.
- * A launch with neither button tapped writes nothing, so the next one shows it.
+ * What the Room raises about notifications without being asked, on an iPhone only
+ * (the spec's D9).
+ *
+ * In a tab, the prompt row: while a Door waits that `Not now` has not answered and
+ * the house has a key, at the time of the first such Door. It is derived from those
+ * facts, so it leaves with the last of them and a reload brings it back. `Not now`
+ * holds until a Door arrives that was not waiting when it was tapped (the spec's D11).
+ *
+ * In the installed app, the standalone gate, once on launch, with the permission
+ * still `default`, a button not yet tapped and a key on the house. A launch with
+ * neither button tapped writes nothing, so the next one shows it.
+ *
+ * `pending` is oldest first, as `DoorProvider` keeps it, and `now` is its clock.
  */
-export function useReachPrompts(): ReachPrompts {
+export function useReachPrompts(pending: TrackedAction[], now: number): ReachPrompts {
   // Read once, each of them: this is what decides whether the key is wanted, and
   // a tap on the launch's own gate is no reason to take that back.
   const [iPhone] = useState(onIPhone);
@@ -65,8 +96,34 @@ export function useReachPrompts(): ReachPrompts {
   const [eligible] = useState(
     () => iPhone && context === "capable" && permission() === "default" && !gateAnswered(),
   );
-  const key = useHouseKey(eligible);
   const [gate, setGate] = useState<ReachGate | null>(null);
+  // Held here as well as stored, so a tap the store refused still holds for this run.
+  const [answered, setAnswered] = useState(readAnsweredDoors);
+  const waiting = pending.filter(({ action }) => !answered.includes(action.request_id));
+  const offering = iPhone && context === "tab" && waiting.length > 0;
+  const key = useHouseKey(eligible || offering);
+
+  // A string, so a Door tick neither re-creates the row nor re-sorts the thread for it.
+  const at = offering && key.has ? doorTime(waiting[0], now) : null;
+  const row = useMemo<TimelineItem | null>(
+    () => (at === null ? null : { kind: "reach", id: "reach:prompt", at }),
+    [at],
+  );
+
+  // Through a ref, as `useRoom` reads its queue: `pending` is a new list on every
+  // Door tick, and `notNow` must not be a new function with it.
+  const pendingRef = useRef(pending);
+  useEffect(() => {
+    pendingRef.current = pending;
+  }, [pending]);
+
+  // Every Door then waiting, replacing the old list, so it cannot grow.
+  const notNow = useCallback(() => {
+    const ids = pendingRef.current.map(({ action }) => action.request_id);
+    setAnswered(ids);
+    writeAnsweredDoors(ids);
+  }, []);
+  const showMe = useCallback(() => setGate("install"), []);
 
   // Set on the key's first answer, whatever it said. It is what stops a later
   // re-read reopening the gate: a sign-in's `invalidateQueries()` reaches the key.
@@ -84,5 +141,5 @@ export function useReachPrompts(): ReachPrompts {
   }
 
   const closeGate = useCallback(() => setGate(null), []);
-  return { gate, closeGate };
+  return { row, notNow, showMe, gate, closeGate };
 }

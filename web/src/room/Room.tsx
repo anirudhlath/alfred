@@ -81,8 +81,17 @@ export function Room() {
   }, [door.actions, tombstone]);
 
   const deviceActs = useReachActRows();
-  const room = useRoom({ history: historyItems, tombstones, idleMs, deviceActs });
-  const prompts = useReachPrompts();
+  const prompts = useReachPrompts(door.pending, door.now);
+  const room = useRoom({
+    history: historyItems,
+    tombstones,
+    idleMs,
+    deviceActs,
+    prompt: prompts.row,
+  });
+  // Memoised, so a Door tick hands the Timeline the same object.
+  const { showMe, notNow } = prompts;
+  const promptButtons = useMemo(() => ({ onShowMe: showMe, onNotNow: notNow }), [showMe, notNow]);
 
   useEffect(() => {
     signal.setThinking(room.thinking);
@@ -136,6 +145,7 @@ export function Room() {
         items={room.items}
         firstDayGreeting={firstRun && room.items.length === 0 ? greetingFor(hour) : null}
         onWhy={setWhy}
+        prompt={promptButtons}
       />
 
       {banner ? (
