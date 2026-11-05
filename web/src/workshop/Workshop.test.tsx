@@ -183,6 +183,16 @@ function mountInRoom() {
   return { rerenderRoom: () => act(() => bump.fire()) };
 }
 
+/**
+ * A bench's reads, landed inside `act`. Left to a `findBy`, one can commit just as
+ * that ends, and the effect it wakes then warns: `act`'s environment is back on.
+ */
+async function settle(): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(50);
+  });
+}
+
 function mount(open: boolean, onClose = vi.fn(), onWhy = vi.fn(), onHeld = vi.fn()) {
   const client = makeClient();
   const tree = (isOpen: boolean) => (
@@ -216,8 +226,9 @@ afterEach(() => {
 });
 
 describe("Workshop", () => {
-  it("rises under the sheets as the Workshop, and Room closes it", () => {
+  it("rises under the sheets as the Workshop, and Room closes it", async () => {
     const { onClose } = mount(true);
+    await settle();
     const dialog = screen.getByRole("dialog", { name: "Workshop" });
     // The whole token: `toContain("z-10")` is also true of `z-100`, which is a
     // different layer and would put the Workshop over the sheets it must sit
@@ -272,6 +283,7 @@ describe("Workshop", () => {
   it("unmounts the bench nobody is looking at, and its clock with it", async () => {
     mount(true);
     fireEvent.click(screen.getByRole("tab", { name: "System" }));
+    await settle();
     // Two `setInterval`s live on this bench: the 1 Hz health stamp and the
     // minute tick that dates its session rows. A `switch` that returned all
     // four benches and hid three would leave both running behind a panel
@@ -280,6 +292,7 @@ describe("Workshop", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
     expect(screen.queryByTestId("health-stamp")).toBeNull();
+    await settle();
   });
 
   it("asks for nothing on behalf of a bench nobody has opened, and for what the open one needs", async () => {
@@ -376,6 +389,7 @@ describe("Workshop", () => {
   it("hands the Held-back sheet up to the Room", async () => {
     const { onHeld } = mount(true);
     fireEvent.click(screen.getByRole("tab", { name: "System" }));
+    await settle();
     fireEvent.click(await screen.findByRole("button", { name: /Held back/ }));
     // The sheet is the Room's — Quiet's third row is the only thing on this
     // bench that leaves it.
@@ -427,11 +441,12 @@ describe("Workshop", () => {
     expect(screen.getByTestId("workshop-status")).toHaveTextContent("last true --:-- · not live");
   });
 
-  it("names the minute the pump went quiet once it has been live", () => {
+  it("names the minute the pump went quiet once it has been live", async () => {
     // `--:--` above is the same line whether the header reads the clock or
     // hardcodes the dashes. This is the branch beside it: a feed that *was*
     // live has a stamp, and the header has to print it.
     mount(true);
+    await settle();
     expect(screen.getByTestId("workshop-status")).toHaveTextContent("live ·");
 
     vi.setSystemTime(new Date(2026, 8, 7, 21, 40, 0));
@@ -510,6 +525,7 @@ describe("Workshop", () => {
   it("keeps a System write's note through a trip to another bench", async () => {
     mount(true);
     fireEvent.click(screen.getByRole("tab", { name: "System" }));
+    await settle();
     fireEvent.click(await screen.findByRole("button", { name: "Send them now" }));
     // The server confirmed the queue-up, and the stamp is of that reply — not
     // of the press (spec §5.2, and `useSystem.ts` on `drainedAt`).
@@ -523,8 +539,9 @@ describe("Workshop", () => {
     expect(await screen.findByText(/^queued 21:14 · /)).toBeInTheDocument();
   });
 
-  it("closes on Escape, which is all a standalone app has", () => {
+  it("closes on Escape, which is all a standalone app has", async () => {
     const { onClose } = mount(true);
+    await settle();
     fireEvent.keyDown(screen.getByRole("dialog", { name: "Workshop" }), { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });

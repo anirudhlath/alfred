@@ -9,7 +9,7 @@ import {
   syncSubscription,
 } from "@/lib/push";
 import { REACH_ACTS_KEY, type ReachAct } from "@/lib/reach-local";
-import { authSession } from "@/test/fixtures";
+import { authSession, IPHONE_UA } from "@/test/fixtures";
 import { BUSY, failedClient, makeClient } from "@/test/push-client";
 import { ReachSection } from "./ReachSection";
 import type { Sessions } from "./useSystem";
@@ -106,9 +106,6 @@ describe("ReachSection over usePush", () => {
   });
 
   describe("on an iPhone, Reach's route to the Act rows", () => {
-    const IPHONE =
-      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1";
-
     afterEach(() => {
       vi.restoreAllMocks();
       localStorage.clear();
@@ -117,7 +114,7 @@ describe("ReachSection over usePush", () => {
     /** The owner taps through Reach and answers iOS with `answer`, on `client`. */
     async function answerFromReach(answer: "granted" | "denied", client: QueryClient) {
       granted = "default";
-      vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE);
+      vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE_UA);
       vi.mocked(requestAndSubscribe).mockImplementation(async () => {
         await Promise.resolve();
         granted = answer;

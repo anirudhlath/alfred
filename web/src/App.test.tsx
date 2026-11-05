@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   deferredFixture,
   firstRunOverviewFixture,
+  IPHONE_UA,
   notificationsPage,
   overviewFixture,
   pendingActionFixture,
@@ -139,14 +140,21 @@ const ROUTES: Record<string, unknown> = {
 
 const EMPTY_PAGE = { entries: [], next_before: null };
 
-const IPHONE =
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1";
-
 let routes: Record<string, unknown>;
 
 /** The paths fetch was asked for, in order. */
 function fetched(): string[] {
   return vi.mocked(fetch).mock.calls.map(([input]) => String(input));
+}
+
+/**
+ * The first reads, landed inside `act`. Left to a `findBy`, one can commit just as
+ * that ends, and the effect it wakes then warns: `act`'s environment is back on.
+ */
+async function settle(): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(50);
+  });
 }
 
 /** The key read stays out until the test answers it, and what it said has then been drawn. */
@@ -166,7 +174,7 @@ function holdKey(): () => Promise<void> {
 /** An iPhone's first launch from the home screen. Hands back iOS's word, for a test to change. */
 function firstLaunch(): { permission: NotificationPermission } {
   vi.mocked(reachContext).mockReturnValue("capable");
-  vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE);
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE_UA);
   const notification = { permission: "default" as NotificationPermission };
   vi.stubGlobal("Notification", notification);
   return notification;
@@ -218,6 +226,7 @@ afterEach(() => {
 describe("App", () => {
   it("boots an authenticated device into a listening Room", async () => {
     render(<App />);
+    await settle();
 
     expect(await screen.findByRole("heading", { name: "Listening, sir." })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Switch theme" })).toBeInTheDocument();
@@ -258,6 +267,7 @@ describe("App", () => {
 
   it("offers the composer and the microphone", async () => {
     render(<App />);
+    await settle();
     expect(await screen.findByPlaceholderText("Ask or tell Alfred")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Hold to talk" })).toBeInTheDocument();
   });
@@ -293,6 +303,7 @@ describe("App", () => {
     vi.setSystemTime(new Date(2026, 8, 7, 23, 0));
     localStorage.setItem(THEME_KEY, "light");
     render(<App />);
+    await settle();
     await screen.findByRole("heading", { name: "Listening, sir." });
     expect(document.documentElement.dataset.theme).toBe("light");
   });
@@ -590,6 +601,7 @@ describe("App", () => {
     // the case `Workshop.tsx` names for its `memo`.
     routes["/api/actions/pending"] = { actions: [pendingActionFixture] };
     render(<App />);
+    await settle();
 
     fireEvent.click(await screen.findByRole("button", { name: "Open the Workshop" }));
     const workshop = await screen.findByRole("dialog", { name: "Workshop" });
@@ -616,7 +628,7 @@ describe("App", () => {
     // 21:20 local: the fixture's turns are one live session, and the row lands in it.
     vi.setSystemTime(new Date(2026, 8, 7, 21, 20));
     vi.mocked(reachContext).mockReturnValue("capable");
-    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE);
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE_UA);
     vi.stubGlobal("Notification", {
       permission: "default",
       requestPermission: async () => "denied",
@@ -704,7 +716,7 @@ describe("App", () => {
   it("a waiting Door in an iPhone tab offers the install path", async () => {
     // 21:20 local, the thread's day, with the fuse of a Door asked a minute ago running.
     vi.setSystemTime(new Date(2026, 8, 7, 21, 20));
-    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE);
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE_UA);
     routes["/api/actions/pending"] = {
       actions: [
         {
@@ -759,6 +771,7 @@ describe("App — the socket's word", () => {
     socket.status = "offline";
     const setOffline = vi.spyOn(PresenceSignal.prototype, "setOffline");
     render(<App />);
+    await settle();
 
     expect(await screen.findByRole("heading", { name: "Unreachable." })).toBeInTheDocument();
     expect(screen.getByText(/^No connection to the house since /)).toBeInTheDocument();
@@ -770,6 +783,7 @@ describe("App — the socket's word", () => {
   it("says it is still trying while the socket reconnects", async () => {
     socket.status = "reconnecting";
     render(<App />);
+    await settle();
 
     expect(await screen.findByRole("heading", { name: "Reconnecting…" })).toBeInTheDocument();
     expect(screen.getByText(/^Trying again\. /)).toBeInTheDocument();
@@ -778,6 +792,7 @@ describe("App — the socket's word", () => {
   it("turns the headline and the field to a turn in flight", async () => {
     const setThinking = vi.spyOn(PresenceSignal.prototype, "setThinking");
     render(<App />);
+    await settle();
     const field = await screen.findByPlaceholderText("Ask or tell Alfred");
 
     fireEvent.change(field, { target: { value: "Lights off in the study" } });
@@ -789,6 +804,7 @@ describe("App — the socket's word", () => {
 
   it("changes the headline the moment a hold begins", async () => {
     render(<App />);
+    await settle();
     await screen.findByRole("heading", { name: "Listening, sir." });
     const button = screen.getByRole("button", { name: "Hold to talk" });
 
@@ -807,6 +823,7 @@ describe("App — the socket's word", () => {
     // `Room` wires `onAudio` to anything: this is the half that does not.
     mic.recording = { blob: new Blob(["take"], { type: "audio/mp4" }), durationMs: 2000 };
     render(<App />);
+    await settle();
     await screen.findByRole("heading", { name: "Listening, sir." });
     const button = screen.getByRole("button", { name: "Hold to talk" });
 

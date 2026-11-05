@@ -16,6 +16,7 @@ import {
   type ReachAct,
 } from "@/lib/reach-local";
 import { useReachActRows } from "@/room/useReachPrompts";
+import { IPHONE_UA } from "@/test/fixtures";
 import { BUSY, failedClient, makeClient } from "@/test/push-client";
 import type { SyncAnswer } from "@/lib/push";
 import { usePush, type PushOptions, type PushValue } from "./usePush";
@@ -228,7 +229,7 @@ describe("usePush", () => {
     expect(syncSubscription).not.toHaveBeenCalled();
   });
 
-  it("enables without awaiting before the permission request", () => {
+  it("enables without awaiting before the permission request", async () => {
     granted = "default";
     const { result } = renderPush();
 
@@ -238,6 +239,7 @@ describe("usePush", () => {
       // iOS shows the prompt only from inside the gesture.
       expect(requestAndSubscribe).toHaveBeenCalledTimes(1);
     });
+    await waitFor(() => expect(result.current.asking).toBe(false));
   });
 
   it("is unconfigured when enabling finds the house has no key", async () => {
@@ -326,8 +328,6 @@ describe("usePush", () => {
 });
 
 describe("usePush's Act rows", () => {
-  const IPHONE =
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1";
   const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15";
   const NOW = new Date("2026-11-04T07:44:00.000Z");
   const AT = NOW.toISOString();
@@ -376,7 +376,7 @@ describe("usePush's Act rows", () => {
 
   /** Enable and the Room's rows on an iPhone, on one client, as they are in the app. */
   function renderPushAndRows() {
-    on(IPHONE);
+    on(IPHONE_UA);
     granted = "default";
     const client = makeClient();
     const view = renderHook(() => ({ push: usePush(), rows: useReachActRows() }), {
@@ -397,29 +397,29 @@ describe("usePush's Act rows", () => {
   });
 
   it("writes the on row when iOS allows and the house registers", async () => {
-    expect(await tapEnable(IPHONE, "granted")).toEqual([{ at: AT, outcome: "on" }]);
+    expect(await tapEnable(IPHONE_UA, "granted")).toEqual([{ at: AT, outcome: "on" }]);
     expect(readReachActs()).toEqual([{ at: AT, outcome: "on" }]);
   });
 
   it("writes the off row when iOS declines", async () => {
-    expect(await tapEnable(IPHONE, "denied")).toEqual([{ at: AT, outcome: "off" }]);
+    expect(await tapEnable(IPHONE_UA, "denied")).toEqual([{ at: AT, outcome: "off" }]);
     expect(readReachActs()).toEqual([{ at: AT, outcome: "off" }]);
   });
 
   it("writes no row for a dismissed dialog", async () => {
-    expect(await tapEnable(IPHONE, "default")).toBeUndefined();
+    expect(await tapEnable(IPHONE_UA, "default")).toBeUndefined();
     expect(readReachActs()).toEqual([]);
   });
 
   it("writes no row when the registration fails", async () => {
     const failure = new ApiError(503, "Device store busy");
-    expect(await tapEnable(IPHONE, "granted", failure)).toBeUndefined();
+    expect(await tapEnable(IPHONE_UA, "granted", failure)).toBeUndefined();
     expect(readReachActs()).toEqual([]);
   });
 
   it("writes no row when the house has no key", async () => {
     const failure = new ApiError(404, "Web Push not configured");
-    expect(await tapEnable(IPHONE, "granted", failure)).toBeUndefined();
+    expect(await tapEnable(IPHONE_UA, "granted", failure)).toBeUndefined();
     expect(readReachActs()).toEqual([]);
   });
 

@@ -5,6 +5,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { permission, reachContext, requestAndSubscribe } from "@/lib/push";
 import { gateAnswered, REACH_ACTS_KEY, type ReachAct } from "@/lib/reach-local";
+import { IPHONE_UA } from "@/test/fixtures";
 import { makeClient } from "@/test/push-client";
 import { ReachGates, type ReachGate } from "./ReachGates";
 
@@ -14,9 +15,6 @@ vi.mock("@/lib/push", () => ({
   syncSubscription: vi.fn(),
   requestAndSubscribe: vi.fn(),
 }));
-
-const IPHONE =
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1";
 
 function renderGates(gate: ReachGate, client = makeClient()) {
   const onClose = vi.fn();
@@ -148,7 +146,7 @@ describe("ReachGates", () => {
   });
 
   it("a tap during the gate's leave asks nothing and writes no second row", async () => {
-    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE);
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE_UA);
     vi.mocked(requestAndSubscribe).mockResolvedValue("granted");
     const client = makeClient();
     const user = userEvent.setup();
@@ -167,7 +165,7 @@ describe("ReachGates", () => {
   });
 
   it("an iPhone's grant through this gate lands the on row", async () => {
-    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE);
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE_UA);
     vi.mocked(requestAndSubscribe).mockResolvedValue("granted");
     const client = makeClient();
     const user = userEvent.setup();

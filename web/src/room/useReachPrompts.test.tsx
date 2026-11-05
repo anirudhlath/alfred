@@ -7,7 +7,7 @@ import { fetchPublicKey, permission, reachContext } from "@/lib/push";
 import { gateAnswered, markGateAnswered, readAnsweredDoors } from "@/lib/reach-local";
 import { Layer } from "@/shell/Layer";
 import { Sheet } from "@/shell/Sheet";
-import { pendingActionFixture } from "@/test/fixtures";
+import { IPHONE_UA, pendingActionFixture } from "@/test/fixtures";
 import { makeClient } from "@/test/push-client";
 import { PUSH_KEY_QUERY_KEY, useReachPrompts } from "./useReachPrompts";
 
@@ -17,8 +17,6 @@ vi.mock("@/lib/push", () => ({
   fetchPublicKey: vi.fn(),
 }));
 
-const IPHONE =
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1";
 const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15";
 const KEY = "BHouseKey";
 const NOW = Date.parse("2026-09-07T07:42:00Z");
@@ -86,7 +84,7 @@ async function signIn(client: QueryClient) {
 
 beforeEach(() => {
   vi.resetAllMocks();
-  on(IPHONE);
+  on(IPHONE_UA);
   vi.mocked(reachContext).mockReturnValue("capable");
   vi.mocked(permission).mockReturnValue("default");
   vi.mocked(fetchPublicKey).mockResolvedValue(KEY);

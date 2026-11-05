@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { IPHONE_UA } from "@/test/fixtures";
 import { ApiError, timedOut } from "./api";
 import {
   DEVICE_KEY,
@@ -165,11 +166,7 @@ describe("fetchAuthStatus", () => {
 
 describe("defaultDeviceName", () => {
   it("names the common devices", () => {
-    expect(
-      defaultDeviceName(
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1",
-      ),
-    ).toBe("iPhone");
+    expect(defaultDeviceName(IPHONE_UA)).toBe("iPhone");
     expect(defaultDeviceName("Mozilla/5.0 (iPad; CPU OS 18_2 like Mac OS X) AppleWebKit/605.1.15")).toBe("iPad");
     expect(defaultDeviceName("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15")).toBe("Mac");
     expect(defaultDeviceName("Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36")).toBe("Android");
@@ -211,14 +208,14 @@ describe("rememberDevice / rememberedDevice", () => {
   });
 
   it("survives a storage that refuses to write", () => {
-    vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("QuotaExceededError");
     });
     expect(() => rememberDevice({ name: "iPhone", registeredAt: "2026-09-07T07:02:00.000Z" })).not.toThrow();
   });
 
   it("is null when storage cannot be read", () => {
-    vi.spyOn(localStorage, "getItem").mockImplementation(() => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("SecurityError");
     });
     expect(rememberedDevice()).toBeNull();

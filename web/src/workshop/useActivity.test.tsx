@@ -601,6 +601,8 @@ describe("useActivity", () => {
   });
 
   it("takes no row from a frame that is not an entry", async () => {
+    // The provider's word on the pump's trouble, and the one line this test should raise.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     routes[headUrl("events")] = { entries: [entry(1000)], next_before: null };
     mount();
     await waitFor(() => expect(state().loaded).toBe(true));
@@ -624,6 +626,7 @@ describe("useActivity", () => {
 
     expect(rowKeys()).toEqual([`events:${entry(1000).id}`]);
     expect(state().liveAt).toBe(before);
+    expect(warn).toHaveBeenCalledWith("telemetry: redis_error");
   });
 
   it("clears the older banner the moment a retry goes out", async () => {
@@ -699,6 +702,9 @@ describe("useActivity", () => {
     expect(state().counts).toMatchObject({ events: 2 });
 
     showBench(true);
+    expect(rowKeys()).toEqual([`events:${entry(6000).id}`, `events:${entry(5000).id}`]);
+    // The bench coming back reads every stream again: those land in the test.
+    await waitFor(() => expect(settled).toHaveLength(calls.length));
     expect(rowKeys()).toEqual([`events:${entry(6000).id}`, `events:${entry(5000).id}`]);
   });
 
