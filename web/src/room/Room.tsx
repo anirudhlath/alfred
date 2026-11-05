@@ -20,6 +20,7 @@ import { StatusLine } from "@/room/StatusLine";
 import { Timeline } from "@/room/Timeline";
 import { WorkshopHandle } from "@/room/WorkshopHandle";
 import { isFirstRun, sessionIdleMs, useOverview } from "@/room/useOverview";
+import { useReachActRows } from "@/room/useReachPrompts";
 import { useRoom } from "@/room/useRoom";
 import { useRoomHistory } from "@/room/useRoomHistory";
 import { HeldBackSheet } from "@/sheets/HeldBackSheet";
@@ -78,7 +79,8 @@ export function Room() {
     return tombstone ? [...items, tombstone] : items;
   }, [door.actions, tombstone]);
 
-  const room = useRoom({ history: historyItems, tombstones, idleMs });
+  const deviceActs = useReachActRows();
+  const room = useRoom({ history: historyItems, tombstones, idleMs, deviceActs });
 
   useEffect(() => {
     signal.setThinking(room.thinking);

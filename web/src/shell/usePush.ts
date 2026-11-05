@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { ApiError, errorText } from "@/lib/api";
+import { onIPhone } from "@/lib/device";
 import { onVisible } from "@/lib/lifecycle";
 import {
   permission,
@@ -10,6 +11,7 @@ import {
   type ReachContext,
   type SyncAnswer,
 } from "@/lib/push";
+import { addReachAct, REACH_ACTS_KEY } from "@/lib/reach-local";
 
 /**
  * The sync's one cache entry. A sign-in's `invalidateQueries()` (`AuthGate`)
@@ -144,6 +146,14 @@ export function usePush({ syncOnMount = true }: PushOptions = {}): PushValue {
           // takes it as its own rather than registering a second time. A
           // refusal or a dismissed prompt needs nothing — the permission says it.
           if (answer === "granted") queryClient.setQueryData(PUSH_QUERY_KEY, "on");
+          // The answer goes in the Room, on the one device its copy can name. Only
+          // here: a registration that failed rejects, and `on` would then be false.
+          if (answer !== "default" && onIPhone()) {
+            queryClient.setQueryData(
+              REACH_ACTS_KEY,
+              addReachAct(answer === "granted" ? "on" : "off", new Date().toISOString()),
+            );
+          }
         },
         (error: unknown) => {
           // The house has no key: said, and not asked again.

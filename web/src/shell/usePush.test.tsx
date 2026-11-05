@@ -9,6 +9,13 @@ import {
   requestAndSubscribe,
   syncSubscription,
 } from "@/lib/push";
+import {
+  addReachAct,
+  REACH_ACTS_KEY,
+  readReachActs,
+  type ReachAct,
+} from "@/lib/reach-local";
+import { useReachActRows } from "@/room/useReachPrompts";
 import { BUSY, failedClient, makeClient } from "@/test/push-client";
 import type { SyncAnswer } from "@/lib/push";
 import { usePush, type PushOptions } from "./usePush";
@@ -312,6 +319,115 @@ describe("usePush", () => {
     await act(async () => client.invalidateQueries());
     await waitFor(() => expect(syncSubscription).toHaveBeenCalledTimes(2));
     expect(result.current.reach).toEqual({ kind: "on" });
+  });
+});
+
+describe("usePush's Act rows", () => {
+  const IPHONE =
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1";
+  const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15";
+  const NOW = new Date("2026-11-04T07:44:00.000Z");
+  const AT = NOW.toISOString();
+
+  /** This page is on `userAgent`, and the prompt is still to come. */
+  function on(userAgent: string): void {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(userAgent);
+    granted = "default";
+  }
+
+  /** The owner taps Enable on `userAgent`, and the tap runs to its end. */
+  async function tapEnable(
+    userAgent: string,
+    answer: NotificationPermission,
+    failure?: Error,
+  ): Promise<ReachAct[] | undefined> {
+    on(userAgent);
+    answers(answer, failure);
+    const { result, client } = renderPush();
+
+    act(() => result.current.enable());
+    await waitFor(() => expect(result.current.asking).toBe(false));
+    await settle();
+    return client.getQueryData<ReachAct[]>(REACH_ACTS_KEY);
+  }
+
+  beforeEach(() => {
+    vi.setSystemTime(NOW);
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    localStorage.clear();
+  });
+
+  it("writes the on row when iOS allows and the house registers", async () => {
+    expect(await tapEnable(IPHONE, "granted")).toEqual([{ at: AT, outcome: "on" }]);
+    expect(readReachActs()).toEqual([{ at: AT, outcome: "on" }]);
+  });
+
+  it("writes the off row when iOS declines", async () => {
+    expect(await tapEnable(IPHONE, "denied")).toEqual([{ at: AT, outcome: "off" }]);
+    expect(readReachActs()).toEqual([{ at: AT, outcome: "off" }]);
+  });
+
+  it("writes no row for a dismissed dialog", async () => {
+    expect(await tapEnable(IPHONE, "default")).toBeUndefined();
+    expect(readReachActs()).toEqual([]);
+  });
+
+  it("writes no row when the registration fails", async () => {
+    const failure = new ApiError(503, "Device store busy");
+    expect(await tapEnable(IPHONE, "granted", failure)).toBeUndefined();
+    expect(readReachActs()).toEqual([]);
+  });
+
+  it("writes no row when the house has no key", async () => {
+    const failure = new ApiError(404, "Web Push not configured");
+    expect(await tapEnable(IPHONE, "granted", failure)).toBeUndefined();
+    expect(readReachActs()).toEqual([]);
+  });
+
+  it.each(["granted", "denied"] as const)("writes no row off an iPhone: %s", async (answer) => {
+    expect(await tapEnable(MAC, answer)).toBeUndefined();
+    expect(readReachActs()).toEqual([]);
+  });
+
+  it("keeps the row and finishes the tap when the store refuses it", async () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("refused", "QuotaExceededError");
+    });
+    on(IPHONE);
+    answers("granted");
+    const client = makeClient();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => ({ push: usePush(), rows: useReachActRows() }), { wrapper });
+    expect(result.current.rows).toEqual([]);
+
+    act(() => result.current.push.enable());
+    await waitFor(() => expect(result.current.push.asking).toBe(false));
+
+    expect(result.current.push.reach).toEqual({ kind: "on" });
+    expect(readReachActs()).toEqual([]);
+    expect(result.current.rows).toMatchObject([
+      { kind: "act", at: AT, text: "Notifications on for this iPhone" },
+    ]);
+  });
+
+  it("brings back the rows an earlier launch wrote", () => {
+    addReachAct("off", AT);
+    const client = makeClient();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useReachActRows(), { wrapper });
+
+    expect(result.current).toMatchObject([
+      { kind: "act", at: AT, text: "Notifications stay off on this iPhone" },
+    ]);
   });
 });
 
