@@ -33,7 +33,7 @@ export default defineConfig([
       sourceType: 'script',
     },
     rules: {
-      // Rule 3 of sw.js's header: these ten globals go through `self.`,
+      // Rule 3 of sw.js's header: these twelve globals go through `self.`,
       // because that object is the entire world src/test/sw-harness.ts can
       // replace. The language's own globals, and URL and Response, are reached
       // bare and run for real in the tests; none of them reaches outside the
@@ -52,7 +52,9 @@ export default defineConfig([
           'clearTimeout',
           'clients',
           'fetch',
+          'indexedDB',
           'location',
+          'navigator',
           'registration',
           'setTimeout',
           'skipWaiting',
