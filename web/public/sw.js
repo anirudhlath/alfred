@@ -124,7 +124,7 @@ const CEILING_MS = 120000;
    one per navigation — released the moment its headers arrive (see
    navigate()); what outlives the race is a request still awaiting headers,
    bounded by the browser's own network timeout. The alternative costs the
-   page's Request, which is worse. The other is the
+   page's Request, which is worse. Another is the
    reading of a body, inside `whole`: one race per piece, and one over all of
    them with CEILING_MS for its length — and there the loser is not left
    running: `whole` cancels what it was reading the moment a race is lost, and

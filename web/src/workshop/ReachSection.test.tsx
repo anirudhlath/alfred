@@ -14,8 +14,8 @@ function setPush(reach: Reach, asking = false) {
   push.value = { ...push.value, reach, asking };
 }
 
-// Alfred.dc.html:389-395 and the brief's table, verbatim; D1–D4, D7 and D8 from
-// the plans' Deviations tables.
+// Alfred.dc.html:389-395 and the brief's table, verbatim; D1–D4 and D7 from the
+// slice 1 plan's Deviations table, D8 from the slice 2 spec's.
 const INSTALL_SUB = "unavailable in Safari · add to home screen first";
 const ASK_SUB = "off · not yet asked · iOS asks once";
 const ON_SUB = "on · this iPhone · important and urgent only";

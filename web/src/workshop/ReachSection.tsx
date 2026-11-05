@@ -60,7 +60,7 @@ const LINES: Record<Reach["kind"], { sub: string; right: Right }> = {
 
 /**
  * What the number on the icon counts, on the `on` line where the icon can show
- * one: the plan's deviation D8, since the handoff's own clause would be false.
+ * one: the slice 2 spec's deviation D8, since the handoff's own clause would be false.
  */
 const BADGE_CLAUSE = " · badge = notifications since you last opened";
 

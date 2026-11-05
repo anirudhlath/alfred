@@ -1608,21 +1608,22 @@ from would never stop. The file's header has the measurements.
 1. `cp web/public/sw.kill.js web/public/sw.js`, and commit that alone. A real copy — not a
    redirect, a symlink or an import.
 2. Open a pull request and let `ci-ok` pass it. While `sw.js` is `sw.kill.js` byte for
-   byte, and only then, every test that reads the worker's bytes stands down: the two
-   files that do, `src/test/sw.test.ts` and `src/test/sw-server-routes.test.ts`, each run
-   one passing test that says the switch is fired (a warning on the run in GitHub
-   Actions). CI keeps that true before anyone needs it: every run of the web job also runs
-   the whole suite on a fired copy of the tree, `sw.kill.js` copied over `sw.js`, so a
-   test that would fail the firing commit fails the pull request that adds it. Beside it,
-   a test that runs in either tree (`sw.test.ts:81`) fails if any file under `src/` loads
-   `public/sw.js` without its own `const FIRED =` and `.skipIf(FIRED)`. That one checks
-   per file, not per block; a block in one of those files that stops standing down is the
-   fired run's to catch. `src/lib/auth.test.ts` no longer reads `sw.js`: its check that
-   the worker's `TIMEOUT_MS` equals the page's `STATUS_DEADLINE_MS` is in `sw.test.ts`'s
-   `navigations` block (`sw.test.ts:2294`). Measured on a fired tree at `1d166e3`: 0
-   failed, 1 840 passed and 269 skipped, and the two warnings. The warnings come from the
-   job's ordinary test step; the fired copy runs with `--reporter=default`, so on a tree
-   that is not fired it posts none, and a run carrying the two is a fired tree.
+   byte, and only then, every test that reads the worker's bytes stands down: each file
+   that does, `src/test/sw.test.ts`, `sw-server-routes.test.ts`, `sw-push.test.ts` and
+   `sw-badge.test.ts`, runs one passing test that says the switch is fired (a warning on
+   the run in GitHub Actions). CI keeps that true before anyone needs it: every run of the
+   web job also runs the whole suite on a fired copy of the tree, `sw.kill.js` copied over
+   `sw.js`, so a test that would fail the firing commit fails the pull request that adds it.
+   Beside it, a test that runs in either tree (`sw.test.ts:81`) fails if any file under
+   `src/` loads `public/sw.js` without its own `const FIRED =` and `.skipIf(FIRED)`. That
+   one checks per file, not per block; a block in one of those files that stops standing
+   down is the fired run's to catch. `src/lib/auth.test.ts` no longer reads `sw.js`: its
+   check that the worker's `TIMEOUT_MS` equals the page's `STATUS_DEADLINE_MS` is in
+   `sw.test.ts`'s `navigations` block (`sw.test.ts:2298`). Measured on a fired tree at
+   `b416875`: 0 failed, 2 085 passed and 305 skipped, and one warning from each of those
+   files. The warnings come from the job's ordinary test step; the fired copy runs with
+   `--reporter=default`, so on a tree that is not fired it posts none, and a run carrying
+   them is a fired tree.
 3. Merge it; merging deploys it. Every installed copy takes it at its next update check —
    a navigation, or a return to the foreground.
 4. Afterwards, **revert the firing commit** (a pull request of its own), and ship the fix.
@@ -1906,16 +1907,16 @@ phase 6 (D9).
 **The prompt row** (`ReachRow`, `Alfred.dc.html:75-77` and `:751`) shows in a browser tab
 while a Door waits that `Not now` has not answered and the house has a Web Push key. The key
 is read only once the other two hold (`useHouseKey`). While that read is pending, or if it
-failed, there is no row. A failed read has no retry: the next launch reads it anew, and a
-later Door does only once no such Door was left waiting. The row is derived from those facts,
-so it leaves with the last such Door, several Doors give one row, and a reload brings
-it back while one still waits. It takes the first such Door's time for its place in the
-thread and its meta line (D10), and `useRoom` never windows it, because it stands as long as
-its Door does. `Show me how` opens the install gate, with the row left behind it. `Not now`
-answers every Door waiting at that moment, so the row stays gone, across a reload too, until
-a Door arrives that was not waiting when it was tapped. It writes no line into the Room: the
-handoff's line (`Alfred.dc.html:835`) promises never to raise it again, which would be false
-(D11, the owner's ruling).
+failed, there is no row. A failed read is not retried at once: a reconnect or a sign-in reads
+it anew, as does the next launch, and a later Door does only once no such Door was left
+waiting. The row is derived from those facts, so it leaves with the last such Door, several
+Doors give one row, and a reload brings it back while one still waits. It takes the first
+such Door's time for its place in the thread and its meta line (D10), and `useRoom` never
+windows it, because it stands as long as its Door does. `Show me how` opens the install
+gate, with the row left behind it. `Not now` answers every Door waiting at that moment, so
+the row stays gone, across a reload too, until a Door arrives that was not waiting when it
+was tapped. It writes no line into the Room: the handoff's line (`Alfred.dc.html:835`)
+promises never to raise it again, which would be false (D11, the owner's ruling).
 
 **The gate that opens itself.** In the installed app, with the permission still `default`,
 neither button tapped, a key on the house and nothing modal already up, the `standalone` gate
@@ -1996,10 +1997,10 @@ screen inside `AuthGate`, so a person at the sign-in gate on launch has not open
 session that lapsed in the background is the exception: `PushKeeper` stays mounted under the
 Expired gate, so the number clears just before that gate rises, and what counts as seen is
 [#424](https://github.com/anirudhlath/alfred/issues/424)'s to define. `forgetPush()` clears it
-first on sign-out, since a number left there would never move again. `clearBadge()` zeroes the count and clears the icon, each whatever becomes
-of the other; it never rejects and has no time limit, so every caller leaves it unawaited.
-Notifications already in Notification Center are left alone: opening clears the number, not
-the shade.
+first on sign-out, since a number left there would never move again. `clearBadge()` zeroes
+the count and clears the icon, each whatever becomes of the other; it never rejects and has
+no time limit, so every caller leaves it unawaited. Notifications already in Notification
+Center are left alone: opening clears the number, not the shade.
 
 `lib/badge.ts` repeats the database's names and its upgrade, since `sw.js` is hand-written and
 not bundled, and `src/test/sw-badge.test.ts` pins that the two agree. Slice 2 changed `sw.js`'s

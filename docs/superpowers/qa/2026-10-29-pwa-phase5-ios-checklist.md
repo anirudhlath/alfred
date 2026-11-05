@@ -226,12 +226,12 @@ this order.
       shows no number. A number that showed for a moment is fine. One that stays until the
       next return to Alfred is the worst case the design accepts, so record it
 - [ ] **Sign-out.** Open Alfred and close it from the app switcher, so a number left by the
-      last step is gone. With the app closed, one reminder puts `1` on the tile. Open Alfred, which
-      clears it, then System › `Sign out on this device`, and close the app. The tile shows no
-      number, and a reminder asked for now neither arrives nor adds one. A phone can't separate
-      this clear from the open's, since the app has to be open to sign out. With a Mac's Web
-      Inspector, `navigator.setAppBadge(3)` on the console just before signing out makes it a
-      real test. Sign in again afterwards
+      last step is gone. With the app closed, one reminder puts `1` on the tile. Open Alfred,
+      which clears it, then System › `Sign out on this device`, and close the app. The tile
+      shows no number, and a reminder asked for now neither arrives nor adds one. A phone can't
+      separate this clear from the open's, since the app has to be open to sign out. With a
+      Mac's Web Inspector, `navigator.setAppBadge(3)` on the console just before signing out
+      makes it a real test. Sign in again afterwards
 
 **On a fresh install.** These need a copy of the app with nothing stored and iOS not yet
 asked, so delete any home-screen copy first.
