@@ -39,6 +39,7 @@ const GROUPS = {
     "ThinkingRow",
     "TranscribingBubble",
     "FirstDay",
+    "ReachRow",
   ],
   door: ["FuseRing", "DoorBanner", "SlideToConfirm", "DoorLayer"],
   gates: ["Gate", "StepList", "DeniedGate", "InstallGate", "StandaloneGate"],
