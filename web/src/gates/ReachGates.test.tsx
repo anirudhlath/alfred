@@ -122,6 +122,31 @@ describe("ReachGates", () => {
     expect(complaint).not.toHaveBeenCalled();
   });
 
+  it("leaves no moment between the answer and the close with the primary live", async () => {
+    const answer = deferred<NotificationPermission>();
+    vi.mocked(requestAndSubscribe).mockReturnValue(answer.promise);
+    const user = userEvent.setup();
+    renderHosted();
+    await user.click(allow());
+
+    // The commit that ends the asking drops `aria-busy`, and the one that closes the
+    // gate puts it back. A frame or a tap can only meet what stands once the stack
+    // has run out, and an observer's callback runs at just that point.
+    const primary = allow();
+    const seen: (string | null)[] = [];
+    const observer = new MutationObserver(() => seen.push(primary.getAttribute("aria-busy")));
+    observer.observe(primary, { attributes: true, attributeFilter: ["aria-busy"] });
+
+    // Not in `act`, whose queue runs a passive effect straight after its commit and
+    // would hide the gap. `waitFor` is what keeps React from complaining about that.
+    answer.resolve("denied");
+    await waitFor(() => expect(standalone()).toHaveClass("rise-out"));
+    observer.disconnect();
+
+    expect(seen).not.toContain(null);
+    expect(primary).toHaveAttribute("aria-busy", "true");
+  });
+
   it("a tap during the gate's leave asks nothing and writes no second row", async () => {
     vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE);
     vi.mocked(requestAndSubscribe).mockResolvedValue("granted");

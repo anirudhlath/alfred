@@ -6,7 +6,7 @@ import { hhmm } from "@/lib/format";
 export interface StandaloneGateProps {
   /** When this session began (its `created_at`); null until the sessions read lands. */
   signedInAt: string | null;
-  /** The permission request is in flight: the primary holds until it settles. */
+  /** The permission request is in flight or the gate is leaving: the primary holds. */
   busy: boolean;
   onAllow: () => void;
   onDismiss: () => void;

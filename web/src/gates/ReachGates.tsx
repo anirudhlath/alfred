@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { InstallGate } from "@/gates/InstallGate";
 import { StandaloneGate } from "@/gates/StandaloneGate";
 import { markGateAnswered } from "@/lib/reach-local";
@@ -26,7 +26,9 @@ export interface ReachGatesProps {
  * A tap on either of the standalone gate's buttons ends its opening by itself on
  * this device (`useReachPrompts`), even if iOS's dialog is then dismissed. Should
  * the store refuse that, only the Room's own state holds the tap, and only as long
- * as that Room is mounted. The install gate's way out only closes it.
+ * as that Room is mounted. That state holds nothing during a slow key read, so
+ * `Not yet` or a dismissed dialog through Reach then still opens the gate once.
+ * The install gate's way out only closes it.
  */
 export function ReachGates({ gate, signedInAt, onClose }: ReachGatesProps) {
   // An observer only: mounting here is not asking again (`PushOptions`).
@@ -34,9 +36,11 @@ export function ReachGates({ gate, signedInAt, onClose }: ReachGatesProps) {
 
   // The asking ending closes the standalone gate. An effect, where a component
   // would adjust its own state during render: `onClose` sets the host's, which
-  // React refuses from this one's render.
+  // React refuses from this one's render. A layout effect, so the close commits
+  // before the paint: a passive effect can run after it, and leave the primary ink
+  // and live for a frame between the asking and the leave.
   const wasAsking = useRef(asking);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (wasAsking.current && !asking && gate === "standalone") onClose();
     wasAsking.current = asking;
   }, [asking, gate, onClose]);
