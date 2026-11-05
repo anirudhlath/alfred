@@ -3,6 +3,7 @@ import { DoorBanner } from "@/door/DoorBanner";
 import { DoorLayer } from "@/door/DoorLayer";
 import { useDoor } from "@/door/DoorProvider";
 import { useActionRoute } from "@/door/useActionRoute";
+import { ReachGates } from "@/gates/ReachGates";
 import { tombstoneItems } from "@/lib/actions";
 import { greetingFor, pickHeadline } from "@/lib/headline";
 import { pendingActionTitles, toTimelineItems } from "@/lib/history";
@@ -20,7 +21,7 @@ import { StatusLine } from "@/room/StatusLine";
 import { Timeline } from "@/room/Timeline";
 import { WorkshopHandle } from "@/room/WorkshopHandle";
 import { isFirstRun, sessionIdleMs, useOverview } from "@/room/useOverview";
-import { useReachActRows } from "@/room/useReachPrompts";
+import { useReachActRows, useReachPrompts } from "@/room/useReachPrompts";
 import { useRoom } from "@/room/useRoom";
 import { useRoomHistory } from "@/room/useRoomHistory";
 import { HeldBackSheet } from "@/sheets/HeldBackSheet";
@@ -81,6 +82,7 @@ export function Room() {
 
   const deviceActs = useReachActRows();
   const room = useRoom({ history: historyItems, tombstones, idleMs, deviceActs });
+  const prompts = useReachPrompts();
 
   useEffect(() => {
     signal.setThinking(room.thinking);
@@ -173,6 +175,8 @@ export function Room() {
         onConfirm={door.confirm}
         onDeny={door.deny}
       />
+
+      <ReachGates gate={prompts.gate} signedInAt={null} onClose={prompts.closeGate} />
     </main>
   );
 }

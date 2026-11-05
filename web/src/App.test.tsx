@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   deferredFixture,
@@ -12,6 +12,7 @@ import {
   yesterdayRequestPage,
 } from "@/test/fixtures";
 import { PresenceSignal } from "@/lib/presence-signal";
+import { reachContext } from "@/lib/push";
 import * as sw from "@/lib/sw";
 import { THEME_KEY } from "@/lib/theme";
 import type { SocketStatus } from "@/lib/ws";
@@ -52,6 +53,12 @@ vi.mock("@/lib/webauthn", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/webauthn")>()),
   loginPasskey: loginPasskeyMock,
 }));
+
+// The real answer, a Safari tab in jsdom, until a test says this is the installed app.
+vi.mock("@/lib/push", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/push")>();
+  return { ...actual, reachContext: vi.fn(actual.reachContext) };
+});
 
 vi.mock("@/lib/telemetry-socket", () => ({
   TelemetrySocket: class {
@@ -121,9 +128,13 @@ const ROUTES: Record<string, unknown> = {
   "/api/admin/streams/reflex_observations?count=50": reflexObservationsPage,
   "/api/admin/streams/notifications?count=50": notificationsPage,
   "/api/actions/pending": { actions: [] },
+  "/api/push/public-key": { public_key: "BHouseKey" },
 };
 
 const EMPTY_PAGE = { entries: [], next_before: null };
+
+const IPHONE =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1";
 
 let routes: Record<string, unknown>;
 
@@ -165,6 +176,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.mocked(reachContext).mockReset();
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
   window.history.pushState({}, "", "/");
@@ -565,6 +577,30 @@ describe("App", () => {
     // `onHeld` in `Room.tsx` would defeat it and no test in
     // `workshop/Workshop.test.tsx` could tell.
     expect(summarised.count).toBe(rows);
+  });
+
+  it("an iPhone's first launch from the home screen raises the gate, and a decline is written into the Room", async () => {
+    // 21:20 local: the fixture's turns are one live session, and the row lands in it.
+    vi.setSystemTime(new Date(2026, 8, 7, 21, 20));
+    vi.mocked(reachContext).mockReturnValue("capable");
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE);
+    vi.stubGlobal("Notification", {
+      permission: "default",
+      requestPermission: async () => "denied",
+    });
+    render(<App />);
+
+    const gate = await screen.findByRole("dialog", { name: "You came in the front way" });
+    expect(
+      within(gate).getByRole("heading", { name: "You came in the front way." }),
+    ).toBeInTheDocument();
+    fireEvent.click(within(gate).getByRole("button", { name: "Let me reach you" }));
+
+    expect(await screen.findByText("Notifications stay off on this iPhone")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(400));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "You came in the front way" })).toBeNull(),
+    );
   });
 });
 
