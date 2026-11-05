@@ -1,3 +1,4 @@
+import { defaultScheduler, notifyManager } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -213,6 +214,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  notifyManager.setScheduler(defaultScheduler);
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -711,6 +713,37 @@ describe("App", () => {
     expect(
       await screen.findByRole("dialog", { name: "You came in the front way" }),
     ).toBeInTheDocument();
+  });
+
+  it("a Door tapped open as the key settles raises nothing, with its answer yet to notify", async () => {
+    firstLaunch();
+    routes["/api/actions/pending"] = { actions: [pendingActionFixture] };
+    const answerKey = holdKey();
+    render(<App />);
+    const banner = await screen.findByRole("button", { name: /^Lock unlock/ });
+    // The Room's other first reads have landed, so none of them renders it inside the
+    // gap below. That render would find the key answered with nothing up, and open the
+    // gate for the right reason ahead of the tap.
+    await settle();
+    const dialogs = () => screen.queryAllByRole("dialog").map((d) => d.getAttribute("aria-label"));
+
+    // The key has settled and react-query's notify is still out, so the tap's own
+    // render is the first to read it as answered, ahead of the Door joining the stack.
+    const held: (() => void)[] = [];
+    notifyManager.setScheduler((notify) => void held.push(notify));
+    await answerKey();
+    expect(dialogs()).toEqual([]);
+    fireEvent.click(banner);
+    expect(dialogs()).toEqual(["Critical approval"]);
+
+    notifyManager.setScheduler(defaultScheduler);
+    await act(async () => {
+      held.forEach((notify) => notify());
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(dialogs()).toEqual(["Critical approval"]);
+    // Skipped, which is not answered: the next launch offers it.
+    expect(gateAnswered()).toBe(false);
   });
 
   it("a waiting Door in an iPhone tab offers the install path", async () => {

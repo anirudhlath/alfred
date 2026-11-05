@@ -1619,7 +1619,7 @@ from would never stop. The file's header has the measurements.
    one checks per file, not per block; a block in one of those files that stops standing
    down is the fired run's to catch. `src/lib/auth.test.ts` no longer reads `sw.js`: its
    check that the worker's `TIMEOUT_MS` equals the page's `STATUS_DEADLINE_MS` is in
-   `sw.test.ts`'s `navigations` block (`sw.test.ts:2298`). Measured on a fired tree at
+   `sw.test.ts`'s `navigations` block (`sw.test.ts:2299`). Measured on a fired tree at
    `b416875`: 0 failed, 2 085 passed and 305 skipped, and one warning from each of those
    files. The warnings come from the job's ordinary test step; the fired copy runs with
    `--reporter=default`, so on a tree that is not fired it posts none, and a run carrying
@@ -1907,31 +1907,35 @@ phase 6 (D9).
 **The prompt row** (`ReachRow`, `Alfred.dc.html:75-77` and `:751`) shows in a browser tab
 while a Door waits that `Not now` has not answered and the house has a Web Push key. The key
 is read only once the other two hold (`useHouseKey`). While that read is pending, or if it
-failed, there is no row. A failed read is not retried at once: a reconnect or a sign-in reads
-it anew, as does the next launch, and a later Door does only once no such Door was left
-waiting. The row is derived from those facts, so it leaves with the last such Door, several
-Doors give one row, and a reload brings it back while one still waits. It takes the first
-such Door's time for its place in the thread and its meta line (D10), and `useRoom` never
-windows it, because it stands as long as its Door does. `Show me how` opens the install
-gate, with the row left behind it. `Not now` answers every Door waiting at that moment, so
-the row stays gone, across a reload too, until a Door arrives that was not waiting when it
-was tapped. It writes no line into the Room: the handoff's line (`Alfred.dc.html:835`)
-promises never to raise it again, which would be false (D11, the owner's ruling).
+failed, there is no row. A failed read is not retried at once: the phone coming back online
+or a sign-in reads it anew, as does the next launch, and a later Door does only once no such
+Door was left waiting. The row is derived from those facts, so it leaves with the last such
+Door, several Doors give one row, and a reload brings it back while one still waits. It
+takes the first such Door's time for its place in the thread and its meta line (D10), and
+`useRoom` never windows it, because it stands as long as its Door does. `Show me how` opens
+the install gate, with the row left behind it. `Not now` answers every Door waiting at that
+moment, so the row stays gone, across a reload too, until a Door arrives that was not
+waiting when it was tapped. It writes no line into the Room: the handoff's line
+(`Alfred.dc.html:835`) promises never to raise it again, which would be false (D11, the
+owner's ruling).
 
 **The gate that opens itself.** In the installed app, with the permission still `default`,
-neither button tapped, a key on the house and nothing modal already up, the `standalone` gate
-opens once on launch, as the key read answers. The Room hosts it; Reach's own opening of it
-is unchanged. The permission and the flag are read again at that moment, because a slow read
-leaves time to answer through Reach. So is whether anything is up (`anySurfaceUp()`, from
-`shell/presence.ts`): a Door, the Workshop, a sheet, Reach's own gate or the Expired gate,
-one in its leave included. If so this launch skips the gate, since over a Door `Not yet`
-would be the only quick way back, and over Reach's own gate there would be two to answer
-(D12). A failed key read skips this launch too, and the next reads anew. A tap on either
-button ends the opening on this device, even if iOS's dialog is then dismissed, and Reach
-keeps `Enable`. `enable()` still comes first in the tap, ahead of the flag, since anything
-ahead of it can end the gesture. A launch with neither tap writes nothing, so the next one
-shows it again. It never opens for `granted` or `denied`, so an iPhone already set up sees
-nothing new.
+neither button tapped, a key on the house and nothing modal already up, the `standalone`
+gate opens once on launch, as the key read answers. The Room hosts it; Reach's own opening
+of it is unchanged. The permission and the flag are read again at that moment, because a
+slow read leaves time to answer through Reach. So is whether anything is up
+(`anySurfaceUp()`, from `shell/presence.ts`): a Door, the Workshop, a sheet, Reach's own
+gate or the Expired gate, one in its leave included. That check runs in a passive effect, so
+it counts what the same commit raised under the Room: a child's effects run first, and a
+surface joins the stack in its own. An Expired gate raised in that very commit sits above
+the Room and is not counted, which is accepted. If something is up this launch skips the
+gate, since over a Door `Not yet` would be the only quick way back, and over Reach's own
+gate there would be two to answer (D12). A failed key read skips this launch too, and the
+next reads anew. A tap on either button ends the opening on this device, even if iOS's
+dialog is then dismissed, and Reach keeps `Enable`. `enable()` still comes first in the tap,
+ahead of the flag, since anything ahead of it can end the gesture. A launch with neither tap
+writes nothing, so the next one shows it again. It never opens for `granted` or `denied`, so
+an iPhone already set up sees nothing new.
 
 **The Act rows** (`reachActRow`, `Alfred.dc.html:752`, hue 255, the notification stream's)
 are written by `enable()` when the iOS dialog answers, from either route to it. Allowed and
@@ -2027,7 +2031,7 @@ restore here (its deviation D7), would be false under the ruling on what counts 
 | `src/room/useReachPrompts.test.tsx` | The self-opening gate and the prompt row, each condition, across reloads and new Doors, and the launch skipped with a real `Layer` or `Sheet` up |
 | `src/shell/Layer.test.tsx` | `anySurfaceUp()` from a surface's rise to the end of its leave |
 | `src/room/Timeline.test.tsx`, `src/room/useRoom.test.tsx` | The row verbatim and its buttons; the Act rows windowed and the row not |
-| `src/App.test.tsx` | A first launch raising the gate with a decline written into the Room, the key answering over Reach's own gate and over an open Door, and a tab's offer on and off an iPhone |
+| `src/App.test.tsx` | A first launch raising the gate with a decline written into the Room, the key answering over Reach's own gate and over an open Door, a Door tapped open as the key settles with its notify still out, and a tab's offer on and off an iPhone |
 | `src/workshop/useSystem.test.tsx` | Sign-out forgets the subscription before it logs out |
 
 ---

@@ -101,7 +101,9 @@ const surfaces: HTMLElement[] = [];
 /**
  * Whether any modal surface is up, for something about to raise one of its own
  * unasked (`useReachPrompts`). One in its leave counts: `useModalFocus` holds it
- * until `mounted` goes, and it is still on screen with the app inert behind it.
+ * until `mounted` goes, and it is still on screen with the app inert behind it. One
+ * joins in a passive effect of its own, so a render or a layout effect above it can
+ * read this before it has.
  */
 export function anySurfaceUp(): boolean {
   return surfaces.length > 0;

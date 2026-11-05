@@ -40,9 +40,9 @@ export const PUSH_KEY_QUERY_KEY = ["push", "public-key"] as const;
 /**
  * Whether the house has a Web Push key, asked only once it is `wanted`. A prompt
  * promising a knock needs one to keep that promise. `answered` covers a read that
- * failed, with `has` false. It is not retried at once: a reconnect or a sign-in reads
- * it anew, as does the next launch, and the next Door does once a tab has stopped
- * wanting it.
+ * failed, with `has` false. It is not retried at once: the phone coming back online
+ * or a sign-in reads it anew, as does the next launch, and the next Door does once a
+ * tab has stopped wanting it.
  */
 export function useHouseKey(wanted: boolean): { answered: boolean; has: boolean } {
   const { data, isFetched } = useQuery({
@@ -136,10 +136,18 @@ export function useReachPrompts(pending: TrackedAction[], now: number): ReachPro
   // anew. It holds nothing from before the key's answer either, so on that store a
   // `Not yet` or a dismissed dialog through Reach during a slow read still opens the
   // gate once, unless something is up by then (the spec's section 4 allows both).
-  // Adjusted during render, as `usePresence` adjusts its own.
-  const [selfOpened, setSelfOpened] = useState(false);
-  if (eligible && key.answered && !selfOpened) {
-    setSelfOpened(true);
+  const selfOpened = useRef(false);
+
+  // A passive effect, for what it reads of the surface stack. A render can see the key
+  // settled before react-query has notified, so its answer can come in the very commit
+  // a tap raises a Door, and `useModalFocus` adds that to the stack in a passive effect.
+  // A child's effects run first, so whatever this commit raised under the Room is on the
+  // stack by here. In a render or a layout effect it would not be yet. What a sibling
+  // above the Room raises in the same commit (`AuthGate`'s Expired gate) is not, which
+  // the spec's D12 accepts.
+  useEffect(() => {
+    if (!eligible || !key.answered || selfOpened.current) return;
+    selfOpened.current = true;
     // Permission and flag again: a slow key read leaves time to answer through Reach's
     // own gate. And whatever is up meanwhile keeps the screen: a second gate over
     // Reach's would ask twice, and over a Door `Not yet` would be the only quick way
@@ -147,9 +155,11 @@ export function useReachPrompts(pending: TrackedAction[], now: number): ReachPro
     // This gate cannot count itself: in the installed app only this line raises it,
     // and the latch means it has not yet.
     if (key.has && permission() === "default" && !gateAnswered() && !anySurfaceUp()) {
+      // The rule wants this derived in render, which is the stale read named above.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setGate("standalone");
     }
-  }
+  }, [eligible, key.answered, key.has]);
 
   const closeGate = useCallback(() => setGate(null), []);
   return { row, notNow, showMe, gate, closeGate };
