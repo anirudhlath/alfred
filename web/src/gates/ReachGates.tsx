@@ -27,7 +27,8 @@ export interface ReachGatesProps {
  * this device (`useReachPrompts`), even if iOS's dialog is then dismissed. Should
  * the store refuse that, only the Room's own state holds the tap, and only as long
  * as that Room is mounted. That state holds nothing during a slow key read, so
- * `Not yet` or a dismissed dialog through Reach then still opens the gate once.
+ * `Not yet` or a dismissed dialog through Reach then still opens the gate once,
+ * unless something is up when the key answers.
  * The install gate's way out only closes it.
  */
 export function ReachGates({ gate, signedInAt, onClose }: ReachGatesProps) {

@@ -102,6 +102,7 @@ launch and tries again on the next.
   decided.
 - It never opens when the permission is `granted` or `denied`, so an iPhone already set up sees
   nothing new.
+- If anything modal is up when it would open, this launch skips it and writes nothing (D12).
 
 The Room hosts it, along with the install gate from section 1, the way `ReachSection` hosts its own
 pair. Reach's own opening of these gates is unchanged.
@@ -194,6 +195,7 @@ goes in the Deviations table below.
 | D9 | Prompt row, self-opening gate, Act rows | Drawn on an iPhone only, no rule for other devices | Only on an iPhone. Other devices keep Reach, as they do today | Their copy names Safari, iOS and this iPhone, which would be false elsewhere. Desktop and Android wait for phase 6; iPad is a small follow-up if it's wanted |
 | D10 | Prompt row meta time | Sample `07:41` | The time of the first waiting Door `Not now` has not answered | Sample data, not copy |
 | D11 | Prompt row, `Not now` | Retires the row for good and writes `Very good, sir. I shan't raise it again; the switch stays under Workshop › System should you change your mind.` into the Room | Hides the row until a new Door arrives, and writes no line | The owner's ruling. The handoff's line would be false |
+| D12 | Self-opening gate, with something already up | No rule: drawn on its own over the Room | If anything modal is up when the gate would open (a Door, the Workshop, a sheet, Reach's own gate, the Expired gate), this launch skips it. The launch's latch is set and nothing is written, so the next launch offers it | The controller's ruling, beyond the handoff. Over a Door with a live fuse the only quick way back was `Not yet`, which ends the opening for good. Over Reach's own gate there were two identical dialogs, and the lower one could ask iOS a second time and write a second row |
 
 ## Constraints
 

@@ -1,10 +1,12 @@
 import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrackedAction } from "@/lib/actions";
 import { fetchPublicKey, permission, reachContext } from "@/lib/push";
 import { gateAnswered, markGateAnswered, readAnsweredDoors } from "@/lib/reach-local";
+import { Layer } from "@/shell/Layer";
+import { Sheet } from "@/shell/Sheet";
 import { pendingActionFixture } from "@/test/fixtures";
 import { makeClient } from "@/test/push-client";
 import { PUSH_KEY_QUERY_KEY, useReachPrompts } from "./useReachPrompts";
@@ -250,6 +252,100 @@ describe("useReachPrompts' gate", () => {
     // The key was read again, so the latch is what kept the gate shut.
     expect(fetchPublicKey).toHaveBeenCalledTimes(2);
     expect(result.current.gate).toBeNull();
+  });
+
+  describe("with something already up when the key answers", () => {
+    /** A launch whose key read answers with `surface` up, `surface` mounted first. */
+    async function answeredOver(surface: ReactNode) {
+      const answerKey = holdKey();
+      const up = render(surface);
+      const first = launch();
+      await settle();
+      await act(async () => answerKey(KEY));
+      await keyAnswered(first.client);
+      return { up, first };
+    }
+
+    it.each([
+      [
+        "a layer",
+        <Layer key="layer" open label="Critical approval">
+          up
+        </Layer>,
+      ],
+      [
+        "a sheet",
+        <Sheet key="sheet" open title="Held back" onClose={() => {}}>
+          up
+        </Sheet>,
+      ],
+    ])("skips this launch over %s, writing nothing, so the next one offers it", async (_, surface) => {
+      const { up, first } = await answeredOver(surface);
+
+      expect(first.result.current.gate).toBeNull();
+      expect(gateAnswered()).toBe(false);
+      first.unmount();
+      up.unmount();
+
+      const { result } = launch();
+
+      await waitFor(() => expect(result.current.gate).toBe("standalone"));
+    });
+
+    it("stays skipped once the surface has gone, for the rest of this launch", async () => {
+      const { up, first } = await answeredOver(
+        <Layer open label="Critical approval">
+          up
+        </Layer>,
+      );
+      expect(first.result.current.gate).toBeNull();
+
+      up.unmount();
+      first.rerender();
+      expect(first.result.current.gate).toBeNull();
+
+      // The key is read again and says yes: the latch is what keeps the gate shut.
+      await signIn(first.client);
+      expect(fetchPublicKey).toHaveBeenCalledTimes(2);
+      expect(first.result.current.gate).toBeNull();
+    });
+
+    it("skips over a surface still in its leave", async () => {
+      const surface = (open: boolean) => (
+        <Layer open={open} label="Critical approval">
+          up
+        </Layer>
+      );
+      const answerKey = holdKey();
+      const up = render(surface(true));
+      const { result, client } = launch();
+      await settle();
+
+      // Closed, and on screen until its 400 ms are up.
+      up.rerender(surface(false));
+      expect(document.querySelector(".rise-out")).not.toBeNull();
+      await act(async () => answerKey(KEY));
+      await keyAnswered(client);
+
+      expect(result.current.gate).toBeNull();
+    });
+
+    it("opens when the surface has gone by the time the key answers", async () => {
+      const answerKey = holdKey();
+      const up = render(
+        <Layer open label="Workshop">
+          up
+        </Layer>,
+      );
+      const { result, client } = launch();
+      await settle();
+
+      up.unmount();
+      await act(async () => answerKey(KEY));
+      await keyAnswered(client);
+
+      expect(result.current.gate).toBe("standalone");
+    });
   });
 
   it("holds a tap the store refused while this Room is mounted", async () => {

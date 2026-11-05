@@ -99,6 +99,15 @@ export function useLatched<T>(value: T | null): T | null {
 const surfaces: HTMLElement[] = [];
 
 /**
+ * Whether any modal surface is up, for something about to raise one of its own
+ * unasked (`useReachPrompts`). One in its leave counts: `useModalFocus` holds it
+ * until `mounted` goes, and it is still on screen with the app inert behind it.
+ */
+export function anySurfaceUp(): boolean {
+  return surfaces.length > 0;
+}
+
+/**
  * While a modal surface is up, everything behind it is inert and focus lives
  * in the surface — Full Keyboard Access and VoiceOver must not wander into a
  * room they cannot see. That includes a surface under another one: a gate over

@@ -12,7 +12,8 @@ import {
   yesterdayRequestPage,
 } from "@/test/fixtures";
 import { PresenceSignal } from "@/lib/presence-signal";
-import { reachContext } from "@/lib/push";
+import { reachContext, requestAndSubscribe } from "@/lib/push";
+import { gateAnswered } from "@/lib/reach-local";
 import * as sw from "@/lib/sw";
 import { THEME_KEY } from "@/lib/theme";
 import type { SocketStatus } from "@/lib/ws";
@@ -54,10 +55,14 @@ vi.mock("@/lib/webauthn", async (importOriginal) => ({
   loginPasskey: loginPasskeyMock,
 }));
 
-// The real answer, a Safari tab in jsdom, until a test says this is the installed app.
+// The real answers, a Safari tab in jsdom, until a test says this is the installed app.
 vi.mock("@/lib/push", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/push")>();
-  return { ...actual, reachContext: vi.fn(actual.reachContext) };
+  return {
+    ...actual,
+    reachContext: vi.fn(actual.reachContext),
+    requestAndSubscribe: vi.fn(actual.requestAndSubscribe),
+  };
 });
 
 vi.mock("@/lib/telemetry-socket", () => ({
@@ -118,7 +123,8 @@ vi.mock("@/lib/streams", async (importOriginal) => {
 /**
  * What the house answers, by path. A test that needs a different house copies
  * these into `routes` and overrides; a `Response` is served as it is, so a test
- * can make the house say 404.
+ * can make the house say 404, and a promise is waited for, so a test can hold a
+ * read out for as long as it likes.
  */
 const ROUTES: Record<string, unknown> = {
   "/api/auth/status": { registered: true, authenticated: true },
@@ -143,6 +149,32 @@ function fetched(): string[] {
   return vi.mocked(fetch).mock.calls.map(([input]) => String(input));
 }
 
+/** The key read stays out until the test answers it, and what it said has then been drawn. */
+function holdKey(): () => Promise<void> {
+  const key = ROUTES["/api/push/public-key"];
+  let answer: (reply: unknown) => void = () => {};
+  routes["/api/push/public-key"] = new Promise((resolve) => {
+    answer = resolve;
+  });
+  return () =>
+    act(async () => {
+      answer(key);
+      await vi.advanceTimersByTimeAsync(10);
+    });
+}
+
+/** An iPhone's first launch from the home screen. Hands back iOS's word, for a test to change. */
+function firstLaunch(): { permission: NotificationPermission } {
+  vi.mocked(reachContext).mockReturnValue("capable");
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE);
+  const notification = { permission: "default" as NotificationPermission };
+  vi.stubGlobal("Notification", notification);
+  return notification;
+}
+
+/** The standalone gates up: Reach's and the Room's are the same dialog. */
+const frontWayGates = () => screen.queryAllByRole("dialog", { name: "You came in the front way" });
+
 beforeEach(() => {
   socket.status = "online";
   routes = { ...ROUTES };
@@ -160,7 +192,7 @@ beforeEach(() => {
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url in routes) {
-        const reply = routes[url];
+        const reply = await routes[url];
         return reply instanceof Response
           ? reply.clone()
           : new Response(JSON.stringify(reply), { status: 200 });
@@ -177,6 +209,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.mocked(reachContext).mockReset();
+  vi.mocked(requestAndSubscribe).mockReset();
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
   window.history.pushState({}, "", "/");
@@ -601,6 +634,71 @@ describe("App", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "You came in the front way" })).toBeNull(),
     );
+  });
+
+  it("a key read answering over Reach's own gate raises no second gate, and asks once", async () => {
+    // 21:20 local: the fixture's turns are one live session, and the row lands in it.
+    vi.setSystemTime(new Date(2026, 8, 7, 21, 20));
+    const notification = firstLaunch();
+    vi.mocked(requestAndSubscribe).mockImplementation(async () => {
+      notification.permission = "granted";
+      return "granted";
+    });
+    const answerKey = holdKey();
+    render(<App />);
+    await screen.findByText("What have I got tomorrow morning?");
+
+    // Through Reach, which a slow key read leaves time for.
+    fireEvent.click(screen.getByRole("button", { name: "Open the Workshop" }));
+    const workshop = await screen.findByRole("dialog", { name: "Workshop" });
+    fireEvent.click(within(workshop).getByRole("tab", { name: "System" }));
+    fireEvent.click(await within(workshop).findByRole("button", { name: "Enable" }));
+    expect(frontWayGates()).toHaveLength(1);
+
+    await answerKey();
+    expect(frontWayGates()).toHaveLength(1);
+
+    const primaries = () =>
+      frontWayGates().map((gate) => within(gate).getByRole("button", { name: "Let me reach you" }));
+    fireEvent.click(primaries()[0]);
+    expect(await screen.findByText("Notifications on for this iPhone")).toBeInTheDocument();
+
+    // Whatever is still standing, tapped again: a lower gate would ask a second time.
+    primaries().forEach((primary) => fireEvent.click(primary));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    expect(frontWayGates()).toHaveLength(0);
+
+    expect(requestAndSubscribe).toHaveBeenCalledOnce();
+    expect(screen.getAllByText("Notifications on for this iPhone")).toHaveLength(1);
+  });
+
+  it("a key read answering over an open Door raises nothing, and the next launch offers it", async () => {
+    firstLaunch();
+    routes["/api/actions/pending"] = { actions: [pendingActionFixture] };
+    const answerKey = holdKey();
+    const { unmount } = render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /^Lock unlock/ }));
+    const door = await screen.findByRole("dialog", { name: "Critical approval" });
+
+    await answerKey();
+
+    // The Door keeps its fuse, on top and live.
+    expect(frontWayGates()).toHaveLength(0);
+    expect(door).not.toHaveAttribute("inert");
+    expect(within(door).getByText("until it lapses")).toBeInTheDocument();
+    // Skipped, which is not answered: `Not yet` is what ends the opening for good.
+    expect(gateAnswered()).toBe(false);
+    unmount();
+
+    routes = { ...routes, "/api/push/public-key": ROUTES["/api/push/public-key"] };
+    render(<App />);
+
+    expect(
+      await screen.findByRole("dialog", { name: "You came in the front way" }),
+    ).toBeInTheDocument();
   });
 
   it("a waiting Door in an iPhone tab offers the install path", async () => {

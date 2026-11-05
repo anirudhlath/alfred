@@ -13,6 +13,7 @@ import {
   readReachActs,
   writeAnsweredDoors,
 } from "@/lib/reach-local";
+import { anySurfaceUp } from "@/shell/presence";
 
 /**
  * The iOS dialog's answers as the Room's rows. Storage is read once, when the cache
@@ -39,8 +40,9 @@ export const PUSH_KEY_QUERY_KEY = ["push", "public-key"] as const;
 /**
  * Whether the house has a Web Push key, asked only once it is `wanted`. A prompt
  * promising a knock needs one to keep that promise. `answered` covers a read that
- * failed, with `has` false: there is no retry, since the next launch reads anew, as
- * does the next Door once a tab has stopped wanting it.
+ * failed, with `has` false. It is not retried at once: a reconnect or a sign-in reads
+ * it anew, as does the next launch, and the next Door does once a tab has stopped
+ * wanting it.
  */
 export function useHouseKey(wanted: boolean): { answered: boolean; has: boolean } {
   const { data, isFetched } = useQuery({
@@ -83,8 +85,9 @@ function doorTime({ action }: TrackedAction, now: number): string {
  * holds until a Door arrives that was not waiting when it was tapped (the spec's D11).
  *
  * In the installed app, the standalone gate, once on launch, with the permission
- * still `default`, a button not yet tapped and a key on the house. A launch with
- * neither button tapped writes nothing, so the next one shows it.
+ * still `default`, a button not yet tapped, a key on the house and nothing modal
+ * already up (the spec's D12). A launch with neither button tapped writes nothing,
+ * so the next one shows it.
  *
  * `pending` is oldest first, as `DoorProvider` keeps it, and `now` is its clock.
  */
@@ -132,13 +135,20 @@ export function useReachPrompts(pending: TrackedAction[], now: number): ReachPro
   // keep, and only as long as this Room is mounted: a new mount reads the store
   // anew. It holds nothing from before the key's answer either, so on that store a
   // `Not yet` or a dismissed dialog through Reach during a slow read still opens the
-  // gate once (the spec's section 4 allows both).
+  // gate once, unless something is up by then (the spec's section 4 allows both).
   // Adjusted during render, as `usePresence` adjusts its own.
   const [selfOpened, setSelfOpened] = useState(false);
   if (eligible && key.answered && !selfOpened) {
     setSelfOpened(true);
-    // Both again: a slow key read leaves time to answer through Reach's own gate.
-    if (key.has && permission() === "default" && !gateAnswered()) setGate("standalone");
+    // Permission and flag again: a slow key read leaves time to answer through Reach's
+    // own gate. And whatever is up meanwhile keeps the screen: a second gate over
+    // Reach's would ask twice, and over a Door `Not yet` would be the only quick way
+    // back. That only skips this launch, since nothing is written (the spec's D12).
+    // This gate cannot count itself: in the installed app only this line raises it,
+    // and the latch means it has not yet.
+    if (key.has && permission() === "default" && !gateAnswered() && !anySurfaceUp()) {
+      setGate("standalone");
+    }
   }
 
   const closeGate = useCallback(() => setGate(null), []);

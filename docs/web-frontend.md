@@ -1895,7 +1895,7 @@ in a Safari tab, left the iOS prompt behind Workshop › System › Reach, and l
 missed push. Slice 2 closes those three, all in `web/`: no new route, no new setting, and
 `build_payload()` and the payload contract stay as they are. Its spec is
 [`2026-11-04-pwa-phase5-slice2-reach-design.md`](superpowers/specs/2026-11-04-pwa-phase5-slice2-reach-design.md),
-and that spec's "Deviations from the handoff" table holds D8 to D11. Otherwise the handoff's
+and that spec's "Deviations from the handoff" table holds D8 to D12. Otherwise the handoff's
 copy is verbatim.
 
 The prompt row, the gate that opens itself and the Act rows appear only on an iPhone
@@ -1918,15 +1918,19 @@ handoff's line (`Alfred.dc.html:835`) promises never to raise it again, which wo
 (D11, the owner's ruling).
 
 **The gate that opens itself.** In the installed app, with the permission still `default`,
-neither button tapped and a key on the house, the `standalone` gate opens once on launch, as
-the key read answers. The Room hosts it; Reach's own opening of it is unchanged. The
-permission and the flag are read again at that moment, because a slow read leaves time to
-answer through Reach. A failed key read skips this launch, and the next reads anew. A tap on
-either button ends the opening on this device, even if iOS's dialog is then dismissed, and
-Reach keeps `Enable`. `enable()` still comes first in the tap, ahead of the flag, since
-anything ahead of it can end the gesture. A launch with neither tap writes nothing, so the
-next one shows it again. It never opens for `granted` or `denied`, so an iPhone already set
-up sees nothing new.
+neither button tapped, a key on the house and nothing modal already up, the `standalone` gate
+opens once on launch, as the key read answers. The Room hosts it; Reach's own opening of it
+is unchanged. The permission and the flag are read again at that moment, because a slow read
+leaves time to answer through Reach. So is whether anything is up (`anySurfaceUp()`, from
+`shell/presence.ts`): a Door, the Workshop, a sheet, Reach's own gate or the Expired gate,
+one in its leave included. If so this launch skips the gate, since over a Door `Not yet`
+would be the only quick way back, and over Reach's own gate there would be two to answer
+(D12). A failed key read skips this launch too, and the next reads anew. A tap on either
+button ends the opening on this device, even if iOS's dialog is then dismissed, and Reach
+keeps `Enable`. `enable()` still comes first in the tap, ahead of the flag, since anything
+ahead of it can end the gesture. A launch with neither tap writes nothing, so the next one
+shows it again. It never opens for `granted` or `denied`, so an iPhone already set up sees
+nothing new.
 
 **The Act rows** (`reachActRow`, `Alfred.dc.html:752`, hue 255, the notification stream's)
 are written by `enable()` when the iOS dialog answers, from either route to it. Allowed and
@@ -1955,7 +1959,8 @@ a row stays in its query entry, `["reach", "acts"]`, until the cache lets that g
 is disabled so that a sign-in's `invalidateQueries()` cannot re-read the row away. A `Not now`
 or a gate tap the store refused holds only while this Room is mounted. Nothing holds a tap
 during a slow key read either, so on such a store `Not yet` or a dismissed dialog through
-Reach then still opens the gate once. Section 4 of the spec accepts that loss.
+Reach then still opens the gate once, unless something is up when the key answers. Section 4
+of the spec accepts that loss.
 
 **The badge.** The owner's rulings: every push adds one, urgent and important alike, and
 INFORMATIONAL is never pushed, so it never counts. Opening the app sets it to zero, for now
@@ -2018,9 +2023,10 @@ restore here (its deviation D7), would be false under the ruling on what counts 
 | `src/workshop/ReachSection.hook.test.tsx` | The card over the real `usePush`: opening on a failed sync without syncing, `Try again` syncing, Enable registering once, and Reach's route to the Act rows |
 | `src/gates/ReachGates.test.tsx` | `enable()` first in the tap, the close when the asking ends, a tap during the leave, either button ending the self-opening, and a throwing store |
 | `src/gates/InstallGate.test.tsx`, `src/gates/StandaloneGate.test.tsx`, `src/gates/Gate.test.tsx` | The gates' copy and steps, and the pointer |
-| `src/room/useReachPrompts.test.tsx` | The self-opening gate and the prompt row, each condition, across reloads and new Doors |
+| `src/room/useReachPrompts.test.tsx` | The self-opening gate and the prompt row, each condition, across reloads and new Doors, and the launch skipped with a real `Layer` or `Sheet` up |
+| `src/shell/Layer.test.tsx` | `anySurfaceUp()` from a surface's rise to the end of its leave |
 | `src/room/Timeline.test.tsx`, `src/room/useRoom.test.tsx` | The row verbatim and its buttons; the Act rows windowed and the row not |
-| `src/App.test.tsx` | A first launch raising the gate with a decline written into the Room, and a tab's offer on and off an iPhone |
+| `src/App.test.tsx` | A first launch raising the gate with a decline written into the Room, the key answering over Reach's own gate and over an open Door, and a tab's offer on and off an iPhone |
 | `src/workshop/useSystem.test.tsx` | Sign-out forgets the subscription before it logs out |
 
 ---
