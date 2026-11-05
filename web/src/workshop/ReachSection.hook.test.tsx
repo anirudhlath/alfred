@@ -99,8 +99,9 @@ describe("ReachSection over usePush", () => {
     await waitFor(() => expect(screen.getByText("on")).toBeInTheDocument());
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(requestAndSubscribe).toHaveBeenCalledTimes(1);
-    // Enable registered for itself; the query took its answer, and nothing
-    // registered a second time.
+    // Enable registered for itself and the query took its answer. This mock answers
+    // inside a microtask, which leaves no render to sync in; a real, slower answer
+    // can leave another observer room to (`usePush`).
     expect(syncSubscription).not.toHaveBeenCalled();
   });
 

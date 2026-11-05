@@ -69,8 +69,12 @@ export function useReachPrompts(): ReachPrompts {
   const [gate, setGate] = useState<ReachGate | null>(null);
 
   // Set on the key's first answer, whatever it said. It is what stops a later
-  // re-read reopening the gate: a sign-in's `invalidateQueries()` reaches the key,
-  // and this, with the gate closed, is what holds a tap the store refused to keep.
+  // re-read reopening the gate: a sign-in's `invalidateQueries()` reaches the key.
+  // With the gate closed, it is also all that holds a tap the store refused to
+  // keep, and only as long as this Room is mounted: a new mount reads the store
+  // anew. It holds nothing from before the key's answer either, so on that store a
+  // `Not yet` or a dismissed dialog through Reach during a slow read still opens the
+  // gate once (the spec's section 4 allows both).
   // Adjusted during render, as `usePresence` adjusts its own.
   const [selfOpened, setSelfOpened] = useState(false);
   if (eligible && key.answered && !selfOpened) {

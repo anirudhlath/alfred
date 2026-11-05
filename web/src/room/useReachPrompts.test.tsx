@@ -231,7 +231,7 @@ describe("useReachPrompts' gate", () => {
     expect(result.current.gate).toBeNull();
   });
 
-  it("holds a tap the store refused for the rest of this launch", async () => {
+  it("holds a tap the store refused while this Room is mounted", async () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
     });

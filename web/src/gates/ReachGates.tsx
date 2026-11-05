@@ -19,14 +19,14 @@ export interface ReachGatesProps {
 /**
  * The gate pair that System › Reach and the Room each host, mounted at
  * `level="gate"`, the way `AuthGate` mounts its own, so they rise over either.
- * The standalone gate's primary is `enable()`, held while `asking`, and the gate
- * closes once the asking ends: whatever iOS answered, Reach's row and the Room's
- * Act row are now what say it.
+ * The standalone gate's primary is `enable()`, held while `asking` and through the
+ * gate's leave, and the gate closes once the asking ends: whatever iOS answered,
+ * Reach's row and the Room's Act row are now what say it.
  *
  * A tap on either of the standalone gate's buttons ends its opening by itself on
  * this device (`useReachPrompts`), even if iOS's dialog is then dismissed. Should
- * the store refuse that, the tap holds for this launch in the Room's own state.
- * The install gate's way out only closes it.
+ * the store refuse that, only the Room's own state holds the tap, and only as long
+ * as that Room is mounted. The install gate's way out only closes it.
  */
 export function ReachGates({ gate, signedInAt, onClose }: ReachGatesProps) {
   // An observer only: mounting here is not asking again (`PushOptions`).
@@ -59,7 +59,9 @@ export function ReachGates({ gate, signedInAt, onClose }: ReachGatesProps) {
       >
         <StandaloneGate
           signedInAt={signedInAt}
-          busy={asking}
+          // `Layer` keeps a closed gate mounted for its leave. A second `enable()`
+          // there would answer at once, and write a second row (`usePush`).
+          busy={asking || gate !== "standalone"}
           onAllow={() => {
             // `enable()` first: anything ahead of it can end the gesture (`usePush`).
             enable();

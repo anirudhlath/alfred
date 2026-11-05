@@ -1,10 +1,10 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { permission, reachContext, requestAndSubscribe } from "@/lib/push";
-import { gateAnswered } from "@/lib/reach-local";
+import { gateAnswered, REACH_ACTS_KEY, type ReachAct } from "@/lib/reach-local";
 import { makeClient } from "@/test/push-client";
 import { ReachGates, type ReachGate } from "./ReachGates";
 
@@ -15,14 +15,31 @@ vi.mock("@/lib/push", () => ({
   requestAndSubscribe: vi.fn(),
 }));
 
-function renderGates(gate: ReachGate) {
+const IPHONE =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1";
+
+function renderGates(gate: ReachGate, client = makeClient()) {
   const onClose = vi.fn();
   render(
-    <QueryClientProvider client={makeClient()}>
+    <QueryClientProvider client={client}>
       <ReachGates gate={gate} signedInAt={null} onClose={onClose} />
     </QueryClientProvider>,
   );
   return onClose;
+}
+
+/** Holds the gate in state, as Reach and the Room do, so a close starts the real leave. */
+function Host() {
+  const [gate, setGate] = useState<ReachGate | null>("standalone");
+  return <ReachGates gate={gate} signedInAt={null} onClose={() => setGate(null)} />;
+}
+
+function renderHosted(client = makeClient()) {
+  render(
+    <QueryClientProvider client={client}>
+      <Host />
+    </QueryClientProvider>,
+  );
 }
 
 /** A promise the test settles by hand, for what the gate says while iOS is asking. */
@@ -93,16 +110,8 @@ describe("ReachGates", () => {
     const complaint = vi.spyOn(console, "error");
     const answer = deferred<NotificationPermission>();
     vi.mocked(requestAndSubscribe).mockReturnValue(answer.promise);
-    function Host() {
-      const [gate, setGate] = useState<ReachGate | null>("standalone");
-      return <ReachGates gate={gate} signedInAt={null} onClose={() => setGate(null)} />;
-    }
     const user = userEvent.setup();
-    render(
-      <QueryClientProvider client={makeClient()}>
-        <Host />
-      </QueryClientProvider>,
-    );
+    renderHosted();
 
     await user.click(allow());
     expect(standalone()).not.toBeNull();
@@ -111,6 +120,40 @@ describe("ReachGates", () => {
     await waitFor(() => expect(standalone()).toBeNull());
     // `onClose` sets the host's state, which React refuses from this one's render.
     expect(complaint).not.toHaveBeenCalled();
+  });
+
+  it("a tap during the gate's leave asks nothing and writes no second row", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE);
+    vi.mocked(requestAndSubscribe).mockResolvedValue("granted");
+    const client = makeClient();
+    const user = userEvent.setup();
+    renderHosted(client);
+
+    await user.click(allow());
+    await waitFor(() => expect(standalone()).toHaveClass("rise-out"));
+    expect(client.getQueryData<ReachAct[]>(REACH_ACTS_KEY)).toHaveLength(1);
+
+    // Closing, but mounted and under the finger until its leave ends.
+    fireEvent.click(allow());
+    await act(async () => {});
+
+    expect(requestAndSubscribe).toHaveBeenCalledTimes(1);
+    expect(client.getQueryData<ReachAct[]>(REACH_ACTS_KEY)).toHaveLength(1);
+  });
+
+  it("an iPhone's grant through this gate lands the on row", async () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE);
+    vi.mocked(requestAndSubscribe).mockResolvedValue("granted");
+    const client = makeClient();
+    const user = userEvent.setup();
+    const onClose = renderGates("standalone", client);
+
+    await user.click(allow());
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(client.getQueryData<ReachAct[]>(REACH_ACTS_KEY)).toEqual([
+      { at: expect.any(String), outcome: "on" },
+    ]);
   });
 
   it("asks iOS before anything else in the tap", async () => {
