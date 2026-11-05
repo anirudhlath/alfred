@@ -477,6 +477,14 @@ describe("usePush's Act rows", () => {
     ]);
   });
 
+  it("draws the rows without a complaint from react-query", () => {
+    const complaint = vi.spyOn(console, "error");
+    renderHook(() => useReachActRows(), { wrapper: withClient(makeClient()) });
+
+    // It wants a `queryFn` on every render, whatever `enabled` says.
+    expect(complaint).not.toHaveBeenCalled();
+  });
+
   it("brings back the rows an earlier launch wrote", () => {
     addReachAct("off", AT);
     const { result } = renderHook(() => useReachActRows(), { wrapper: withClient(makeClient()) });

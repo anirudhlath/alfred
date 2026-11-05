@@ -13,6 +13,9 @@ import { REACH_ACTS_KEY, reachActRow, readReachActs } from "@/lib/reach-local";
 export function useReachActRows(): TimelineItem[] {
   const { data } = useQuery({
     queryKey: REACH_ACTS_KEY,
+    // Never called while the query is disabled, and nothing here refetches it.
+    // It is here because react-query logs an error on every render without one.
+    queryFn: readReachActs,
     initialData: readReachActs,
     enabled: false,
   });
