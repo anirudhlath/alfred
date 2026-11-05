@@ -1646,7 +1646,7 @@ each of that page's returns to the foreground logs one `InvalidStateError` as
 and after the revert too, until it is relaunched. Nothing is visible on screen. Those
 pages take the restored worker only at their next launch (filed:
 [#406](https://github.com/anirudhlath/alfred/issues/406) §12). It leaves the icon's count
-as well, since it deletes caches and nothing else: `alfred-badge`, and any number on the
+as well, since caches are the only store it touches: `alfred-badge`, and any number on the
 icon, stay until the page next clears them ("Web Push").
 
 **The last resort**, for a phone that is bricked and has no network to take the switch
@@ -1693,7 +1693,7 @@ a 5-second deadline before a healthy store had answered.
 |---|---|
 | `src/test/sw.test.ts` | The worker, event by event |
 | `src/test/sw-push.test.ts` | The `push` and `notificationclick` listeners: what is shown for every payload shape, the deep link, focus before post, an uncontrolled window, a new window when none is open, and rule 1 unchanged |
-| `src/test/sw-badge.test.ts` | A push's count: one per push and two at once as two, every push shown when the store throws, errors or hangs or `setAppBadge` is absent, the windows told after the number lands, and that the worker and `lib/badge.ts` agree on the database |
+| `src/test/sw-badge.test.ts` | A push's count: one per push and two at once as two, every push shown when the store throws, errors or hangs or `setAppBadge` is absent, the windows told once `setAppBadge` has answered, even with a refusal, and that the worker and `lib/badge.ts` agree on the database |
 | `src/test/sw-kill.test.ts` | The kill switch, in the same fake scope |
 | `src/test/sw-harness.test.ts` | The fake scope itself: `ExtendableEvent`, `Cache.put`, `Clients.matchAll`, which worker controls each open page, the clock, and the late answers, held puts and held or failed reads (`late`, `holdPut`, `holdRead`, `refuseRead`) |
 | `src/test/sw-server-routes.test.ts` | `NEVER` and `NEVER_UNDER` against the routes `create_app` and `mount_spa` declare |
@@ -1906,8 +1906,9 @@ phase 6 (D9).
 **The prompt row** (`ReachRow`, `Alfred.dc.html:75-77` and `:751`) shows in a browser tab
 while a Door waits that `Not now` has not answered and the house has a Web Push key. The key
 is read only once the other two hold (`useHouseKey`). While that read is pending, or if it
-failed, there is no row, and the next Door reads it again. The row is derived from those
-facts, so it leaves with the last such Door, several Doors give one row, and a reload brings
+failed, there is no row. A failed read has no retry: the next launch reads it anew, and a
+later Door does only once no such Door was left waiting. The row is derived from those facts,
+so it leaves with the last such Door, several Doors give one row, and a reload brings
 it back while one still waits. It takes the first such Door's time for its place in the
 thread and its meta line (D10), and `useRoom` never windows it, because it stands as long as
 its Door does. `Show me how` opens the install gate, with the row left behind it. `Not now`
@@ -1936,8 +1937,9 @@ registered writes `Notifications on for this iPhone`, with the meta
 dismissed dialog writes nothing. Nor does a grant the house did not take, or a house with no
 key: `on` would be false there, and Reach already says where things stand. They behave like
 history rows: `useRoom` passes them through `sessionWindow`, so they show at their time and
-go once the window has moved past them, and, not being turns, they never hold it open. An Act
-row is a row, so it ends the first-day greeting.
+go once the window has moved past them, and, not being turns, they never hold it open. Any
+row, the prompt row included, takes the timeline's `FirstDay` row away. The headline's
+first-day greeting stays, since `isFirstRun` reads the house's streams and not the rows.
 
 **Where device state lives.** `src/lib/reach-local.ts`, in this browser's `localStorage`. It
 is never sent to the house, so other devices do not see it.
@@ -1973,8 +1975,8 @@ The increment is one read-write transaction, so two pushes at once both count. `
 every failure swallowed and a time limit (`BADGE_TIMEOUT_MS`, 5 s), so a broken or hung store
 can neither stop the notification nor hold the event open. That matters because iOS revokes
 a subscription that receives pushes it does not show. A browser with no `setAppBadge` counts
-nothing and makes no database. Once the badge is set, the worker posts every open window
-`{ type: "BADGE_ADDED" }`, the way `OPEN_PATH` travels.
+nothing and makes no database. Once `setAppBadge` has answered, even with a refusal, the
+worker posts every open window `{ type: "BADGE_ADDED" }`, the way `OPEN_PATH` travels.
 
 The page clears, and that is how a push on screen ends up not counted. **The worker never
 reads `visibilityState`:** that reading is unverified from an iOS worker, and if it were
@@ -1988,8 +1990,8 @@ and on `BADGE_ADDED` while visible, only in the `capable` context. Opening means
 screen inside `AuthGate`, so a person at the sign-in gate on launch has not opened it yet. A
 session that lapsed in the background is the exception: `PushKeeper` stays mounted under the
 Expired gate, so the number clears just before that gate rises, and what counts as seen is
-#424's to define. `forgetPush()` clears it first on sign-out, since a number left there would
-never move again. `clearBadge()` zeroes the count and clears the icon, each whatever becomes
+[#424](https://github.com/anirudhlath/alfred/issues/424)'s to define. `forgetPush()` clears it
+first on sign-out, since a number left there would never move again. `clearBadge()` zeroes the count and clears the icon, each whatever becomes
 of the other; it never rejects and has no time limit, so every caller leaves it unawaited.
 Notifications already in Notification Center are left alone: opening clears the number, not
 the shade.
