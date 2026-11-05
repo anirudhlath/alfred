@@ -42,6 +42,17 @@ async function keyAnswered(client: QueryClient, status: "success" | "error" = "s
   await settle();
 }
 
+/** The key read stays out until the test answers it. */
+function holdKey(): (key: string) => void {
+  let answer: (key: string) => void = () => {};
+  vi.mocked(fetchPublicKey).mockReturnValue(
+    new Promise((resolve) => {
+      answer = resolve;
+    }),
+  );
+  return (key) => answer(key);
+}
+
 /** A sign-in's unfiltered invalidate (`AuthGate`), which re-reads every active query. */
 async function signIn(client: QueryClient) {
   await act(async () => {
@@ -65,21 +76,57 @@ afterEach(() => {
 
 describe("useReachPrompts' gate", () => {
   it("opens once the house's key is read", async () => {
-    let answer: (key: string) => void = () => {};
-    vi.mocked(fetchPublicKey).mockReturnValue(
-      new Promise((resolve) => {
-        answer = resolve;
-      }),
-    );
+    const answerKey = holdKey();
     const { result } = launch();
 
     await settle();
     expect(fetchPublicKey).toHaveBeenCalledTimes(1);
     expect(result.current.gate).toBeNull();
 
-    await act(async () => answer(KEY));
+    await act(async () => answerKey(KEY));
 
     await waitFor(() => expect(result.current.gate).toBe("standalone"));
+  });
+
+  it.each(["granted", "denied"] as const)(
+    "does not open when iOS answered %s while the key was read",
+    async (answer) => {
+      const answerKey = holdKey();
+      const { result, client, rerender } = launch();
+      await settle();
+      expect(fetchPublicKey).toHaveBeenCalledTimes(1);
+
+      // Through Reach's own gate, which a slow read leaves time for.
+      vi.mocked(permission).mockReturnValue(answer);
+      await act(async () => answerKey(KEY));
+      await keyAnswered(client);
+
+      expect(result.current.gate).toBeNull();
+
+      // The launch has had its one try, so a later render does not open it.
+      vi.mocked(permission).mockReturnValue("default");
+      rerender();
+      expect(result.current.gate).toBeNull();
+    },
+  );
+
+  it("does not open when a button was tapped while the key was read", async () => {
+    const answerKey = holdKey();
+    const { result, client, rerender } = launch();
+    await settle();
+    expect(fetchPublicKey).toHaveBeenCalledTimes(1);
+
+    // Reach's own gate shares the mark.
+    markGateAnswered();
+    await act(async () => answerKey(KEY));
+    await keyAnswered(client);
+
+    expect(result.current.gate).toBeNull();
+
+    // The launch has had its one try, so a later render does not open it.
+    localStorage.clear();
+    rerender();
+    expect(result.current.gate).toBeNull();
   });
 
   it("does not open off an iPhone", async () => {

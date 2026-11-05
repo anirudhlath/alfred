@@ -58,8 +58,8 @@ export interface ReachPrompts {
  * A launch with neither button tapped writes nothing, so the next one shows it.
  */
 export function useReachPrompts(): ReachPrompts {
-  // Read once, each of them. A launch is judged as it began: what its own gate
-  // goes on to change is not a reason to judge it again.
+  // Read once, each of them: this is what decides whether the key is wanted, and
+  // a tap on the launch's own gate is no reason to take that back.
   const [iPhone] = useState(onIPhone);
   const [context] = useState<ReachContext>(reachContext);
   const [eligible] = useState(
@@ -75,7 +75,8 @@ export function useReachPrompts(): ReachPrompts {
   const [selfOpened, setSelfOpened] = useState(false);
   if (eligible && key.answered && !selfOpened) {
     setSelfOpened(true);
-    if (key.has) setGate("standalone");
+    // Both again: a slow key read leaves time to answer through Reach's own gate.
+    if (key.has && permission() === "default" && !gateAnswered()) setGate("standalone");
   }
 
   const closeGate = useCallback(() => setGate(null), []);
