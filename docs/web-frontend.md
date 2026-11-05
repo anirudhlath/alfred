@@ -1925,13 +1925,13 @@ gate opens once on launch, as the key read answers. The Room hosts it; Reach's o
 of it is unchanged. The permission and the flag are read again at that moment, because a
 slow read leaves time to answer through Reach. So is whether anything is up
 (`anySurfaceUp()`, from `shell/presence.ts`): a Door, the Workshop, a sheet, Reach's own
-gate or the Expired gate, one in its leave included. That check runs in a passive effect, so
-it counts what the same commit raised under the Room: a child's effects run first, and a
-surface joins the stack in its own. An Expired gate raised in that very commit sits above
-the Room and is not counted, which is accepted. If something is up this launch skips the
-gate, since over a Door `Not yet` would be the only quick way back, and over Reach's own
-gate there would be two to answer (D12). A failed key read skips this launch too, and the
-next reads anew. A tap on either button ends the opening on this device, even if iOS's
+gate, the Expired gate or the Denied gate, one in its leave included. That check runs in a
+passive effect, so it counts what the same commit raised under the Room: a child's effects
+run first, and a surface joins the stack in its own. An Expired or Denied gate raised in
+that very commit sits above the Room and is not counted, which is accepted. If something is
+up this launch skips the gate, since over a Door `Not yet` would be the only quick way back,
+and over Reach's own gate there would be two to answer (D12). A failed key read skips this
+launch too, and the next reads anew. A tap on either button ends the opening on this device, even if iOS's
 dialog is then dismissed, and Reach keeps `Enable`. `enable()` still comes first in the tap,
 ahead of the flag, since anything ahead of it can end the gesture. A launch with neither tap
 writes nothing, so the next one shows it again. It never opens for `granted` or `denied`, so

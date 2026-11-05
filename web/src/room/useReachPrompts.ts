@@ -143,8 +143,8 @@ export function useReachPrompts(pending: TrackedAction[], now: number): ReachPro
   // a tap raises a Door, and `useModalFocus` adds that to the stack in a passive effect.
   // A child's effects run first, so whatever this commit raised under the Room is on the
   // stack by here. In a render or a layout effect it would not be yet. What a sibling
-  // above the Room raises in the same commit (`AuthGate`'s Expired gate) is not, which
-  // the spec's D12 accepts.
+  // above the Room raises in the same commit (`AuthGate`'s Expired or Denied gate) is not,
+  // which the spec's D12 accepts.
   useEffect(() => {
     if (!eligible || !key.answered || selfOpened.current) return;
     selfOpened.current = true;
