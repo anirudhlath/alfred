@@ -54,7 +54,7 @@ function write(store: string, value: string): void {
   try {
     localStorage.setItem(store, value);
   } catch {
-    // Private mode. What was tapped holds for this run only, in the caller's hands.
+    // Private mode. The store keeps nothing: what lasts is the caller's to hold.
   }
 }
 
@@ -62,9 +62,17 @@ export function readReachActs(): ReachAct[] {
   return readList(ACTS_STORE, isReachAct);
 }
 
-/** The list including this answer, even if the write failed: this run still shows it. */
-export function addReachAct(outcome: ReachOutcome, at: string): ReachAct[] {
-  const acts = [...readReachActs(), { at, outcome }];
+/**
+ * The list including this answer, even if the write failed. It builds on `held`,
+ * the list already showing, and on storage only when nothing is held: storage has
+ * no copy of an earlier answer it refused.
+ */
+export function addReachAct(
+  outcome: ReachOutcome,
+  at: string,
+  held: ReachAct[] = readReachActs(),
+): ReachAct[] {
+  const acts = [...held, { at, outcome }];
   write(ACTS_STORE, JSON.stringify(acts));
   return acts;
 }

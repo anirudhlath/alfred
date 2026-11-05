@@ -131,6 +131,7 @@ describe("a store that throws", () => {
     refuse("setItem");
 
     expect(addReachAct("on", AT)).toEqual([{ at: AT, outcome: "on" }]);
+    // The store's word, not the row's: only what the caller was handed has it now.
     expect(readReachActs()).toEqual([]);
 
     expect(() => writeAnsweredDoors(["req-1"])).not.toThrow();
@@ -140,7 +141,7 @@ describe("a store that throws", () => {
     expect(gateAnswered()).toBe(false);
   });
 
-  it("still returns what it holds when only the write throws", () => {
+  it("builds on the store when nothing is held and only the write throws", () => {
     addReachAct("off", AT);
     refuse("setItem");
 
@@ -148,6 +149,41 @@ describe("a store that throws", () => {
       { at: AT, outcome: "off" },
       { at: LATER, outcome: "on" },
     ]);
+    // The second answer is only in the list it returned, for the caller to hold.
     expect(readReachActs()).toEqual([{ at: AT, outcome: "off" }]);
+  });
+
+  it("keeps two answers the store refused, when the first is handed back", () => {
+    refuse("setItem");
+
+    const first = addReachAct("off", AT);
+    expect(addReachAct("on", LATER, first)).toEqual([
+      { at: AT, outcome: "off" },
+      { at: LATER, outcome: "on" },
+    ]);
+    expect(readReachActs()).toEqual([]);
+  });
+});
+
+describe("what addReachAct builds on", () => {
+  it("is the list it is given, over what the store holds", () => {
+    addReachAct("off", AT);
+
+    expect(addReachAct("on", LATER, [])).toEqual([{ at: LATER, outcome: "on" }]);
+    expect(readReachActs()).toEqual([{ at: LATER, outcome: "on" }]);
+  });
+
+  it("stores a refused answer once the store takes writes again", () => {
+    const refusing = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("refused", "QuotaExceededError");
+    });
+    const first = addReachAct("off", AT);
+    refusing.mockRestore();
+
+    addReachAct("on", LATER, first);
+    expect(readReachActs()).toEqual([
+      { at: AT, outcome: "off" },
+      { at: LATER, outcome: "on" },
+    ]);
   });
 });

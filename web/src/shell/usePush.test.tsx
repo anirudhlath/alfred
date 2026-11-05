@@ -1,4 +1,4 @@
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,7 +18,7 @@ import {
 import { useReachActRows } from "@/room/useReachPrompts";
 import { BUSY, failedClient, makeClient } from "@/test/push-client";
 import type { SyncAnswer } from "@/lib/push";
-import { usePush, type PushOptions } from "./usePush";
+import { usePush, type PushOptions, type PushValue } from "./usePush";
 
 vi.mock("@/lib/push", () => ({
   reachContext: vi.fn(),
@@ -30,11 +30,14 @@ vi.mock("@/lib/push", () => ({
 /** The page's notification permission, which a test changes as the owner would. */
 let granted: NotificationPermission;
 
+/** The wrapper a hook under test reads `client` through. */
+const withClient = (client: QueryClient) =>
+  function Wrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  };
+
 function renderPush(client = makeClient(), options?: PushOptions) {
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  );
-  return { ...renderHook(() => usePush(options), { wrapper }), client };
+  return { ...renderHook(() => usePush(options), { wrapper: withClient(client) }), client };
 }
 
 /** A promise the test settles by hand, for what the hook says while one is in flight. */
@@ -329,26 +332,57 @@ describe("usePush's Act rows", () => {
   const NOW = new Date("2026-11-04T07:44:00.000Z");
   const AT = NOW.toISOString();
 
-  /** This page is on `userAgent`, and the prompt is still to come. */
+  const ON_TEXT = "Notifications on for this iPhone";
+  const OFF_TEXT = "Notifications stay off on this iPhone";
+
+  /** This page is on `userAgent`. */
   function on(userAgent: string): void {
     vi.spyOn(navigator, "userAgent", "get").mockReturnValue(userAgent);
-    granted = "default";
   }
 
-  /** The owner taps Enable on `userAgent`, and the tap runs to its end. */
+  /** The store takes no more writes, as a full or forbidden one does. */
+  function refuseWrites(): void {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("refused", "QuotaExceededError");
+    });
+  }
+
+  /** The owner taps Enable and answers the prompt, and the tap runs to its end. */
+  async function tap(
+    push: () => PushValue,
+    answer: NotificationPermission,
+    failure?: Error,
+  ): Promise<void> {
+    granted = "default";
+    answers(answer, failure);
+    act(() => push().enable());
+    await waitFor(() => expect(push().asking).toBe(false));
+  }
+
+  /** A tap on `userAgent` with nothing else mounted: what the cache was then told. */
   async function tapEnable(
     userAgent: string,
     answer: NotificationPermission,
     failure?: Error,
   ): Promise<ReachAct[] | undefined> {
     on(userAgent);
-    answers(answer, failure);
+    granted = "default";
     const { result, client } = renderPush();
 
-    act(() => result.current.enable());
-    await waitFor(() => expect(result.current.asking).toBe(false));
+    await tap(() => result.current, answer, failure);
     await settle();
     return client.getQueryData<ReachAct[]>(REACH_ACTS_KEY);
+  }
+
+  /** Enable and the Room's rows on an iPhone, on one client, as they are in the app. */
+  function renderPushAndRows() {
+    on(IPHONE);
+    granted = "default";
+    const client = makeClient();
+    const view = renderHook(() => ({ push: usePush(), rows: useReachActRows() }), {
+      wrapper: withClient(client),
+    });
+    return { ...view, client };
   }
 
   beforeEach(() => {
@@ -395,39 +429,59 @@ describe("usePush's Act rows", () => {
   });
 
   it("keeps the row and finishes the tap when the store refuses it", async () => {
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new DOMException("refused", "QuotaExceededError");
-    });
-    on(IPHONE);
-    answers("granted");
-    const client = makeClient();
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    );
-    const { result } = renderHook(() => ({ push: usePush(), rows: useReachActRows() }), { wrapper });
+    refuseWrites();
+    const { result } = renderPushAndRows();
     expect(result.current.rows).toEqual([]);
 
-    act(() => result.current.push.enable());
-    await waitFor(() => expect(result.current.push.asking).toBe(false));
+    await tap(() => result.current.push, "granted");
 
     expect(result.current.push.reach).toEqual({ kind: "on" });
+    // Nothing in the store, so the row below can only be the cache's.
     expect(readReachActs()).toEqual([]);
-    expect(result.current.rows).toMatchObject([
-      { kind: "act", at: AT, text: "Notifications on for this iPhone" },
+    expect(result.current.rows).toMatchObject([{ kind: "act", at: AT, text: ON_TEXT }]);
+  });
+
+  it("keeps a row the store refused through a sign-in", async () => {
+    refuseWrites();
+    const { result, client } = renderPushAndRows();
+    await tap(() => result.current.push, "granted");
+
+    // What `AuthGate`'s `refetchEverything` does on a sign-in.
+    await act(async () => client.invalidateQueries());
+    await settle();
+
+    expect(client.getQueryData(REACH_ACTS_KEY)).toEqual([{ at: AT, outcome: "on" }]);
+    expect(result.current.rows).toMatchObject([{ kind: "act", at: AT, text: ON_TEXT }]);
+  });
+
+  it("keeps both of two answers the store refused", async () => {
+    refuseWrites();
+    const { result } = renderPushAndRows();
+
+    await tap(() => result.current.push, "denied");
+    // Reset in Settings, and asked again.
+    await tap(() => result.current.push, "granted");
+
+    expect(result.current.rows).toMatchObject([{ text: OFF_TEXT }, { text: ON_TEXT }]);
+  });
+
+  it("stores both of two answers when the store takes them", async () => {
+    const { result } = renderPushAndRows();
+
+    await tap(() => result.current.push, "denied");
+    await tap(() => result.current.push, "granted");
+
+    expect(readReachActs()).toEqual([
+      { at: AT, outcome: "off" },
+      { at: AT, outcome: "on" },
     ]);
   });
 
   it("brings back the rows an earlier launch wrote", () => {
     addReachAct("off", AT);
-    const client = makeClient();
-    const wrapper = ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    );
-    const { result } = renderHook(() => useReachActRows(), { wrapper });
+    const { result } = renderHook(() => useReachActRows(), { wrapper: withClient(makeClient()) });
 
-    expect(result.current).toMatchObject([
-      { kind: "act", at: AT, text: "Notifications stay off on this iPhone" },
-    ]);
+    expect(result.current).toMatchObject([{ kind: "act", at: AT, text: OFF_TEXT }]);
   });
 });
 

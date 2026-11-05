@@ -1038,6 +1038,17 @@ describe("useRoom — the session window", () => {
       expect(kinds(result.current.items)).toEqual(["alfred", "act", "you"]);
     });
 
+    it("shows a device act that lands while the Room is open", () => {
+      // The same history throughout, so only `deviceActs` can move the thread.
+      const history = [historyRow];
+      const { result, rerender } = renderRoom({ history, deviceActs: [], online: true });
+      expect(kinds(result.current.items)).toEqual(["alfred"]);
+
+      // Stamped after the mount's `now`, which moves only when the app returns.
+      rerender({ history, deviceActs: [deviceAct("2026-09-07T21:06:00")] });
+      expect(kinds(result.current.items)).toEqual(["alfred", "act"]);
+    });
+
     it("drops a device act the window has moved past", () => {
       const { result } = renderRoom({
         history: [],

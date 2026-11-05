@@ -404,8 +404,7 @@ export function useRoom({
     // history: a turn the house read back and then let go idle is simply gone,
     // which is the point. `now` moves on visibilitychange, so an open thread
     // does not vanish at minute thirty — it is gone when you come back. The
-    // device's acts follow the history unsorted: the window's walk reads only
-    // turns, and those stay in order.
+    // device's acts follow the history unsorted, which the window allows.
     const merged = [
       ...sessionWindow([...(history ?? []), ...(deviceActs ?? [])], now, idleMs),
       ...(tombstones ?? []),

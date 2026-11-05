@@ -409,6 +409,18 @@ describe("sessionWindow", () => {
     expect(kept(items)).toEqual(["nt:dawn"]);
   });
 
+  it("needs only the turns in order: other rows may sit anywhere", () => {
+    const items = [
+      you("a", "2026-09-07T21:00:00"),
+      alfred("b", "2026-09-07T21:10:00"),
+      // After the turns in the list, and before them by its stamp.
+      act("device", "2026-09-07T20:40:00"),
+      // After them, and from a day the window has left.
+      act("old", "2026-09-06T23:59:00"),
+    ];
+    expect(kept(items)).toEqual(["you:a", "alfred:b", "nt:device"]);
+  });
+
   it("keeps the house's rows back to a session that began yesterday", () => {
     const items = [
       you("a", "2026-09-06T23:50:00"),
