@@ -256,8 +256,9 @@ async def open_ask(
     The open key is claimed first, with ``SET NX``: Reflex's two loops interleave at every
     await, so the gate's read cannot promise one open ask at a time. A lost claim writes
     nothing else. After it, in this order: the action is parked as a pending action for
-    ``ask_expiry_seconds``; the repeat key is set for ``repeat_hours`` (none when that is 0);
-    the day's count goes up by one; and the notification goes out. A crash after the claim
+    ``ask_expiry_seconds``, with the question it puts as its title; the repeat key is set for
+    ``repeat_hours`` (none when that is 0); the day's count goes up by one; and the
+    notification goes out. A crash after the claim
     leaves the open key behind, so a redelivery finds ``ask_open``. A failure in any step
     propagates: the runner decides what to do with it.
 
@@ -267,6 +268,15 @@ async def open_ask(
     action = proposal.action
     if action is None:
         raise ValueError("an ask needs a proposal with an action")
+    title, body = ask_text(
+        action.tool_name,
+        action.parameters,
+        noticed=noticed,
+        reason=proposal.reason or "",
+        names=[names.get(target, target) for target in targets],
+        script=script,
+        service=service,
+    )
     ask = OpenAsk(
         ask_id=action.request_id,
         tool_name=action.tool_name,
@@ -285,7 +295,7 @@ async def open_ask(
     )
     if not claimed:
         return None
-    await store_pending_action(redis, action, ttl_seconds=settings.ask_expiry_seconds)
+    await store_pending_action(redis, action, ttl_seconds=settings.ask_expiry_seconds, title=title)
     if settings.repeat_hours > 0:
         await redis.set(
             asked_key(action.tool_name, targets),
@@ -297,15 +307,6 @@ async def open_ask(
         pipe.incr(day)
         pipe.expire(day, _COUNT_TTL_SECONDS)
         await pipe.execute()
-    title, body = ask_text(
-        action.tool_name,
-        action.parameters,
-        noticed=noticed,
-        reason=proposal.reason or "",
-        names=[names.get(target, target) for target in targets],
-        script=script,
-        service=service,
-    )
     await notifier.publish(
         title,
         body,

@@ -81,6 +81,17 @@ export const failedAction: TrackedAction = {
   },
 };
 export const declinedAction: TrackedAction = { ...pendingAction, phase: "declined" };
+export const askAction: TrackedAction = {
+  ...pendingAction,
+  action: {
+    ...pendingAction.action,
+    tool_name: "home.light_turn_off",
+    parameters: { entity_id: "light.desk_left" },
+    reason: "The room has been empty for an hour.",
+    source: "reflex-engine",
+    title: "Shall I turn off Desk Left?",
+  },
+};
 export const expiredAction: TrackedAction = {
   ...pendingAction,
   phase: "expired",

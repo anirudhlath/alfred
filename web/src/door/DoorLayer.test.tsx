@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrackedAction } from "@/lib/actions";
+import type { PendingAction } from "@/lib/types";
 import { hhmm } from "@/lib/format";
 import { hintOpacity, slideKnob } from "@/lib/slide";
 import { pendingActionFixture } from "@/test/fixtures";
@@ -13,6 +14,15 @@ const T0745_30 = Date.parse("2026-09-07T07:45:30Z");
 /** 353 px track − 64 = 289 px of travel, the 393 pt phone's real geometry. */
 const TRACK_WIDTH = 353;
 const MAX = TRACK_WIDTH - 64;
+
+/** A Reflex ask: benign, and it arrives with the question it put to the owner. */
+const ASK: PendingAction = {
+  ...pendingActionFixture,
+  tool_name: "home.light_turn_off",
+  parameters: { entity_id: "light.desk_left" },
+  source: "reflex-engine",
+  title: "Shall I turn off Desk Left?",
+};
 
 function at(phase: TrackedAction["phase"], extra: Partial<TrackedAction> = {}): TrackedAction {
   return { action: pendingActionFixture, phase, ...extra };
@@ -76,6 +86,18 @@ describe("DoorLayer — what it says", () => {
     expect(screen.getByRole("dialog", { name: "Critical approval" })).toBeInTheDocument();
     expect(screen.getByText("CRITICAL · a91f")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Leave it" })).toBeInTheDocument();
+  });
+
+  it("calls a Reflex ask an ask, and nothing about it critical", () => {
+    renderDoor(at("pending", { action: ASK }));
+    expect(screen.getByRole("dialog", { name: "Approval" })).toBeInTheDocument();
+    expect(screen.getByText("ASK · a91f")).toBeInTheDocument();
+    expect(screen.queryByText(/CRITICAL/)).toBeNull();
+  });
+
+  it("heads an ask with the question it put", () => {
+    renderDoor(at("pending", { action: ASK }));
+    expect(screen.getByRole("heading", { name: "Shall I turn off Desk Left?" })).toBeInTheDocument();
   });
 
   it("counts the fuse down and says what it is counting to", () => {
@@ -146,7 +168,7 @@ describe("DoorLayer — pending", () => {
     expect(screen.getByText("Slide to confirm")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Approval only; the lock itself reports back separately. Releasing before the end snaps back.",
+        "Approval only; the result reports back separately. Releasing before the end snaps back.",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Back to the room" })).toBeNull();

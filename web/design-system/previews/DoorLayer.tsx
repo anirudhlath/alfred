@@ -2,6 +2,7 @@ import { Page, DoorLayer } from "@ds";
 import {
   NOW,
   appliedAction,
+  askAction,
   declinedAction,
   expiredAction,
   failedAction,
@@ -17,6 +18,7 @@ const door = (tracked: TrackedAction, theme: "dark" | "light" = "dark", online =
 );
 export const Pending = door(pendingAction);
 export const PendingLight = door(pendingAction, "light");
+export const Ask = door(askAction);
 export const Queued = door(queuedAction);
 export const Applied = door(appliedAction, "light");
 export const Failed = door(failedAction);

@@ -464,6 +464,26 @@ describe("sessionWindow", () => {
 });
 
 describe("pendingActionTitles", () => {
+  it("names an ask by the question it put, even with a tool to name it by", () => {
+    const history = {
+      notifications: [
+        {
+          id: "1-0",
+          event: {
+            title: "Shall I turn off Desk Left?",
+            metadata: {
+              pending_action_id: "b7e21c40",
+              tool_name: "home.light_turn_off",
+              kind: "reflex_ask",
+            },
+          },
+        },
+      ],
+    } as unknown as RoomHistory;
+
+    expect(pendingActionTitles(history)).toEqual({ b7e21c40: "Shall I turn off Desk Left?" });
+  });
+
   it("names an approval by its tool, for the tombstone a deep link may need", () => {
     expect(pendingActionTitles(HISTORY)).toEqual({ a91f3c2e: "Lock unlock" });
   });

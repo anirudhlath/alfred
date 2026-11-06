@@ -123,6 +123,18 @@ async def test_store_pending_action_writes_a_parked_action_with_a_ttl(
     assert 0 < await redis.ttl(pending_key(action.request_id)) <= PENDING_TTL_SECONDS
 
 
+async def test_store_pending_action_keeps_the_title_it_is_given(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    action = _action()
+    await store_pending_action(redis, action, title="Shall I unlock the front door?")
+
+    record = await read_pending(redis, action.request_id)
+    assert isinstance(record, ParkedAction)
+    assert record.title == "Shall I unlock the front door?"
+    assert record.action == action
+
+
 async def test_store_pending_action_keeps_five_minutes_by_default(
     redis: fakeredis.FakeAsyncRedis,
 ) -> None:
@@ -228,6 +240,7 @@ async def test_a_parked_run_payload_shows_its_first_call_and_its_summary() -> No
     assert payload["target_service"] == "home-service"
     assert payload["parameters"] == {"entity_id": "lock.door_0"}
     assert payload["reason"] == "Unlock the front door and the garage."
+    assert payload["title"] is None
     assert payload["source"] == "conscious-engine"
     assert payload["timestamp"] == T0.isoformat()
     assert payload["ttl_seconds"] == 90
@@ -244,6 +257,7 @@ async def test_an_action_payload_keeps_todays_shape() -> None:
     assert payload["tool_name"] == "home.unlock_door"
     assert payload["parameters"] == {"entity_id": "lock.front_door"}
     assert payload["reason"] == "The dog walker is here."
+    assert payload["title"] is None
     assert payload["source"] == "conscious-engine"
     assert payload["timestamp"] == T0.isoformat()
     assert set(payload) == {
@@ -252,11 +266,18 @@ async def test_an_action_payload_keeps_todays_shape() -> None:
         "target_service",
         "parameters",
         "reason",
+        "title",
         "source",
         "timestamp",
         "ttl_seconds",
         "expires_at",
     }
+
+
+async def test_an_action_payload_carries_the_title_it_was_parked_with() -> None:
+    record = ParkedAction(action=_action(), title="Shall I unlock the front door?")
+
+    assert pending_payload(record, 90)["title"] == "Shall I unlock the front door?"
 
 
 async def test_decide_approve_on_an_action_republishes_it_confirmed(

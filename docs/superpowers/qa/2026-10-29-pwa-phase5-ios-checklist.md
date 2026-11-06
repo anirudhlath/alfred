@@ -265,6 +265,24 @@ asked, so delete any home-screen copy first.
       would mean the new copy kept the earlier answer. Afterwards, Settings › Alfred ›
       Notifications back on, to leave the phone reachable
 
+## The Door after a tap on a push
+
+CI cannot reach any of this: the height comes from iOS. A waiting Door is the same as in
+"Slice 2".
+
+- [ ] Send the app to the background, wait for the push and tap it. The Door fills the
+      screen with no dark band across the bottom, and `Don't` shows without touching anything
+- [ ] Do it again from the Room with the app left open a while. The Room's composer sits at
+      the bottom of the screen before the first touch
+- [ ] Slide. `Applied` shows for about two seconds and the Door closes by itself
+- [ ] Tap `Don't` on another. `Declined` shows for about two seconds and the Door closes
+- [ ] A Reflex ask reads `ASK ·`, not `CRITICAL ·`, and is headed by its question
+- [ ] In the Room, tap the composer. It sits right above the keys. Dismiss the keyboard, and
+      the composer goes back to the bottom of the screen
+- [ ] Tap the composer, type a word, then send the app to the background with the keyboard
+      up and tap the push. The Door fills the screen. Slide, and when it closes the composer
+      sits at the bottom of the screen, with no dark band
+
 ## With Web Inspector (optional)
 
 On a Mac with Safari's Develop menu, inspect the home-screen app.

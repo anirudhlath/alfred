@@ -60,6 +60,17 @@ describe("FuseRing", () => {
 });
 
 describe("DoorBanner", () => {
+  it("names an ask by the question it put", () => {
+    const ask = {
+      ...tracked,
+      action: { ...tracked.action, title: "Shall I turn off Desk Left?" },
+    };
+    render(<DoorBanner tracked={ask} now={T0742} onOpen={() => {}} />);
+
+    expect(screen.getByText("Shall I turn off Desk Left?")).toBeInTheDocument();
+    expect(screen.queryByText("Lock unlock")).toBeNull();
+  });
+
   it("names the action, counts it down, and says who it is for", () => {
     render(<DoorBanner tracked={tracked} now={T0742} onOpen={() => {}} />);
 

@@ -213,7 +213,8 @@ exception is the Do Not Disturb check, which counts as on when it fails.
 
 ### The words of an ask
 
-`ask_text` writes the notification: the title is `Shall I {words} {names}?`, where `words` are the
+`ask_text` writes the notification, and the Door heads the ask with the same title, which
+`open_ask` parks beside the action. The title is `Shall I {words} {names}?`, where `words` are the
 service half of the tool's name with underscores as spaces (the tool's last dotted segment when
 the caller has no service) and `names` are the targets as the owner knows them; for a script it is
 `Shall I run the script {names}?`. The body is `{noticed} {reason} Reply yes or no.`: each of the

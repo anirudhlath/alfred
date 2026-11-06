@@ -16,7 +16,13 @@ import fakeredis
 import pytest
 from loguru import logger
 
-from bus.schemas.events import ActionRequest, OutcomeKind, ReflexOutcome, ReflexProposal
+from bus.schemas.events import (
+    ActionRequest,
+    OutcomeKind,
+    ParkedAction,
+    ReflexOutcome,
+    ReflexProposal,
+)
 from core.notifications.dnd import DNDChecker
 from core.notifications.publisher import NotificationPublisher
 from core.notifications.schema import Urgency
@@ -651,6 +657,19 @@ async def test_open_ask_parks_the_action_for_the_expiry(
     assert parked.record_id == "ask-1"
     assert parked.action_requests() == [proposal.action]
     assert 595 <= await redis.ttl(pending_key("ask-1")) <= 600
+
+
+async def test_open_ask_parks_the_question_it_puts(
+    redis: fakeredis.FakeAsyncRedis,
+) -> None:
+    notifier = make_notifier()
+
+    await ask_about(redis, notifier)
+
+    parked = await read_pending(redis, "ask-1")
+    assert isinstance(parked, ParkedAction)
+    assert parked.title == "Shall I turn on Lamp?"
+    assert parked.title == notifier.publish.await_args.args[0]
 
 
 async def test_open_ask_takes_its_expiry_from_the_settings(
