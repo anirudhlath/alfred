@@ -1,5 +1,5 @@
-import { fusePercent, fuseRemaining, type TrackedAction } from "@/lib/actions";
-import { humaniseTool, mmss } from "@/lib/format";
+import { actionTitle, fusePercent, fuseRemaining, type TrackedAction } from "@/lib/actions";
+import { mmss } from "@/lib/format";
 import { DANGER_SECONDS, FuseRing } from "@/door/FuseRing";
 
 export interface DoorBannerProps {
@@ -28,7 +28,7 @@ export function DoorBanner({ tracked, now, onOpen }: DoorBannerProps) {
       <FuseRing percent={percent} size={34} danger={remaining <= DANGER_SECONDS} />
 
       <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
-        <div className="text-[16px] font-medium">{humaniseTool(tracked.action.tool_name)}</div>
+        <div className="text-[16px] font-medium">{actionTitle(tracked.action)}</div>
         {/* Not `.t-meta`: that class pins the colour to --muted, which is a Room
             token and disappears against ink. */}
         <div className="font-mono text-[11px] leading-[1.5]" style={{ color: "var(--paper-muted)" }}>

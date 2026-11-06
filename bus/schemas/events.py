@@ -215,6 +215,9 @@ class ParkedAction(BaseModel):
 
     kind: Literal["action"] = "action"
     action: ActionRequest
+    # The words the owner was asked in, for a client to head the approval with. It stays
+    # here and not on the action, which goes on to the service that runs it.
+    title: str | None = None
 
     @property
     def record_id(self) -> str:

@@ -174,7 +174,7 @@
   }
 
   /* Constraint §4.4: 100vh is wrong in Safari. --app-height and --viewport-top
-     are the visual viewport's own height and offset (lib/viewport.ts), so the
+     are the visible band's height and offset (lib/viewport.ts), so the
      shell is the band of screen that is on screen — under a keyboard, after an
      iOS pan, or neither. The fallback keeps it full-height before the JS has
      run. One declaration, not two — an undefined var() is invalid at

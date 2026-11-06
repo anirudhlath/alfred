@@ -1,11 +1,13 @@
 import {
+  actionTitle,
   fuseLength,
   fusePercent,
   fuseRemaining,
+  isAsk,
   type ActionPhase,
   type TrackedAction,
 } from "@/lib/actions";
-import { hhmm, humaniseTool, mmss, rawCall, shortId } from "@/lib/format";
+import { hhmm, mmss, rawCall, shortId } from "@/lib/format";
 import { DANGER_SECONDS, FuseRing } from "@/door/FuseRing";
 import { SlideToConfirm } from "@/door/SlideToConfirm";
 import { Layer } from "@/shell/Layer";
@@ -65,7 +67,7 @@ function footLine(tracked: TrackedAction, online: boolean): string {
   switch (phase) {
     case "pending":
       return online
-        ? "Approval only; the lock itself reports back separately. Releasing before the end snaps back."
+        ? "Approval only; the result reports back separately. Releasing before the end snaps back."
         : "Cannot confirm while offline; the fuse is still running on the server.";
     case "queued":
       return `Sent to Home Assistant. Waiting for it to report (request ${shortId(action.request_id)}).`;
@@ -112,9 +114,10 @@ export function DoorLayer({ tracked, open, online, now, onClose, onConfirm, onDe
   const percent = fusePercent(action, now);
   const reason =
     action.reason ?? `Alfred wants to run '${action.tool_name}' on ${action.target_service}.`;
+  const ask = isAsk(action);
 
   return (
-    <Layer open={open} label="Critical approval" durationMs={420}>
+    <Layer open={open} label={ask ? "Approval" : "Critical approval"} durationMs={420}>
       <div
         className="flex flex-1 flex-col overflow-hidden"
         style={{ background: "var(--ink)", color: "var(--paper)" }}
@@ -134,7 +137,7 @@ export function DoorLayer({ tracked, open, online, now, onClose, onConfirm, onDe
             Leave it
           </button>
           <div className="font-mono text-[11px]" style={{ color: "var(--paper-muted)" }}>
-            CRITICAL · {shortId(action.request_id)}
+            {ask ? "ASK" : "CRITICAL"} · {shortId(action.request_id)}
           </div>
         </div>
 
@@ -149,7 +152,7 @@ export function DoorLayer({ tracked, open, online, now, onClose, onConfirm, onDe
           </FuseRing>
 
           <div className="flex flex-col items-center gap-2.5">
-            <h2 className="t-gate">{humaniseTool(action.tool_name)}</h2>
+            <h2 className="t-gate">{actionTitle(action)}</h2>
             <p
               className="max-w-[300px] text-[15px] leading-[1.45]"
               style={{ color: "var(--paper-muted)" }}

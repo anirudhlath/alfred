@@ -294,7 +294,11 @@ export function pendingActionTitles(history: RoomHistory | undefined): Record<st
     const id = str(metadata?.pending_action_id);
     if (!id) continue;
     const tool = str(metadata?.tool_name);
-    titles[id] = tool ? humaniseTool(tool) : (str(entry.event.title) ?? `Action ${shortId(id)}`);
+    const title = str(entry.event.title);
+    // An ask's title is the question it put, which is what the Door heads it with.
+    titles[id] =
+      (metadata?.kind === "reflex_ask" ? title : null) ??
+      (tool ? humaniseTool(tool) : (title ?? `Action ${shortId(id)}`));
   }
   return titles;
 }

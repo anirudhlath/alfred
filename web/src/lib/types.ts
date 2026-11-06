@@ -68,6 +68,8 @@ export interface PendingAction {
   target_service: string;
   parameters: Record<string, unknown>;
   reason: string | null;
+  /** The question a Reflex ask put to the owner. Other approvals have none. */
+  title?: string | null;
   source: string;
   timestamp: string;
   ttl_seconds: number;

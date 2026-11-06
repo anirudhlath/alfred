@@ -124,6 +124,9 @@ function Probe() {
       <button type="button" onClick={() => door.openAction("a91f3c2e")}>
         open
       </button>
+      <button type="button" onClick={() => door.openAction("7c2e0b1d")}>
+        open second
+      </button>
       <button type="button" onClick={door.close}>
         close
       </button>
@@ -539,6 +542,176 @@ describe("DoorProvider", () => {
 
     await user.click(screen.getByRole("button", { name: "close" }));
     expect(screen.getByTestId("open")).toHaveTextContent("closed");
+  });
+
+  describe("closing itself", () => {
+    const wait = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+
+    /** Open the first action and answer yes, up to the house having it. */
+    async function confirmOpened(): Promise<FakeTelemetry> {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      const { telemetry } = renderDoor();
+      await waitFor(() => expect(phases()).toContain("a91f3c2e:pending"));
+      await user.click(screen.getByRole("button", { name: "open" }));
+      await user.click(screen.getByRole("button", { name: "confirm" }));
+      await waitFor(() => expect(phases()).toContain("a91f3c2e:queued"));
+      return telemetry;
+    }
+
+    it("closes shortly after the action is applied, with time to read it", async () => {
+      pendingBody = { actions: [pendingActionFixture] };
+      const telemetry = await confirmOpened();
+
+      deliverResult(telemetry, {});
+      expect(phases()).toBe("a91f3c2e:applied");
+      await wait(1500);
+      expect(screen.getByTestId("open")).toHaveTextContent("a91f3c2e");
+
+      await wait(600);
+      expect(screen.getByTestId("open")).toHaveTextContent("closed");
+    });
+
+    it("closes on time while another approval's clock is ticking", async () => {
+      pendingBody = { actions: [pendingActionFixture, secondPendingActionFixture] };
+      const telemetry = await confirmOpened();
+
+      deliverResult(telemetry, {});
+      await wait(2100);
+
+      expect(screen.getByTestId("open")).toHaveTextContent("closed");
+    });
+
+    it("closes shortly after a decline", async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      pendingBody = { actions: [pendingActionFixture] };
+      renderDoor();
+      await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+      await user.click(screen.getByRole("button", { name: "open" }));
+      await user.click(screen.getByRole("button", { name: "deny" }));
+      await waitFor(() => expect(phases()).toBe("a91f3c2e:declined"));
+
+      await wait(2100);
+
+      expect(screen.getByTestId("open")).toHaveTextContent("closed");
+    });
+
+    it("stays on a failure, which has to be read", async () => {
+      pendingBody = { actions: [pendingActionFixture] };
+      const telemetry = await confirmOpened();
+
+      deliverResult(telemetry, {
+        event: { ...actionResultFixture, status: "error", error: "lock jammed" } as unknown as Record<
+          string,
+          unknown
+        >,
+      });
+      expect(phases()).toBe("a91f3c2e:failed");
+      await wait(10_000);
+
+      expect(screen.getByTestId("open")).toHaveTextContent("a91f3c2e");
+    });
+
+    const failure = {
+      event: { ...actionResultFixture, status: "error", error: "lock jammed" } as unknown as Record<
+        string,
+        unknown
+      >,
+    };
+
+    it("stays when a failure overtakes the success before it has closed", async () => {
+      pendingBody = { actions: [pendingActionFixture] };
+      const telemetry = await confirmOpened();
+
+      deliverResult(telemetry, {});
+      await wait(1000);
+      deliverResult(telemetry, failure);
+      await wait(10_000);
+
+      expect(screen.getByTestId("open")).toHaveTextContent("a91f3c2e");
+    });
+
+    it("comes back when a later call of the approval fails", async () => {
+      pendingBody = { actions: [pendingActionFixture] };
+      const telemetry = await confirmOpened();
+
+      deliverResult(telemetry, {});
+      await wait(2100);
+      expect(screen.getByTestId("open")).toHaveTextContent("closed");
+
+      deliverResult(telemetry, failure);
+      expect(screen.getByTestId("open")).toHaveTextContent("a91f3c2e");
+
+      // And this time it stays: a failure has to be read.
+      await wait(10_000);
+      expect(screen.getByTestId("open")).toHaveTextContent("a91f3c2e");
+    });
+
+    it("comes back when a decline turns out to have run", async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      pendingBody = { actions: [pendingActionFixture] };
+      const { telemetry } = renderDoor();
+      await waitFor(() => expect(phases()).toBe("a91f3c2e:pending"));
+      await user.click(screen.getByRole("button", { name: "open" }));
+      await user.click(screen.getByRole("button", { name: "deny" }));
+      await waitFor(() => expect(phases()).toBe("a91f3c2e:declined"));
+      await wait(2100);
+      expect(screen.getByTestId("open")).toHaveTextContent("closed");
+
+      deliverResult(telemetry, {});
+
+      expect(phases()).toBe("a91f3c2e:applied");
+      expect(screen.getByTestId("open")).toHaveTextContent("a91f3c2e");
+    });
+
+    it("does not come back for a second success", async () => {
+      pendingBody = { actions: [pendingActionFixture] };
+      const telemetry = await confirmOpened();
+
+      deliverResult(telemetry, {});
+      await wait(2100);
+      deliverResult(telemetry, {});
+
+      expect(screen.getByTestId("open")).toHaveTextContent("closed");
+    });
+
+    it("waits for a Door in the way before coming back", async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      pendingBody = { actions: [pendingActionFixture, secondPendingActionFixture] };
+      const telemetry = await confirmOpened();
+      deliverResult(telemetry, {});
+      await wait(2100);
+      await user.click(screen.getByRole("button", { name: "open second" }));
+
+      deliverResult(telemetry, failure);
+      expect(screen.getByTestId("open")).toHaveTextContent("7c2e0b1d");
+
+      await user.click(screen.getByRole("button", { name: "close" }));
+      expect(screen.getByTestId("open")).toHaveTextContent("a91f3c2e");
+    });
+
+    it("stays while the house has not reported yet", async () => {
+      pendingBody = { actions: [pendingActionFixture] };
+      await confirmOpened();
+
+      await wait(10_000);
+
+      expect(screen.getByTestId("open")).toHaveTextContent("a91f3c2e");
+    });
+
+    it("leaves alone a Door opened on something else in the meantime", async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      pendingBody = { actions: [pendingActionFixture, secondPendingActionFixture] };
+      const telemetry = await confirmOpened();
+
+      deliverResult(telemetry, {});
+      await user.click(screen.getByRole("button", { name: "open second" }));
+      await wait(2100);
+
+      expect(screen.getByTestId("open")).toHaveTextContent("7c2e0b1d");
+    });
   });
 
   it("refuses to be used outside the provider", () => {

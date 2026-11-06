@@ -23,13 +23,45 @@
  * (index.css, `#root` and `.viewport-fill`). Whatever iOS does — shrink, pan,
  * or both — the shell *is* the visible part of the screen, the composer sits at
  * the bottom of it, and nothing in the tree has to know a keyboard exists.
+ *
+ * The visual viewport is only believed while a field that raises a keyboard has
+ * focus, because that is the only thing that truly shrinks it. Measured on an
+ * iPhone (iOS 27, installed) with no keyboard and nothing focused, it dropped
+ * to 547 against a layout viewport of 894 as the app went to the background,
+ * came back reading 547 with no event, and corrected only at the next touch: a
+ * dark band over the bottom of every surface, clipping whatever sat there.
+ * Re-reading on resume cannot help, since the reading itself is what is wrong.
+ * With no such field the shell is the layout viewport, from its top: an offset
+ * belongs to the band it was read with, and a shell that kept the keyboard's
+ * offset at the full height would hang off the bottom of the screen.
  */
+
+/** The input types iOS raises no keyboard for. */
+const NO_KEYBOARD = new Set([
+  "button",
+  "checkbox",
+  "color",
+  "file",
+  "hidden",
+  "image",
+  "radio",
+  "range",
+  "reset",
+  "submit",
+]);
+
+function fieldHasFocus(): boolean {
+  const focused = document.activeElement;
+  if (focused instanceof HTMLTextAreaElement) return true;
+  return focused instanceof HTMLInputElement && !NO_KEYBOARD.has(focused.type);
+}
 
 /**
  * Call `fn` whenever the geometry may have changed. `scroll` matters as much as
  * `resize`: iOS pans the visual viewport under a focused field rather than
  * resizing it again, and the pan moves `offsetTop`. `window`'s own resize
- * covers rotation and the browsers that have no `visualViewport` at all.
+ * covers rotation and the browsers that have no `visualViewport` at all. Focus
+ * moving decides which reading counts, so it is geometry too.
  * Returns the unsubscriber.
  */
 function subscribe(fn: () => void): () => void {
@@ -37,10 +69,14 @@ function subscribe(fn: () => void): () => void {
   viewport?.addEventListener("resize", fn);
   viewport?.addEventListener("scroll", fn);
   window.addEventListener("resize", fn);
+  document.addEventListener("focusin", fn);
+  document.addEventListener("focusout", fn);
   return () => {
     viewport?.removeEventListener("resize", fn);
     viewport?.removeEventListener("scroll", fn);
     window.removeEventListener("resize", fn);
+    document.removeEventListener("focusin", fn);
+    document.removeEventListener("focusout", fn);
   };
 }
 
@@ -53,12 +89,12 @@ export function installViewportVars(): () => void {
   const root = document.documentElement;
 
   const apply = () => {
-    const viewport = window.visualViewport;
     // No visualViewport (jsdom, and browsers before Safari 13): innerHeight is
     // the only reading there is, and on those the two viewports are the same.
-    const height = viewport ? viewport.height : window.innerHeight;
+    const band = fieldHasFocus() ? window.visualViewport : null;
+    const height = band ? band.height : window.innerHeight;
     root.style.setProperty("--app-height", `${Math.round(height)}px`);
-    root.style.setProperty("--viewport-top", `${Math.round(viewport?.offsetTop ?? 0)}px`);
+    root.style.setProperty("--viewport-top", `${Math.round(band?.offsetTop ?? 0)}px`);
   };
 
   apply();

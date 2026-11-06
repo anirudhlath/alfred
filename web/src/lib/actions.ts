@@ -3,6 +3,19 @@ import { hhmm, humaniseTool } from "./format";
 import type { TimelineItem } from "./history";
 import type { ActionResultEvent, PendingAction } from "./types";
 
+/** The `source` a Reflex ask carries, `ASK_SOURCE` in core/reflex/answers.py. */
+const ASK_SOURCE = "reflex-engine";
+
+/** An ask is Reflex wanting a yes for something benign, and never a critical action. */
+export function isAsk(action: PendingAction): boolean {
+  return action.source === ASK_SOURCE;
+}
+
+/** An ask goes by the question it put, anything else by the call it would make. */
+export function actionTitle(action: PendingAction): string {
+  return action.title ?? humaniseTool(action.tool_name);
+}
+
 /**
  * Where one approval stands.
  *
@@ -219,7 +232,7 @@ export function tombstoneItems(actions: TrackedAction[]): TimelineItem[] {
       kind: "tombstone",
       id: `tomb:${item.action.request_id}`,
       at: item.action.expires_at,
-      title: humaniseTool(item.action.tool_name),
+      title: actionTitle(item.action),
       meta:
         item.phase === "expired"
           ? `expired ${hhmm(item.action.expires_at)} · not done · asked ${asked}`

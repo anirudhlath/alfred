@@ -5,6 +5,7 @@ import {
   useEffect,
   useMemo,
   useReducer,
+  useRef,
   useState,
   type Dispatch,
   type ReactNode,
@@ -17,6 +18,7 @@ import {
   fetchAction,
   fetchPending,
   type ActionEvent,
+  type ActionPhase,
   type TrackedAction,
 } from "@/lib/actions";
 import { ApiError } from "@/lib/api";
@@ -27,6 +29,12 @@ import { useConnection } from "@/shell/ConnectionProvider";
 const TICK_MS = 1000;
 /** The only stream the Door needs; "applied" is what it carries. */
 const RESULT_STREAM = "home_action_results";
+/**
+ * How long a settled answer stays up before the Door closes itself: enough to
+ * read the pill. Only a yes that went through and a "Don't" settle it, since a
+ * failure has to be read and a report still awaited may yet be one.
+ */
+const SETTLED_CLOSE_MS = 2000;
 
 export interface DoorValue {
   /** Everything tracked, oldest first — including tombstones. */
@@ -162,6 +170,31 @@ export function DoorProvider({ children }: { children: ReactNode }) {
     (id: string) => answer(id, denyAction, dispatch, () => ({ type: "declined", id })),
     [],
   );
+
+  const openPhase = actions.find((item) => item.action.request_id === openId)?.phase;
+  const selfClosed = useRef<{ id: string; phase: ActionPhase } | null>(null);
+
+  useEffect(() => {
+    if (!openId || (openPhase !== "applied" && openPhase !== "declined")) return;
+    const closing = { id: openId, phase: openPhase };
+    const timer = setTimeout(() => {
+      selfClosed.current = closing;
+      setOpenId(null);
+    }, SETTLED_CLOSE_MS);
+    return () => clearTimeout(timer);
+  }, [openId, openPhase]);
+
+  // What it closed on may not be the last word: one approval can cover several
+  // calls, and a decline can lose to a result. The Door said something that has
+  // stopped being true, so it comes back to say the rest, once nothing is in the way.
+  useEffect(() => {
+    const closed = selfClosed.current;
+    if (!closed || openId !== null) return;
+    const phase = actions.find((item) => item.action.request_id === closed.id)?.phase;
+    if (phase === closed.phase || (phase !== "failed" && phase !== "applied")) return;
+    selfClosed.current = null;
+    setOpenId(closed.id);
+  }, [actions, openId]);
 
   const value = useMemo<DoorValue>(() => {
     const current = actions.find((item) => item.action.request_id === openId) ?? null;

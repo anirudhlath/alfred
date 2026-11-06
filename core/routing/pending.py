@@ -68,16 +68,20 @@ def _parse(raw: bytes | str) -> PendingRecord:
 
 
 async def store_pending_action(
-    redis: AioRedis, action: ActionRequest, *, ttl_seconds: int = PENDING_TTL_SECONDS
+    redis: AioRedis,
+    action: ActionRequest,
+    *,
+    ttl_seconds: int = PENDING_TTL_SECONDS,
+    title: str | None = None,
 ) -> None:
     """Park an unconfirmed critical action, by default with a 5-minute TTL.
 
     Reflex's asks pass their own ``ttl_seconds``: an ask waits as long as the owner's
-    ``ask_expiry_seconds``.
+    ``ask_expiry_seconds``. They pass their ``title`` too, the question they put.
     """
     await redis.set(
         pending_key(action.request_id),
-        ParkedAction(action=action).model_dump_json(),
+        ParkedAction(action=action, title=title).model_dump_json(),
         ex=ttl_seconds,
     )
 
@@ -172,6 +176,7 @@ def pending_payload(record: PendingRecord, ttl_seconds: int) -> dict[str, Any]:
         "target_service": first.target_service,
         "parameters": first.parameters,
         "reason": record.summary if isinstance(record, ParkedRun) else first.reason,
+        "title": record.title if isinstance(record, ParkedAction) else None,
         "source": first.source,
         "timestamp": first.timestamp.isoformat(),
         "ttl_seconds": ttl_seconds,

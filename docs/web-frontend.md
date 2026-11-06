@@ -256,7 +256,7 @@ palette colour.
 | `--ring`, `--scrim` | Focus ring, and the dim behind a layer |
 | `--ring-text-l` | The lightness `ringText()` uses for a stream hue set as text — 0.75 on ink, 0.52 on paper |
 | `--ease-rise`, `--ease-settle`, `--ease-sink` | The three easing curves: rise in, settle, leave |
-| `--app-height`, `--viewport-top` | The visual viewport's height and offset, written by `installViewportVars()` (below) |
+| `--app-height`, `--viewport-top` | The visible band's height and offset, written by `installViewportVars()` (below) |
 
 `ThemeProvider` writes `data-theme` on `<html>` and rewrites the single
 `<meta name="theme-color">` so Safari's chrome matches. The choice is stored under
@@ -525,6 +525,17 @@ inferred (`expired` from a fast clock, `answered` from a racing 404). A declined
 so by the house and says so in the Room. A late `home_action_results` entry after a decline
 still wins — `applied` or `failed` replaces `declined` — because if the lock reported, the
 decline was wrong about what happened, and the Door shows what the lock did.
+
+**Closing itself.** `applied` and `declined` leave the Door up for two seconds
+(`SETTLED_CLOSE_MS`), enough to read the pill, and then it closes. `failed` stays, because
+it has to be read, and so does `queued`, because the report may yet be a failure. `Back to
+the room` closes any of them sooner. A Door that closed itself comes back if what it said
+stops being true: a later call of the same approval failing, or a result arriving after a
+decline. If another Door is up, it waits for that one to close.
+
+**An ask is not critical.** A Reflex ask (`source` is `reflex-engine`) opens the same Door,
+reading `ASK · a91f` and labelled `Approval`, with the question it put as its heading
+(`title` on the pending payload). The banner and the tombstone go by that question too.
 
 **A failed answer is not a lost one.** A confirm or deny that fails with anything other than
 404 (a 503, no network) leaves the item `pending` so the owner can retry while the fuse
@@ -1190,8 +1201,9 @@ the same checklist's.
 Three of them bite hardest:
 
 - **`100vh` is wrong in Safari, and so is the window.** `installViewportVars()` writes
-  `--app-height` and `--viewport-top` from `visualViewport`'s own height and offset —
-  the band of screen that is actually visible. `#root` and every `.viewport-fill` layer
+  `--app-height` and `--viewport-top`, the band of screen that is actually visible:
+  `visualViewport`'s height and offset while a field that raises a keyboard has focus,
+  and `innerHeight` from the top otherwise. `#root` and every `.viewport-fill` layer
   are fixed boxes at exactly those coordinates, `height` and not `min-height`, with
   `overflow: hidden`, so the shell *is* the viewport and nothing scrolls but the regions
   that opt in: the Timeline, the Sheet body, the gate's copy region. A root that can grow
@@ -1203,10 +1215,20 @@ Three of them bite hardest:
   did, and the phone reported the composer clipped off the *top* of the screen: the two
   readings settle at different moments, and one frame of disagreement leaves most of a
   keyboard as padding on a column that is already keyboard-free, overflowing a shell
-  shorter than itself. Measured in standalone mode on a real iPhone, neither reading
-  moves when the keyboard opens at all — iOS slides the webview itself, invisibly to JS.
+  shorter than itself. Measured in standalone mode on a real iPhone at the time, neither
+  reading moved when the keyboard opened — iOS slid the webview itself, invisibly to JS.
+  iOS 27 on an iPhone 18 Pro Max does move one: the visual viewport reads 479 at offset
+  415 with the keyboard up, against a `clientHeight` of 894.
   What the composer still owes is the home indicator, and that is a question about its
   own field's focus, which is what `Composer.tsx` asks.
+
+  **Believe `visualViewport.height` only under a focused field.** On an iPhone 18 Pro Max
+  (iOS 27, from the Home Screen), with no keyboard and nothing focused, it fell to 547
+  against an `innerHeight` of 894 as the app went to the background. It came back reading
+  547 with no event, and corrected only at the next touch. The Room and the Door both
+  came up 547 tall over a dark band, which clipped the Door's `Don't` and `Back to the
+  room`. Re-reading on resume cannot help, because the reading itself is what is wrong.
+  iOS gave no reason for it, and the rule does not need one.
 - **No translucent status bar.** `index.html` sets no `apple-mobile-web-app-status-bar-style`.
   With `black-translucent`, iOS 27 on an iPhone 18 Pro Max (956 pt, from the Home Screen)
   drew the app from the top of the screen, under the status bar
@@ -1896,8 +1918,8 @@ in a Safari tab, left the iOS prompt behind Workshop › System › Reach, and l
 missed push. Slice 2 closes those three, all in `web/`: no new route, no new setting, and
 `build_payload()` and the payload contract stay as they are. Its spec is
 [`2026-11-04-pwa-phase5-slice2-reach-design.md`](superpowers/specs/2026-11-04-pwa-phase5-slice2-reach-design.md),
-and that spec's "Deviations from the handoff" table holds D8 to D12. Otherwise the handoff's
-copy is verbatim.
+and that spec's "Deviations from the handoff" table holds D8 to D12, plus D13 to D15 for the
+Door, from the first ask tried on the phone. Otherwise the handoff's copy is verbatim.
 
 The prompt row, the gate that opens itself and the Act rows appear only on an iPhone
 (`onIPhone()`), because their copy names Safari, iOS and this iPhone. An iPad reports a Mac,

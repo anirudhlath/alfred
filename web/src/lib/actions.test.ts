@@ -468,6 +468,14 @@ describe("tombstoneItems", () => {
     );
   });
 
+  it("names a lapsed ask by the question it put", () => {
+    const expired = tracked("expired");
+    const [item] = tombstoneItems([
+      { ...expired, action: { ...expired.action, title: "Shall I turn off Desk Left?" } },
+    ]);
+    expect(item).toMatchObject({ title: "Shall I turn off Desk Left?" });
+  });
+
   it("says an already-answered one differently", () => {
     const [item] = tombstoneItems([tracked("answered")]);
     expect(item.kind === "tombstone" && item.meta).toBe(

@@ -309,8 +309,9 @@ Full behaviour in [`web-frontend.md`](web-frontend.md#the-door).
   **503** `Action store unavailable`. Both are session-gated by the same auth cookie and
   **non-consuming** — a plain `GET`, never the `GETDEL` the answers use — so a client may
   poll or re-open a push-tap deep link without spending the approval. Each entry carries
-  `request_id`, `tool_name`, `target_service`, `parameters`, `reason`, `source`,
+  `request_id`, `tool_name`, `target_service`, `parameters`, `reason`, `title`, `source`,
   `timestamp`, `ttl_seconds` and `expires_at`; a parked run lists its first deferred call.
+  `title` is the question a Reflex ask put to the owner, and null for anything else.
   `ttl_seconds` is clamped at 0 (Redis reports -2 for a key that vanished between the read
   and the TTL, -1 for one with no expiry), so clients can render the remaining fuse
   directly.

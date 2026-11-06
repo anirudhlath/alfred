@@ -20,7 +20,8 @@ fail, and that is worse than no step at all.
 Both were measured on a real iPhone in **standalone** mode and are settled:
 
 - `window.innerHeight === visualViewport.height` even with the keyboard up. iOS slides
-  the webview itself, invisibly to JS.
+  the webview itself, invisibly to JS. iOS 27 no longer does this: see "`100vh` is wrong
+  in Safari" in `docs/web-frontend.md`.
 - `env(safe-area-inset-top)` is `0`.
 
 So: **never compute a keyboard inset by subtracting the two viewports**, and never
