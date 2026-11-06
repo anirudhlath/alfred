@@ -34,6 +34,7 @@ export { Tombstone } from "@/room/rows/Tombstone";
 export { ThinkingRow } from "@/room/rows/ThinkingRow";
 export { TranscribingBubble } from "@/room/rows/TranscribingBubble";
 export { FirstDay } from "@/room/rows/FirstDay";
+export { ReachRow } from "@/room/rows/ReachRow";
 
 // door
 export { FuseRing } from "@/door/FuseRing";

@@ -162,10 +162,21 @@ export interface UseRoomOptions {
   tombstones?: TimelineItem[];
   /**
    * The server's session idle timeout, from `Overview.session.idle_minutes`
-   * (`sessionIdleMs`). The history is windowed to the current session
-   * (`sessionWindow`); live rows and tombstones never are.
+   * (`sessionIdleMs`). The history and `deviceActs` are windowed to the current
+   * session (`sessionWindow`); live rows, tombstones and the prompt never are.
    */
   idleMs?: number;
+  /**
+   * Act rows kept on this device rather than in the house's streams
+   * (`useReachActRows`). They go when the window moves past them, and, not being
+   * turns, never hold it open.
+   */
+  deviceActs?: TimelineItem[];
+  /**
+   * The prompt row (`useReachPrompts`), standing as long as its Door does however
+   * old that is, so never windowed.
+   */
+  prompt?: TimelineItem | null;
 }
 
 export interface RoomValue {
@@ -180,6 +191,8 @@ export function useRoom({
   history,
   tombstones,
   idleMs = SESSION_IDLE_MS,
+  deviceActs,
+  prompt,
 }: UseRoomOptions): RoomValue {
   const { chat, online, subscribeOnline } = useConnection();
   const [live, setLive] = useState<TimelineItem[]>(readUnsent);
@@ -396,14 +409,16 @@ export function useRoom({
     // Windowed here, after the read-back has been settled against the full
     // history: a turn the house read back and then let go idle is simply gone,
     // which is the point. `now` moves on visibilitychange, so an open thread
-    // does not vanish at minute thirty — it is gone when you come back.
+    // does not vanish at minute thirty — it is gone when you come back. The
+    // device's acts follow the history unsorted, which the window allows.
     const merged = [
-      ...sessionWindow(history ?? [], now, idleMs),
+      ...sessionWindow([...(history ?? []), ...(deviceActs ?? [])], now, idleMs),
       ...(tombstones ?? []),
+      ...(prompt ? [prompt] : []),
       ...live,
     ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
     return withDividers(liftRepliesAboveTransients(merged), now, idleMs);
-  }, [history, tombstones, live, now, idleMs]);
+  }, [history, deviceActs, tombstones, prompt, live, now, idleMs]);
 
   return { items, thinking: thinkingAt !== null, sendText, sendAudio };
 }

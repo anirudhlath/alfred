@@ -1,15 +1,14 @@
 import { useId, useState } from "react";
-import { InstallGate } from "@/gates/InstallGate";
-import { StandaloneGate } from "@/gates/StandaloneGate";
+import { ReachGates, type ReachGate } from "@/gates/ReachGates";
+import { badgeSupported } from "@/lib/badge";
 import type { ServiceState } from "@/lib/system";
-import { Layer } from "@/shell/Layer";
 import { usePush, type Reach } from "@/shell/usePush";
 import { StateDot, WORD_COLOUR } from "./IntegrationRow";
 import { SystemRow, SystemSection } from "./SystemFrame";
 import type { Sessions } from "./useSystem";
 
 /** Where the row's action leads: one of the two gates, or the sync again. */
-type Go = "install" | "standalone" | "retry";
+type Go = ReachGate | "retry";
 
 /**
  * What sits on the row's right: an action, or a state word and its dot — the
@@ -59,6 +58,12 @@ const LINES: Record<Reach["kind"], { sub: string; right: Right }> = {
   },
 };
 
+/**
+ * What the number on the icon counts, on the `on` line where the icon can show
+ * one: the slice 2 spec's deviation D8, since the handoff's own clause would be false.
+ */
+const BADGE_CLAUSE = " · badge = notifications since you last opened";
+
 /** Where the switch went, once iOS has it (`Alfred.dc.html:394`, verbatim). */
 const DENIED_NOTE =
   "Settings › Alfred › Notifications › Allow. iOS holds this switch now; nothing in here can flip it, and Alfred will not raise it again.";
@@ -76,11 +81,8 @@ const DENIED_NOTE =
  * as `failed` and leaves it there. `Try again` runs it again, as a sign-in, a
  * permission given back or a reconnect does (docs/web-push.md, "From the PWA").
  *
- * Its two gates are mounted here at `level="gate"`, the way `AuthGate` mounts
- * its own, so they rise over the Workshop. The standalone gate's primary is
- * `enable()`, held while `asking`, and the gate closes once the asking ends:
- * whatever iOS answered, the row is now what says it. Each gate's way out only
- * closes it.
+ * It hosts `ReachGates` for its two gates, which rise over the Workshop. Which
+ * one is up is held here; asking iOS, and closing when that ends, are theirs.
  *
  * Every line is `.t-meta-strong`, not the handoff's `--muted`: the sub is the
  * row's whole state and the note is the only way back to a switch iOS holds,
@@ -88,21 +90,14 @@ const DENIED_NOTE =
  */
 export function ReachSection({ sessions }: { sessions: Sessions }) {
   // An observer only: opening the bench is not asking again (`PushOptions`).
-  const { reach, asking, enable, retry } = usePush({ syncOnMount: false });
-  const [gate, setGate] = useState<"install" | "standalone" | null>(null);
-
-  // The asking ending closes the standalone gate. Adjusted during render, as
-  // `usePresence` adjusts its own, so no effect sets state behind the answer.
-  const [wasAsking, setWasAsking] = useState(asking);
-  if (asking !== wasAsking) {
-    setWasAsking(asking);
-    if (!asking && gate === "standalone") setGate(null);
-  }
+  const { reach, retry } = usePush({ syncOnMount: false });
+  const [gate, setGate] = useState<ReachGate | null>(null);
 
   const base = useId();
   const subId = `${base}-sub`;
   const noteId = `${base}-note`;
-  const { sub, right } = LINES[reach.kind];
+  const { sub: line, right } = LINES[reach.kind];
+  const sub = reach.kind === "on" && badgeSupported() ? `${line}${BADGE_CLAUSE}` : line;
   // A refusal's way back, or the failure as it was said: a browser's own
   // timeout sentence included, since new words here would be new copy.
   const note =
@@ -157,27 +152,7 @@ export function ReachSection({ sessions }: { sessions: Sessions }) {
         )}
       </SystemSection>
 
-      <Layer
-        open={gate === "install"}
-        label="Add me to the home screen"
-        level="gate"
-        durationMs={400}
-      >
-        <InstallGate onDismiss={() => setGate(null)} />
-      </Layer>
-      <Layer
-        open={gate === "standalone"}
-        label="You came in the front way"
-        level="gate"
-        durationMs={400}
-      >
-        <StandaloneGate
-          signedInAt={signedInAt}
-          busy={asking}
-          onAllow={enable}
-          onDismiss={() => setGate(null)}
-        />
-      </Layer>
+      <ReachGates gate={gate} signedInAt={signedInAt} onClose={() => setGate(null)} />
     </>
   );
 }

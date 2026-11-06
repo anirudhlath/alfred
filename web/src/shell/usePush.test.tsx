@@ -1,4 +1,4 @@
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,9 +9,17 @@ import {
   requestAndSubscribe,
   syncSubscription,
 } from "@/lib/push";
+import {
+  addReachAct,
+  REACH_ACTS_KEY,
+  readReachActs,
+  type ReachAct,
+} from "@/lib/reach-local";
+import { useReachActRows } from "@/room/useReachPrompts";
+import { IPHONE_UA } from "@/test/fixtures";
 import { BUSY, failedClient, makeClient } from "@/test/push-client";
 import type { SyncAnswer } from "@/lib/push";
-import { usePush, type PushOptions } from "./usePush";
+import { usePush, type PushOptions, type PushValue } from "./usePush";
 
 vi.mock("@/lib/push", () => ({
   reachContext: vi.fn(),
@@ -23,11 +31,14 @@ vi.mock("@/lib/push", () => ({
 /** The page's notification permission, which a test changes as the owner would. */
 let granted: NotificationPermission;
 
+/** The wrapper a hook under test reads `client` through. */
+const withClient = (client: QueryClient) =>
+  function Wrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  };
+
 function renderPush(client = makeClient(), options?: PushOptions) {
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  );
-  return { ...renderHook(() => usePush(options), { wrapper }), client };
+  return { ...renderHook(() => usePush(options), { wrapper: withClient(client) }), client };
 }
 
 /** A promise the test settles by hand, for what the hook says while one is in flight. */
@@ -218,7 +229,7 @@ describe("usePush", () => {
     expect(syncSubscription).not.toHaveBeenCalled();
   });
 
-  it("enables without awaiting before the permission request", () => {
+  it("enables without awaiting before the permission request", async () => {
     granted = "default";
     const { result } = renderPush();
 
@@ -228,6 +239,7 @@ describe("usePush", () => {
       // iOS shows the prompt only from inside the gesture.
       expect(requestAndSubscribe).toHaveBeenCalledTimes(1);
     });
+    await waitFor(() => expect(result.current.asking).toBe(false));
   });
 
   it("is unconfigured when enabling finds the house has no key", async () => {
@@ -312,6 +324,172 @@ describe("usePush", () => {
     await act(async () => client.invalidateQueries());
     await waitFor(() => expect(syncSubscription).toHaveBeenCalledTimes(2));
     expect(result.current.reach).toEqual({ kind: "on" });
+  });
+});
+
+describe("usePush's Act rows", () => {
+  const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15";
+  const NOW = new Date("2026-11-04T07:44:00.000Z");
+  const AT = NOW.toISOString();
+
+  const ON_TEXT = "Notifications on for this iPhone";
+  const OFF_TEXT = "Notifications stay off on this iPhone";
+
+  /** This page is on `userAgent`. */
+  function on(userAgent: string): void {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(userAgent);
+  }
+
+  /** The store takes no more writes, as a full or forbidden one does. */
+  function refuseWrites(): void {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("refused", "QuotaExceededError");
+    });
+  }
+
+  /** The owner taps Enable and answers the prompt, and the tap runs to its end. */
+  async function tap(
+    push: () => PushValue,
+    answer: NotificationPermission,
+    failure?: Error,
+  ): Promise<void> {
+    granted = "default";
+    answers(answer, failure);
+    act(() => push().enable());
+    await waitFor(() => expect(push().asking).toBe(false));
+  }
+
+  /** A tap on `userAgent` with nothing else mounted: what the cache was then told. */
+  async function tapEnable(
+    userAgent: string,
+    answer: NotificationPermission,
+    failure?: Error,
+  ): Promise<ReachAct[] | undefined> {
+    on(userAgent);
+    granted = "default";
+    const { result, client } = renderPush();
+
+    await tap(() => result.current, answer, failure);
+    await settle();
+    return client.getQueryData<ReachAct[]>(REACH_ACTS_KEY);
+  }
+
+  /** Enable and the Room's rows on an iPhone, on one client, as they are in the app. */
+  function renderPushAndRows() {
+    on(IPHONE_UA);
+    granted = "default";
+    const client = makeClient();
+    const view = renderHook(() => ({ push: usePush(), rows: useReachActRows() }), {
+      wrapper: withClient(client),
+    });
+    return { ...view, client };
+  }
+
+  beforeEach(() => {
+    vi.setSystemTime(NOW);
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    localStorage.clear();
+  });
+
+  it("writes the on row when iOS allows and the house registers", async () => {
+    expect(await tapEnable(IPHONE_UA, "granted")).toEqual([{ at: AT, outcome: "on" }]);
+    expect(readReachActs()).toEqual([{ at: AT, outcome: "on" }]);
+  });
+
+  it("writes the off row when iOS declines", async () => {
+    expect(await tapEnable(IPHONE_UA, "denied")).toEqual([{ at: AT, outcome: "off" }]);
+    expect(readReachActs()).toEqual([{ at: AT, outcome: "off" }]);
+  });
+
+  it("writes no row for a dismissed dialog", async () => {
+    expect(await tapEnable(IPHONE_UA, "default")).toBeUndefined();
+    expect(readReachActs()).toEqual([]);
+  });
+
+  it("writes no row when the registration fails", async () => {
+    const failure = new ApiError(503, "Device store busy");
+    expect(await tapEnable(IPHONE_UA, "granted", failure)).toBeUndefined();
+    expect(readReachActs()).toEqual([]);
+  });
+
+  it("writes no row when the house has no key", async () => {
+    const failure = new ApiError(404, "Web Push not configured");
+    expect(await tapEnable(IPHONE_UA, "granted", failure)).toBeUndefined();
+    expect(readReachActs()).toEqual([]);
+  });
+
+  it.each(["granted", "denied"] as const)("writes no row off an iPhone: %s", async (answer) => {
+    expect(await tapEnable(MAC, answer)).toBeUndefined();
+    expect(readReachActs()).toEqual([]);
+  });
+
+  it("keeps the row and finishes the tap when the store refuses it", async () => {
+    refuseWrites();
+    const { result } = renderPushAndRows();
+    expect(result.current.rows).toEqual([]);
+
+    await tap(() => result.current.push, "granted");
+
+    expect(result.current.push.reach).toEqual({ kind: "on" });
+    // Nothing in the store, so the row below can only be the cache's.
+    expect(readReachActs()).toEqual([]);
+    expect(result.current.rows).toMatchObject([{ kind: "act", at: AT, text: ON_TEXT }]);
+  });
+
+  it("keeps a row the store refused through a sign-in", async () => {
+    refuseWrites();
+    const { result, client } = renderPushAndRows();
+    await tap(() => result.current.push, "granted");
+
+    // What `AuthGate`'s `refetchEverything` does on a sign-in.
+    await act(async () => client.invalidateQueries());
+    await settle();
+
+    expect(client.getQueryData(REACH_ACTS_KEY)).toEqual([{ at: AT, outcome: "on" }]);
+    expect(result.current.rows).toMatchObject([{ kind: "act", at: AT, text: ON_TEXT }]);
+  });
+
+  it("keeps both of two answers the store refused", async () => {
+    refuseWrites();
+    const { result } = renderPushAndRows();
+
+    await tap(() => result.current.push, "denied");
+    // Reset in Settings, and asked again.
+    await tap(() => result.current.push, "granted");
+
+    expect(result.current.rows).toMatchObject([{ text: OFF_TEXT }, { text: ON_TEXT }]);
+  });
+
+  it("stores both of two answers when the store takes them", async () => {
+    const { result } = renderPushAndRows();
+
+    await tap(() => result.current.push, "denied");
+    await tap(() => result.current.push, "granted");
+
+    expect(readReachActs()).toEqual([
+      { at: AT, outcome: "off" },
+      { at: AT, outcome: "on" },
+    ]);
+  });
+
+  it("draws the rows without a complaint from react-query", () => {
+    const complaint = vi.spyOn(console, "error");
+    renderHook(() => useReachActRows(), { wrapper: withClient(makeClient()) });
+
+    // It wants a `queryFn` on every render, whatever `enabled` says.
+    expect(complaint).not.toHaveBeenCalled();
+  });
+
+  it("brings back the rows an earlier launch wrote", () => {
+    addReachAct("off", AT);
+    const { result } = renderHook(() => useReachActRows(), { wrapper: withClient(makeClient()) });
+
+    expect(result.current).toMatchObject([{ kind: "act", at: AT, text: OFF_TEXT }]);
   });
 });
 

@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { hhmm } from "@/lib/format";
 import type { TimelineItem } from "@/lib/history";
 import { Timeline } from "./Timeline";
 
@@ -161,6 +162,55 @@ describe("Timeline rows", () => {
     expect(mark).toHaveStyle({ background: `oklch(0.62 0.11 ${hue})` });
     // Decoration: the meta line already says which mind acted.
     expect(mark).toHaveAttribute("aria-hidden", "true");
+  });
+
+  describe("the prompt row", () => {
+    const reach: TimelineItem = { kind: "reach", id: "reach:prompt", at: you.at };
+    const prompt = () => ({ onShowMe: vi.fn(), onNotNow: vi.fn() });
+
+    it("renders the prompt row verbatim", () => {
+      render(<Timeline items={[reach]} firstDayGreeting={null} prompt={prompt()} />);
+      expect(
+        screen.getByText(
+          "That door is waiting on you below. Had this tab been closed, I would have had no way to tell you. Add me to the home screen and I can knock when something cannot wait.",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(`notifications · unavailable in Safari · ${hhmm(reach.at)}`),
+      ).toBeInTheDocument();
+    });
+
+    it("its buttons call back", () => {
+      const callbacks = prompt();
+      render(<Timeline items={[reach]} firstDayGreeting={null} prompt={callbacks} />);
+
+      fireEvent.click(screen.getByRole("button", { name: "Show me how" }));
+      expect(callbacks.onShowMe).toHaveBeenCalledOnce();
+      expect(callbacks.onNotNow).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+      expect(callbacks.onNotNow).toHaveBeenCalledOnce();
+    });
+
+    it("draws its buttons as the handoff does", () => {
+      render(<Timeline items={[reach]} firstDayGreeting={null} prompt={prompt()} />);
+
+      const show = screen.getByRole("button", { name: "Show me how" });
+      expect(show).toHaveClass("h-11", "rounded-[22px]", "border-0", "px-[18px]");
+      expect(show).toHaveStyle({ background: "var(--ink)", color: "var(--paper)" });
+
+      const notNow = screen.getByRole("button", { name: "Not now" });
+      expect(notNow).toHaveClass("h-11", "rounded-[22px]", "bg-transparent", "px-3.5");
+      expect(notNow).toHaveStyle({ color: "var(--fg)" });
+      // Read off the element: jsdom's computed style can't resolve a `var()` in a shorthand.
+      expect(notNow.style.border).toBe("1px solid var(--line)");
+    });
+
+    it("draws nothing without its callbacks", () => {
+      render(<Timeline items={[reach]} firstDayGreeting={null} />);
+      expect(screen.queryByRole("button")).toBeNull();
+      expect(screen.queryByText(/^notifications · unavailable in Safari/)).toBeNull();
+    });
   });
 
   const observation: TimelineItem = {

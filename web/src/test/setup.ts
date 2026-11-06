@@ -114,3 +114,9 @@ if (typeof Element.prototype.setPointerCapture !== "function") {
     return false;
   };
 }
+
+// jsdom has no canvas without the `canvas` package: its `getContext` logs "Not
+// implemented" and answers null. The answer is all `PresenceField` needs, since it
+// draws nothing without a context, and the Room mounts one in every test that
+// renders it. A test that wants a context spies over this (`PresenceField.test.tsx`).
+HTMLCanvasElement.prototype.getContext = (() => null) as HTMLCanvasElement["getContext"];

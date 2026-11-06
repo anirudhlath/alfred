@@ -25,11 +25,12 @@ export interface GateAction {
    */
   disabled?: boolean;
   /**
-   * Its request is in flight: held, and painted as `disabled` paints it. The
-   * change of look is what shows the press was taken — Sign in and Expired
-   * have no secondary to say so, and setup's credential write has no deadline
-   * — and the handoff draws no busy state to use instead. `aria-busy` as well,
-   * which is what tells assistive tech busy from unavailable.
+   * Its request is in flight, or its gate is on the way out: held, and painted
+   * as `disabled` paints it. The change of look is what shows the press was
+   * taken — Sign in and Expired have no secondary to say so, and setup's
+   * credential write has no deadline — and the handoff draws no busy state to
+   * use instead. `aria-busy` as well, which is what tells assistive tech busy
+   * from unavailable.
    */
   busy?: boolean;
 }

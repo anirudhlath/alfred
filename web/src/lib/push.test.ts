@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, timedOut } from "./api";
+import { clearBadge } from "./badge";
 import {
   DEVICES_PATH,
   fetchPublicKey,
@@ -13,6 +14,9 @@ import {
   syncSubscription,
 } from "./push";
 import { bufToB64url } from "./webauthn";
+
+// The badge has its own tests. Here it is only something `forgetPush` must not wait on.
+vi.mock("./badge");
 
 // jsdom has none of the push APIs. `navigator.serviceWorker` is defined per test
 // and deleted afterwards, as in sw.test.ts — `vi.stubGlobal` would have to
@@ -270,6 +274,7 @@ afterEach(() => {
   Reflect.deleteProperty(navigator, "serviceWorker");
   log.length = 0;
   vi.useRealTimers();
+  vi.mocked(clearBadge).mockReset();
 });
 
 describe("reachContext", () => {
@@ -572,6 +577,19 @@ describe("forgetPush", () => {
     await expect(forgetPush()).resolves.toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("clears the badge, and a clear that never settles does not hold it", async () => {
+    const clearing = vi.mocked(clearBadge);
+    clearing.mockReturnValue(new Promise(() => {}));
+    registry();
+    await expect(forgetPush()).resolves.toBeUndefined();
+    expect(clearing).toHaveBeenCalledTimes(1);
+
+    // Ahead of the service worker check: a browser with none clears too.
+    Reflect.deleteProperty(navigator, "serviceWorker");
+    await expect(forgetPush()).resolves.toBeUndefined();
+    expect(clearing).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("forgetPush and a sync under way", () => {
@@ -757,6 +775,15 @@ describe("onOpenPath", () => {
     off();
     say({ type: "OPEN_PATH", path: "/" });
     expect(heard).toEqual(["/actions/abc", "/"]);
+  });
+
+  it("ignores BADGE_ADDED", () => {
+    const { container } = registry();
+    const fn = vi.fn();
+    const off = onOpenPath(fn);
+    container.dispatchEvent(new MessageEvent("message", { data: { type: "BADGE_ADDED" } }));
+    expect(fn).not.toHaveBeenCalled();
+    off();
   });
 
   it("listens to nothing where there is no service worker", () => {

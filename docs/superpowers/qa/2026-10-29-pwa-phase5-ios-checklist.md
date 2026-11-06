@@ -1,18 +1,20 @@
 # PWA phase 5 — manual iOS checklist
 
-Spec §7's manual half, for what phase 5's first slice added: Web Push, the System › Reach
-card, and the `install` and `standalone` gates behind it. The phase-1 to phase-4 checklists
+Spec §7's manual half, for what phase 5 added: Web Push, the System › Reach card, and the
+`install` and `standalone` gates behind it. The phase-1 to phase-4 checklists
 (`2026-09-07-pwa-phase1-ios-checklist.md`, `2026-09-10-pwa-phase2-ios-checklist.md`,
 `2026-09-16-pwa-phase3-ios-checklist.md`, `2026-09-16-pwa-phase4-ios-checklist.md`) still
-apply to everything they cover. This one covers only slice 1; slice 2 (the Room's
-home-screen prompt row, the allowed and declined Act rows, and the badge) will add its own
-lines. Gate (spec §8): *Alfred reaches the phone when the app is closed*.
+apply to everything they cover. This one covers both slices: slice 2 (the Room's
+home-screen prompt row, the gate that opens itself, the allowed and declined Act rows, and
+the badge) is the section "Slice 2", part of which runs on a phone already set up. Gate
+(spec §8): *Alfred reaches the phone when the app is closed*.
 
 **Unrun.** It was written on a headless box, and nothing in it has run on a phone. WebKit
-is unmeasured for everything this slice asks of it: whether it lets `subscribe()` run
+is unmeasured for everything phase 5 asks of it: whether it lets `subscribe()` run
 outside the tap, what it reports after Notifications is turned off in Settings, how a tap
-on a notification reaches a closed app, and where the install gate's pointer sits against
-Safari's toolbar. Several steps are therefore observations, not assertions. Where a step
+on a notification reaches a closed app, where the install gate's pointer sits against
+Safari's toolbar, and whether a number set from the worker reaches the icon. Several steps
+are therefore observations, not assertions. Where a step
 says *record*, write down what you saw, whatever it was.
 
 Run against the deployed build at `https://alfred.example.com`. Record the device, iOS
@@ -87,8 +89,9 @@ the first 12 characters of its field, and never the endpoint. How the pieces fit
 
 ## Install and enable
 
-- [ ] Share → Add to Home Screen, open Alfred from the tile and sign in. System › Reach
-      reads `off · not yet asked · iOS asks once`, with `Enable`
+- [ ] Share → Add to Home Screen, open Alfred from the tile and sign in. On an iPhone the
+      standalone gate rises by itself ("Slice 2" runs that road): tap `Not yet`. System ›
+      Reach reads `off · not yet asked · iOS asks once`, with `Enable`
 - [ ] `Enable` opens the standalone gate: `reaching you · 5 of 6 · opened from the home
       screen`, `You came in the front way.` Step 1 (`Open in Safari`) names this host,
       `alfred.example.com`; step 2 (`Sign in with Face ID`) shows the time you signed in,
@@ -99,8 +102,9 @@ the first 12 characters of its field, and never the endpoint. How the pieces fit
 - [ ] `Enable` again, then `Let me reach you`: the iOS dialog asking whether Alfred may send
       notifications
 - [ ] Allow. `Let me reach you` holds while the phone subscribes and registers, the gate
-      closes, and Reach reads `on · this iPhone · important and urgent only` with `on` in
-      green. `checking · allowed in iOS · registering with the house` shows under the gate
+      closes, and Reach reads
+      `on · this iPhone · important and urgent only · badge = notifications since you last opened`
+      with `on` in green. `checking · allowed in iOS · registering with the house` shows under the gate
       on this path, so record whether you saw it at all; the row ending on `on` is the
       assertion
 - [ ] **This step measures whether iOS lets `subscribe()` run outside the tap.** Enable asks
@@ -191,6 +195,76 @@ Close the app from the app switcher and lock the phone for each of these.
 - [ ] A confirmation arrives on both phones, and a tap on either opens the same Door. The
       first decision taken wins; the other phone's Door then has nothing to claim
 
+## Slice 2
+
+The test push in these steps is the reminder from "Delivery, with the app closed": on the
+other device, ask Alfred "In one minute, remind me to check the oven, and make it
+important". A notification titled `Trigger: ` and the name Alfred gave the reminder
+arrives. A waiting Door is that section's confirmation: ask for something critical on the
+other device, and it lives five minutes. Both need what "Before you start" asks for: Do Not
+Disturb off, no calendar meeting under way, and Reflex running.
+
+**Right after deploy (owner).** On the iPhone already set up, with nothing reinstalled, in
+this order.
+
+- [ ] Open Alfred from the tile. The Room's header shows `A newer Alfred is waiting. Nothing
+      is lost; I pick up where we left off.`, at once or after switching away and back. Tap
+      `Reload` first, because pushes count only once the new worker is active. Close the app
+      and open it from the tile: the note does not come back
+- [ ] System › Reach reads
+      `on · this iPhone · important and urgent only · badge = notifications since you last opened`
+- [ ] **App closed.** Close the app from the app switcher and lock the phone. On the other
+      device, ask for the reminder, then ask "In two minutes, remind me to check the door, and
+      make it important". Both notifications arrive, and the tile shows `2`
+- [ ] Open Alfred from the tile, not from a notification: the number goes from the tile
+- [ ] Pull down Notification Center: the two notifications are still there. Opening clears
+      the number, not the shade
+- [ ] **App in the background.** Open Alfred, then go to the home screen without closing it.
+      Ask for the reminder. It arrives, and the tile shows `1`. Back to Alfred: the number goes
+- [ ] **App on screen.** Keep Alfred on the Room with the phone unlocked and ask for the
+      reminder. Record how the notification showed. Then go to the home screen: the tile
+      shows no number. A number that showed for a moment is fine. One that stays until the
+      next return to Alfred is the worst case the design accepts, so record it
+- [ ] **Sign-out.** Open Alfred and close it from the app switcher, so a number left by the
+      last step is gone. With the app closed, one reminder puts `1` on the tile. Open Alfred,
+      which clears it, then System › `Sign out on this device`, and close the app. The tile
+      shows no number, and a reminder asked for now neither arrives nor adds one. A phone can't
+      separate this clear from the open's, since the app has to be open to sign out. With a
+      Mac's Web Inspector, `navigator.setAppBadge(3)` on the console just before signing out
+      makes it a real test. Sign in again afterwards
+
+**On a fresh install.** These need a copy of the app with nothing stored and iOS not yet
+asked, so delete any home-screen copy first.
+
+- [ ] In a Safari tab, signed in, on the Room, ask for something critical on the other device.
+      Beside the Door's banner, the thread shows `That door is waiting on you below. Had this
+      tab been closed, I would have had no way to tell you. Add me to the home screen and I can
+      knock when something cannot wait.`, with `notifications · unavailable in Safari · <hh:mm>`
+      at the Door's time, `Show me how` and `Not now`
+- [ ] `Show me how` opens the install gate. The gate's `Not now` only closes it, and the row
+      is still there
+- [ ] The row's `Not now`: the row goes, and no line is written into the Room. Reload the tab
+      with that Door still waiting: the row stays gone
+- [ ] Ask for something critical again: the new Door brings the row back, at that Door's time.
+      Deny both Doors: the row leaves with them
+- [ ] Share → Add to Home Screen, open Alfred from the tile and sign in. `You came in the front
+      way.` rises by itself over the Room, with no iOS dialog and no time on step 2
+- [ ] Close the app from the app switcher with neither button tapped, and open it from the
+      tile: the gate rises again
+- [ ] `Not yet`: the gate closes, with no iOS dialog. Close the app and open it from the tile:
+      the gate does not rise. System › Reach reads `off · not yet asked · iOS asks once`, with
+      `Enable`
+- [ ] `Enable`, `Let me reach you`, Allow. The Room shows `Notifications on for this iPhone`,
+      with `<hh:mm> · notifications · iOS allowed · important and urgent only`
+- [ ] Delete the home-screen copy, add it again, open it from the tile and sign in. The gate
+      rises by itself. `Let me reach you`, Don't Allow: the gate closes, and the Room shows
+      `Notifications stay off on this iPhone`, with
+      `<hh:mm> · iOS declined · Settings › Alfred › Notifications to change · not asked again`.
+      Close the app and open it from the tile: the gate does not rise, and Reach reads
+      `off · declined in iOS · this app cannot flip it`. Record it if iOS never asked, which
+      would mean the new copy kept the earlier answer. Afterwards, Settings › Alfred ›
+      Notifications back on, to leave the phone reachable
+
 ## With Web Inspector (optional)
 
 On a Mac with Safari's Develop menu, inspect the home-screen app.
@@ -209,9 +283,9 @@ On a Mac with Safari's Develop menu, inspect the home-screen app.
 
 ## Nothing lies
 
-- [ ] The Room shows no home-screen prompt row, no allowed or declined Act row, and the tile
-      carries no badge: those are slice 2's. Reach's `on` line names a badge that slice 2
-      makes true; it is the handoff's copy, and known
+- [ ] The Room's prompt row, the gate that opens itself, the allowed and declined Act rows and
+      the number on the tile all exist, and "Slice 2" ran them. The number counts pushes since
+      the app was last opened, not approvals, and nothing on screen says otherwise
 - [ ] Reach never read `on` before the house held the row: every `on` above had its
       `web_push` row in the device read
 - [ ] Nothing arrived for an informational notification, and nothing arrived on this phone

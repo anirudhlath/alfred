@@ -3,6 +3,7 @@ import { DoorBanner } from "@/door/DoorBanner";
 import { DoorLayer } from "@/door/DoorLayer";
 import { useDoor } from "@/door/DoorProvider";
 import { useActionRoute } from "@/door/useActionRoute";
+import { ReachGates } from "@/gates/ReachGates";
 import { tombstoneItems } from "@/lib/actions";
 import { greetingFor, pickHeadline } from "@/lib/headline";
 import { pendingActionTitles, toTimelineItems } from "@/lib/history";
@@ -20,6 +21,7 @@ import { StatusLine } from "@/room/StatusLine";
 import { Timeline } from "@/room/Timeline";
 import { WorkshopHandle } from "@/room/WorkshopHandle";
 import { isFirstRun, sessionIdleMs, useOverview } from "@/room/useOverview";
+import { useReachActRows, useReachPrompts } from "@/room/useReachPrompts";
 import { useRoom } from "@/room/useRoom";
 import { useRoomHistory } from "@/room/useRoomHistory";
 import { HeldBackSheet } from "@/sheets/HeldBackSheet";
@@ -78,7 +80,18 @@ export function Room() {
     return tombstone ? [...items, tombstone] : items;
   }, [door.actions, tombstone]);
 
-  const room = useRoom({ history: historyItems, tombstones, idleMs });
+  const deviceActs = useReachActRows();
+  const prompts = useReachPrompts(door.pending, door.now);
+  const room = useRoom({
+    history: historyItems,
+    tombstones,
+    idleMs,
+    deviceActs,
+    prompt: prompts.row,
+  });
+  // Memoised, so a Door tick hands the Timeline the same object.
+  const { showMe, notNow } = prompts;
+  const promptButtons = useMemo(() => ({ onShowMe: showMe, onNotNow: notNow }), [showMe, notNow]);
 
   useEffect(() => {
     signal.setThinking(room.thinking);
@@ -132,6 +145,7 @@ export function Room() {
         items={room.items}
         firstDayGreeting={firstRun && room.items.length === 0 ? greetingFor(hour) : null}
         onWhy={setWhy}
+        prompt={promptButtons}
       />
 
       {banner ? (
@@ -171,6 +185,8 @@ export function Room() {
         onConfirm={door.confirm}
         onDeny={door.deny}
       />
+
+      <ReachGates gate={prompts.gate} signedInAt={null} onClose={prompts.closeGate} />
     </main>
   );
 }

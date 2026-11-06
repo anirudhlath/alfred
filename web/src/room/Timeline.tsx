@@ -5,6 +5,7 @@ import { ActRow } from "@/room/rows/ActRow";
 import { AlfredRow } from "@/room/rows/AlfredRow";
 import { Divider } from "@/room/rows/Divider";
 import { FirstDay } from "@/room/rows/FirstDay";
+import { ReachRow } from "@/room/rows/ReachRow";
 import { ThinkingRow } from "@/room/rows/ThinkingRow";
 import { Tombstone } from "@/room/rows/Tombstone";
 import { TranscribingBubble } from "@/room/rows/TranscribingBubble";
@@ -23,9 +24,13 @@ export interface TimelineProps {
   firstDayGreeting: string | null;
   /** A reflex act row's `why?`. Without it no row offers one. */
   onWhy?: (ref: StreamRef) => void;
+  /** The prompt row's two buttons. Without them it draws nothing. */
+  prompt?: { onShowMe: () => void; onNotNow: () => void };
 }
 
-function Row({ item, onWhy }: { item: TimelineItem; onWhy?: (ref: StreamRef) => void }) {
+type RowProps = { item: TimelineItem } & Pick<TimelineProps, "onWhy" | "prompt">;
+
+function Row({ item, onWhy, prompt }: RowProps) {
   switch (item.kind) {
     case "divider":
       return <Divider label={item.label} />;
@@ -60,6 +65,10 @@ function Row({ item, onWhy }: { item: TimelineItem; onWhy?: (ref: StreamRef) => 
       return <TranscribingBubble seconds={item.seconds} />;
     case "thinking":
       return <ThinkingRow detail={item.detail} />;
+    case "reach":
+      return prompt ? (
+        <ReachRow at={item.at} onShowMe={prompt.onShowMe} onNotNow={prompt.onNotNow} />
+      ) : null;
     default: {
       // A ninth kind added to TimelineItem fails here at compile time instead
       // of rendering nothing.
@@ -69,7 +78,7 @@ function Row({ item, onWhy }: { item: TimelineItem; onWhy?: (ref: StreamRef) => 
   }
 }
 
-export function Timeline({ items, firstDayGreeting, onWhy }: TimelineProps) {
+export function Timeline({ items, firstDayGreeting, onWhy, prompt }: TimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   // Ref, not state: whether we are following the bottom must not re-render the
@@ -113,7 +122,7 @@ export function Timeline({ items, firstDayGreeting, onWhy }: TimelineProps) {
       <div ref={contentRef} className="flex flex-1 flex-col gap-4">
         {items.length === 0 && firstDayGreeting ? <FirstDay greeting={firstDayGreeting} /> : null}
         {items.map((item) => (
-          <Row key={item.id} item={item} onWhy={onWhy} />
+          <Row key={item.id} item={item} onWhy={onWhy} prompt={prompt} />
         ))}
       </div>
     </div>

@@ -1,5 +1,6 @@
 import { ACTION_PATH } from "@/door/useActionRoute";
 import { api, ApiError } from "./api";
+import { clearBadge } from "./badge";
 import { b64urlToBuf, sessionChannel } from "./webauthn";
 
 /** The house's VAPID public key: `push_public_key` in core/channels/web_server.py. No session. */
@@ -245,8 +246,13 @@ export async function requestAndSubscribe(): Promise<NotificationPermission> {
  * at once. And it never rejects, so sign-out never stops here. The DELETE gives
  * up after `FORGET_TIMEOUT_MS`, and the unsubscribe runs whatever it answered, so
  * the browser stops receiving even when the house could not be told.
+ *
+ * It takes the number off the icon first, since one left there would never move
+ * again, and whichever browser this is. Not awaited: `clearBadge` has no time
+ * limit, and a hung store must not hold sign-out.
  */
 export async function forgetPush(): Promise<void> {
+  void clearBadge();
   generation += 1;
   forgetting += 1;
   try {

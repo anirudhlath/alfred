@@ -86,6 +86,7 @@ it("finds every file that reads the worker's bytes standing down when the switch
       "/src/test/sw.test.ts",
       "/src/test/sw-server-routes.test.ts",
       "/src/test/sw-push.test.ts",
+      "/src/test/sw-badge.test.ts",
     ]),
   );
   for (const path of loaders) {

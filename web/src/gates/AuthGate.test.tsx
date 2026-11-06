@@ -27,7 +27,7 @@ vi.mock("@/lib/telemetry-socket", () => ({
   },
 }));
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, post } from "@/lib/api";
@@ -462,6 +462,62 @@ describe("AuthGate events", () => {
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Your session lapsed." })).toBeNull(),
     );
+  });
+
+  describe("the expired gate's leave", () => {
+    const signIn = () => screen.getByRole("button", { name: "Sign in with Face ID" });
+
+    /** Signed back in through the gate, which is closing and still under the finger. */
+    async function signedInAndLeaving(): Promise<void> {
+      renderGate();
+      await screen.findByText("the room");
+      act(() => authEvents.emit("expired"));
+
+      fireEvent.click(signIn());
+      await act(async () => {});
+      expect(screen.getByRole("dialog", { name: "Session lapsed" })).toHaveClass("rise-out");
+    }
+
+    it("a tap during it starts no second passkey ceremony", async () => {
+      await signedInAndLeaving();
+      expect(loginPasskeyMock).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(signIn());
+      await act(async () => {});
+
+      expect(loginPasskeyMock).toHaveBeenCalledTimes(1);
+      expect(signIn()).toHaveAttribute("aria-busy", "true");
+    });
+
+    it("gives the button back when a read the old session sent lapses during it", async () => {
+      await signedInAndLeaving();
+
+      act(() => authEvents.emit("expired"));
+
+      expect(screen.getByRole("dialog", { name: "Session lapsed" })).toHaveClass("rise-in");
+      expect(signIn()).not.toHaveAttribute("aria-busy");
+      fireEvent.click(signIn());
+      await act(async () => {});
+      expect(loginPasskeyMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("releases the button when the passkey fails, and asks again on the next tap", async () => {
+    loginPasskeyMock.mockRejectedValueOnce(new DOMException("Cancelled", "NotAllowedError"));
+    renderGate();
+    await screen.findByText("the room");
+    act(() => authEvents.emit("expired"));
+    const signIn = screen.getByRole("button", { name: "Sign in with Face ID" });
+
+    fireEvent.click(signIn);
+    expect(signIn).toHaveAttribute("aria-busy", "true");
+
+    expect(await screen.findByText("Face ID was cancelled.")).toBeInTheDocument();
+    expect(signIn).not.toHaveAttribute("aria-busy");
+    expect(screen.getByRole("dialog", { name: "Session lapsed" })).toHaveClass("rise-in");
+
+    fireEvent.click(signIn);
+    await waitFor(() => expect(loginPasskeyMock).toHaveBeenCalledTimes(2));
   });
 
   it("drops the expired gate when the status says signed out, for good", async () => {

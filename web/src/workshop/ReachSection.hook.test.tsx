@@ -1,14 +1,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   permission,
   reachContext,
   requestAndSubscribe,
   syncSubscription,
 } from "@/lib/push";
-import { authSession } from "@/test/fixtures";
+import { REACH_ACTS_KEY, type ReachAct } from "@/lib/reach-local";
+import { authSession, IPHONE_UA } from "@/test/fixtures";
 import { BUSY, failedClient, makeClient } from "@/test/push-client";
 import { ReachSection } from "./ReachSection";
 import type { Sessions } from "./useSystem";
@@ -98,8 +99,54 @@ describe("ReachSection over usePush", () => {
     await waitFor(() => expect(screen.getByText("on")).toBeInTheDocument());
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(requestAndSubscribe).toHaveBeenCalledTimes(1);
-    // Enable registered for itself; the query took its answer, and nothing
-    // registered a second time.
+    // Enable registered for itself and the query took its answer. This mock answers
+    // inside a microtask, which leaves no render to sync in; a real, slower answer
+    // can leave another observer room to (`usePush`).
     expect(syncSubscription).not.toHaveBeenCalled();
+  });
+
+  describe("on an iPhone, Reach's route to the Act rows", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      localStorage.clear();
+    });
+
+    /** The owner taps through Reach and answers iOS with `answer`, on `client`. */
+    async function answerFromReach(answer: "granted" | "denied", client: QueryClient) {
+      granted = "default";
+      vi.spyOn(navigator, "userAgent", "get").mockReturnValue(IPHONE_UA);
+      vi.mocked(requestAndSubscribe).mockImplementation(async () => {
+        await Promise.resolve();
+        granted = answer;
+        return answer;
+      });
+      const user = userEvent.setup();
+      renderReach(client);
+
+      await user.click(screen.getByRole("button", { name: "Enable" }));
+      await user.click(screen.getByRole("button", { name: "Let me reach you" }));
+
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    }
+
+    it("Enable then Let me reach you writes the on row", async () => {
+      const client = makeClient();
+
+      await answerFromReach("granted", client);
+
+      expect(client.getQueryData<ReachAct[]>(REACH_ACTS_KEY)).toEqual([
+        { at: expect.any(String), outcome: "on" },
+      ]);
+    });
+
+    it("Enable then Let me reach you, declined writes the off row", async () => {
+      const client = makeClient();
+
+      await answerFromReach("denied", client);
+
+      expect(client.getQueryData<ReachAct[]>(REACH_ACTS_KEY)).toEqual([
+        { at: expect.any(String), outcome: "off" },
+      ]);
+    });
   });
 });

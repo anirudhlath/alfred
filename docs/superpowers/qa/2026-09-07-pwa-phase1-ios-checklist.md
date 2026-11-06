@@ -73,8 +73,10 @@ never signed in. Record the device, iOS version and date at the bottom.
 
 ## §4.9 / §4.9b — Web Push and install
 
-- [ ] **Deferred to phase 5.** There is no Reach gate, no permission prompt and
-      no service worker in phase 1. Confirm only that nothing *offers* them.
+- [ ] **Deferred.** Phase 1 had no Reach gate, no permission prompt and no service
+      worker. They exist now: `2026-09-16-pwa-phase4-ios-checklist.md` runs the worker and
+      `2026-10-29-pwa-phase5-ios-checklist.md` the rest, so there is nothing to confirm
+      here.
 
 ## §4.10 — iOS kills suspended PWAs
 

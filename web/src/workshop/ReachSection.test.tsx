@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PushValue, Reach } from "@/shell/usePush";
 import { authSession } from "@/test/fixtures";
 import { ReachSection } from "./ReachSection";
@@ -14,11 +14,13 @@ function setPush(reach: Reach, asking = false) {
   push.value = { ...push.value, reach, asking };
 }
 
-// Alfred.dc.html:389-395 and the brief's table, verbatim; D1–D4 and D7 from
-// the plan's Deviations table.
+// Alfred.dc.html:389-395 and the brief's table, verbatim; D1–D4 and D7 from the
+// slice 1 plan's Deviations table, D8 from the slice 2 spec's.
 const INSTALL_SUB = "unavailable in Safari · add to home screen first";
 const ASK_SUB = "off · not yet asked · iOS asks once";
 const ON_SUB = "on · this iPhone · important and urgent only";
+const ON_BADGE_SUB =
+  "on · this iPhone · important and urgent only · badge = notifications since you last opened";
 const DENIED_SUB = "off · declined in iOS · this app cannot flip it";
 const DENIED_NOTE =
   "Settings › Alfred › Notifications › Allow. iOS holds this switch now; nothing in here can flip it, and Alfred will not raise it again.";
@@ -78,6 +80,15 @@ beforeEach(() => {
   };
   vi.stubGlobal("location", { hostname: "alfred.example.com", pathname: "/" });
 });
+
+afterEach(() => {
+  Reflect.deleteProperty(navigator, "setAppBadge");
+});
+
+/** A browser with an icon to put a number on. jsdom's has none. */
+function badging(): void {
+  Object.defineProperty(navigator, "setAppBadge", { configurable: true, value: vi.fn() });
+}
 
 type Right = { action: string } | { word: string; colour: string; fill: string; ring: string };
 
@@ -157,6 +168,26 @@ describe("ReachSection", () => {
         borderColor: right.ring,
       });
     }
+  });
+
+  it("names the badge in the on line where setAppBadge exists", () => {
+    badging();
+    setPush({ kind: "on" });
+    render(section());
+    expect(sub()?.textContent).toBe(ON_BADGE_SUB);
+  });
+
+  it("leaves the clause out elsewhere", () => {
+    setPush({ kind: "on" });
+    render(section());
+    expect(sub()?.textContent).toBe(ON_SUB);
+  });
+
+  it("keeps the clause to the on line", () => {
+    badging();
+    setPush({ kind: "denied" });
+    render(section());
+    expect(sub()?.textContent).toBe(DENIED_SUB);
   });
 
   it("Show me how opens the install gate, and Not now closes it", async () => {

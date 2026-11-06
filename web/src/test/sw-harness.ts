@@ -452,6 +452,12 @@ export interface Harness {
    */
   deadlinesCleared: number;
   /**
+   * Lets the clock go when `clockHeld` has been holding it: whatever is armed
+   * on it starts firing, in the order it falls due, and from here on the clock
+   * runs as it does for any other worker.
+   */
+  releaseClock(): void;
+  /**
    * The worker's own file-local functions, by the name the file declares them
    * under — `loadWorker(source, { expose: ["isRefused"] })` is what puts one
    * here. A name the file does not declare is a `ReferenceError` at load, which
@@ -568,10 +574,16 @@ export interface Harness {
   /** Everything a window client's `postMessage()` was handed, by the page's URL, in order. */
   posted: { url: string; data: unknown }[];
   /**
-   * Every focus and every post, in the one order they landed — `focus <url>`
-   * when a focus lands, `post <url>` at a post — because `focused` and
-   * `posted` each keep only their own order, and which came first is a
-   * worker's to get right.
+   * Every number `self.navigator.setAppBadge()` was handed, in order, recorded
+   * at the call whatever `appBadge` has it do next. Empty where there is no such
+   * call to make.
+   */
+  badges: number[];
+  /**
+   * Every focus, post and badge, in the one order they landed — `focus <url>`
+   * when a focus lands, `post <url>` at a post, `badge <n>` at a `setAppBadge()`
+   * — because `focused`, `posted` and `badges` each keep only their own order,
+   * and which came first is a worker's to get right.
    */
   events: string[];
   /**
@@ -644,7 +656,9 @@ const SEALED = [
   "clearTimeout",
   "clients",
   "fetch",
+  "indexedDB",
   "location",
+  "navigator",
   "registration",
   "setTimeout",
   "skipWaiting",
@@ -654,7 +668,9 @@ const seal = (name: string): unknown => {
   const complain = (): never => {
     throw new Error(`${name} was reached bare; a worker reaches it through self.${name}.`);
   };
-  return new Proxy(function sealed() {} as object, { get: complain, apply: complain });
+  // `has` for a feature test: `"setAppBadge" in navigator` reads no property, and
+  // would otherwise answer false from a seal rather than say what was reached.
+  return new Proxy(function sealed() {} as object, { get: complain, apply: complain, has: complain });
 };
 
 /**
@@ -703,6 +719,28 @@ export interface LoadOptions {
    * worker on a first install, which is the one page every install has.
    */
   clients?: readonly ClientSpec[];
+  /**
+   * What `self.indexedDB` is. Absent by default, as it is for every test that
+   * has no count to keep. A whole store is `fake-indexeddb`'s `IDBFactory`,
+   * for real transaction semantics; one that throws, errors or hangs is `open`
+   * and nothing else, which is all a worker can reach before it finds out.
+   */
+  indexedDB?: Pick<IDBFactory, "open">;
+  /**
+   * What `self.navigator.setAppBadge()` does. Absent by default, so that
+   * `self.navigator` is `{}`, as it is on a browser without one. Otherwise each
+   * call is recorded in `badges` and `events`, and then resolves, rejects with
+   * `NotAllowedError` as a browser does for a badge it will not set, or never
+   * settles.
+   */
+  appBadge?: "sets" | "rejects" | "hangs";
+  /**
+   * Timers are armed and do not fire until `releaseClock()`. `fake-indexeddb`
+   * takes real macrotasks and this clock is virtual, jumping to whatever falls
+   * due next: left running, it would fire a 5-second deadline before a healthy
+   * store had answered.
+   */
+  clockHeld?: boolean;
 }
 
 /**
@@ -782,16 +820,24 @@ interface FakeServiceWorker {
  * hand back the levers a test needs.
  *
  * `new Function("self", ...SEALED, source)` is the whole trick: the worker
- * reaches the ten globals in SEALED — its network, storage, clients, timers
+ * reaches the twelve globals in SEALED — its network, storage, clients, timers
  * and events among them — only through `self.`, so one object is all of the
- * scope it can see; and SEALED shadows those ten bare, so a worker that
+ * scope it can see; and SEALED shadows those twelve bare, so a worker that
  * reaches past `self.` meets a refusal rather than Node's real one. What it
  * reaches bare is the language's own globals, and URL and Response: Node's
  * real ones, which reach nothing outside the worker. Nothing here is mocked at
  * the module boundary — these tests run the bytes that ship.
  */
 export function loadWorker(source: string, options: LoadOptions = {}): Harness {
-  const { expose = [], scope: scopeUrl = `${ORIGIN}/`, update = false, clients = [{ path: "/" }] } = options;
+  const {
+    expose = [],
+    scope: scopeUrl = `${ORIGIN}/`,
+    update = false,
+    clients = [{ path: "/" }],
+    indexedDB,
+    appBadge,
+    clockHeld = false,
+  } = options;
   /** This instance's notion of "us" — `ORIGIN` unless a test moved the scope. */
   const origin = new URL(scopeUrl).origin;
   /**
@@ -864,6 +910,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     opened: string[];
     focused: string[];
     posted: Harness["posted"];
+    badges: number[];
     events: string[];
     matchAllOptions: Harness["matchAllOptions"];
   } = {
@@ -880,6 +927,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     opened: [],
     focused: [],
     posted: [],
+    badges: [],
     events: [],
     matchAllOptions: [],
   };
@@ -893,6 +941,8 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
   let now = 0;
   let nextTimer = 1;
   const timers = new Map<number, { due: number; fire: () => void }>();
+  /** Whether `clockHeld` still has the clock: see `LoadOptions` and `releaseClock`. */
+  let held = clockHeld;
   let ticking = false;
   const tick = () => {
     ticking = false;
@@ -915,7 +965,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
   const after = (ms: number, fire: () => void): number => {
     const id = nextTimer++;
     timers.set(id, { due: now + ms, fire });
-    wake();
+    if (!held) wake();
     return id;
   };
 
@@ -1030,6 +1080,19 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     addEventListener(type: string, fn: (event: unknown) => void) {
       listeners.set(type, [...(listeners.get(type) ?? []), fn]);
     },
+    indexedDB,
+    navigator: appBadge
+      ? {
+          // Recorded at the call: see `Harness.badges`.
+          setAppBadge: (count: number): Promise<void> => {
+            harness.badges.push(count);
+            harness.events.push(`badge ${count}`);
+            if (appBadge === "sets") return Promise.resolve();
+            if (appBadge === "hangs") return new Promise<void>(() => {});
+            return Promise.reject(new DOMException("The badge was refused.", "NotAllowedError"));
+          },
+        }
+      : {},
     registration: {
       scope: scopeUrl,
       // Empty until `install()` below puts a worker in it.
@@ -1309,6 +1372,10 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     get now() {
       return now;
     },
+    releaseClock: () => {
+      held = false;
+      wake();
+    },
     released: harness.released,
     trickle: (type, pieces, { every, stall = false }) => {
       const encoder = new TextEncoder();
@@ -1444,6 +1511,7 @@ export function loadWorker(source: string, options: LoadOptions = {}): Harness {
     opened: harness.opened,
     focused: harness.focused,
     posted: harness.posted,
+    badges: harness.badges,
     events: harness.events,
     matchAllOptions: harness.matchAllOptions,
     refuseFocus: (url) => void focusRefusals.add(new URL(url, origin).href),

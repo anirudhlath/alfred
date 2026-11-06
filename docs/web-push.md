@@ -19,10 +19,10 @@ ciphertext it cannot read, so Apple's relay never sees a notification's text.
 | Adapter | `core/notifications/adapters/webpush.py` | `WebPushChannelAdapter`: payload, encryption, headers, delivery, pruning |
 | Routes | `core/channels/web_server.py` | `POST`/`DELETE /api/devices/register`, `GET /api/push/public-key`, `_init_webpush_adapter()` |
 | Admin read | `core/channels/admin_api.py` | `GET /api/admin/devices`, with Web Push rows redacted |
-| Worker | `web/public/sw.js` | the `push` and `notificationclick` listeners |
+| Worker | `web/public/sw.js` | the `push` and `notificationclick` listeners; each push also adds to the icon's count ([`web-frontend.md`](web-frontend.md#web-push)) |
 | Client | `web/src/lib/push.ts` | subscribing, launch re-validation, sign-out, hearing a tap's `OPEN_PATH` ([`web-frontend.md`](web-frontend.md)) |
 | Client wiring | `web/src/shell/usePush.ts`, `web/src/shell/PushKeeper.tsx` | `usePush()`: the Reach state and `enable()`; `PushKeeper` (inside `AuthGate`): the re-validation once a launch, again after each sign-in and again when a permission taken away is given back, when installed with permission granted; `NotificationOpen`: routes a tap's `OPEN_PATH`. Sign-out (`useSystem`) forgets the subscription before it ends the session |
-| Reach card | `web/src/workshop/ReachSection.tsx`, `web/src/gates/InstallGate.tsx`, `web/src/gates/StandaloneGate.tsx` | System › Reach: the `Push notifications` row over `usePush()`, and the two gates it opens ("From the PWA" below) |
+| Reach card | `web/src/workshop/ReachSection.tsx`, `web/src/gates/ReachGates.tsx`, `web/src/gates/InstallGate.tsx`, `web/src/gates/StandaloneGate.tsx` | System › Reach: the `Push notifications` row over `usePush()`, and the two gates it opens ("From the PWA" below), which the Room hosts as well |
 
 ## Architecture
 
@@ -140,7 +140,8 @@ subscribes (spec §6.1).
 
 ### From the PWA
 
-The standalone gate's `Let me reach you` (opened by `Enable` on System › Reach) asks for
+The standalone gate's `Let me reach you` (opened by `Enable` on System › Reach or, on an
+iPhone, by itself on launch: [`web-frontend.md`](web-frontend.md#web-push)) asks for
 permission inside the tap, then reads the key, subscribes and registers: one `POST` a tap,
 and a success is Reach's `on` with no second one. A 404 key read says Web Push is not set
 up, and nothing asks again; any other failure gets one try of the sync below once the tap
@@ -162,8 +163,9 @@ its right, by `usePush()`'s `reach.kind`:
 
 `Enable` itself asks nothing: the standalone gate's `Let me reach you` is the tap that
 does, it holds while the prompt and the registration are under way, and the gate closes
-once they are done, leaving the row to say what came of it. Each gate's way out, `Not now`
-or `Not yet`, only closes it. A registration refused with 503 `Device store busy` is the
+once they are done, leaving the row, and on an iPhone an Act row in the Room, to say what
+came of it. The install gate's `Not now` only closes it; the standalone gate's `Not yet`
+closes it and ends its opening by itself on this device. A registration refused with 503 `Device store busy` is the
 `failed` row once the sync's one retry is refused too, with `Device store busy` under it
 and `Try again` beside it.
 

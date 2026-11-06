@@ -1089,11 +1089,17 @@ describe("the seams the harness depends on", () => {
   it("refuses a global reached bare rather than letting it hit Node's", async () => {
     // `self.` is a convention only because this enforces it. Node's own fetch
     // is a live network call, and a worker that slipped past the fake scope
-    // would be tested against the internet.
-    const worker = loadWorker(`
-      self.addEventListener("install", () => { fetch("/x"); });
-    `);
-    await expect(worker.install()).rejects.toThrow(/reached bare/);
+    // would be tested against the internet. The other reaches are the two the
+    // count makes: jsdom has a real `navigator`, so a bare one would be read from
+    // the test's own page, and the feature test is an `in`, which a seal that only
+    // watched reads and calls would answer with a quiet false.
+    const reaches = ['fetch("/x")', 'indexedDB.open("x")', "navigator.setAppBadge(1)", '"setAppBadge" in navigator'];
+    for (const reach of reaches) {
+      const worker = loadWorker(`
+        self.addEventListener("install", () => { ${reach}; });
+      `);
+      await expect(worker.install(), reach).rejects.toThrow(/reached bare/);
+    }
   });
 
   it("does not answer a cross-origin URL from a same-origin route", async () => {

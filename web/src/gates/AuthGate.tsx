@@ -196,6 +196,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       {body}
       <Layer open={expired} label="Session lapsed" level="gate" durationMs={400}>
         <ExpiredGate
+          open={expired}
           onSignedIn={() => {
             setExpired(false);
             refetchEverything();

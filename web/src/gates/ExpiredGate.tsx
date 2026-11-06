@@ -4,6 +4,8 @@ import { failureText } from "@/lib/auth";
 import { loginPasskey } from "@/lib/webauthn";
 
 export interface ExpiredGateProps {
+  /** Whether the gate is up. `Layer` keeps a closed one mounted for its leave. */
+  open: boolean;
   onSignedIn: () => void;
 }
 
@@ -14,7 +16,7 @@ export interface ExpiredGateProps {
  * The body deviates from the handoff on purpose: the prototype says "30 days",
  * and phase 0 cut the session TTL to eight hours (`_AUTH_SESSION_TTL`).
  */
-export function ExpiredGate({ onSignedIn }: ExpiredGateProps) {
+export function ExpiredGate({ open, onSignedIn }: ExpiredGateProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,7 +38,15 @@ export function ExpiredGate({ onSignedIn }: ExpiredGateProps) {
       kicker="401 · session lapsed"
       title="Your session lapsed."
       body="The passkey session on this phone ran out after eight hours. Anything below is last-known until you sign in again."
-      primary={{ label: "Sign in with Face ID", onClick: () => void signIn(), busy }}
+      primary={{
+        label: "Sign in with Face ID",
+        onClick: () => void signIn(),
+        // Held through the leave, or a tap there would start a second passkey
+        // ceremony. From `open` and not left set by the sign-in: a read the lapsed
+        // session sent can land during the leave and raise this gate again, and
+        // re-opened mid-leave it is this same mounted gate, which must not stay held.
+        busy: busy || !open,
+      }}
       foot={error ?? "Conversations and settings are on the server; nothing is lost."}
     />
   );

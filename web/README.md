@@ -41,7 +41,9 @@ src/lib/        no React: api, sockets, formatters, the presence physics,
                 the action reducer, the slide maths, audio and recording,
                 the stream catalogue (streams.ts), the feed reducer (feed.ts),
                 the causal thread (trace.ts), the page's half of the service
-                worker (sw.ts), the browser's push APIs (push.ts) — and one
+                worker (sw.ts), the browser's push APIs (push.ts), the page's half
+                of the icon's count (badge.ts), what this browser alone keeps
+                about reaching it (reach-local.ts), onIPhone (device.ts) — and one
                 module per bench:
                 memory.ts (the three-shape episodic adapter), triggers.ts
                 (kinds and meta lines), system.ts (sessions, credentials,
@@ -51,10 +53,11 @@ src/shell/      providers, the two surfaces everything rises on, the
                 note (UpdateNote.tsx, useUpdateReady.ts), useOnline.ts, and
                 Web Push's sync (usePush.ts, PushKeeper.tsx)
 src/gates/      setup, sign-in, expired, denied, offline and unanswered — and
-                the router between them; and Reach's install and standalone
-                gates
+                the router between them; and the install and standalone gates
+                (ReachGates.tsx), hosted by Reach and by the Room
 src/room/       the one screen: presence field, headline, timeline, composer,
-                and the handle into the Workshop (WorkshopHandle.tsx)
+                what it raises about notifications (useReachPrompts.ts), and
+                the handle into the Workshop (WorkshopHandle.tsx)
 src/door/       the approval interrupt: banner, fuse, slide, deep link
 src/workshop/   the Workshop layer: the bench switcher (BenchSwitcher.tsx,
                 tabs.ts) and four benches, each a pure view over one hook —
@@ -159,11 +162,26 @@ Phase 5, slice 1: Alfred reaches the phone when the app is closed. The architect
   to the `install` gate in a browser tab, `Enable` to the `standalone` gate in the
   installed app, whose `Let me reach you` asks iOS.
 
+Phase 5, slice 2: an iPhone is asked at the moments that matter, and the icon counts what
+arrived. All of it is in `docs/web-frontend.md`, "Web Push".
+
+- **The prompt row** — in a browser tab on an iPhone, beside a waiting Door, on a house
+  with a Web Push key. `Show me how` opens the `install` gate, and `Not now` holds until
+  a new Door.
+- **The gate that opens itself** — the `standalone` gate, once on launch in the installed
+  app on an iPhone, until either button is tapped. `Enable` stays in Reach.
+- **The Act rows** — iOS's answer, written into the Room on that iPhone alone
+  (`src/lib/reach-local.ts`).
+- **The number on the icon** (`navigator.setAppBadge`) — every push adds one and opening
+  the app clears it. Reach's `on` line names it, only where `setAppBadge` exists.
+
 ## What it does not
 
-- **Phase 5's second slice** — the Room's home-screen prompt row, the allowed and
-  declined Act rows, and the icon badge (`navigator.setAppBadge`). Reach's `on` line is
-  the handoff's copy verbatim and already names the badge, which slice 2 makes true.
+- **Three things phase 5's second slice left out** — a `pushsubscriptionchange` handler
+  ([#427](https://github.com/anirudhlath/alfred/issues/427)), seen and unseen per
+  notification ([#424](https://github.com/anirudhlath/alfred/issues/424)), and Alfred
+  taking back a suggestion whose reason has gone
+  ([#425](https://github.com/anirudhlath/alfred/issues/425)).
 - **A sign-out whose `DELETE` and unsubscribe both fail** leaves the subscription live
   and the house's row in place, so pushes keep arriving on a signed-out phone until the
   next sign-in, until the push service drops it, or until the cap evicts the row
@@ -180,9 +198,9 @@ Phase 5, slice 1: Alfred reaches the phone when the app is closed. The architect
 
 ## The service worker
 
-`public/sw.js` is hand-written — 313 lines of code under 965 of comment once phase 5 added
-its push listeners, 3.1 to 1, counted with acorn's tokenizer (a line is code if any token
-touches it, comment if only a comment does, and a blank line, inside a comment or not, is
+`public/sw.js` is hand-written — 366 lines of code under 1 010 of comment once phase 5 added
+its push listeners and the icon's count, 2.8 to 1, counted with acorn's tokenizer (a line is
+code if any token touches it, comment if only a comment does, and a blank line, inside a comment or not, is
 neither) — and shipped verbatim by Vite's `public/` copy: no `vite-plugin-pwa`, no
 Workbox, no generated precache manifest. The reasoning is in
 `docs/superpowers/plans/2026-09-16-pwa-phase4-install-and-offline.md`; the short version
@@ -523,9 +541,12 @@ since iOS revokes a subscription whose pushes are not shown), and `notificationc
 hands the tapped notification's path to the open app as `{ type: "OPEN_PATH", path }`, or
 opens a window at it when none is open. The worker builds that path itself from the
 payload's `action_id`: `/actions/<id>` or `/`. Neither listener reads or writes a cache, so
-the first rule below holds unchanged. The payload is `docs/web-push.md`, "The payload
-contract with `sw.js`", and the page's half is `src/lib/push.ts` (`docs/web-frontend.md`,
-"Web Push").
+the first rule below holds unchanged. Each push also adds to the icon's count, on a
+`waitUntil` branch of its own beside the notification, and the count is kept in IndexedDB
+(`alfred-badge`) because `setAppBadge` has no getter, this worker dies between pushes, and
+that rule keeps the caches for the shell. The payload is `docs/web-push.md`, "The payload
+contract with `sw.js`", and the page's half is `src/lib/push.ts` and `src/lib/badge.ts`
+(`docs/web-frontend.md`, "Web Push").
 
 **`src/lib/sw.ts` registers it**, from one `installServiceWorker()` call in `main.tsx` after
 the app is handed to React. In a production build that registers `/sw.js` at the root; in dev
@@ -558,15 +579,16 @@ Three rules govern it, and they are restated at the top of the file itself:
    only by a phone that is offline or cannot reach this origin inside the deadline, never
    by one whose network is working; and the browser's own update check on `/sw.js` keeps
    running — which is what lets a kill switch land if this file ever has to be withdrawn.
-3. **Ten globals go through `self.`** — `fetch`, `caches`, `clients`, `registration`,
-   `location`, `setTimeout`, `clearTimeout`, `AbortController`, `addEventListener` and
-   `skipWaiting` — which is the seam `src/test/sw-harness.ts` replaces to evaluate the
-   shipped bytes in a fake `ServiceWorkerGlobalScope`. It is enforced by
-   `no-restricted-globals` in `eslint.config.js`, not by convention:
-   `globals.serviceworker` would otherwise make a bare `caches` perfectly legal. The
-   language's own globals (`Promise`, `JSON`, `Set`, `Array`, `Error`,
-   `decodeURIComponent`, `undefined`) and `URL` and `Response` are reached bare: none of
-   them reaches outside the worker, and the tests run the real ones.
+3. **Twelve globals go through `self.`** — `fetch`, `caches`, `clients`, `registration`,
+   `location`, `setTimeout`, `clearTimeout`, `AbortController`, `addEventListener`,
+   `skipWaiting`, `indexedDB` and `navigator` — which is the seam
+   `src/test/sw-harness.ts` replaces to evaluate the shipped bytes in a fake
+   `ServiceWorkerGlobalScope`. It is enforced by `no-restricted-globals` in
+   `eslint.config.js`, not by convention: `globals.serviceworker` would otherwise make a
+   bare `caches` perfectly legal. The language's own globals (`Promise`, `JSON`, `Set`,
+   `Array`, `Number`, `Error`, `decodeURIComponent`, `undefined`) and `URL` and `Response`
+   are reached bare: none of them reaches outside the worker, and the tests run the real
+   ones.
 
 Two things to know before editing it. **A 200 is not proof of anything** — `/assets` is a
 StaticFiles mount (`core/channels/spa.py:39-40`), so a removed hashed chunk answers 404
@@ -588,6 +610,7 @@ kill switch".
 
 The tests are `src/test/sw.test.ts` (the worker, driven event by event),
 `src/test/sw-push.test.ts` (its two push listeners, through the same fake scope),
+`src/test/sw-badge.test.ts` (a push's count, against `fake-indexeddb`),
 `src/test/sw-kill.test.ts` (the kill switch, through the same fake scope),
 `src/test/sw-harness.test.ts` (the fake scope itself — it has to model `ExtendableEvent`,
 `Cache.put`, `Clients.matchAll` and which worker controls each open page closely enough

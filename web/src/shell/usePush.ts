@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { ApiError, errorText } from "@/lib/api";
+import { onIPhone } from "@/lib/device";
 import { onVisible } from "@/lib/lifecycle";
 import {
   permission,
@@ -10,6 +11,7 @@ import {
   type ReachContext,
   type SyncAnswer,
 } from "@/lib/push";
+import { addReachAct, REACH_ACTS_KEY, type ReachAct } from "@/lib/reach-local";
 
 /**
  * The sync's one cache entry. A sign-in's `invalidateQueries()` (`AuthGate`)
@@ -49,7 +51,8 @@ export interface PushOptions {
   /**
    * Whether this observer's mount syncs again: on by default, and `PushKeeper`
    * relies on it — it remounts under `AuthGate` with each sign-in, and that
-   * mount is the sync. System › Reach passes false. The bench remounts on every
+   * mount is the sync. Every other observer passes false: System › Reach's card,
+   * and `ReachGates` in both Reach and the Room. The bench remounts on every
    * visit, and react-query marks a failed sync invalidated, so each opening of
    * System would subscribe and register again behind the reader's back; the
    * card's retry is its `Try again`. A query nothing has fetched yet still
@@ -82,8 +85,8 @@ function reachOf(
 }
 
 /**
- * Web Push for this page: the launch sync (`PushKeeper` mounts it), and what
- * System › Reach shows and offers.
+ * Web Push for this page: the launch sync (`PushKeeper` mounts it), what
+ * System › Reach shows and offers, and the ask behind `ReachGates`.
  */
 export function usePush({ syncOnMount = true }: PushOptions = {}): PushValue {
   const queryClient = useQueryClient();
@@ -100,9 +103,11 @@ export function usePush({ syncOnMount = true }: PushOptions = {}): PushValue {
     queryFn: () => syncSubscription(),
     // Off while Enable runs, which registers for itself: a render that reads
     // the new permission mid-tap would otherwise start a second register.
-    // `!asking` holds off only this hook instance's query. Another instance,
-    // such as `PushKeeper`'s, can still sync; at worst that is one extra POST,
-    // which rewrites the same row (docs/web-frontend.md, "Enable asks first").
+    // `!asking` holds off only this hook instance's query. Any other observer,
+    // `PushKeeper`'s, `ReachSection`'s or the Room's `ReachGates`, can still sync.
+    // That costs one extra POST, which rewrites the same row; and if that sync
+    // fails after Enable's has landed, Reach reads `failed` with `Try again` until
+    // it is tapped (docs/web-frontend.md, "Enable asks first").
     enabled: context === "capable" && allowed === "granted" && !asking,
     // Once a launch and once a sign-in, never on focus: the house's row does
     // not lapse, and a register on every app switch would only rewrite it.
@@ -144,6 +149,16 @@ export function usePush({ syncOnMount = true }: PushOptions = {}): PushValue {
           // takes it as its own rather than registering a second time. A
           // refusal or a dismissed prompt needs nothing — the permission says it.
           if (answer === "granted") queryClient.setQueryData(PUSH_QUERY_KEY, "on");
+          // The answer goes in the Room, on the one device its copy can name. Only
+          // here: a registration that failed rejects, and `on` would then be false.
+          // It builds on the cache, which holds what the store may have refused.
+          if (answer !== "default" && onIPhone()) {
+            const outcome = answer === "granted" ? "on" : "off";
+            const at = new Date().toISOString();
+            queryClient.setQueryData<ReachAct[]>(REACH_ACTS_KEY, (held) =>
+              addReachAct(outcome, at, held),
+            );
+          }
         },
         (error: unknown) => {
           // The house has no key: said, and not asked again.

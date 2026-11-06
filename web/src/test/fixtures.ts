@@ -9,6 +9,10 @@ import type {
   StreamPage,
 } from "@/lib/types";
 
+/** Safari on an iPhone, for whatever asks `onIPhone()` or names the device. */
+export const IPHONE_UA =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Mobile/15E148 Safari/604.1";
+
 /**
  * `GET /api/integrations`. Two entries on purpose: the setup gate must find
  * `home-service` by name rather than by position.

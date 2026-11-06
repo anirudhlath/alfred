@@ -41,6 +41,9 @@ vi.mock("@/lib/sw", async (importOriginal) => ({
   installServiceWorker,
 }));
 vi.mock("react-dom/client", () => ({ createRoot }));
+// `css: true` (`vite.config.ts`) would put the real stylesheet into jsdom, whose
+// parser refuses it, aloud. Nothing here reads a style.
+vi.mock("@/index.css", () => ({}));
 
 // main.tsx runs once per module load, and vitest clears every mock's calls
 // before each test (`clearMocks`, on by default since vitest 5). So each test

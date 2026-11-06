@@ -227,7 +227,8 @@ describe("DoorProvider", () => {
 
   it("reads the list again when the app comes back", async () => {
     renderDoor();
-    await waitFor(() => expect(calls).toContain("GET /api/actions/pending"));
+    await settle();
+    expect(calls).toContain("GET /api/actions/pending");
     expect(phases()).toBe("");
 
     pendingBody = { actions: [pendingActionFixture] };
@@ -278,6 +279,7 @@ describe("DoorProvider", () => {
   it("ignores an action that has already gone by the time we ask", async () => {
     getStatus = 404;
     const { chat } = renderDoor();
+    await settle();
 
     act(() =>
       chat.deliver({

@@ -17,22 +17,24 @@
       cannot reach this origin in ten seconds, and never by one whose network is
       working; and the browser's own update check on /sw.js keeps running, which
       is what lets sw.kill.js land if this file ever has to be withdrawn.
-   3. Ten globals go through `self.`: fetch, caches, clients, registration,
-      location, setTimeout, clearTimeout, AbortController, addEventListener
-      and skipWaiting. Valid in a worker, and the seam src/test/sw-harness.ts
-      hangs a fake scope on. eslint.config.js's `no-restricted-globals` block
-      is what enforces it; without that rule `globals.serviceworker` makes a
-      bare `caches` or `fetch` perfectly legal. The language's own globals —
-      Promise, JSON, Set, Array, Error, decodeURIComponent, undefined — and
-      URL and Response are reached bare: none of them reaches outside the
-      worker, and the tests run the real ones.
+   3. Twelve globals go through `self.`: fetch, caches, clients, registration,
+      location, setTimeout, clearTimeout, AbortController, addEventListener,
+      skipWaiting, indexedDB and navigator. Valid in a worker, and the seam
+      src/test/sw-harness.ts hangs a fake scope on. eslint.config.js's
+      `no-restricted-globals` block is what enforces it; without that rule
+      `globals.serviceworker` makes a bare `caches` or `fetch` perfectly legal.
+      The language's own globals — Promise, JSON, Set, Array, Number, Error,
+      decodeURIComponent, undefined — and URL and Response are reached bare:
+      none of them reaches outside the worker, and the tests run the real ones.
 
    It also shows pushes and opens what they name — the `push` and
    `notificationclick` listeners after the `message` one — and caches nothing
    for either: a push is shown from its own payload, and a tap hands a path to
-   a window or opens one. What the payload holds, and what the server's
-   build_payload() promises about it, is in docs/web-push.md, "The payload
-   contract with `sw.js`".
+   a window or opens one. Each push also adds to the icon's count, kept in
+   IndexedDB rather than the caches because rule 1 keeps them for the shell,
+   `setAppBadge` has no getter, and this worker dies between pushes. What the
+   payload holds, and what the server's build_payload() promises about it, is
+   in docs/web-push.md, "The payload contract with `sw.js`".
 */
 
 const VERSION = "v1";
@@ -116,17 +118,19 @@ const CEILING_MS = 120000;
 
 /* Two shapes of deadline, and which one a call gets is not a style choice.
 
-   This one RACES, and it is for the two waits a signal cannot end. A
+   This one RACES, and it is for the three waits a signal cannot end. A
    navigation is one: it cannot be given a signal at all, for the reason
    written under `timed`, so the loser is a fetch left running behind the race,
    one per navigation — released the moment its headers arrive (see
    navigate()); what outlives the race is a request still awaiting headers,
    bounded by the browser's own network timeout. The alternative costs the
-   page's Request, which is worse. The other is the
+   page's Request, which is worse. Another is the
    reading of a body, inside `whole`: one race per piece, and one over all of
    them with CEILING_MS for its length — and there the loser is not left
    running: `whole` cancels what it was reading the moment a race is lost, and
-   why that and not an abort is written beside it. */
+   why that and not an abort is written beside it. The third is a push's count,
+   and IndexedDB and setAppBadge take no signal at all: the loser is left to
+   finish on its own, if it ever does (see countPush). */
 function deadlined(work, ms = TIMEOUT_MS) {
   let deadline;
   const expiry = new Promise((_, reject) => {
@@ -293,8 +297,8 @@ function fetchFresh(url) {
    `self.registration.scope` rather than `self.location`: the scope is what
    actually bounds a worker, and it keeps one notion of "us" in this file — the
    fetch handler's cross-origin refusal reads the same value. The one other is
-   openPath()'s, which asks a different question (see there). Not named `origin`
-   because a worker already has a global of that name. */
+   ownWindows()'s, which asks a different question (see there). Not named
+   `origin` because a worker already has a global of that name. */
 function scopeOrigin() {
   return new URL(self.registration.scope).origin;
 }
@@ -824,6 +828,116 @@ function tappedPath(data) {
     : "/";
 }
 
+/* Every window of this app that is open. `includeUncontrolled`, because the
+   page that registered this worker is controlled by no worker until it reloads,
+   and it is the app all the same. The origin is judged on each window's URL
+   because a window that has not loaded anything yet can be about:blank, whose
+   origin is "null", and nothing there takes a message. `self.location` and not
+   scopeOrigin(): it is what openWindow() resolves a path against, so the window
+   told and the window opened are on one origin — the scope's too, since a scope
+   cannot leave its script's. */
+async function ownWindows() {
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  return windows.filter((client) => new URL(client.url).origin === self.location.origin);
+}
+
+/* The number on the icon: how many pushes have arrived since the app was last
+   opened. One store holding one number, under names the page repeats when it
+   puts the number back to zero: this file is hand-written and not bundled, so
+   there is nothing to share them through. */
+const BADGE_DB = "alfred-badge";
+const BADGE_STORE = "count";
+const BADGE_KEY = "pushes";
+/* How long a push's event may wait on the count: the disk and a round trip to
+   the browser, not the network TIMEOUT_MS is about. Too short costs the number
+   one push, and too long holds the event open behind a store that has gone. */
+const BADGE_TIMEOUT_MS = 5000;
+
+/* Adds one to the count, and resolves with the new number once it is written.
+
+   One read-write transaction, which is what makes two pushes at once count as
+   two: the second waits for the first to finish, and reads what it wrote. The
+   put is made inside the get's own `onsuccess`, with no `await` between them,
+   because a transaction goes inactive once control returns to the event loop,
+   and a put made then throws.
+
+   What is stored is read as untrusted, as a push's fields are: anything but a
+   positive integer counts as nothing, so setAppBadge is never handed a NaN.
+
+   Resolved on the transaction's `oncomplete` and not the put's `onsuccess`,
+   because only then is the number written, and the windows are told on the
+   strength of it. Closed either way: a connection left open stands in the way
+   of any later version of this database until the worker stops.
+
+   The `try` is for what `transaction()` throws, a database with no such store
+   for one: thrown inside this handler it would reject nothing, and leave the
+   deadline as the only way out. */
+function addToCount() {
+  return new Promise((resolve, reject) => {
+    const opening = self.indexedDB.open(BADGE_DB, 1);
+    opening.onupgradeneeded = () => opening.result.createObjectStore(BADGE_STORE);
+    opening.onerror = () => reject(opening.error);
+    opening.onsuccess = () => {
+      const database = opening.result;
+      const fail = (error) => {
+        database.close();
+        reject(error);
+      };
+      try {
+        const writing = database.transaction(BADGE_STORE, "readwrite");
+        const store = writing.objectStore(BADGE_STORE);
+        const reading = store.get(BADGE_KEY);
+        let next;
+        reading.onsuccess = () => {
+          const stored = reading.result;
+          next = Number.isInteger(stored) && stored > 0 ? stored + 1 : 1;
+          store.put(next, BADGE_KEY);
+        };
+        writing.oncomplete = () => {
+          database.close();
+          resolve(next);
+        };
+        writing.onerror = () => fail(writing.error);
+        writing.onabort = () => fail(writing.error);
+      } catch (error) {
+        fail(error);
+      }
+    };
+  });
+}
+
+/* A push's count, on a branch of its own beside the notification. It never
+   rejects and it has a deadline, so a store that throws, errors or hangs costs
+   the number one push and nothing else. A browser with no setAppBadge counts
+   nothing: there is nowhere it could show the number, so there is no database.
+
+   Then every open window is told, the way OPEN_PATH travels, and whether this
+   push was on screen is the page's to decide: one that is running and visible
+   answers by clearing, and a suspended one runs nothing, so its count stands.
+   This worker never reads `visibilityState`. That reading is unverified from an
+   iOS worker, and if it were wrong, pushes to a backgrounded app would never
+   count; this way the worst case is a number that shows for a moment, or sits
+   until the next return to the foreground.
+
+   Told once setAppBadge has answered, because a page's answer is to clear: told
+   sooner, it could clear first, and the number would land after it and stay. A
+   rejection is swallowed and the windows are told all the same, since by then
+   the count is written, and that is what a page clears. */
+async function countPush() {
+  try {
+    if (!("setAppBadge" in self.navigator) || !self.indexedDB) return;
+    const count = async () => {
+      const pushes = await addToCount();
+      await self.navigator.setAppBadge(pushes).catch(() => {});
+      for (const client of await ownWindows()) client.postMessage({ type: "BADGE_ADDED" });
+    };
+    await deadlined(count(), BADGE_TIMEOUT_MS);
+  } catch {
+    /* Whatever it was, the notification is not waiting on it, and nothing here
+       has anyone to tell. */
+  }
+}
+
 /* A push is SHOWN, whatever it holds. iOS revokes a subscription that receives
    pushes it does not show, and Chrome shows "This site has been updated in the
    background" in their place, so a payload that is missing, is not JSON, or is
@@ -855,6 +969,9 @@ self.addEventListener("push", (event) => {
   };
   if (typeof fields.id === "string") options.tag = fields.id;
   event.waitUntil(self.registration.showNotification(title, options));
+  /* After, and apart: the notification is on its way before the count begins,
+     so nothing about the count can delay or prevent it. */
+  event.waitUntil(countPush());
 });
 
 /* Into the app that is open, if one is: the first window on this origin is
@@ -862,21 +979,11 @@ self.addEventListener("push", (event) => {
    src/lib/push.ts takes — so a tap lands in the conversation the owner already
    has rather than reloading it. With none open, a new window at the path.
 
-   `includeUncontrolled`, because the page that registered this worker is
-   controlled by no worker until it reloads, and it is the app all the same.
-   The origin is judged on each window's URL because a window that has not
-   loaded anything yet can be about:blank, whose origin is "null", and nothing
-   there takes the message. `self.location` and not scopeOrigin(): it is what
-   openWindow() resolves `path` against, so the window told and the window
-   opened are on one origin — the scope's too, since a scope cannot leave its
-   script's.
-
    Focused first, and a focus refused is no reason not to post: a browser may
    refuse a worker focus (InvalidAccessError), and the path still belongs in
    the window the owner has rather than a second copy of the app beside it. */
 async function openPath(path) {
-  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  const app = windows.find((client) => new URL(client.url).origin === self.location.origin);
+  const [app] = await ownWindows();
   if (app) {
     await app.focus().catch(() => {});
     app.postMessage({ type: "OPEN_PATH", path });

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Layer } from "./Layer";
+import { anySurfaceUp } from "./presence";
 import { Sheet } from "./Sheet";
 
 /** Only the reduce-motion query answers `matches`; everything else stays false. */
@@ -152,6 +153,26 @@ describe("Layer", () => {
     expect(vi.getTimerCount()).toBe(idle);
   });
 
+  it("counts as up from its rise to the end of its leave", () => {
+    const layer = (open: boolean) => (
+      <Layer open={open} label="Door" durationMs={420}>
+        content
+      </Layer>
+    );
+    const { rerender } = render(layer(false));
+    expect(anySurfaceUp()).toBe(false);
+
+    rerender(layer(true));
+    expect(anySurfaceUp()).toBe(true);
+
+    rerender(layer(false));
+    expect(screen.getByRole("dialog", { name: "Door" })).toHaveClass("rise-out");
+    expect(anySurfaceUp()).toBe(true);
+
+    act(() => vi.advanceTimersByTime(420));
+    expect(anySurfaceUp()).toBe(false);
+  });
+
   it("takes focus, makes the app inert, and gives both back when it has left", () => {
     const talk = mountApp();
     talk.focus();
@@ -279,6 +300,22 @@ describe("Sheet", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     fireEvent.keyDown(screen.getByRole("button", { name: "Done" }), { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(3);
+  });
+
+  it("counts as up until it has left", () => {
+    const sheet = (open: boolean) => (
+      <Sheet open={open} title="Held back" onClose={() => {}}>
+        rows
+      </Sheet>
+    );
+    const { rerender } = render(sheet(true));
+    expect(anySurfaceUp()).toBe(true);
+
+    rerender(sheet(false));
+    expect(anySurfaceUp()).toBe(true);
+
+    act(() => vi.advanceTimersByTime(380));
+    expect(anySurfaceUp()).toBe(false);
   });
 
   it("unmounts 380 ms after closing", () => {

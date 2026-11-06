@@ -1010,6 +1010,110 @@ describe("useRoom — the session window", () => {
     expect(result.current.items.find((item) => item.kind === "you")).toMatchObject({ text: "held over" });
   });
 
+  describe("a device act", () => {
+    /** A row kept on this device, as `useReachActRows` hands it over. */
+    const deviceAct = (at: string): TimelineItem => ({
+      kind: "act",
+      id: `reach:${at}`,
+      at,
+      hue: 255,
+      text: "Notifications on for this iPhone",
+      meta: "notifications · iOS allowed · important and urgent only",
+    });
+
+    it("shows a device act at its time", () => {
+      const nextTurn: TimelineItem = {
+        kind: "you",
+        id: "you:next",
+        at: "2026-09-07T21:00:00",
+        text: "Thank you.",
+        state: "sent",
+      };
+      const { result } = renderRoom({
+        history: [historyRow, nextTurn],
+        // After both turns in the merge, and before the second by its stamp.
+        deviceActs: [deviceAct("2026-09-07T20:55:00")],
+        online: true,
+      });
+      expect(kinds(result.current.items)).toEqual(["alfred", "act", "you"]);
+    });
+
+    it("shows a device act that lands while the Room is open", () => {
+      // The same history throughout, so only `deviceActs` can move the thread.
+      const history = [historyRow];
+      const { result, rerender } = renderRoom({ history, deviceActs: [], online: true });
+      expect(kinds(result.current.items)).toEqual(["alfred"]);
+
+      // Stamped after the mount's `now`, which moves only when the app returns.
+      rerender({ history, deviceActs: [deviceAct("2026-09-07T21:06:00")] });
+      expect(kinds(result.current.items)).toEqual(["alfred", "act"]);
+    });
+
+    it("drops a device act the window has moved past", () => {
+      const { result } = renderRoom({
+        history: [],
+        deviceActs: [deviceAct("2026-09-06T23:50:00"), deviceAct("2026-09-07T06:10:00")],
+        online: true,
+      });
+      expect(result.current.items.filter((item) => item.kind === "act")).toMatchObject([
+        { at: "2026-09-07T06:10:00" },
+      ]);
+    });
+
+    it("a device act does not extend the session", () => {
+      // 25 min before NOW and 25 after `idleTurn`: as a turn, it would bridge them.
+      const { result } = renderRoom({
+        history: [idleTurn],
+        deviceActs: [deviceAct("2026-09-07T20:40:00")],
+        online: true,
+      });
+      expect(kinds(result.current.items)).toEqual(["act"]);
+    });
+  });
+
+  describe("the prompt", () => {
+    const reach = (at: string): TimelineItem => ({ kind: "reach", id: "reach:prompt", at });
+
+    it("the prompt sits at its time", () => {
+      const nextTurn: TimelineItem = {
+        kind: "you",
+        id: "you:next",
+        at: "2026-09-07T21:00:00",
+        text: "Thank you.",
+        state: "sent",
+      };
+      const { result } = renderRoom({
+        history: [historyRow, nextTurn],
+        // After both turns in the merge, and before the second by its stamp.
+        prompt: reach("2026-09-07T20:55:00"),
+        online: true,
+      });
+      expect(kinds(result.current.items)).toEqual(["alfred", "reach", "you"]);
+    });
+
+    it("the prompt is not windowed", () => {
+      const { result } = renderRoom({
+        history: [],
+        prompt: reach("2026-09-05T21:05:00"),
+        online: true,
+      });
+      expect(kinds(result.current.items)).toEqual(["reach"]);
+    });
+
+    it("the prompt lands and leaves with the thread as it stands", () => {
+      // The same history throughout, so only `prompt` can move the thread.
+      const history = [historyRow];
+      const { result, rerender } = renderRoom({ history, prompt: null, online: true });
+      expect(kinds(result.current.items)).toEqual(["alfred"]);
+
+      rerender({ history, prompt: reach("2026-09-07T21:06:00") });
+      expect(kinds(result.current.items)).toEqual(["alfred", "reach"]);
+
+      rerender({ history, prompt: null });
+      expect(kinds(result.current.items)).toEqual(["alfred"]);
+    });
+  });
+
   it("does not drop the thread under you before the app has been away", () => {
     // Open at 21:05 with a live session; the clock passes 30 min with no
     // visibilitychange: the rows stay until the app returns.
