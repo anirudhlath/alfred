@@ -202,6 +202,19 @@ describe("Sheet in a column", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("columns: leaves a composition's Escape to the composition", () => {
+    const onClose = vi.fn();
+    mount(tree("columns", true, { onClose }));
+
+    // The composer's own handler lets this one through to `document`: it cancels the
+    // candidate, and the reader is still writing.
+    fireEvent.keyDown(document.body, { key: "Escape", isComposing: true });
+    expect(onClose).not.toHaveBeenCalled();
+
+    escape();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it("columns: ignores Escape while #root is inert", () => {
     const onClose = vi.fn();
     mount(tree("columns", true, { onClose }));
@@ -352,6 +365,17 @@ describe("Sheet over the bench", () => {
 
     root.removeAttribute("inert");
     escape(button("Elsewhere"));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("sheet-over-bench: leaves a composition's Escape to the composition", () => {
+    const onClose = vi.fn();
+    mount(tree("sheet-over-bench", true, { onClose }));
+
+    fireEvent.keyDown(document.body, { key: "Escape", isComposing: true });
+    expect(onClose).not.toHaveBeenCalled();
+
+    escape();
     expect(onClose).toHaveBeenCalledOnce();
   });
 

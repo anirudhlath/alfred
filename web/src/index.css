@@ -469,8 +469,9 @@
   }
 
   /* Where J and K left focus (R11). The app has no other focus rule, and the UA's ring
-     vanishes on --surface. Inset, because the bench's list clips what crosses its edge. */
-  [data-event-row]:focus-visible {
+     vanishes on --surface. Inset, because the bench's list clips what crosses its edge.
+     At width only: below 760 px every pixel stays. */
+  .desk:not([data-layout="phone"]) [data-event-row]:focus-visible {
     outline: 2px solid var(--accent-text);
     outline-offset: -2px;
   }

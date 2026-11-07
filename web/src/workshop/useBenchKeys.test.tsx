@@ -52,6 +52,9 @@ function Bench({ a, enabled = true, onRow, onOther, onAll }: BenchProps) {
       </div>
       <ul ref={list}>
         <li>
+          <button type="button">older</button>
+        </li>
+        <li>
           <button type="button" data-event-row="" onClick={onRow}>
             one
           </button>
@@ -65,11 +68,13 @@ function Bench({ a, enabled = true, onRow, onOther, onAll }: BenchProps) {
           <button type="button" data-event-row="">
             two
           </button>
+          <button type="button">Only RX</button>
         </li>
         <li>
           <button type="button" data-event-row="">
             three
           </button>
+          <button type="button">Only EV</button>
         </li>
       </ul>
     </div>
@@ -78,9 +83,11 @@ function Bench({ a, enabled = true, onRow, onOther, onAll }: BenchProps) {
 
 const button = (name: string) => screen.getByRole("button", { name });
 
-/** Prevented or not, which `user-event` has no way to say about a keyup. */
-const spaceDown = (target: Element, init: KeyboardEventInit = {}) =>
-  !fireEvent.keyDown(target, { key: " ", ...init });
+/** Whether the key was claimed from the browser, which `user-event` has no way to say. */
+const claimed = (key: string, init: KeyboardEventInit = {}, target: Element = document.body) =>
+  !fireEvent.keyDown(target, { key, ...init });
+
+const spaceDown = (target: Element, init: KeyboardEventInit = {}) => claimed(" ", init, target);
 const spaceUp = (target: Element) => !fireEvent.keyUp(target, { key: " " });
 
 describe("useBenchKeys", () => {
@@ -124,6 +131,49 @@ describe("useBenchKeys", () => {
 
       button("other").focus();
       await user.keyboard("k");
+      expect(button("one")).toHaveFocus();
+    });
+
+    it("from a pill in an open row, J goes to the next row and K to the row it sits in", async () => {
+      const user = userEvent.setup();
+      render(<Bench a={activity()} />);
+
+      button("Only RX").focus();
+      await user.keyboard("j");
+      expect(button("three")).toHaveFocus();
+
+      button("Only RX").focus();
+      await user.keyboard("k");
+      expect(button("two")).toHaveFocus();
+    });
+
+    it("from a row a solo has just dimmed, J and K go to their nearest undimmed neighbours", async () => {
+      const user = userEvent.setup();
+      render(<Bench a={activity()} />);
+
+      button("dimmed").focus();
+      await user.keyboard("j");
+      expect(button("two")).toHaveFocus();
+
+      button("dimmed").focus();
+      await user.keyboard("k");
+      expect(button("one")).toHaveFocus();
+    });
+
+    it("does not wrap from inside the list either", async () => {
+      const user = userEvent.setup();
+      render(<Bench a={activity()} />);
+
+      // Below the last row, with nothing further down.
+      button("Only EV").focus();
+      await user.keyboard("j");
+      expect(button("Only EV")).toHaveFocus();
+
+      // Above the first, with nothing further up, and the first row one J away.
+      button("older").focus();
+      await user.keyboard("k");
+      expect(button("older")).toHaveFocus();
+      await user.keyboard("j");
       expect(button("one")).toHaveFocus();
     });
 
@@ -309,13 +359,21 @@ describe("useBenchKeys", () => {
       expect(a.setSolo).toHaveBeenCalledWith(STREAMS[7]);
     });
 
-    it("does not flicker while a digit is held", () => {
+    it("does not flicker while a digit is held, and still claims it", () => {
       const a = activity();
       render(<Bench a={a} />);
 
-      fireEvent.keyDown(document.body, { key: "1", repeat: true });
+      expect(claimed("1", { repeat: true })).toBe(true);
 
       expect(a.setSolo).not.toHaveBeenCalled();
+    });
+
+    it("claims 1 to 8 and leaves 9 and 0 alone", () => {
+      const a = activity();
+      render(<Bench a={a} />);
+
+      for (const key of ["1", "2", "3", "4", "5", "6", "7", "8"]) expect(claimed(key)).toBe(true);
+      for (const key of ["9", "0"]) expect(claimed(key)).toBe(false);
     });
   });
 
@@ -337,6 +395,7 @@ describe("useBenchKeys", () => {
 
       expect(field).toHaveValue("j 1");
       expect(field).toHaveFocus();
+      for (const key of ["j", " ", "1"]) expect(claimed(key, {}, field)).toBe(false);
       expectSilent(a);
     });
 

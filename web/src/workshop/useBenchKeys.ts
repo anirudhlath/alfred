@@ -9,11 +9,22 @@ import type { Activity } from "./useActivity";
  */
 const SPACE_IS_ITS_OWN = 'button, a, [role="tab"], [role="switch"]';
 
-/** J/K's stops: real focus on the row's own button, so Enter needs no code, past dimmed rows (R11). */
+/**
+ * J/K's stops: real focus on the row's own button, so Enter needs no code, past dimmed
+ * rows (R11). By document position, because focus inside the list need not be on one of
+ * those stops: a pill in an open row, or a row a solo has just dimmed. A reader back from
+ * a thread keeps their place. From outside the list, the first.
+ */
 function moveFocus(list: HTMLElement, by: 1 | -1): void {
   const rows = [...list.querySelectorAll<HTMLElement>("[data-event-row]:not([data-dimmed])")];
-  const at = rows.indexOf(document.activeElement as HTMLElement);
-  (at === -1 ? rows[0] : rows[at + by])?.focus();
+  const from = document.activeElement;
+  if (!from || !list.contains(from)) {
+    rows[0]?.focus();
+    return;
+  }
+  const side = by === 1 ? Node.DOCUMENT_POSITION_FOLLOWING : Node.DOCUMENT_POSITION_PRECEDING;
+  const onThatSide = (row: HTMLElement) => (from.compareDocumentPosition(row) & side) !== 0;
+  (by === 1 ? rows.find(onThatSide) : rows.findLast(onThatSide))?.focus();
 }
 
 /**
@@ -58,7 +69,9 @@ export function useBenchKeys(activity: Activity, list: RefObject<HTMLElement | n
         const { paused, pause, resume } = latest.current;
         if (paused) resume();
         else pause();
-      } else if (/^[1-8]$/.test(key) && !event.repeat) {
+      } else if (/^[1-8]$/.test(key)) {
+        event.preventDefault();
+        if (event.repeat) return;
         const stream = STREAMS[Number(key) - 1];
         const { solo, setSolo } = latest.current;
         setSolo(solo === stream ? null : stream);

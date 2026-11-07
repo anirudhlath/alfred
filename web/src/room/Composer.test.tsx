@@ -300,14 +300,35 @@ describe("Composer", () => {
       expect(field()).toHaveFocus();
     });
 
-    it("works in any layout at width, and from another field, and claims the key from the browser", () => {
-      const { rerender } = render(composer("sheet-over-bench"));
-      expect(fireEvent.keyDown(document.body, { key: "k", metaKey: true })).toBe(false);
-      expect(field()).toHaveFocus();
+    it.each<Layout>(["sheet-over-bench", "columns"])("works at %s, and claims the key from the browser", (layout) => {
+      render(composer(layout));
 
-      rerender(composer("columns"));
-      // Already there, where a browser would still open its own search.
+      expect(fireEvent.keyDown(document.body, { key: "k", metaKey: true })).toBe(false);
+
+      expect(field()).toHaveFocus();
+    });
+
+    it("takes focus from another field", () => {
+      render(
+        <>
+          {composer()}
+          <input aria-label="A bench's field" />
+        </>,
+      );
+      const other = screen.getByLabelText("A bench's field");
+      act(() => other.focus());
+
+      expect(fireEvent.keyDown(other, { key: "k", metaKey: true })).toBe(false);
+
+      expect(field()).toHaveFocus();
+    });
+
+    it("still claims the key with the field already focused, or a browser opens its own search", () => {
+      render(composer());
+      focusField();
+
       expect(fireEvent.keyDown(field(), { key: "k", ctrlKey: true })).toBe(false);
+
       expect(field()).toHaveFocus();
     });
 
@@ -367,7 +388,7 @@ describe("Composer", () => {
       expect(field()).not.toHaveFocus();
     });
 
-    it("keeps a composition's Escape, which only cancels the candidate", () => {
+    it("keeps focus through a composition's Escape", () => {
       render(composer());
       focusField();
 

@@ -267,7 +267,8 @@ function useTopOnRepoint(subject: unknown): RefObject<HTMLDivElement | null> {
  * Escape from anywhere, for a detail that sits beside the app: focus can be in the
  * Room or the bench, so the key would not reach the panel the way it reaches the
  * phone's. A Door or a gate makes `#root` inert around the panel, and then the key
- * is not this detail's: nothing behind a modal surface answers to it.
+ * is not this detail's: nothing behind a modal surface answers to it. Nor is a
+ * composition's Escape, which cancels the candidate of someone still writing.
  */
 function useEscapeBeside(
   active: boolean,
@@ -277,7 +278,7 @@ function useEscapeBeside(
   useEffect(() => {
     if (!active) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !panel.current?.closest("[inert]")) onClose();
+      if (event.key === "Escape" && !event.isComposing && !panel.current?.closest("[inert]")) onClose();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);

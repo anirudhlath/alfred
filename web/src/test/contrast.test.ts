@@ -245,11 +245,12 @@ describe("contrast ratios", () => {
     });
 
     it(`${theme}: the ring on a row J and K have moved to can be seen`, () => {
-      // `[data-event-row]:focus-visible` in index.css, the only sign of where those
-      // keys left focus. A row sits on the bench's `--bg`, and an open one on
-      // `--surface`, where the UA's own ring vanishes. WCAG 1.4.11 asks 3:1 of both.
+      // The rule in index.css, the only sign of where those keys left focus, and at
+      // width only: below 760 px every pixel stays. A row sits on the bench's `--bg`, and
+      // an open one on `--surface`, where the UA's own ring vanishes. WCAG 1.4.11 asks 3:1
+      // of both.
       expect(css.replace(/\s+/g, " ")).toContain(
-        "[data-event-row]:focus-visible { outline: 2px solid var(--accent-text); outline-offset: -2px; }",
+        '.desk:not([data-layout="phone"]) [data-event-row]:focus-visible { outline: 2px solid var(--accent-text); outline-offset: -2px; }',
       );
       expect(contrast(token(theme, "accent-text"), token(theme, "bg"))).toBeGreaterThanOrEqual(3);
       expect(contrast(token(theme, "accent-text"), token(theme, "surface"))).toBeGreaterThanOrEqual(3);
