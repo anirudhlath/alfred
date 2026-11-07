@@ -243,15 +243,15 @@ CSS, in `@layer components`:
   - `useBenchKeys(activity: Activity, list: RefObject<HTMLElement | null>, enabled: boolean): void`
 
 `useBenchKeys` listens on `document` for `keydown` only while `enabled`. It ignores the event when any of these holds: the list is inside `[inert]`; `isComposing`; ctrl, meta or alt held; `isEditing(event.target)`.
-- `j` and `k` (case-insensitive): `querySelectorAll("[data-event-row]:not([data-dimmed])")`, focus the next or previous from `document.activeElement`; from anywhere else, the first; no wrap. `preventDefault`.
+- `j` and `k` (case-insensitive): `querySelectorAll("[data-event-row]:not([data-dimmed])")`, focus the next or previous by document position from `document.activeElement` when it is inside the list (a row, a dimmed row, or a pill in an open row), so a keyboard reader back from a thread keeps their place; from outside the list, the first; no wrap. `preventDefault`.
 - Space: if `event.target` is inside a `button, a, [role="tab"], [role="switch"]` that is not a `[data-event-row]`, leave it alone. Otherwise `preventDefault`, toggle pause unless `repeat`, and `preventDefault` the matching `keyup` too (Firefox clicks a focused button on keyup regardless).
-- `1` to `8`: unless `repeat`, `setSolo(solo === STREAMS[n - 1] ? null : STREAMS[n - 1])`.
+- `1` to `8`: `preventDefault`, and unless `repeat`, `setSolo(solo === STREAMS[n - 1] ? null : STREAMS[n - 1])`.
 
 `ActivityBench` calls it with `layout !== "phone"`; being unmounted on the other three benches is what scopes the keys to Activity.
 
 `Composer` at width: a `document` keydown for meta-or-ctrl K focuses the field unless the field is inside `[inert]`, with `preventDefault`. `onKeyDown` blurs on Escape, after the existing `isComposing` guard. The field sets `aria-keyshortcuts="Meta+K Control+K"`. The hint `⌘K` (`Alfred Desktop.dc.html:38`) sits inside the field's right edge, `aria-hidden`, `pointer-events-none`, `t-meta`, only with no draft; wrap the input in a `relative min-w-0 flex-1` box and give the field room with right padding at width.
 
-CSS: `[data-event-row]:focus-visible` gets a 2 px `--accent-text` outline at offset -2 px. The app has no focus rule, and the UA ring vanishes on `--surface`.
+CSS: `.desk:not([data-layout="phone"]) [data-event-row]:focus-visible` gets a 2 px `--accent-text` outline at offset -2 px. The app has no focus rule, and the UA ring vanishes on `--surface`.
 
 - [ ] **Step 1: Write the failing tests.**
 
