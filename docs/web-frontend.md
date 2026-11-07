@@ -575,7 +575,7 @@ gate, and the read is asked again after the sign-in (`authEvents`' `signed-in`, 
 ## The Workshop
 
 A `Layer` at level `workshop` (z-10): under the sheets (z-20), the Door (z-30) and the
-gates (z-40), over the Room. It is mounted in `Room.tsx` next to `DoorLayer`, opened by
+gates (z-40), over the Room. It is mounted in `Room.tsx` as `Desk`'s `bench`, opened by
 the handle under the composer, and closed by `‹ Room` or Escape. Its header line is the
 socket's word first (`last true HH:MM · not live` while the telemetry socket is down),
 then the feed's (`paused · N new`), then the overview's rate (`live · N ev/s`) — and
@@ -2172,8 +2172,8 @@ body at the top, the thread already open included, since pressing it asks to see
 `useDetail` holds one detail at a time (R6): nothing is modal at width, so `why?` can be
 pressed with Held back open, and both would land in one column. The Room passes the open
 thread's key to `Timeline` at width, and that Act row reads `{meta} · thread open →`. It keeps
-its `why?` as the same DOM node, faded and out of the pointer's way unless `focus-visible`:
-removing it would throw a keyboard reader's focus to `<body>` the moment they pressed it (R23).
+its `why?` as the same DOM node, which never takes a pointer while the thread is open, and is
+faded unless `focus-visible`: removing it would throw a keyboard reader's focus to `<body>` the moment they pressed it (R23).
 
 The column keeps the title `Why Alfred did that`, since the mock's
 `Why Alfred spoke about the door` is sample data and nothing generates such a sentence (R8).
@@ -2234,8 +2234,12 @@ by being unmounted with it on the other three benches.
 
 ### Deviations from the handoff
 
-Otherwise the handoff's copy and sizes are verbatim. Every colour is a token: `Alfred Desktop.dc.html`
-writes literals, so "muted" below is its `#9a9186`, which is `--muted` in dark.
+The rulings above aside, this is where the desk differs from `Alfred Desktop.dc.html`, read against
+the code for copy, sizes, spacing and colour. The mock's sample rows are data rather than copy: a row
+says what `summarise` makes of its event. Every colour is a token and the mock writes literals, so
+"muted" below is its `#9a9186`, which is `--muted` in dark.
+
+These were decided for the desk:
 
 | The mock draws | What ships | Why |
 |---|---|---|
@@ -2248,8 +2252,30 @@ writes literals, so "muted" below is its `#9a9186`, which is `--muted` in dark.
 | No stale banner and no error line, since it shows a healthy bench | Both held to `max-w-[520px]` | On a wide column nothing else would line them up with the chips and the list's content |
 | `All` plain, at full strength (`:53-64`) | With no solo, `aria-disabled`, `opacity-40` and `focus-visible:opacity-100` | A press then does nothing. `disabled` would throw focus to `<body>` under the press that cleared the solo, on the surface built for the keyboard. So focus can rest there, and `opacity` dims the focus ring too, so it comes back to full on focus |
 | No focus ring on a row (`:68`) | `2px solid var(--accent-text)`, offset `-2px`, on a row's `focus-visible`, at width only | J and K leave real focus there (R11), and the UA's ring vanishes on `--surface`. Inset, because the list clips what crosses its edge |
-| `esc closes` as a muted label (`:94`) | A real button in `t-meta-strong`, whose `after` box makes 44 px of its 16.5 px line | An iPad in landscape reaches 1100 px with no Escape key (R7), and a button's name has to be readable: `--muted` is 3.46:1 in light (R21) |
+| `esc closes` as a muted label (`:94`) | A real button in `t-meta-strong`, whose `after` box makes 44 px of its 16.5 px line | An iPad in landscape reaches 1100 px with no Escape key (R7), and a button's name has to be readable: `--muted` is 3.34:1 on `--detail` in light (R21) |
 | No Door or gate at width; they cover all three columns (§11) | Their contents in a `.phone-column`, at most 480 px, at every width | R15 reasons that no phone held upright is wider than 480 px, so phones do not change. That does not cover **a phone on its side**, which R4 keeps `phone` and CSS cannot tell from a window that wide, or **any window 481–759 px wide**: both get a slide narrower than they had. This is the one thing below 760 px that moved |
+
+These came with the components. §11 calls the Room "identical to phone", and the bench and the thread
+are the phone's own, so where the phone already differed from the mock the desk does too. None was
+decided for a laptop.
+
+| The mock draws | What ships | Why |
+|---|---|---|
+| The composer's text at 15 px (`:38`) | 16 px | iOS zooms the page in on any field it focuses below 16, which shrinks the viewport the shell is sized from, so the phone left the handoff's 15 (`Composer.tsx`). The class has no width branch |
+| Alfred's line at most 340 px wide (`:35`) | 330 px | §1's `max 330`. §11 does not mention 340; only the mock draws it |
+| Your bubble at most 300 px wide (`:34`) | 280 px | §1's `max 280`. §11 does not mention 300 either |
+| `live · 2.1 ev/s` in muted (`:46`) | `t-meta-strong` | A reader has to take the Workshop's state on its own to trust the screen (`index.css`, `.t-meta-strong`), and `--muted` is 3.46:1 on `--bg` in light |
+| The three unchosen tabs in muted (`:49-51`) | `--fg2` | `--muted` is 3.20:1 on `--surface` in light, under AA at 13 px (`BenchSwitcher.tsx`) |
+| An open row with only its payload (`:70-80`) | The payload, then `Why · causal thread` and `Only {mono}` | The mock shows a thread open and draws nothing that opens one. These are the phone's buttons for it |
+| A thread's first node at the column's 18 px of padding (`:98`) | 24 px | The list keeps the 6 px of `padding-top` in the phone's mock (`Alfred.dc.html:173`), which the desktop mock drops |
+| A thread node's two lines 3 px apart (`:99-103`) | 2 px | Phase 2 built `gap-0.5` against both mocks, and nothing records why |
+| A thread node's meta in muted (`:99-103`) | `t-meta-strong` | It is the whole evidence for the link drawn beside it (`WhySheet.tsx`), and `--muted` is 3.34:1 on `--detail` in light |
+| Nothing under the thread (`:99-103`) | `searched 8 streams · 100 entries each · ±10 min` | It states what was searched, and says so when a stream could not be read |
+
+Two wraps are not deviations. The Room's status line wraps at 420 px as the mock's does
+(`… 2.1 / ev/s`), and `thread open →` drops to its own line at a tool name as long as
+`home.light_turn_on`, where the mock's sample meta is shorter. Both are from Chromium at 1280 and
+1100 px.
 
 ### How it is tested
 

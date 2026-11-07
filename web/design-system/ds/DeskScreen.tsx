@@ -39,9 +39,15 @@ const activity: Activity = {
   error: null,
 };
 
-/** A cache already holding the open row's thread, fresh, so `WhySheet` reads nothing. */
+/**
+ * A cache already holding the open row's thread. `WhySheet`'s `staleTime` keeps it
+ * fresh for only ten minutes and a canvas has no server, so a refetch on focus or
+ * reconnect would fail into the sheet's status note. Neither refetches here.
+ */
 function seededClient(): QueryClient {
-  const client = new QueryClient();
+  const client = new QueryClient({
+    defaultOptions: { queries: { refetchOnWindowFocus: false, refetchOnReconnect: false } },
+  });
   const others = deskFeed.filter((row) => row !== open);
   const thread: Thread = { nodes: buildThread(anchor, others), searched: STREAMS.length, partial: 0 };
   client.setQueryData(["trace", anchor.stream, anchor.entry.id], thread);

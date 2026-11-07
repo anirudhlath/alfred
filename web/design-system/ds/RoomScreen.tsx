@@ -91,7 +91,7 @@ export function RoomScreen({
         items={items}
         firstDayGreeting={firstDayGreeting}
         onWhy={() => {}}
-        openThread={openThread}
+        openThread={layout === "phone" ? null : openThread}
       />
 
       {pending ? <DoorBanner tracked={pending} now={now} onOpen={() => {}} /> : null}
