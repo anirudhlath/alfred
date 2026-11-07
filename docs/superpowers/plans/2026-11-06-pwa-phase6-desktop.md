@@ -29,7 +29,7 @@ The handoff draws one composition, the Workshop open with a thread beside it. Th
 | R1 | From 760 px the Workshop is always in the middle column: no handle, no `‹ Room`, and `open` is ignored | It is the only composition drawn, and a closed Workshop would be an undrawn empty column |
 | R2 | The third column exists only while a detail is open; closed, the grid is `420px 1px minmax(0,1fr)` | Architecture doc: "its detail views open as a third column" |
 | R3 | The handoff's grid is literal, except the bench's minimum is `min(380px, calc(100vw - 782px))` | Its minimums sum to 1162 px and its breakpoint is 1100 px. At 1100 to 1161 the bench gives up the difference, with no sideways scroll. Below 1100 nothing competes, so `minmax(0,1fr)` |
-| R4 | Both breakpoints also require `min-height: 500px` | A phone on its side is 852 px wide and under 450 px tall; it stays the phone |
+| R4 | Both breakpoints also require a screen whose short side is at least 500 px (`Math.min(screen.width, screen.height)`), not a viewport that tall | A phone on its side is 852 px wide and under 450 px tall; it stays the phone. A viewport height would flip a landscape tablet to the phone layout when `interactive-widget=resizes-content` shrinks it for the keyboard, unmounting the field being typed in |
 | R5 | `useLayout()` reads a context defaulting to `"phone"`; only `Room` provides it | Stories in a wide frame and every existing test stay phone. The Door, sheets and benches are all inside the Room |
 | R6 | One detail at a time (`useDetail`): opening one closes the other | Nothing is modal at width, so `why?` can be pressed with Held back open, and both would land in one column |
 | R7 | `esc closes` is a real button | An iPad in landscape reaches 1100 px with no Escape key |
@@ -73,10 +73,11 @@ The handoff draws one composition, the Workshop open with a thread beside it. Th
   - `useViewportLayout(): Layout`, `useSyncExternalStore` over both queries, the way `useReducedMotion` is in `shell/presence.ts`
   - `LayoutContext = createContext<Layout>("phone")`
   - `useLayout(): Layout`
-  - Queries: `(min-width: 760px) and (min-height: 500px)` and `(min-width: 1100px) and (min-height: 500px)`
+  - Queries: `(min-width: 760px)` and `(min-width: 1100px)`, plus the screen's short side at least 500 (R4)
 
-- [ ] **Step 1: Write the failing tests.** Stub `window.matchMedia` with a helper that evaluates those two query strings against a `(width, height)` and can fire `change`:
-  - `readLayout` gives `phone` at 393×852, 759×900 and 852×393; `sheet-over-bench` at 760×900 and 1099×900; `columns` at 1100×900 and 1920×1080
+- [ ] **Step 1: Write the failing tests.** Stub `window.matchMedia` with a helper that evaluates those two query strings against a viewport width and can fire `change`, and stub `window.screen` for the short side:
+  - `readLayout` gives `phone` at 393 wide, 759 wide, and 852 wide on a 393×852 screen; `sheet-over-bench` at 760 and 1099 wide; `columns` at 1100 and 1920 wide
+  - A landscape tablet with its keyboard up stays `columns`: 1280 wide on an 800×1280 screen, whatever the viewport's height
   - `readLayout` gives `phone` when `matchMedia` is not a function
   - `useViewportLayout` re-renders with the new value when the stub resizes across 760 and across 1100
   - `useLayout` gives `phone` with no provider, and the provided value inside `LayoutContext.Provider`
