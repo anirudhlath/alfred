@@ -48,6 +48,7 @@ The handoff draws one composition, the Workshop open with a thread beside it. Th
 | R20 | The chip row wraps rather than overflows: a chip's count drops under its monogram when narrow, and `All`/`Pause` drop to a second line under 352 px | Real counts run to 400, and the bench can be 270 px of content at 1100 px. The mock has single digits |
 | R21 | `esc closes` uses `t-meta-strong`, not the mock's muted | It is a control, and `--muted` is 3.46:1 in light (index.css, `.t-meta-strong`) |
 | R22 | `orientation: portrait` in the manifests stays | Desktop ignores it, and removing it changes phones. Android tablets stay portrait for now |
+| R24 | A column's always-visible label (`Workshop`, `Causal thread`) is `t-meta-strong uppercase` at `letter-spacing: 0.08em`, as `SystemFrame` does, not `t-label` | `t-label` is `--muted`, 3.46:1 on `--bg` in light. `SystemFrame` and `IntegrationRow` already refuse it for labels on that ground; the handoff's dark mock does not face it |
 | R23 | The Act row whose thread is open keeps its `why?` button as the same DOM node, `opacity-0` unless `focus-visible`, instead of removing it | The mock draws none, and that is what a pointer sees. Removing the node would throw a keyboard reader's focus to `<body>` the moment they pressed it |
 
 ## Review Focus
@@ -138,7 +139,7 @@ CSS, in `@layer components`:
 
 - [ ] **Step 2:** Run the three files. Expected: FAIL (missing module, missing token).
 - [ ] **Step 3: Implement `Desk` and the CSS.** Slots are `useState<HTMLElement | null>` ref callbacks.
-- [ ] **Step 4: Implement the Workshop.** `useLayout()` in `Workshop`: `phone` is today's `Layer`; anything else is the panel directly. `ErrorBoundary` takes `key={attempt}`, a `useState` counter; `BenchFailed` gets `onRestart` and its R18 copy at width. In `WorkshopPanel`'s header at width (handoff §11): padding `40 24 0`, gap 12, `t-label` `Workshop` left instead of the `‹ Room` button, the same status spans right, the switcher in a `max-w-[520px]` wrapper. The Escape effect already no-ops with no dialog, so leave it.
+- [ ] **Step 4: Implement the Workshop.** `useLayout()` in `Workshop`: `phone` is today's `Layer`; anything else is the panel directly. `ErrorBoundary` takes `key={attempt}`, a `useState` counter; `BenchFailed` gets `onRestart` and its R18 copy at width. In `WorkshopPanel`'s header at width (handoff §11): padding `40 24 0`, gap 12, `Workshop` (R24) left instead of the `‹ Room` button, the same status spans right, the switcher in a `max-w-[520px]` wrapper. The Escape effect already no-ops with no dialog, so leave it.
 - [ ] **Step 5: Implement the Room.** `useViewportLayout()` wraps everything in `LayoutContext.Provider`. `<main>` is `Desk`'s `room`; `<Workshop>` moves out of it to `bench`. `detailOpen` is `sheetOpen || why !== null`. Header `px-7 pt-10` at width. `handle` only on the phone. `Timeline`'s `px-6` becomes `px-7` at width. Composer's row `pb-2` becomes `pb-6` at width.
 - [ ] **Step 6:** Run the three files, then the gate. Expected: PASS, with no existing test edited.
 - [ ] **Step 7:** Commit: `feat(web): lay the Room and the Workshop side by side from 760 px`.
@@ -161,7 +162,7 @@ CSS, in `@layer components`:
 `Sheet` picks its mode from `useLayout()` and `useDeskSlots()`: `columns` with a `detail` slot is the column; `sheet-over-bench` with an `overBench` slot is the sheet over the bench; everything else, including no slot, is today's modal. Split into small components so each mode's hooks are its own.
 
 - **Over the bench:** today's panel, shared rather than copied, with the outer box `absolute inset-0 z-20` in place of `viewport-fill`, portalled to `overBench`, `role="dialog"` without `aria-modal`, `useAsideFocus(mounted, panel, true)`.
-- **Column:** an `<aside aria-labelledby>` portalled to `detail`, drawn from `Alfred Desktop.dc.html:93-98`: header padding `40 24 14`, gap 6, 1 px `--line` bottom; eyebrow `t-label` left, `esc closes` button right (R7, R21, a 44 px target by an `after` box like `EventRow`'s `PILL`); title `t-title`; intro 13.5/1.5 `--fg2`. Body padding `18 24 40`, `overflow-y-auto`, the `gap-3` column the sheet has today. No rise (R2 is a grid change, and `null` the moment `open` is false). `useAsideFocus(open, panel, false)`.
+- **Column:** an `<aside aria-labelledby>` portalled to `detail`, drawn from `Alfred Desktop.dc.html:93-98`: header padding `40 24 14`, gap 6, 1 px `--line` bottom; eyebrow (R24) left, `esc closes` button right (R7, R21, a 44 px target by an `after` box like `EventRow`'s `PILL`); title `t-title`; intro 13.5/1.5 `--fg2`. Body padding `18 24 40`, `overflow-y-auto`, the `gap-3` column the sheet has today. No rise (R2 is a grid change, and `null` the moment `open` is false). `useAsideFocus(open, panel, false)`.
 - **Both non-modal modes:** a `document` keydown closes on Escape unless `panel.closest("[inert]")`.
 
 `WhySheet` passes `eyebrow="Causal thread"` and, at `columns` only, the mock's intro `Solid links are joined by an id the server holds. Dashed means adjacent in time only.`; otherwise today's `INTRO`. `HeldBackSheet` passes its `INTRO` as `intro`.
@@ -326,5 +327,5 @@ Not dispatched. Run the built client in Chromium with the API stubbed by `page.r
 - [ ] 1280×800: three columns against `Alfred Desktop.dc.html`, thread open and closed; Door over all three, shortcuts dead under it.
 - [ ] 1100×800: thread open, counts of 400 and 1200 in the chips, no sideways scroll and no clipped chip text (Review Focus 5).
 - [ ] 900×800 and 760×800: sheet over the bench only; the Room stays live beside it.
-- [ ] 393×852 and 852×393: the phone, identical to master's screenshot at the same size.
+- [ ] 393×852 and 852×393: the phone, identical to master's screenshot at the same size. At 393, press the handle: the Workshop rises over the Room.
 - [ ] J, K, Enter, Space, 1–8, `⌘K`, Escape once each at 1280 in Chromium, and the same click-through in light theme.
