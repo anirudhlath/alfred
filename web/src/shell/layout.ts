@@ -30,16 +30,21 @@ function subscribeLayout(onChange: () => void): () => void {
   if (typeof window.matchMedia !== "function") return () => {};
   const queries = [SHEET_OVER_BENCH_QUERY, COLUMNS_QUERY].map((query) => window.matchMedia(query));
   for (const query of queries) query.addEventListener("change", onChange);
+  window.addEventListener("resize", onChange);
   return () => {
     for (const query of queries) query.removeEventListener("change", onChange);
+    window.removeEventListener("resize", onChange);
   };
 }
 
 /**
  * `readLayout()`, kept current. Both queries are watched because a browser fires
  * `change` only on the one whose answer flipped: crossing 1100 px says nothing on
- * the 760 px query, and the reverse. The screen is not watched: it has no change
- * event, and rotating does not change its short side.
+ * the 760 px query, and the reverse. `resize` is watched because the screen has no
+ * change event, and a foldable changes its short side with no query flipping: an
+ * 882×344 cover screen unfolding to 841×673 stays inside the 760 to 1100 px band.
+ * A resize that leaves the layout alone renders nothing, since the snapshot is the
+ * same string.
  */
 export function useViewportLayout(): Layout {
   return useSyncExternalStore(subscribeLayout, readLayout);

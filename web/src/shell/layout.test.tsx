@@ -14,6 +14,9 @@ const QUERIES: Record<string, (width: number) => boolean> = {
  * two strings are the contract, and a height query is the bug R4 exists to prevent.
  * The screen defaults to a laptop's, since jsdom's is 0×0 and would answer `phone`
  * before any query was asked.
+ *
+ * `resize` deliberately fires nothing on `window`, and `changeScreen` fires only
+ * that, so each test proves the one listener it is about.
  */
 function stubViewport(startWidth: number, screenWidth = 1920, screenHeight = 1080) {
   let width = startWidth;
@@ -48,6 +51,10 @@ function stubViewport(startWidth: number, screenWidth = 1920, screenHeight = 108
       act(() => {
         for (const query of flipped) listeners.get(query)?.forEach((listener) => listener());
       });
+    },
+    changeScreen(nextScreenWidth: number, nextScreenHeight: number) {
+      vi.stubGlobal("screen", { width: nextScreenWidth, height: nextScreenHeight });
+      act(() => void window.dispatchEvent(new Event("resize")));
     },
     listening: () => [...listeners.values()].reduce((sum, set) => sum + set.size, 0),
   };
@@ -120,6 +127,24 @@ describe("useViewportLayout", () => {
     expect(screen.getByText("sheet-over-bench")).toBeInTheDocument();
   });
 
+  it("a foldable unfolding re-reads the screen", () => {
+    const viewport = stubViewport(841, 344, 882);
+    render(<ViewportProbe />);
+    expect(screen.getByText("phone")).toBeInTheDocument();
+
+    viewport.changeScreen(673, 841);
+    expect(screen.getByText("sheet-over-bench")).toBeInTheDocument();
+  });
+
+  it("a foldable folding back re-reads the screen", () => {
+    const viewport = stubViewport(841, 673, 841);
+    render(<ViewportProbe />);
+    expect(screen.getByText("sheet-over-bench")).toBeInTheDocument();
+
+    viewport.changeScreen(344, 882);
+    expect(screen.getByText("phone")).toBeInTheDocument();
+  });
+
   it("gives phone and does not throw when matchMedia is not a function", () => {
     stubViewport(1920);
     vi.stubGlobal("matchMedia", undefined);
@@ -128,13 +153,20 @@ describe("useViewportLayout", () => {
   });
 
   it("stops listening on unmount", () => {
+    const added = vi.spyOn(window, "addEventListener");
+    const removed = vi.spyOn(window, "removeEventListener");
     const viewport = stubViewport(1920);
     const { unmount } = render(<ViewportProbe />);
     expect(viewport.listening()).toBe(2);
+    const resizes = added.mock.calls.filter(([type]) => type === "resize");
+    expect(resizes).toHaveLength(1);
 
     unmount();
 
     expect(viewport.listening()).toBe(0);
+    for (const [type, listener] of resizes) {
+      expect(removed).toHaveBeenCalledWith(type, listener);
+    }
   });
 });
 
