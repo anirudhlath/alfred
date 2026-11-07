@@ -50,6 +50,11 @@ export function Room() {
   const [holding, setHolding] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [workshopOpen, setWorkshopOpen] = useState(false);
+  // `open` means nothing at width (R1) and nothing there can close it, so a layer
+  // left open would rise again on the way back to the phone, taking focus and
+  // covering the Room for a reader who only narrowed a window. During render and
+  // not in an effect, so no frame is committed with the stale value.
+  if (layout !== "phone" && workshopOpen) setWorkshopOpen(false);
   /**
    * The row a `why?` was asked on — the Room's or the Workshop's. Deliberately
    * not cleared when the Workshop closes: the sheet renders over the Room as

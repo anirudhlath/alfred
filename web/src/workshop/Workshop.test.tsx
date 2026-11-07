@@ -628,6 +628,12 @@ describe("Workshop", () => {
     fireEvent.click(screen.getByRole("button", { name: "Room" }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it("on the phone, the dialog is what names it", () => {
+    mount(true);
+    expect(screen.getByRole("dialog", { name: "Workshop" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Workshop" })).toBeNull();
+  });
 });
 
 describe("Workshop at width", () => {
@@ -667,6 +673,24 @@ describe("Workshop at width", () => {
     expect(screen.getByTestId("workshop-status")).toHaveTextContent("live");
   });
 
+  it("writes the label in the type that can be read", () => {
+    mountAtWidth(false);
+    const label = screen.getByText("Workshop");
+    // R24. `.t-label` is this exact type and carries `--muted`, which is 3.46:1 on
+    // the page in light, under AA at 11 px.
+    expect(label).not.toHaveClass("t-label");
+    expect(label).toHaveClass("t-meta-strong");
+    expect(label).toHaveClass("uppercase");
+    expect(label).toHaveStyle({ letterSpacing: "0.08em" });
+  });
+
+  it.each(["columns", "sheet-over-bench"] as const)("names the column (%s)", (layout) => {
+    mountAtWidth(false, layout);
+    const column = screen.getByRole("region", { name: "Workshop" });
+    expect(column).toContainElement(screen.getByRole("tablist", { name: "Bench" }));
+    expect(column).toContainElement(screen.getByRole("tabpanel"));
+  });
+
   it("does not close on Escape", () => {
     const { onClose } = mountAtWidth(false);
     fireEvent.keyDown(screen.getByRole("tab", { name: "Activity" }), { key: "Escape" });
@@ -689,5 +713,34 @@ describe("Workshop at width", () => {
 
     expect(screen.getByRole("tablist", { name: "Bench" })).toBeInTheDocument();
     expect(screen.queryByText("This bench stopped working.")).toBeNull();
+  });
+
+  it("hands focus to the chosen bench once it has started over", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    breakage.activity = true;
+    mountAtWidth(false);
+
+    const restart = screen.getByRole("button", { name: "Start it over" });
+    act(() => restart.focus());
+    breakage.activity = false;
+    fireEvent.click(restart);
+
+    // The button has just unmounted itself, which would leave focus on `<body>`.
+    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Activity" }));
+  });
+
+  it("hands focus to the new button when the bench throws again", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    breakage.activity = true;
+    mountAtWidth(false);
+
+    const first = screen.getByRole("button", { name: "Start it over" });
+    act(() => first.focus());
+    fireEvent.click(first);
+
+    // A new boundary, so a new button, and no tab to go to.
+    const second = screen.getByRole("button", { name: "Start it over" });
+    expect(second).not.toBe(first);
+    expect(document.activeElement).toBe(second);
   });
 });

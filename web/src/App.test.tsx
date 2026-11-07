@@ -860,6 +860,24 @@ describe("App — the desk", () => {
     expect(room.parentElement).toHaveAttribute("data-layout", "phone");
   });
 
+  it("does not raise the phone's Workshop again after a trip through the desk", async () => {
+    const resize = stubWindow(390);
+    render(<App />);
+    await settle();
+    fireEvent.click(await screen.findByRole("button", { name: "Open the Workshop" }));
+    expect(await screen.findByRole("dialog", { name: "Workshop" })).toBeInTheDocument();
+
+    resize(1400);
+    expect(screen.queryByRole("dialog", { name: "Workshop" })).toBeNull();
+
+    // Nothing at width can close it, so a layer left open here would rise over the
+    // Room and take focus, for a reader who only narrowed a window.
+    resize(390);
+    await settle();
+    expect(screen.queryByRole("dialog", { name: "Workshop" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open the Workshop" })).toBeInTheDocument();
+  });
+
   it("opens a third column for a detail, only once there is room for one", async () => {
     const resize = stubWindow(1400);
     routes["/api/admin/overview"] = { ...overviewFixture, dnd: { active: true } };

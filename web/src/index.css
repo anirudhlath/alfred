@@ -440,8 +440,8 @@
     min-width: 0;
     overflow: hidden;
   }
-  /* A flex column because the Workshop's panel is a fragment that relies on one,
-     as it does in `Layer`: header at its height, tabpanel taking the rest. */
+  /* A flex column because what it holds takes the height with `flex-1`, as it does
+     in `Layer`: the Workshop's `section`, itself the column its panel needs. */
   .desk-bench-body {
     display: flex;
     flex-direction: column;

@@ -36,8 +36,8 @@ export interface WorkshopProps {
  * 400 ms it takes to leave.
  *
  * From 760 px there is no layer: the panel is `Desk`'s bench, always there and
- * always reading, and `open` means nothing (R1). A bare panel where the phone has
- * a `Layer` remounts it when the window crosses that one boundary, which is
+ * always reading, and `open` means nothing (R1). A `section` where the phone has
+ * a `Layer` remounts the panel when the window crosses that one boundary, which is
  * accepted: the Room's node is the one that has to survive (`Desk.tsx`).
  *
  * `memo`, because it is mounted in the Room and the Room re-renders for things
@@ -64,6 +64,19 @@ export const Workshop = memo(function Workshop({ open, onClose, onWhy, onHeld }:
   // unmount to get that from, which is how the phone gets it (R18).
   const [attempt, setAttempt] = useState(0);
 
+  // `Start it over` has just unmounted itself, which drops focus to `<body>` and
+  // sends a keyboard reader back to the top of the page. Focus goes to the new
+  // panel's chosen tab, or to the new button if the bench threw again. Keyed on
+  // `attempt`, which only that press moves, so a window crossing a breakpoint takes
+  // focus from nothing. The phone never gets here: its button closes the layer.
+  const column = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (attempt === 0) return;
+    column.current
+      ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"], [role="alert"] button')
+      ?.focus();
+  }, [attempt]);
+
   // The boundary is here rather than around the app, so a bench that throws costs
   // the reader this surface and not the Room beside or underneath it — and on the
   // phone it is inside `Layer`, so closing the Workshop unmounts it and the next
@@ -79,7 +92,15 @@ export const Workshop = memo(function Workshop({ open, onClose, onWhy, onHeld }:
     </ErrorBoundary>
   );
 
-  if (layout !== "phone") return panel;
+  // The name `Layer` gives the phone's dialog, and the column `Layer`'s panel is.
+  // Here rather than in `Desk`, which does not know what it is handed.
+  if (layout !== "phone") {
+    return (
+      <section ref={column} aria-label="Workshop" className="flex flex-1 flex-col overflow-hidden">
+        {panel}
+      </section>
+    );
+  }
   return (
     <Layer open={open} label="Workshop" durationMs={400} level="workshop">
       {panel}
@@ -138,8 +159,8 @@ interface WorkshopPanelProps {
 /**
  * A fragment, not a wrapper: `Layer`'s panel is already a `flex flex-col`
  * column, and this gives it two children — the header, at its own height, and
- * the `tabpanel`, taking the rest. `.desk-bench-body` is the same column at
- * width. The bench inside that panel is a column of its own, which is what
+ * the `tabpanel`, taking the rest. The `section` in `Workshop` is the same column
+ * at width. The bench inside that panel is a column of its own, which is what
  * `ActivityBench` documents it needs: banner and footer at their heights, its
  * `flex-1` list between them.
  */
@@ -300,7 +321,11 @@ function WorkshopPanel({ onClose, onWhy, onHeld }: WorkshopPanelProps) {
               Room
             </button>
           ) : (
-            <span className="t-label">Workshop</span>
+            // `SystemFrame`'s recipe, not `.t-label`, which is this exact type in
+            // `--muted`: 3.46:1 on `--bg` in light, under AA at 11 px (R24).
+            <span className="t-meta-strong uppercase" style={{ letterSpacing: "0.08em" }}>
+              Workshop
+            </span>
           )}
           {/* The one live region that survives a change of bench, which is why
               it is this one. The Activity bench's banner used to speak the
