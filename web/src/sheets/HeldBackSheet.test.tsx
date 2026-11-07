@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DeskSlotsContext } from "@/shell/Desk";
+import { LayoutContext } from "@/shell/layout";
 import { deferredFixture } from "@/test/fixtures";
 import { HeldBackSheet } from "./HeldBackSheet";
 
@@ -77,6 +79,31 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("HeldBackSheet", () => {
+  it("columns: says the same, under the title, with no eyebrow of its own", async () => {
+    const slot = document.createElement("div");
+    document.body.append(slot);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={client}>
+        <LayoutContext.Provider value="columns">
+          <DeskSlotsContext.Provider value={{ overBench: null, detail: slot }}>
+            <HeldBackSheet open onClose={() => {}} />
+          </DeskSlotsContext.Provider>
+        </LayoutContext.Provider>
+      </QueryClientProvider>,
+    );
+
+    const heading = within(slot).getByRole("heading", { name: "Held back" });
+    // The title's next sibling: in the header, not the body.
+    expect(heading.nextElementSibling).toHaveTextContent(/^Non-urgent notifications wait here/);
+    // `Causal thread` is the thread's. The row it would share is `esc closes` alone.
+    expect(within(slot).getByRole("button", { name: "esc closes" }).previousElementSibling).toBeNull();
+    await within(slot).findByRole("button", { name: "Drain queue now" });
+
+    view.unmount();
+    slot.remove();
+  });
+
   it("explains why the queue exists and that turning quiet off sends it", async () => {
     renderSheet();
     expect(

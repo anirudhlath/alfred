@@ -63,11 +63,7 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
   const held = draining || queuedAt !== null;
 
   return (
-    <Sheet open={open} title="Held back" onClose={onClose}>
-      <p className="text-[13.5px] leading-[1.5]" style={{ color: "var(--fg2)" }}>
-        {INTRO}
-      </p>
-
+    <Sheet open={open} title="Held back" intro={INTRO} onClose={onClose}>
       {notifications.map((notification) => (
         <div
           key={notification.notification_id}

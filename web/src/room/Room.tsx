@@ -9,7 +9,7 @@ import { greetingFor, pickHeadline } from "@/lib/headline";
 import { pendingActionTitles, toTimelineItems } from "@/lib/history";
 import { onVisible } from "@/lib/lifecycle";
 import { PresenceSignal } from "@/lib/presence-signal";
-import type { StreamRef } from "@/lib/streams";
+import { rowKey } from "@/lib/streams";
 import { applyUpdate } from "@/lib/sw";
 import { Composer } from "@/room/Composer";
 import { DndRow } from "@/room/DndRow";
@@ -20,6 +20,7 @@ import { PresenceField } from "@/room/PresenceField";
 import { StatusLine } from "@/room/StatusLine";
 import { Timeline } from "@/room/Timeline";
 import { WorkshopHandle } from "@/room/WorkshopHandle";
+import { useDetail } from "@/room/useDetail";
 import { isFirstRun, sessionIdleMs, useOverview } from "@/room/useOverview";
 import { useReachActRows, useReachPrompts } from "@/room/useReachPrompts";
 import { useRoom } from "@/room/useRoom";
@@ -48,31 +49,17 @@ export function Room() {
   // hold-to-talk writes to it, so it must not be rebuilt on a render.
   const [signal] = useState(() => new PresenceSignal());
   const [holding, setHolding] = useState(false);
-  const [sheetOpen, setSheetOpen] = useState(false);
+  const { why, heldOpen, openWhy, openHeld, closeWhy, closeHeld } = useDetail();
   const [workshopOpen, setWorkshopOpen] = useState(false);
   // `open` means nothing at width (R1) and nothing there can close it, so a layer
   // left open would rise again on the way back to the phone, taking focus and
   // covering the Room for a reader who only narrowed a window. During render and
   // not in an effect, so no frame is committed with the stale value.
   if (layout !== "phone" && workshopOpen) setWorkshopOpen(false);
-  /**
-   * The row a `why?` was asked on — the Room's or the Workshop's. Deliberately
-   * not cleared when the Workshop closes: the sheet renders over the Room as
-   * happily as over the Workshop, and while it is up the Workshop under it is
-   * inert, so a close arriving from there is unreachable anyway. The sheet
-   * outlives the surface that opened it.
-   */
-  const [why, setWhy] = useState<StreamRef | null>(null);
-  // Stable, both of them, so the memoised Workshop does not re-render for every
-  // chat frame, overview poll and Door tick the Room re-renders on
+  // Stable, as `useDetail`'s are, so the memoised Workshop does not re-render for
+  // every chat frame, overview poll and Door tick the Room re-renders on
   // (Workshop.tsx) — an inline arrow would undo that memoisation entirely.
   const closeWorkshop = useCallback(() => setWorkshopOpen(false), []);
-  /**
-   * The Held-back sheet's one opener, shared by the DND row here and System ›
-   * Quiet inside the Workshop. One sheet and one piece of state: the Workshop
-   * does not render a second copy, it asks for this one.
-   */
-  const openHeld = useCallback(() => setSheetOpen(true), []);
 
   // Read once, refreshed when the app returns — a PWA left open overnight must
   // not still be saying "Good evening".
@@ -132,9 +119,9 @@ export function Room() {
   return (
     <LayoutContext.Provider value={layout}>
       <Desk
-        detailOpen={sheetOpen || why !== null}
+        detailOpen={heldOpen || why !== null}
         bench={
-          <Workshop open={workshopOpen} onClose={closeWorkshop} onWhy={setWhy} onHeld={openHeld} />
+          <Workshop open={workshopOpen} onClose={closeWorkshop} onWhy={openWhy} onHeld={openHeld} />
         }
         room={
           <main
@@ -167,8 +154,9 @@ export function Room() {
             <Timeline
               items={room.items}
               firstDayGreeting={firstRun && room.items.length === 0 ? greetingFor(hour) : null}
-              onWhy={setWhy}
+              onWhy={openWhy}
               prompt={promptButtons}
+              openThread={layout !== "phone" && why ? rowKey(why) : null}
             />
 
             {banner ? (
@@ -198,9 +186,9 @@ export function Room() {
               }
             />
 
-            <HeldBackSheet open={sheetOpen} onClose={() => setSheetOpen(false)} />
+            <HeldBackSheet open={heldOpen} onClose={closeHeld} />
 
-            <WhySheet anchor={why} onClose={() => setWhy(null)} />
+            <WhySheet anchor={why} onClose={closeWhy} />
 
             <DoorLayer
               tracked={door.current}

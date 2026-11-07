@@ -7,6 +7,8 @@ export interface ActRowProps {
   meta: string;
   /** Present only on rows with a cause to trace: renders the `why?` button. */
   onWhy?: () => void;
+  /** This row's causal thread is open beside the Room (`Alfred Desktop.dc.html:32`). */
+  threadOpen?: boolean;
 }
 
 /**
@@ -18,12 +20,20 @@ export interface ActRowProps {
  * pulled up and out by its own padding so the row's rhythm does not change.
  * `--accent-text`, not `--accent`: the raw accent is 2.34:1 on paper's `--bg`
  * (index.css, --accent-text), and no `color: var(--accent)` is left in the app.
+ *
+ * With its thread open the row draws no `why?`, as the mock does, but the button
+ * stays in the DOM and only fades: removing the node a keyboard reader has just
+ * pressed would throw their focus to `<body>`.
  */
-export function ActRow({ hue, text, meta, onWhy }: ActRowProps) {
+export function ActRow({ hue, text, meta, onWhy, threadOpen = false }: ActRowProps) {
   return (
     <div
-      className="flex items-start gap-3 py-2.5"
-      style={{ borderTop: "1px solid var(--line)", borderBottom: "1px solid var(--line)" }}
+      className={`flex items-start gap-3 py-2.5 ${threadOpen ? "-mx-3 rounded-[10px] px-3" : ""}`}
+      style={{
+        borderTop: "1px solid var(--line)",
+        borderBottom: "1px solid var(--line)",
+        background: threadOpen ? "var(--surface)" : undefined,
+      }}
     >
       <span
         aria-hidden="true"
@@ -33,10 +43,10 @@ export function ActRow({ hue, text, meta, onWhy }: ActRowProps) {
         style={{ background: ring(hue) }}
       />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <div className="t-row" style={{ color: "var(--fg2)" }}>
+        <div className="t-row" style={{ color: threadOpen ? "var(--fg)" : "var(--fg2)" }}>
           {text}
         </div>
-        <div className="t-meta">{meta}</div>
+        <div className="t-meta">{threadOpen ? `${meta} · thread open →` : meta}</div>
       </div>
       {onWhy ? (
         <button
@@ -47,7 +57,7 @@ export function ActRow({ hue, text, meta, onWhy }: ActRowProps) {
           // own line names which one this is, and the visible text stays a
           // prefix of the name (WCAG 2.5.3, label in name).
           aria-label={`why? ${text}`}
-          className="-mt-2.5 -mr-1.5 flex h-11 shrink-0 items-center border-0 bg-transparent px-2.5 text-[13px] font-medium"
+          className={`-mt-2.5 -mr-1.5 flex h-11 shrink-0 items-center border-0 bg-transparent px-2.5 text-[13px] font-medium ${threadOpen ? "opacity-0 focus-visible:opacity-100" : ""}`}
           style={{ color: "var(--accent-text)" }}
         >
           why?

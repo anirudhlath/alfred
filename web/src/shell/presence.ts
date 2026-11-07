@@ -147,6 +147,47 @@ export function useModalFocus(active: boolean, panel: RefObject<HTMLElement | nu
   }, [active, panel]);
 }
 
+/**
+ * Focus around a surface that sits beside the app rather than over it: nothing
+ * goes inert, and the surface joins no stack.
+ *
+ * With `take` it covers the reader's place, so focus moves in and always comes
+ * back. Without, it is beside their place and focus stays there on open. It comes
+ * back on close only from `<body>`, which is where a focused element's removal
+ * drops it: this cleanup runs after the commit that took the panel out, so `<body>`
+ * means the reader was inside. Anywhere else they have gone on, and stay there.
+ *
+ * "Always" stops at another dialog. The Room stays live beside a sheet over the
+ * bench, so the other detail can open through this one's leave, and this cleanup
+ * runs a leave after that one took focus.
+ *
+ * `active` is true only while the panel is rendered, so its ref is set by the time
+ * this runs.
+ */
+export function useAsideFocus(
+  active: boolean,
+  panel: RefObject<HTMLElement | null>,
+  take: boolean,
+): void {
+  useEffect(() => {
+    const node = panel.current;
+    if (!active || !node) return;
+    const previous = document.activeElement;
+    if (take) node.focus({ preventScroll: true });
+    return () => {
+      const focused = document.activeElement;
+      if (
+        (focused === document.body || (take && !focused?.closest('[role="dialog"]'))) &&
+        previous instanceof HTMLElement &&
+        previous.isConnected &&
+        previous.closest("[inert]") === null
+      ) {
+        previous.focus({ preventScroll: true });
+      }
+    };
+  }, [active, panel, take]);
+}
+
 type RiseStyle = CSSProperties & { "--layer-duration": string };
 
 /** The theme's surface colours and the duration `.rise-in`/`.rise-out` read. */

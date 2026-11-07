@@ -48,8 +48,8 @@ export interface WorkshopProps {
  * nothing solo'd, since `MAX_PER_STREAM` is *per stream* and `mergeRows`
  * merges eight, and no ceiling at all once `↑ older` has been pressed, which
  * is exempt from the cap (`feed.ts`). All three props the Room passes are
- * stable, or this would never hit: `setWhy`, and a `useCallback`'d `onClose`
- * and `onHeld`.
+ * stable, or this would never hit: `useDetail`'s `openWhy` and `openHeld`, and a
+ * `useCallback`'d `onClose`.
  *
  * It stops the Room's re-renders and only those. The panel re-renders on its
  * own at telemetry rate whatever this does, because `useActivity` lives inside

@@ -10,11 +10,15 @@ import {
   type StreamRef,
 } from "@/lib/streams";
 import { CANDIDATE_COUNT, fetchThread, JOIN_WINDOW_MS, nodeMeta, type Thread } from "@/lib/trace";
+import { useLayout } from "@/shell/layout";
 import { useLatched } from "@/shell/presence";
 import { Sheet } from "@/shell/Sheet";
 
 const INTRO =
   "Every link drawn solid is joined by an id the server holds. Dashed means adjacent in time only.";
+/** The third column's own wording (`Alfred Desktop.dc.html:96`). */
+const COLUMN_INTRO =
+  "Solid links are joined by an id the server holds. Dashed means adjacent in time only.";
 /**
  * A thread of one means nothing the anchor's ids reached was inside the read.
  * Not the ordinary case for a passive reflex observation: every bus event
@@ -64,9 +68,10 @@ function footnote({ searched, partial }: Thread): string {
 /**
  * The handoff's "Why Alfred did that": the thread `lib/trace.ts` draws
  * through the eight streams from one row (spec §7). A `Sheet`, so it sits over
- * the Workshop and the Room alike.
+ * the Workshop and the Room alike, and beside them from 1100 px.
  */
 export function WhySheet({ anchor, onClose }: WhySheetProps) {
+  const layout = useLayout();
   // The sheet is still on screen for its leave after `anchor` goes null; keep
   // drawing the last thread rather than emptying the column mid-animation.
   const shown = useLatched(anchor);
@@ -101,11 +106,13 @@ export function WhySheet({ anchor, onClose }: WhySheetProps) {
       : "";
 
   return (
-    <Sheet open={anchor !== null} title="Why Alfred did that" onClose={onClose}>
-      <p className="text-[13.5px] leading-[1.5]" style={{ color: "var(--fg2)" }}>
-        {INTRO}
-      </p>
-
+    <Sheet
+      open={anchor !== null}
+      title="Why Alfred did that"
+      eyebrow="Causal thread"
+      intro={layout === "columns" ? COLUMN_INTRO : INTRO}
+      onClose={onClose}
+    >
       {/* Empty, it is `sr-only` — out of flow, so the sheet's `gap-3` does not
           open around a box with nothing in it. */}
       <p role="status" className={note ? "t-meta-strong" : "sr-only"}>

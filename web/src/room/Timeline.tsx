@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import type { TimelineItem } from "@/lib/history";
-import type { StreamRef } from "@/lib/streams";
+import { rowKey, type StreamRef } from "@/lib/streams";
 import { ActRow } from "@/room/rows/ActRow";
 import { AlfredRow } from "@/room/rows/AlfredRow";
 import { Divider } from "@/room/rows/Divider";
@@ -27,11 +27,13 @@ export interface TimelineProps {
   onWhy?: (ref: StreamRef) => void;
   /** The prompt row's two buttons. Without them it draws nothing. */
   prompt?: { onShowMe: () => void; onNotNow: () => void };
+  /** The `rowKey` of the row whose thread is open beside the Room. */
+  openThread?: string | null;
 }
 
-type RowProps = { item: TimelineItem } & Pick<TimelineProps, "onWhy" | "prompt">;
+type RowProps = { item: TimelineItem } & Pick<TimelineProps, "onWhy" | "prompt" | "openThread">;
 
-function Row({ item, onWhy, prompt }: RowProps) {
+function Row({ item, onWhy, prompt, openThread }: RowProps) {
   switch (item.kind) {
     case "divider":
       return <Divider label={item.label} />;
@@ -57,6 +59,7 @@ function Row({ item, onWhy, prompt }: RowProps) {
           text={item.text}
           meta={item.meta}
           onWhy={why && onWhy ? () => onWhy(why) : undefined}
+          threadOpen={why !== undefined && rowKey(why) === openThread}
         />
       );
     }
@@ -79,7 +82,7 @@ function Row({ item, onWhy, prompt }: RowProps) {
   }
 }
 
-export function Timeline({ items, firstDayGreeting, onWhy, prompt }: TimelineProps) {
+export function Timeline({ items, firstDayGreeting, onWhy, prompt, openThread }: TimelineProps) {
   // Handoff §11: "gutter 28" at width.
   const gutter = useLayout() === "phone" ? "px-6" : "px-7";
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -125,7 +128,7 @@ export function Timeline({ items, firstDayGreeting, onWhy, prompt }: TimelinePro
       <div ref={contentRef} className="flex flex-1 flex-col gap-4">
         {items.length === 0 && firstDayGreeting ? <FirstDay greeting={firstDayGreeting} /> : null}
         {items.map((item) => (
-          <Row key={item.id} item={item} onWhy={onWhy} prompt={prompt} />
+          <Row key={item.id} item={item} onWhy={onWhy} prompt={prompt} openThread={openThread} />
         ))}
       </div>
     </div>

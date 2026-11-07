@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hhmm } from "@/lib/format";
 import type { TimelineItem } from "@/lib/history";
+import { rowKey, type StreamRef } from "@/lib/streams";
 import { LayoutContext, type Layout } from "@/shell/layout";
 import { Timeline } from "./Timeline";
 
@@ -247,6 +248,102 @@ describe("Timeline rows", () => {
     expect(screen.queryByRole("button", { name: /^why\?/ })).toBeNull();
     rerender(<Timeline items={[observation]} firstDayGreeting={null} />);
     expect(screen.queryByRole("button", { name: /^why\?/ })).toBeNull();
+  });
+
+  describe("the act row whose thread is open", () => {
+    const WHY: StreamRef = {
+      stream: "reflex_observations",
+      entry: { id: "1788800280000-0", event: { event_type: "reflex_observation" } },
+    };
+    const OPEN_META = "17:58 · reflex · home.light_set · thread open →";
+    const open: TimelineItem = { ...observation, why: WHY };
+    const neighbour: TimelineItem = {
+      ...observation,
+      id: "rx:1788800290000-0",
+      text: "motion in the hall",
+      meta: "18:02 · reflex · home.light_set",
+      why: {
+        stream: "reflex_observations",
+        entry: { id: "1788800290000-0", event: { event_type: "reflex_observation" } },
+      },
+    };
+    const trigger: TimelineItem = {
+      ...observation,
+      id: "ev:1",
+      text: "your parcel arrived",
+      meta: "18:20 · trigger · one-shot",
+      why: undefined,
+    };
+
+    it("only the act row whose why matches openThread reads · thread open →", () => {
+      render(
+        <Timeline
+          items={[open, neighbour, trigger]}
+          firstDayGreeting={null}
+          onWhy={() => {}}
+          openThread={rowKey(WHY)}
+        />,
+      );
+      expect(screen.getAllByText(/thread open →$/)).toHaveLength(1);
+      expect(screen.getByText(OPEN_META)).toBeInTheDocument();
+      expect(screen.getByText("18:02 · reflex · home.light_set")).toBeInTheDocument();
+      expect(screen.getByText("18:20 · trigger · one-shot")).toBeInTheDocument();
+    });
+
+    it("says nothing with no thread open", () => {
+      const { rerender } = render(
+        <Timeline items={[open, trigger]} firstDayGreeting={null} onWhy={() => {}} />,
+      );
+      expect(screen.queryByText(/thread open/)).toBeNull();
+
+      rerender(
+        <Timeline items={[open, trigger]} firstDayGreeting={null} onWhy={() => {}} openThread={null} />,
+      );
+      expect(screen.queryByText(/thread open/)).toBeNull();
+    });
+
+    it("is drawn from the mock", () => {
+      render(
+        <Timeline
+          items={[open, neighbour]}
+          firstDayGreeting={null}
+          onWhy={() => {}}
+          openThread={rowKey(WHY)}
+        />,
+      );
+      // Alfred Desktop.dc.html:32.
+      const text = screen.getByText("movie started, evening, user home");
+      expect(text).toHaveStyle({ color: "var(--fg)" });
+      const row = text.parentElement?.parentElement as HTMLElement;
+      expect(row).toHaveClass("-mx-3", "px-3", "rounded-[10px]");
+      expect(row).toHaveStyle({ background: "var(--surface)" });
+
+      const other = screen.getByText("motion in the hall");
+      expect(other).toHaveStyle({ color: "var(--fg2)" });
+      const otherRow = other.parentElement?.parentElement as HTMLElement;
+      expect(otherRow).not.toHaveClass("-mx-3");
+      expect(otherRow.style.background).toBe("");
+    });
+
+    it("its why? stays the same node, so focus stays", () => {
+      const timeline = (openThread: string | null) => (
+        <Timeline items={[open]} firstDayGreeting={null} onWhy={() => {}} openThread={openThread} />
+      );
+      const { rerender } = render(timeline(null));
+      const why = screen.getByRole("button", { name: /^why\?/ });
+      expect(why).not.toHaveClass("opacity-0");
+      why.focus();
+
+      rerender(timeline(rowKey(WHY)));
+      expect(document.activeElement).toBe(why);
+      expect(why).toBeInTheDocument();
+      expect(why).toHaveClass("opacity-0", "focus-visible:opacity-100");
+
+      // And it comes back when the thread closes.
+      rerender(timeline(null));
+      expect(document.activeElement).toBe(why);
+      expect(why).not.toHaveClass("opacity-0");
+    });
   });
 
   it("strikes a tombstone through, on a faded row", () => {
