@@ -420,3 +420,14 @@ describe("the stream ring", () => {
     });
   }
 });
+
+describe("the phone's column", () => {
+  it("holds the Door and the gates to a phone's width, and no narrower", () => {
+    // R15, and the only thing that does: jsdom loads no CSS, so every other test sees a
+    // class name. Without this rule the slide runs the width of a desk, and a lower
+    // maximum would narrow the Door on a phone.
+    expect(css.replace(/\s+/g, " ")).toContain(
+      ".phone-column { width: 100%; max-width: 480px; margin-inline: auto; }",
+    );
+  });
+});

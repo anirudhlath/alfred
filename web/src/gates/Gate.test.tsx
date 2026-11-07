@@ -346,8 +346,12 @@ describe("Gate", () => {
     expect(column).toHaveClass("flex", "flex-1", "flex-col", "overflow-hidden");
   });
 
-  it("keeps its dot field outside .phone-column, across the whole screen", () => {
+  it("keeps its background and dot field outside .phone-column, across the whole screen", () => {
     const { container } = render(<Gate kicker="k" title="t" />);
+    const page = container.firstElementChild as HTMLElement;
+
+    expect(page).toHaveStyle({ background: "var(--bg)" });
+    expect(page.closest(".phone-column")).toBeNull();
     expect(container.querySelector(".gate-field")?.closest(".phone-column")).toBeNull();
   });
 });
