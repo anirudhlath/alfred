@@ -15,6 +15,12 @@ export interface SheetProps {
   eyebrow?: string;
   /** What the surface is for: the body's first line, or the column header's last. */
   intro?: string;
+  /**
+   * What the detail is showing, where another row can re-point it: a new one makes
+   * that row the opener focus returns to. Only a column reads it, because over the
+   * bench focus is in the panel, and the panel is no opener.
+   */
+  subject?: unknown;
 }
 
 /**
@@ -91,13 +97,14 @@ function DetailColumn({
   title,
   eyebrow,
   intro,
+  subject,
   onClose,
   children,
   slot,
 }: SheetProps & { slot: HTMLElement }) {
   const panel = useRef<HTMLElement>(null);
   const titleId = useId();
-  useAsideFocus(open, panel, false);
+  useAsideFocus(open, panel, false, subject);
   useEscapeBeside(open, panel, onClose);
 
   if (!open) return null;

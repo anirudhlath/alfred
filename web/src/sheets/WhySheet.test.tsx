@@ -355,6 +355,37 @@ describe("WhySheet", () => {
       done();
     });
 
+    it("columns: closed from inside, focus returns to the row that last opened the thread", async () => {
+      const slot = document.createElement("div");
+      document.body.append(slot);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const at = (anchor: StreamRef | null) => (
+        <QueryClientProvider client={client}>
+          <LayoutContext.Provider value="columns">
+            <DeskSlotsContext.Provider value={{ overBench: null, detail: slot }}>
+              <button type="button">Row A</button>
+              <button type="button">Row B</button>
+              <WhySheet anchor={anchor} onClose={() => {}} />
+            </DeskSlotsContext.Provider>
+          </LayoutContext.Provider>
+        </QueryClientProvider>
+      );
+      const view = render(at(null));
+      screen.getByRole("button", { name: "Row A" }).focus();
+      view.rerender(at(ANCHOR));
+
+      const rowB = screen.getByRole("button", { name: "Row B" });
+      rowB.focus();
+      view.rerender(at(OTHER));
+      await screen.findByText(FOOTNOTE);
+      screen.getByRole("button", { name: "esc closes" }).focus();
+
+      view.rerender(at(null));
+      expect(document.activeElement).toBe(rowB);
+      view.unmount();
+      slot.remove();
+    });
+
     it.each<Layout>(["phone", "sheet-over-bench"])(
       "%s: shows today's intro and no eyebrow",
       async (layout) => {

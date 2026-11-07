@@ -325,6 +325,19 @@ describe("Timeline rows", () => {
       expect(otherRow.style.background).toBe("");
     });
 
+    it("says so in a colour that can be read", () => {
+      render(
+        <Timeline
+          items={[open, neighbour]}
+          firstDayGreeting={null}
+          onWhy={() => {}}
+          openThread={rowKey(WHY)}
+        />,
+      );
+      expect(screen.getByText(OPEN_META)).toHaveClass("t-meta-strong");
+      expect(screen.getByText("18:02 · reflex · home.light_set")).toHaveClass("t-meta");
+    });
+
     it("its why? stays the same node, so focus stays", () => {
       const timeline = (openThread: string | null) => (
         <Timeline items={[open]} firstDayGreeting={null} onWhy={() => {}} openThread={openThread} />
@@ -332,17 +345,24 @@ describe("Timeline rows", () => {
       const { rerender } = render(timeline(null));
       const why = screen.getByRole("button", { name: /^why\?/ });
       expect(why).not.toHaveClass("opacity-0");
+      expect(why).not.toHaveClass("pointer-events-none");
       why.focus();
 
       rerender(timeline(rowKey(WHY)));
       expect(document.activeElement).toBe(why);
       expect(why).toBeInTheDocument();
-      expect(why).toHaveClass("opacity-0", "focus-visible:opacity-100");
+      expect(why).toHaveClass("opacity-0", "focus-visible:opacity-100", "pointer-events-none");
+
+      // Out of the pointer's way, and still in the keyboard's.
+      why.blur();
+      why.focus();
+      expect(document.activeElement).toBe(why);
 
       // And it comes back when the thread closes.
       rerender(timeline(null));
       expect(document.activeElement).toBe(why);
       expect(why).not.toHaveClass("opacity-0");
+      expect(why).not.toHaveClass("pointer-events-none");
     });
   });
 

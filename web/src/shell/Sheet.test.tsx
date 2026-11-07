@@ -67,6 +67,16 @@ const column = () => screen.getByRole("complementary", { name: TITLE });
 const queryColumn = () => screen.queryByRole("complementary", { name: TITLE });
 const dialog = () => screen.getByRole("dialog", { name: TITLE });
 
+/**
+ * Past a leave, with its focus settled. The leave's timer commits outside `act`, and
+ * that commit's passive effects run a task later, so `waitFor` can return between the
+ * two and read `<body>`. A render flushes them first.
+ */
+async function pastLeave(rerender: (ui: ReactNode) => void, ui: ReactNode, name = TITLE) {
+  await waitFor(() => expect(screen.queryByRole("dialog", { name })).toBeNull());
+  rerender(ui);
+}
+
 describe("Sheet on the phone", () => {
   it("phone: a modal dialog on body", () => {
     mount(tree("phone", true));
@@ -221,6 +231,47 @@ describe("Sheet in a column", () => {
     expect(document.activeElement).toBe(button("Opener"));
   });
 
+  it("columns: re-pointed, it returns focus to the row that last opened it", () => {
+    const { rerender } = mount(tree("columns", false));
+    button("Opener").focus();
+    rerender(tree("columns", true, { subject: "a" }));
+
+    button("Elsewhere").focus();
+    rerender(tree("columns", true, { subject: "b" }));
+    button("esc closes").focus();
+
+    rerender(tree("columns", false));
+    expect(document.activeElement).toBe(button("Elsewhere"));
+  });
+
+  it("columns: a new subject moves nothing, even from <body>", () => {
+    const { rerender } = mount(tree("columns", false));
+    button("Opener").focus();
+    rerender(tree("columns", true, { subject: "a" }));
+
+    // Safari: pressing a button does not focus it, so the press leaves `<body>` focused.
+    button("Opener").blur();
+    rerender(tree("columns", true, { subject: "b" }));
+    expect(document.activeElement).toBe(document.body);
+
+    // The row that last opened it was never focused, so there is nothing to give back.
+    rerender(tree("columns", false));
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("columns: the same subject keeps its opener", () => {
+    const { rerender } = mount(tree("columns", false));
+    button("Opener").focus();
+    rerender(tree("columns", true, { subject: "a" }));
+
+    button("Elsewhere").focus();
+    rerender(tree("columns", true, { subject: "a" }));
+    button("esc closes").focus();
+
+    rerender(tree("columns", false));
+    expect(document.activeElement).toBe(button("Opener"));
+  });
+
   it("columns: gives nothing back into a place that has gone inert", () => {
     const { rerender } = mount(tree("columns", false));
     button("Opener").focus();
@@ -279,11 +330,11 @@ describe("Sheet over the bench", () => {
     // Stays through the leave, and gives focus back once it has gone.
     rerender(tree("sheet-over-bench", false));
     expect(dialog()).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await pastLeave(rerender, tree("sheet-over-bench", false));
     expect(document.activeElement).toBe(button("Opener"));
   });
 
-  it("sheet-over-bench: gives focus back from anywhere, not only from inside", async () => {
+  it("sheet-over-bench: a reader who has moved on stays where they went", async () => {
     const { rerender } = mount(tree("sheet-over-bench", false));
     button("Opener").focus();
 
@@ -291,7 +342,19 @@ describe("Sheet over the bench", () => {
     button("Elsewhere").focus();
 
     rerender(tree("sheet-over-bench", false));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await pastLeave(rerender, tree("sheet-over-bench", false));
+    expect(document.activeElement).toBe(button("Elsewhere"));
+  });
+
+  it("sheet-over-bench: a new subject leaves its opener alone", async () => {
+    const { rerender } = mount(tree("sheet-over-bench", false));
+    button("Opener").focus();
+    rerender(tree("sheet-over-bench", true, { subject: "a" }));
+
+    // Focus is in the panel, and the panel is no opener to go back to.
+    rerender(tree("sheet-over-bench", true, { subject: "b" }));
+    rerender(tree("sheet-over-bench", false));
+    await pastLeave(rerender, tree("sheet-over-bench", false));
     expect(document.activeElement).toBe(button("Opener"));
   });
 
@@ -319,11 +382,11 @@ describe("Sheet over the bench", () => {
     const held = screen.getByRole("dialog", { name: "Held" });
     expect(document.activeElement).toBe(held);
 
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Why" })).toBeNull());
+    await pastLeave(rerender, two(false, true), "Why");
     expect(document.activeElement).toBe(held);
 
     rerender(two(false, false));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Held" })).toBeNull());
+    await pastLeave(rerender, two(false, false), "Held");
     expect(document.activeElement).toBe(button("Elsewhere"));
   });
 });
@@ -338,6 +401,7 @@ describe("Sheet in a real Desk", () => {
           detailOpen={open}
           room={
             <main>
+              <textarea aria-label="Composer" />
               <Sheet open={open} title={TITLE} onClose={onClose}>
                 <p>The thread</p>
               </Sheet>
@@ -369,8 +433,24 @@ describe("Sheet in a real Desk", () => {
     expect(document.activeElement).toBe(dialog());
 
     rerender(desk("sheet-over-bench", false));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await pastLeave(rerender, desk("sheet-over-bench", false));
     expect(document.activeElement).toBe(button("Bench row"));
+  });
+
+  it("sheet-over-bench: a reader in the composer during the leave stays there", async () => {
+    const { rerender } = mount(desk("sheet-over-bench", false));
+    button("Bench row").focus();
+
+    rerender(desk("sheet-over-bench", true));
+    expect(document.activeElement).toBe(dialog());
+
+    rerender(desk("sheet-over-bench", false));
+    expect(dialog()).toBeInTheDocument();
+    const composer = screen.getByRole("textbox", { name: "Composer" });
+    composer.focus();
+
+    await pastLeave(rerender, desk("sheet-over-bench", false));
+    expect(document.activeElement).toBe(composer);
   });
 
   it("columns: leaves the bench live, with the aside in the third column", () => {

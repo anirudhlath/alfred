@@ -23,7 +23,8 @@ export interface ActRowProps {
  *
  * With its thread open the row draws no `why?`, as the mock does, but the button
  * stays in the DOM and only fades: removing the node a keyboard reader has just
- * pressed would throw their focus to `<body>`.
+ * pressed would throw their focus to `<body>`. Faded, it takes no pointer: it is
+ * invisible, and pressing it does nothing.
  */
 export function ActRow({ hue, text, meta, onWhy, threadOpen = false }: ActRowProps) {
   return (
@@ -46,7 +47,11 @@ export function ActRow({ hue, text, meta, onWhy, threadOpen = false }: ActRowPro
         <div className="t-row" style={{ color: threadOpen ? "var(--fg)" : "var(--fg2)" }}>
           {text}
         </div>
-        <div className="t-meta">{threadOpen ? `${meta} · thread open →` : meta}</div>
+        {/* `t-meta-strong` while open: these are the only words saying so, and
+            `--muted` is 3.20:1 on `--surface` in light (index.css). */}
+        <div className={threadOpen ? "t-meta-strong" : "t-meta"}>
+          {threadOpen ? `${meta} · thread open →` : meta}
+        </div>
       </div>
       {onWhy ? (
         <button
@@ -57,7 +62,7 @@ export function ActRow({ hue, text, meta, onWhy, threadOpen = false }: ActRowPro
           // own line names which one this is, and the visible text stays a
           // prefix of the name (WCAG 2.5.3, label in name).
           aria-label={`why? ${text}`}
-          className={`-mt-2.5 -mr-1.5 flex h-11 shrink-0 items-center border-0 bg-transparent px-2.5 text-[13px] font-medium ${threadOpen ? "opacity-0 focus-visible:opacity-100" : ""}`}
+          className={`-mt-2.5 -mr-1.5 flex h-11 shrink-0 items-center border-0 bg-transparent px-2.5 text-[13px] font-medium ${threadOpen ? "pointer-events-none opacity-0 focus-visible:opacity-100" : ""}`}
           style={{ color: "var(--accent-text)" }}
         >
           why?
