@@ -66,15 +66,14 @@ export const Workshop = memo(function Workshop({ open, onClose, onWhy, onHeld }:
 
   // `Start it over` has just unmounted itself, which drops focus to `<body>` and
   // sends a keyboard reader back to the top of the page. Focus goes to the new
-  // panel's chosen tab, or to the new button if the bench threw again. Keyed on
-  // `attempt`, which only that press moves, so a window crossing a breakpoint takes
-  // focus from nothing. The phone never gets here: its button closes the layer.
+  // panel's chosen tab. If the bench threw again there is no tab, and `BenchFailed`
+  // takes focus itself. Keyed on `attempt`, which only that press moves, so a window
+  // crossing a breakpoint takes focus from nothing. The phone never gets here: its
+  // button closes the layer.
   const column = useRef<HTMLElement>(null);
   useEffect(() => {
     if (attempt === 0) return;
-    column.current
-      ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"], [role="alert"] button')
-      ?.focus();
+    column.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus();
   }, [attempt]);
 
   // The boundary is here rather than around the app, so a bench that throws costs
@@ -113,17 +112,28 @@ export const Workshop = memo(function Workshop({ open, onClose, onWhy, onHeld }:
  * nothing here knows which bench failed or why, and a sentence that guessed
  * would be the §5.2 failure in a new place.
  *
- * `alert` and not `status`, against this app's habit, for the one reason that
- * distinguishes them: everything else announced in polite is news arriving
- * behind the reader, and this happened under their hands — the screen they were
- * reading has just gone. It is also the only thing left on the layer, so there
- * is nothing for it to interrupt.
+ * `alert` and not `status`, against this app's habit, at every width: everything
+ * else announced in polite is news arriving behind the reader, and this is the
+ * surface itself going. On the phone it happened under their hands and is the only
+ * thing left on the layer, so there is nothing for it to interrupt. At width it can
+ * interrupt a reader working in the Room beside it, and a column that has just gone
+ * is worth that once: it is rare, and `status` risks VoiceOver missing a region
+ * inserted with its text already in it (`ActivityBench.tsx`).
  *
  * At width the way out is not the Room, which is already beside it, and "opening
  * the Workshop again" has no meaning in a column that never closes (R18).
  */
 function BenchFailed({ onClose, onRestart }: { onClose: () => void; onRestart: () => void }) {
   const phone = useLayout() === "phone";
+  // A panel that held focus takes it down to `<body>` as it goes, and at width no
+  // press or closing layer is there to catch it. Only from `<body>`: a reader typing
+  // in the Room or sitting in a layer above has lost nothing, and the alert has told
+  // them what happened. The phone stays as it was.
+  const button = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!phone && document.activeElement === document.body) button.current?.focus();
+  }, [phone]);
+
   return (
     <div
       role="alert"
@@ -139,6 +149,7 @@ function BenchFailed({ onClose, onRestart }: { onClose: () => void; onRestart: (
           pair (index.css, --accent-text). On the phone the same name as that
           button, because it goes to the same place. */}
       <button
+        ref={button}
         type="button"
         onClick={phone ? onClose : onRestart}
         className="t-row min-h-11"
@@ -321,9 +332,9 @@ function WorkshopPanel({ onClose, onWhy, onHeld }: WorkshopPanelProps) {
               Room
             </button>
           ) : (
-            // `SystemFrame`'s recipe, not `.t-label`, which is this exact type in
-            // `--muted`: 3.46:1 on `--bg` in light, under AA at 11 px (R24).
-            <span className="t-meta-strong uppercase" style={{ letterSpacing: "0.08em" }}>
+            // The mock's type, with only its colour moved: `.t-label`'s own `--muted`
+            // is 3.46:1 on `--bg` in light, under AA at 11 px (R24).
+            <span className="t-label" style={{ color: "var(--fg2)" }}>
               Workshop
             </span>
           )}

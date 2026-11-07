@@ -629,6 +629,19 @@ describe("Workshop", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("on the phone, a bench that throws does not move focus", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mount(true);
+    const memory = screen.getByRole("tab", { name: "Memory" });
+    fireEvent.click(memory);
+    act(() => memory.focus());
+
+    breakage.activity = true;
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+
+    expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Room" }));
+  });
+
   it("on the phone, the dialog is what names it", () => {
     mount(true);
     expect(screen.getByRole("dialog", { name: "Workshop" })).toBeInTheDocument();
@@ -673,15 +686,13 @@ describe("Workshop at width", () => {
     expect(screen.getByTestId("workshop-status")).toHaveTextContent("live");
   });
 
-  it("writes the label in the type that can be read", () => {
+  it("keeps the mock's type on the label and moves only its colour", () => {
     mountAtWidth(false);
     const label = screen.getByText("Workshop");
-    // R24. `.t-label` is this exact type and carries `--muted`, which is 3.46:1 on
-    // the page in light, under AA at 11 px.
-    expect(label).not.toHaveClass("t-label");
-    expect(label).toHaveClass("t-meta-strong");
-    expect(label).toHaveClass("uppercase");
-    expect(label).toHaveStyle({ letterSpacing: "0.08em" });
+    // R24. `.t-label` is the mock's type. Its own `--muted` is 3.46:1 on the page in
+    // light, under AA at 11 px, so the colour is the one thing that moves.
+    expect(label).toHaveClass("t-label");
+    expect(label.style.color).toBe("var(--fg2)");
   });
 
   it.each(["columns", "sheet-over-bench"] as const)("names the column (%s)", (layout) => {
@@ -742,5 +753,51 @@ describe("Workshop at width", () => {
     const second = screen.getByRole("button", { name: "Start it over" });
     expect(second).not.toBe(first);
     expect(document.activeElement).toBe(second);
+  });
+
+  /**
+   * Makes the Activity bench throw from the Memory bench, with focus wherever `focus`
+   * puts it. `fireEvent.click` does not move focus, so the throw lands on that.
+   */
+  function throwFromMemory(focus: (memory: HTMLElement) => void) {
+    const memory = screen.getByRole("tab", { name: "Memory" });
+    fireEvent.click(memory);
+    act(() => focus(memory));
+    breakage.activity = true;
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+    expect(screen.getByText("This bench stopped working.")).toBeInTheDocument();
+  }
+
+  it("hands focus to the button when a bench throws with focus inside it", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mountAtWidth(false);
+
+    throwFromMemory((memory) => memory.focus());
+
+    // The tab that held focus has gone with the panel, which leaves it on `<body>`.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Start it over" }));
+  });
+
+  it("hands focus to the button when a bench throws again some time after a restart", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    breakage.activity = true;
+    mountAtWidth(false);
+    breakage.activity = false;
+    fireEvent.click(screen.getByRole("button", { name: "Start it over" }));
+
+    throwFromMemory((memory) => memory.focus());
+
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Start it over" }));
+  });
+
+  it("leaves focus alone when a bench throws with the reader working elsewhere", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    render(<input aria-label="The Composer, beside the column" />);
+    const input = screen.getByRole("textbox", { name: "The Composer, beside the column" });
+    mountAtWidth(false);
+
+    throwFromMemory(() => input.focus());
+
+    expect(document.activeElement).toBe(input);
   });
 });
