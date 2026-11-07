@@ -92,6 +92,15 @@ describe("contrast ratios", () => {
       expect(contrast(token(theme, "accent-text"), token(theme, "bg"))).toBeGreaterThanOrEqual(4.5);
     });
 
+    it(`${theme}: the detail column carries what is written on it`, () => {
+      // `--detail` is its own ground (handoff §11, the third column), so the
+      // pairs measured on `--bg` and `--surface` say nothing about it: a thread's
+      // rows, its meta lines, and `Done` and `esc closes` beside them.
+      for (const name of ["fg", "fg2", "accent-text"]) {
+        expect(contrast(token(theme, name), token(theme, "detail"))).toBeGreaterThanOrEqual(4.5);
+      }
+    });
+
     it(`${theme}: the chosen bench is visible on the switcher's track`, () => {
       // A fill, not text, so WCAG has no ratio to hold it to; 1.1:1 is the
       // floor that the old dark palette failed at exactly 1.00:1, --field and

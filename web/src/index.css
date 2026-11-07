@@ -31,6 +31,10 @@
      field, the setup gate's inputs, the bench switcher's selection. */
   --field: #3A3631;
   --line: #35312C;
+  /* The detail column's ground (handoff §11), the midpoint of --bg and --surface.
+     Restated in `src/test/contrast.ts`, which holds what is written on it to
+     4.5:1. */
+  --detail: #2A2723;
   --keyboard: #1C1A17;
   --muted: #9A9186;
   --fg2: #D9D2C8;
@@ -74,6 +78,8 @@
   --surface: #EFEAE2;
   --field: #FFFFFF;
   --line: #E6E1D9;
+  /* The same midpoint on paper: §11 draws dark only (R17). See dark, above. */
+  --detail: #F3EFE8;
   --keyboard: #E6E1D9;
   --muted: #8A8177;
   --fg2: #4D4740;
@@ -384,6 +390,70 @@
     right: 0;
     top: var(--viewport-top, 0px);
     height: var(--app-height, 100dvh);
+  }
+
+  /* ------------------------------------------------------------------ the desk
+     Handoff §11. `Desk` renders one tree at every layout and this decides what
+     shows, so below 760 px the Room is the only thing in a column that lays out
+     as it always has.
+
+     Above that the line's own selectors do the counting: `:first-child +` is the
+     line after the Room, `.desk-bench +` the line after the bench. */
+  .desk {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+  .desk-line,
+  .desk-bench,
+  .desk-detail {
+    display: none;
+  }
+  .desk[data-layout="sheet-over-bench"],
+  .desk[data-layout="columns"] {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-columns: 420px 1px minmax(0, 1fr);
+  }
+  /* §11's grid, except the bench's minimum. Its minimums sum to 1162 px and its
+     breakpoint is 1100 px, so from 1100 to 1161 the bench gives up the difference
+     rather than the page scrolling sideways (R3). */
+  .desk[data-layout="columns"][data-detail] {
+    grid-template-columns: 420px 1px minmax(min(380px, calc(100vw - 782px)), 1fr) 1px minmax(360px, 520px);
+  }
+  .desk[data-layout="sheet-over-bench"] > :first-child + .desk-line,
+  .desk[data-layout="columns"] > :first-child + .desk-line,
+  .desk[data-layout="sheet-over-bench"] > .desk-bench,
+  .desk[data-layout="columns"] > .desk-bench,
+  .desk[data-layout="columns"][data-detail] > .desk-bench + .desk-line {
+    display: block;
+  }
+  .desk[data-layout="columns"][data-detail] > .desk-detail {
+    display: flex;
+  }
+  .desk-line {
+    background: var(--line);
+  }
+  .desk-bench {
+    position: relative;
+    min-width: 0;
+    overflow: hidden;
+  }
+  /* A flex column because the Workshop's panel is a fragment that relies on one,
+     as it does in `Layer`: header at its height, tabpanel taking the rest. */
+  .desk-bench-body {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .desk-detail {
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--detail);
   }
 
   /* ---------------------------------------------------- keyboard + home indicator

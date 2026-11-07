@@ -5,11 +5,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StreamPage, TelemetryMessage } from "@/lib/types";
 import { WhySheet } from "@/sheets/WhySheet";
 import { ConnectionProvider } from "@/shell/ConnectionProvider";
+import { LayoutContext, type Layout } from "@/shell/layout";
 import { QUERY_DEFAULTS } from "@/shell/QueryProvider";
 import { overviewFixture, reflexObservationsPage } from "@/test/fixtures";
 import { Workshop } from "./Workshop";
 
 const sockets = vi.hoisted(() => ({ telemetryUp: true, telemetries: [] as unknown[] }));
+
+/**
+ * A bench that throws while this is set, and the real one otherwise. Set for as
+ * long as a test wants it broken rather than for one render: a throw makes React
+ * render the whole root a second time before it asks a boundary, so a bench that
+ * threw once and then behaved would never reach the boundary at all.
+ */
+const breakage = vi.hoisted(() => ({ activity: false }));
+
+vi.mock("./ActivityBench", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./ActivityBench")>();
+  return {
+    ...actual,
+    ActivityBench(props: Parameters<typeof actual.ActivityBench>[0]) {
+      if (breakage.activity) throw new Error("a bench threw");
+      return <actual.ActivityBench {...props} />;
+    },
+  };
+});
 
 /**
  * How many rows have been summarised. `memo` on `Workshop` exists so the
@@ -214,6 +234,7 @@ beforeEach(() => {
   // every row the tests ahead of it summarised, and `toBeGreaterThan(0)` is
   // true before that test has rendered a thing.
   summarised.count = 0;
+  breakage.activity = false;
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(new Date(2026, 8, 7, 21, 14, 0));
   stubFetch();
@@ -593,5 +614,80 @@ describe("Workshop", () => {
     expect(screen.getByRole("dialog").className).toContain("rise-out");
     act(() => vi.advanceTimersByTime(400));
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("on the phone, a bench that throws still sends the reader back to the Room", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    breakage.activity = true;
+    const { onClose } = mount(true);
+
+    expect(
+      screen.getByText("Nothing on the Room is affected. Opening the Workshop again starts it over."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start it over" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Room" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Workshop at width", () => {
+  /** The layout `Room` provides in the app, and which this file has no Room to ask. */
+  function mountAtWidth(open: boolean, layout: Layout = "columns") {
+    const onClose = vi.fn();
+    render(
+      <QueryClientProvider client={makeClient()}>
+        <ConnectionProvider>
+          <LayoutContext.Provider value={layout}>
+            <Workshop open={open} onClose={onClose} onWhy={vi.fn()} onHeld={vi.fn()} />
+          </LayoutContext.Provider>
+        </ConnectionProvider>
+      </QueryClientProvider>,
+    );
+    return { onClose };
+  }
+
+  it.each([
+    ["columns", false],
+    ["columns", true],
+    ["sheet-over-bench", false],
+  ] as const)("renders in place with no dialog, whatever open says (%s, open %s)", (layout, open) => {
+    // R1. `open` starts false in the Room and nothing at width sets it, but a window
+    // widened with the phone's Workshop up arrives here with it still true.
+    mountAtWidth(open, layout);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("labels the column", () => {
+    mountAtWidth(false);
+    expect(screen.getByText("Workshop")).toBeInTheDocument();
+    // There is no Room to go back to: it is the column beside this one.
+    expect(screen.queryByRole("button", { name: "Room" })).toBeNull();
+    // The same line the phone's header carries, on its other side.
+    expect(screen.getByTestId("workshop-status")).toHaveTextContent("live");
+  });
+
+  it("does not close on Escape", () => {
+    const { onClose } = mountAtWidth(false);
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Activity" }), { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("a bench that throws can be started over", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    breakage.activity = true;
+    mountAtWidth(false);
+
+    expect(screen.getByText("This bench stopped working.")).toBeInTheDocument();
+    // Exactly this: the phone's sentence goes on about opening the Workshop
+    // again, which means nothing in a column that never closes (R18).
+    expect(screen.getByText("Nothing on the Room is affected.")).toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "Bench" })).toBeNull();
+
+    breakage.activity = false;
+    fireEvent.click(screen.getByRole("button", { name: "Start it over" }));
+
+    expect(screen.getByRole("tablist", { name: "Bench" })).toBeInTheDocument();
+    expect(screen.queryByText("This bench stopped working.")).toBeNull();
   });
 });

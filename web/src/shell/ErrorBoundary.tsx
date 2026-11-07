@@ -26,7 +26,9 @@ interface ErrorBoundaryState {
  * button that re-renders the same bad state is a button that fails again under
  * the same finger. The way out is to leave the layer, which unmounts this
  * boundary with it, so the next open starts from a fresh mount — the reset is
- * the surface's own lifecycle rather than a second mechanism to get wrong.
+ * the surface's own lifecycle rather than a second mechanism to get wrong. The
+ * Workshop at width has no layer to leave, so it remounts this with a new `key`
+ * (R18): a fresh mount all the same, state and all, rather than a re-render.
  */
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { failed: false };

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { LayoutContext, type Layout } from "@/shell/layout";
 import { Composer } from "./Composer";
 
 /** What a tap on the field does. `.focus()` is what fires React's `onFocus`. */
@@ -261,5 +262,21 @@ describe("Composer", () => {
     act(() => field.blur());
 
     expect(screen.getByRole("button", { name: "workshop" })).toBeInTheDocument();
+  });
+
+  it("sits on the handoff's own row padding for each layout", () => {
+    const composer = (layout: Layout) => (
+      <LayoutContext.Provider value={layout}>
+        <Composer online onSend={() => {}} hold={null} />
+      </LayoutContext.Provider>
+    );
+    const { rerender } = render(composer("phone"));
+    const row = screen.getByLabelText("Message Alfred").parentElement as HTMLElement;
+    expect(row.classList.contains("pb-2")).toBe(true);
+
+    // §11's `padding: 0 20px 24px`, with no handle under the row to clear.
+    rerender(composer("columns"));
+    expect(row.classList.contains("pb-6")).toBe(true);
+    expect(row.classList.contains("pb-2")).toBe(false);
   });
 });

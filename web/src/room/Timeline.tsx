@@ -10,6 +10,7 @@ import { ThinkingRow } from "@/room/rows/ThinkingRow";
 import { Tombstone } from "@/room/rows/Tombstone";
 import { TranscribingBubble } from "@/room/rows/TranscribingBubble";
 import { YouBubble } from "@/room/rows/YouBubble";
+import { useLayout } from "@/shell/layout";
 
 /**
  * How far from the bottom still counts as "at the bottom". Wide enough that an
@@ -79,6 +80,8 @@ function Row({ item, onWhy, prompt }: RowProps) {
 }
 
 export function Timeline({ items, firstDayGreeting, onWhy, prompt }: TimelineProps) {
+  // Handoff §11: "gutter 28" at width.
+  const gutter = useLayout() === "phone" ? "px-6" : "px-7";
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   // Ref, not state: whether we are following the bottom must not re-render the
@@ -116,7 +119,7 @@ export function Timeline({ items, firstDayGreeting, onWhy, prompt }: TimelinePro
       role="log"
       aria-label="Conversation"
       onScroll={onScroll}
-      className="relative z-[1] flex flex-1 flex-col overflow-y-auto px-6 pt-[22px] pb-3"
+      className={`relative z-[1] flex flex-1 flex-col overflow-y-auto ${gutter} pt-[22px] pb-3`}
     >
       {/* The observed content: `flex-1` so FirstDay can centre in an empty box. */}
       <div ref={contentRef} className="flex flex-1 flex-col gap-4">

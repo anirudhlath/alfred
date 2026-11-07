@@ -1,4 +1,5 @@
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useLayout } from "@/shell/layout";
 
 /**
  * The half-typed message, kept for the page's session so that a reload does not
@@ -50,6 +51,7 @@ export interface ComposerProps {
  * house is unreachable is queued and retried, and a dead input would hide that.
  */
 export function Composer({ online, onSend, hold, handle }: ComposerProps) {
+  const layout = useLayout();
   const [draft, setDraft] = useState(readDraft);
   const field = useRef<HTMLInputElement>(null);
 
@@ -94,10 +96,11 @@ export function Composer({ online, onSend, hold, handle }: ComposerProps) {
     // Two elements on purpose: the outer one owns the keyboard and safe-area
     // padding (a Tailwind padding utility on the same element would out-rank the
     // `@layer components` rule and silently drop the inset), the inner one the
-    // handoff's own `0 20 8`. The handle sits between them so the safe-area
-    // inset falls below it, not between it and the row.
+    // handoff's own `0 20 8`, or `0 20 24` at width (§11), with no handle below
+    // it. The handle sits between them so the safe-area inset falls below it, not
+    // between it and the row.
     <div className={`pb-keyboard relative z-[1] ${focused ? "keyboard-up" : ""}`}>
-      <div className="flex items-center gap-2.5 px-5 pb-2">
+      <div className={`flex items-center gap-2.5 px-5 ${layout === "phone" ? "pb-2" : "pb-6"}`}>
         <input
           ref={field}
           value={draft}

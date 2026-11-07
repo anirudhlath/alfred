@@ -27,12 +27,15 @@ import { useRoomHistory } from "@/room/useRoomHistory";
 import { HeldBackSheet } from "@/sheets/HeldBackSheet";
 import { WhySheet } from "@/sheets/WhySheet";
 import { useConnection, useLastTrue } from "@/shell/ConnectionProvider";
+import { Desk } from "@/shell/Desk";
+import { LayoutContext, useViewportLayout } from "@/shell/layout";
 import { ThemeToggle } from "@/shell/ThemeToggle";
 import { UpdateNote } from "@/shell/UpdateNote";
 import { useUpdateReady } from "@/shell/useUpdateReady";
 import { Workshop } from "@/workshop/Workshop";
 
 export function Room() {
+  const layout = useViewportLayout();
   const { online, chatStatus, chat } = useConnection();
   const lastTrueAt = useLastTrue();
   const { data: overview } = useOverview();
@@ -122,71 +125,92 @@ export function Room() {
   const banner = door.pending[0] ?? null;
 
   return (
-    <main
-      className="relative flex flex-1 flex-col overflow-hidden"
-      style={{ background: "var(--bg)" }}
-    >
-      <PresenceField signal={signal} offline={!online} />
-
-      <header className="relative z-[1] flex flex-col gap-1 px-6 pt-[72px]">
-        <div className="flex items-end justify-between gap-3">
-          <Headline text={headline} />
-          <ThemeToggle />
-        </div>
-        <StatusLine overview={overview} online={online} lastTrueAt={lastTrueAt} />
-        <OfflineNote online={online} reconnecting={reconnecting} lastTrueAt={lastTrueAt} />
-        <UpdateNote ready={updateReady} onReload={applyUpdate} />
-        {dnd.active ? (
-          <DndRow until={dnd.until} heldCount={overview?.counts.deferred ?? 0} onOpen={openHeld} />
-        ) : null}
-      </header>
-
-      <Timeline
-        items={room.items}
-        firstDayGreeting={firstRun && room.items.length === 0 ? greetingFor(hour) : null}
-        onWhy={setWhy}
-        prompt={promptButtons}
-      />
-
-      {banner ? (
-        <DoorBanner
-          tracked={banner}
-          now={door.now}
-          onOpen={() => door.openAction(banner.action.request_id)}
-        />
-      ) : null}
-
-      <Composer
-        online={online}
-        onSend={room.sendText}
-        hold={
-          <HoldToTalk
-            signal={signal}
-            online={online}
-            onHoldingChange={setHolding}
-            onAudio={room.sendAudio}
-          />
+    <LayoutContext.Provider value={layout}>
+      <Desk
+        detailOpen={sheetOpen || why !== null}
+        bench={
+          <Workshop open={workshopOpen} onClose={closeWorkshop} onWhy={setWhy} onHeld={openHeld} />
         }
-        handle={<WorkshopHandle onOpen={() => setWorkshopOpen(true)} />}
+        room={
+          <main
+            className="relative flex flex-1 flex-col overflow-hidden"
+            style={{ background: "var(--bg)" }}
+          >
+            <PresenceField signal={signal} offline={!online} />
+
+            {/* §11's `padding 40 28 0` at width: the phone's 72 is clearing a
+                status bar a laptop does not have. */}
+            <header
+              className={`relative z-[1] flex flex-col gap-1 ${layout === "phone" ? "px-6 pt-[72px]" : "px-7 pt-10"}`}
+            >
+              <div className="flex items-end justify-between gap-3">
+                <Headline text={headline} />
+                <ThemeToggle />
+              </div>
+              <StatusLine overview={overview} online={online} lastTrueAt={lastTrueAt} />
+              <OfflineNote online={online} reconnecting={reconnecting} lastTrueAt={lastTrueAt} />
+              <UpdateNote ready={updateReady} onReload={applyUpdate} />
+              {dnd.active ? (
+                <DndRow
+                  until={dnd.until}
+                  heldCount={overview?.counts.deferred ?? 0}
+                  onOpen={openHeld}
+                />
+              ) : null}
+            </header>
+
+            <Timeline
+              items={room.items}
+              firstDayGreeting={firstRun && room.items.length === 0 ? greetingFor(hour) : null}
+              onWhy={setWhy}
+              prompt={promptButtons}
+            />
+
+            {banner ? (
+              <DoorBanner
+                tracked={banner}
+                now={door.now}
+                onOpen={() => door.openAction(banner.action.request_id)}
+              />
+            ) : null}
+
+            <Composer
+              online={online}
+              onSend={room.sendText}
+              hold={
+                <HoldToTalk
+                  signal={signal}
+                  online={online}
+                  onHoldingChange={setHolding}
+                  onAudio={room.sendAudio}
+                />
+              }
+              // Only the phone has a Workshop to open: at width it is already up (R1).
+              handle={
+                layout === "phone" ? (
+                  <WorkshopHandle onOpen={() => setWorkshopOpen(true)} />
+                ) : undefined
+              }
+            />
+
+            <HeldBackSheet open={sheetOpen} onClose={() => setSheetOpen(false)} />
+
+            <WhySheet anchor={why} onClose={() => setWhy(null)} />
+
+            <DoorLayer
+              tracked={door.current}
+              open={door.open}
+              online={online}
+              now={door.now}
+              onClose={door.close}
+              onConfirm={door.confirm}
+              onDeny={door.deny}
+            />
+
+            <ReachGates gate={prompts.gate} signedInAt={null} onClose={prompts.closeGate} />
+          </main>
+        }
       />
-
-      <HeldBackSheet open={sheetOpen} onClose={() => setSheetOpen(false)} />
-
-      <WhySheet anchor={why} onClose={() => setWhy(null)} />
-
-      <Workshop open={workshopOpen} onClose={closeWorkshop} onWhy={setWhy} onHeld={openHeld} />
-
-      <DoorLayer
-        tracked={door.current}
-        open={door.open}
-        online={online}
-        now={door.now}
-        onClose={door.close}
-        onConfirm={door.confirm}
-        onDeny={door.deny}
-      />
-
-      <ReachGates gate={prompts.gate} signedInAt={null} onClose={prompts.closeGate} />
-    </main>
+    </LayoutContext.Provider>
   );
 }

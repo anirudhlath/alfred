@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hhmm } from "@/lib/format";
 import type { TimelineItem } from "@/lib/history";
+import { LayoutContext, type Layout } from "@/shell/layout";
 import { Timeline } from "./Timeline";
 
 let scrollHeight = 1000;
@@ -437,5 +438,20 @@ describe("Timeline anchoring", () => {
     clientHeight = 200;
     resize?.([], {} as ResizeObserver);
     expect(list().scrollTop).toBe(100);
+  });
+
+  it("takes the gutter of the layout it is in", () => {
+    const timeline = (layout: Layout) => (
+      <LayoutContext.Provider value={layout}>
+        <Timeline items={[you]} firstDayGreeting={null} />
+      </LayoutContext.Provider>
+    );
+    const { rerender } = render(timeline("phone"));
+    expect(list().classList.contains("px-6")).toBe(true);
+
+    // §11: "gutter 28".
+    rerender(timeline("sheet-over-bench"));
+    expect(list().classList.contains("px-7")).toBe(true);
+    expect(list().classList.contains("px-6")).toBe(false);
   });
 });
