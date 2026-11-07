@@ -460,8 +460,9 @@ describe("useActivity", () => {
 
   it("dimSolo keeps the shared cursor", async () => {
     // Soloed on the phone, this list would stop at home_state's own 3000 and
-    // `↑ older` would read home_state (the test above this pair). At width it is
-    // the same list as before the press, so the shared horizon and its reader stay.
+    // `↑ older` would read home_state (`reads only the solo stream when ↑ older is
+    // tapped soloed`). At width it is the same list as before the press, so the
+    // shared horizon and its reader stay.
     routes[headUrl("events")] = { entries: [entry(5000), entry(4000)], next_before: entry(4000).id };
     routes[headUrl("home_state")] = { entries: [entry(6000), entry(3000)], next_before: entry(3000).id };
     routes[olderUrl("events", entry(4000).id)] = { entries: [entry(2000)], next_before: null };

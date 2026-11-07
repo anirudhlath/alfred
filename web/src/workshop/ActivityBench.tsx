@@ -133,6 +133,9 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
     if (el) el.scrollTop = 0;
   }, [activity.solo, desk]);
 
+  // At width the banner and the error line keep to the 520 the chips and the list's
+  // content have: on a wide column nothing else would line them up.
+  const gutter = desk ? "mx-6 max-w-[520px]" : "mx-4";
   const pauseButton = (
     <button
       type="button"
@@ -153,10 +156,15 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
       {pauseLabel}
     </button>
   );
+  // `aria-disabled` at width, for the reason `↑ older` gives below: this button goes
+  // quiet under the press that made it so, on the surface built for the keyboard. A
+  // press with no solo does nothing, since `setSolo(null)` under `dimSolo` touches
+  // nothing else. The phone keeps `disabled`.
   const allButton = (
     <button
       type="button"
-      disabled={activity.solo === null}
+      disabled={!desk && activity.solo === null}
+      aria-disabled={desk ? activity.solo === null : undefined}
       onClick={() => activity.setSolo(null)}
       className={
         desk
@@ -203,7 +211,7 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
       {activity.live ? null : (
         <div
           data-testid="feed-banner"
-          className={`${desk ? "mx-6" : "mx-4"} mt-2.5 flex items-center gap-2 rounded-[10px] px-3 py-2 text-[13px] leading-[1.4]`}
+          className={`${gutter} mt-2.5 flex items-center gap-2 rounded-[10px] px-3 py-2 text-[13px] leading-[1.4]`}
           style={{ background: "var(--surface)" }}
         >
           <span
@@ -231,7 +239,7 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
         // `t-meta-strong`, not `t-meta`: this is the line that says part of the
         // list is missing, and --muted's 3.46:1 is not a thing to read it at
         // (index.css, .t-meta-strong).
-        className={activity.error ? `t-meta-strong ${desk ? "mx-6" : "mx-4"} mt-2.5` : "sr-only"}
+        className={activity.error ? `t-meta-strong ${gutter} mt-2.5` : "sr-only"}
       >
         {activity.error}
       </p>

@@ -803,12 +803,22 @@ describe("Workshop at width", () => {
     expect(row).toHaveAttribute("aria-expanded", "true");
     expect(chip).toHaveFocus();
 
-    // The other way to clear it. Focus is not asked of this one: `All` disables
-    // itself when pressed, which jsdom does not act on and a browser does.
+    // The other way to clear it, and the button that goes quiet when it has. jsdom
+    // leaves focus on a button that disables itself where a browser would not, so
+    // the absent attribute is what holds this one to the same promise.
     fireEvent.click(only);
-    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    const all = screen.getByRole("button", { name: "All" });
+    all.focus();
+    fireEvent.click(all);
     expect(chip).toHaveAttribute("aria-pressed", "false");
     expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(all).not.toHaveAttribute("disabled");
+    expect(all).toHaveFocus();
+
+    // Pressed again with nothing to clear, it does nothing at all.
+    fireEvent.click(all);
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(all).toHaveFocus();
   });
 
   it("hands focus to the button when a bench throws with focus inside it", () => {

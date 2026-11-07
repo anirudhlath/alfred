@@ -450,9 +450,12 @@ describe("ActivityBench", () => {
       fireEvent.click(pause);
       expect(a.pause).toHaveBeenCalledTimes(1);
       expect(all.style.opacity).toBe("1");
+      expect(all).toHaveAttribute("aria-disabled", "false");
 
+      // Not `disabled`, because that would take the focus of whoever just pressed it.
       rerender(atWidth(activity()));
-      expect(all).toBeDisabled();
+      expect(all).toHaveAttribute("aria-disabled", "true");
+      expect(all).not.toHaveAttribute("disabled");
       expect(all.style.opacity).toBe("0.4");
     });
 
@@ -546,6 +549,17 @@ describe("ActivityBench", () => {
       expect(screen.getByTestId("feed-banner")).toHaveClass("mx-4");
       expect(screen.getByRole("status", { name: "Read errors" })).toHaveClass("mx-4");
       expect(screen.getByRole("list")).toHaveClass("px-4", "pt-2");
+    });
+
+    it("lines the banner and the error line up with the chips and the list's content", () => {
+      const a = activity({ live: false, error: "2 of 8 streams could not be read · redis gone" });
+      const { rerender } = render(atWidth(a));
+      expect(screen.getByTestId("feed-banner")).toHaveClass("max-w-[520px]");
+      expect(screen.getByRole("status", { name: "Read errors" })).toHaveClass("max-w-[520px]");
+
+      rerender(atWidth(a, "phone"));
+      expect(screen.getByTestId("feed-banner")).not.toHaveClass("max-w-[520px]");
+      expect(screen.getByRole("status", { name: "Read errors" })).not.toHaveClass("max-w-[520px]");
     });
 
     it("leaves the phone its footer, its filter's words, and no footnote", () => {
