@@ -99,7 +99,7 @@ Tests live beside their source (`lib/history.ts` → `lib/history.test.ts`).
   (`Confirmed · queued`, `Applied`, `Expired`, `Answered`), set in the layer's own type,
   ink on paper. Do not invent new words for system state.
 
-## What phases 1 to 5 cover
+## What the six phases cover
 
 Phase 1: shell, theme and viewport; the four identity gates; the Room (presence
 field, headline, status line, offline note, DND row and the held-back sheet, the
@@ -175,6 +175,11 @@ arrived. All of it is in `docs/web-frontend.md`, "Web Push".
 - **The number on the icon** (`navigator.setAppBadge`) — every push adds one and opening
   the app clears it. Reach's `on` line names it, only where `setAppBadge` exists.
 
+Phase 6: the same client laid out for a laptop. From 760 px the Workshop is a column beside
+the Room and a detail is a sheet over the bench; from 1100 px the detail is a third column. A
+solo dims the other streams, and the bench answers to J/K, Space and 1–8, the composer to `⌘K`
+(`src/shell/Desk.tsx`, `docs/web-frontend.md`, "Desktop").
+
 ## What it does not
 
 - **Three things phase 5's second slice left out** — a `pushsubscriptionchange` handler
@@ -194,7 +199,9 @@ arrived. All of it is in `docs/web-frontend.md`, "Web Push".
   endpoint and no UI: **removing a passkey** — `DELETE /api/auth/credentials/{id}` exists
   and refuses the last one, but taking away the passkey in your hand needs a confirmation
   design first. Filed as [#258](https://github.com/anirudhlath/alfred/issues/258) §7, §10 and §11.
-- **Desktop** — phase 6.
+- **The prompt row, the gate and the Act rows on anything but an iPhone** — the handoff
+  draws no wording for it and theirs names Safari, iOS and this iPhone. Other browsers keep
+  System › Reach (`docs/web-frontend.md`, "Desktop").
 
 ## The service worker
 

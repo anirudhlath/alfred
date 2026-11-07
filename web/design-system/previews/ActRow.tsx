@@ -7,3 +7,4 @@ const notification = itemOf("act", 1);
 
 export const Reflex = () => (<Page><ActRow hue={reflex.hue} text={reflex.text} meta={reflex.meta} onWhy={() => {}} /></Page>);
 export const Notification = () => (<Page theme="light"><ActRow hue={notification.hue} text={notification.text} meta={notification.meta} /></Page>);
+export const ThreadOpen = () => (<Page><ActRow hue={reflex.hue} text={reflex.text} meta={reflex.meta} onWhy={() => {}} threadOpen /></Page>);

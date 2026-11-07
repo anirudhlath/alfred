@@ -193,6 +193,40 @@ export const feed: FeedRow[] = [
   }),
 ];
 
+const TV_EVENT_ID = "9f3c2a10-6d4e-4b7a-a1c8-5e0d7b2f4c61";
+
+/**
+ * `feed`, with something to draw a thread through: the observation at `deskFeed[2]`
+ * names the event it saw and the action it took, so `buildThread` joins them by id and
+ * the light by entity, and the front door beside them in time comes out dashed. Two
+ * rows are newer than it, so a solo on its stream has something to dim above it.
+ */
+export const deskFeed: FeedRow[] = [
+  entry("events", -1000, feed[3].entry.event),
+  feed[1],
+  entry("reflex_observations", -6000, {
+    trigger_event: { event_id: TV_EVENT_ID, entity_id: "media_player.living_room_tv" },
+    action: { request_id: feed[2].entry.event.request_id, tool_name: "home.light_turn_on" },
+    decision_context: "movie started",
+    latency_ms: 380,
+  }),
+  entry("home_state", -7000, { entity_id: "light.hall", old_state: "off", new_state: "on" }),
+  feed[2],
+  entry("home_state", -11000, {
+    event_id: TV_EVENT_ID,
+    entity_id: "media_player.living_room_tv",
+    old_state: "paused",
+    new_state: "playing",
+  }),
+  entry("reflex_observations", -24000, {
+    source: "reflex",
+    trigger_event: { entity_id: "binary_sensor.back_door" },
+    decision_context: "door closed, nobody home",
+    latency_ms: 410,
+  }),
+  feed[4],
+];
+
 export const counts: Record<StreamName, number> = {
   user_requests: 12,
   user_responses: 12,

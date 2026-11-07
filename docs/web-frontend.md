@@ -11,9 +11,10 @@ It has **one screen** (the Room), **one interrupt** (the Door), and **four ident
 gates** that rise over both, with two more that say why the identity read has not been
 answered yet — and, under the Room, the **Workshop**, where the house's eight Redis
 streams are read as they happen. There is no navigation: a notification tap deep-links
-to the approval it names, the Workshop is a layer rather than a route, and everything
-else is one merged timeline. A hand-written service worker keeps the app shell on the
-phone, so the app opens with no network at all, and never keeps anything the house said;
+to the approval it names, the Workshop is a layer rather than a route (from 760 px, a
+column beside the Room: "Desktop"), and everything else is one merged timeline. A
+hand-written service worker keeps the app shell on the
+device, so the app opens with no network at all, and never keeps anything the house said;
 it also shows the house's pushes when the app is closed, counts them on the icon, and a
 tap on one opens the approval it names ("Web Push").
 
@@ -22,15 +23,18 @@ Design source: `docs/design/2026-09-04-pwa-client-handoff/` (tokens, copy, and t
 Spec: `docs/superpowers/specs/2026-09-04-mobile-first-pwa-client-design.md`.
 Client-side working notes: `web/README.md`.
 
-Phases 1 to 5 of six, phase 5 in two slices. Phase 4 is the icon set, the manifest pair,
+All six phases are built, phase 5 in two slices. Phase 4 is the icon set, the manifest pair,
 the service worker and its kill switch, and the gates for a launch that has read nothing.
 Phase 5's slice 1 is Web Push: the worker's `push` and `notificationclick` listeners, the
 subscription the app keeps registered, System › Reach, and the `install` and `standalone`
 gates it opens ("Web Push"). Its slice 2 asks in the Room and puts a number on the icon: on
 an iPhone, the home-screen prompt row beside a waiting Door, the `standalone` gate opening
 itself once on launch, and the allowed and declined Act rows; and, where the browser has
-one, the icon badge. The desktop composition is later — see "What phases 1 to 5 do not
-cover" at the end.
+one, the icon badge. Phase 6 lays the same client out for a laptop: from 760 px the Workshop
+stands beside the Room, from 1100 px a detail takes a third column, and a solo dims rather
+than filters and the bench answers to the keyboard ("Desktop"). What Reach raises in the Room
+stays on the iPhone, because the handoff draws no wording for anywhere else (R16, "Desktop").
+What is still missing is in "What the six phases do not cover" at the end.
 
 ---
 
@@ -126,16 +130,24 @@ web/
       system.ts          # AuthSession, Credential, Integration, AttentionDomain,
                          # sessionMeta/credentialMeta/serviceNote/spendNote, the
                          # health cells, and every read and write the System bench makes
-    shell/         # Providers, and the two surfaces everything rises on
+    shell/         # Providers, the layout, and the surfaces everything rises on
       QueryProvider.tsx      # QUERY_DEFAULTS: one retry, none for a 4xx or a deadline
-      ErrorBoundary.tsx      # The Workshop's; a bench that throws costs the layer
+      ErrorBoundary.tsx      # The Workshop's; a bench that throws costs the layer,
+                             # or at width the column until `Start it over`
       ThemeProvider.tsx      # useTheme(); writes data-theme and the theme-color meta
       ThemeToggle.tsx        # 44x44 half-filled circle
       ConnectionProvider.tsx # Socket singletons; useConnection, useLastTrue, markTrue
-      presence.ts            # usePresence, useModalFocus, riseStyle, prefersReducedMotion
+      layout.ts              # readLayout, useViewportLayout, LayoutContext, useLayout:
+                             # phone, sheet-over-bench or columns ("Desktop")
+      Desk.tsx               # One tree at every layout: the Room, the bench, the detail,
+                             # and the two slots a Sheet lands in (useDeskSlots)
+      keys.ts                # isEditing: a key pressed in a field is text
+      presence.ts            # usePresence, useModalFocus, useAsideFocus, riseStyle,
+                             # prefersReducedMotion
       Layer.tsx              # Portal + rise in/out + focus trap + inert + level
                              # (workshop z-10 · layer z-30 · gate z-40)
-      Sheet.tsx              # Bottom sheet + scrim + explicit Done + Escape
+      Sheet.tsx              # A detail in three modes: the phone's modal bottom sheet,
+                             # a sheet over the bench, the third column
       UpdateNote.tsx         # "A newer Alfred is waiting." + Reload, in the Room's header
       useUpdateReady.ts      # Whether a changed sw.js is waiting (onUpdateReady)
       useOnline.ts           # navigator.onLine and its two events — explains, never gates
@@ -168,11 +180,13 @@ web/
       Timeline.tsx       # The list and its scroll anchoring
       rows/              # Divider, YouBubble, AlfredRow, ActRow, Tombstone,
                          # TranscribingBubble, ThinkingRow, FirstDay, ReachRow
-      Composer.tsx       # 50px field, send / hold slot, keyboard padding
+      Composer.tsx       # 50px field, send / hold slot, keyboard padding; ⌘K at width
       HoldToTalk.tsx     # Pointer hold, mic, caption, bars
-      WorkshopHandle.tsx # The 44px handle under the composer; hidden with the keyboard up
+      WorkshopHandle.tsx # The 44px handle under the composer; hidden with the keyboard
+                         # up, and on the phone only
       useOverview.ts     # ["overview"], 30s poll, isFirstRun(), sessionIdleMs(), rateText()
       useRoomHistory.ts  # ["room-history"], read once, re-read on return
+      useDetail.ts       # Which detail is open, the thread or Held back; never both
       useRoom.ts         # Live timeline state, the session window, send,
                          # unsent queue, no-reply timeout
       useReachPrompts.ts # What the Room raises about notifications on an iPhone: the prompt
@@ -184,17 +198,20 @@ web/
       FuseRing.tsx      # 34px and 168px conic ring
       SlideToConfirm.tsx# Slide with travel
       useActionRoute.ts # /actions/:id
-    workshop/      # The layer under the Room
-      Workshop.tsx      # Layer level "workshop": ‹ Room, the header's live region,
-                        # the switcher, all four hooks, and the one mounted bench
+    workshop/      # The layer under the Room; from 760 px, the column beside it
+      Workshop.tsx      # Layer level "workshop" (a named section at width): ‹ Room, the
+                        # header's live region, the switcher, all four hooks, and the
+                        # one mounted bench
       BenchSwitcher.tsx # The four-tab segmented control: a full ARIA tab set
       tabs.ts           # tabId and tabKeyDown — the two tab sets' shared behaviour
                         # (the switcher and Memory's sub-tabs; the chips are not tabs)
       ActivityBench.tsx # Stale banner, chips, ↑ older, the list and its scroll
-                        # anchoring, the footer
-      EventRow.tsx      # Monogram, line, meta; expanded payload and pills
-      StreamChips.tsx   # Eight chips with counts; tap to solo
-      useActivity.ts    # Head reads, the subscription, rehydrate on return, paging
+                        # anchoring, the footer (at width, a footnote that names the keys)
+      EventRow.tsx      # Monogram, line, meta; expanded payload and pills; dimmed at width
+      StreamChips.tsx   # Eight chips with counts; tap to solo; compact at width
+      useActivity.ts    # Head reads, the subscription, rehydrate on return, paging;
+                        # dimSolo, where a solo moves nothing but the dimming
+      useBenchKeys.ts   # J/K, Space and 1-8 on the Activity bench, at width
       MemoryBench.tsx   # Four sub-tabs: Episodic list + search footer, Semantic
                         # cards, Routines, Scratchpad
       RoutineRow.tsx    # One routine: trend, lifecycle rail, detail, sparkline
@@ -218,15 +235,16 @@ web/
       contrast.ts   # WCAG ratios over the palette, restated from index.css
       sw-harness.ts # A fake ServiceWorkerGlobalScope the shipped workers are run in
     index.css     # Tailwind import, fonts, tokens per [data-theme], @theme inline,
-                  # the type scale, keyframes, safe areas, the fuse arc and its masks
+                  # the type scale, keyframes, safe areas, the fuse arc and its masks,
+                  # the desk's grid and the Door's and gates' phone column
     main.tsx      # installViewportVars() → installAudioUnlock() → createRoot →
                   # installServiceWorker()
     App.tsx       # Providers and the three routes
 ```
 
 Tests live beside their source (`lib/history.ts` → `lib/history.test.ts`). One test file
-may cover a small family that ships together (`Layer.test.tsx` covers `Sheet`,
-`Headline.test.tsx` covers `OfflineNote` and `DndRow`). The files outside `src/` — the
+may cover a small family that ships together (`Layer.test.tsx` covers the phone's `Sheet`
+as well, and `Headline.test.tsx` covers `OfflineNote` and `DndRow`). The files outside `src/` — the
 two workers, the manifests, the icons and `index.html` — are tested from `src/test/`,
 which has no `src`-side neighbour to put them beside.
 
@@ -244,6 +262,7 @@ palette colour.
 | `--bg` | The room itself |
 | `--surface` | Raised paper: notes, bubbles, sheets |
 | `--field` | Input fill — a step *above* `--surface` in both themes. In dark it was the same colour as `--surface` (1.00:1) until phase 2, which made the chosen bench and a sheet's input invisible |
+| `--detail` | The third column's ground. `#2A2723` in dark is the handoff's (§11), and it is the midpoint of dark `--bg` and `--surface`; §11 draws dark only, so light takes its own midpoint, `#F3EFE8` (R17, "Desktop") |
 | `--line` | Hairlines |
 | `--keyboard` | The composer's own ground — a design-system token; no component paints it yet |
 | `--muted`, `--fg2`, `--fg` | The three text weights, quietest first. `--muted` is 3.46:1 on `--bg` in light theme — under AA, so it is for decoration, not for anything a reader must take on its own. `--fg2` is also what `input::placeholder` is set to: Tailwind's preflight would otherwise half-dissolve `--fg` into `--field` (3.84:1 dark, 3.22:1 light), and the Composer's `Offline · will send when connected` is the only thing that says a typed message will be queued |
@@ -562,14 +581,15 @@ socket's word first (`last true HH:MM · not live` while the telemetry socket is
 then the feed's (`paused · N new`), then the overview's rate (`live · N ev/s`) — and
 since phase 3 the state word is the app's one bench-independent live region
 ("The Workshop's four benches", below). All four benches are built: Activity, Memory,
-Triggers and System.
+Triggers and System. This section is the phone's; from 760 px the same panel is a column
+beside the Room, with no handle and nothing to close ("Desktop").
 
 An `ErrorBoundary` sits inside the layer and around the panel, not around the app: a
 bench that throws costs the reader the Workshop and not the Room under it, and closing
 the layer unmounts the boundary so the next open starts clean. Its fallback is a
 `role="alert"` — the only one in the client, because this happened under the reader's
 hands rather than arriving behind them — saying `This bench stopped working.` and
-offering `Room`.
+offering `Room`. A column that never closes offers `Start it over` instead (R18, "Desktop").
 
 `BenchSwitcher` is a full ARIA tab set rather than four buttons wearing `role="tab"`:
 every tab carries an id and `aria-controls` for the one `role="tabpanel"` the Workshop
@@ -600,7 +620,8 @@ stream that can still page (`next_before` set) is only known back to its oldest 
 entry, so rows from any stream older than the *shallowest* such stream are withheld —
 otherwise one stream's past would sit next to another's silence and read as a quiet
 spell. `↑ older` fetches the streams sitting at the horizon, and the button's label is
-that cursor. Solo-ing a chip narrows the merge (and the horizon) to one stream.
+that cursor. Solo-ing a chip narrows the merge (and the horizon) to one stream; at width it
+dims the other seven and narrows nothing ("Desktop").
 
 **Rehydrate on return** (§4.10): the telemetry socket starts at `$` and replays nothing,
 so `useActivity` re-reads every head page on `visibilitychange`. The reducer merges an
@@ -616,7 +637,8 @@ whatever is being read down the screen; WebKit has never shipped `overflow-ancho
 `scrollTop` — keyed on which row is newest, so an `↑ older` page or an opening payload
 (the reader's own doing) moves nothing, and skipped at `scrollTop === 0`, where watching
 rows arrive is the point. A second layout effect resets the scroll to the top when the
-solo changes: a different stream is a different list.
+solo changes: a different stream is a different list. At width it is the same list, so the
+effect stands aside.
 
 **Causality.** A reflex act row in the Room (`why?`), or an RX or AL row in Activity
 (`Why · causal thread`), opens `WhySheet` with a `StreamRef`. The two streams the bench
@@ -1924,8 +1946,9 @@ Door, from the first ask tried on the phone. Otherwise the handoff's copy is ver
 
 The prompt row, the gate that opens itself and the Act rows appear only on an iPhone
 (`onIPhone()`), because their copy names Safari, iOS and this iPhone. An iPad reports a Mac,
-so it reads false. Every other device keeps Reach, as it did, and their wording waits for
-phase 6 (D9).
+so it reads false. Every other device keeps Reach, as it did. D9 left their wording for phase
+6, and phase 6 answers by leaving them here: the handoff draws no desktop wording, so they
+stay iPhone only at every width (R16, "Desktop").
 
 **The prompt row** (`ReachRow`, `Alfred.dc.html:75-77` and `:751`) shows in a browser tab
 while a Door waits that `Not now` has not answered and the house has a Web Push key. The key
@@ -2059,7 +2082,200 @@ restore here (its deviation D7), would be false under the ruling on what counts 
 
 ---
 
-## What phases 1 to 5 do not cover
+## Desktop
+
+Phase 6 lays the same client out for a laptop (`Alfred Desktop.dc.html`, handoff §5 and §11).
+There is no second app and no second tree: the Room, the Workshop and the sheets are the
+phone's components, and what changes is where they sit and which keys they answer. Below
+760 px every behaviour is as it was, and every pixel but one, the last row of the deviations
+table below. The R numbers name the rulings in the plan,
+[`2026-11-06-pwa-phase6-desktop.md`](superpowers/plans/2026-11-06-pwa-phase6-desktop.md),
+because the handoff draws one composition, the Workshop open with a thread beside it, and
+leaves the rest open.
+
+**The prompt row, the gate that opens itself and the Act rows stay iPhone only (R16).** D9
+left their wording for desktop and Android browsers to this phase, and this phase answers by
+leaving them where they are: the handoff draws no desktop wording, and their copy names
+Safari, iOS and this iPhone. Every other browser keeps System › Reach, as it did.
+
+### Three layouts
+
+| Layout | When | The Workshop | A detail |
+|---|---|---|---|
+| `phone` | Under 760 px, or a screen whose short side is under 500 px | A layer under the Room's handle | A modal sheet over everything |
+| `sheet-over-bench` | From 760 px | The second column, all that the Room's 420 px leaves | A sheet over the bench alone, with the Room live beside it |
+| `columns` | From 1100 px | The second column | A third column, there only while a detail is open (R2) |
+
+`readLayout()` (`shell/layout.ts`) reads the two widths with `matchMedia`, and the short side
+from `screen.width` and `screen.height`, not from the viewport (R4). A phone on its side is
+852 px wide and under 450 px tall, so it stays the phone. A viewport height would flip a
+landscape tablet to the phone when `interactive-widget=resizes-content` shrinks it for the
+keyboard, which unmounts the focused field, which closes the keyboard, which flips it back.
+
+`useViewportLayout()` is `useSyncExternalStore` over both queries and `resize`, so a foldable
+re-reads its screen. Only `Room` calls it and only `Room` provides `LayoutContext`. `useLayout()`
+reads that context, defaulting to `phone`, so a story in a wide frame and every test stay the
+phone unless they ask not to (R5); the Door, the sheets and the benches are all inside the Room.
+
+```mermaid
+flowchart TD
+    Read["readLayout(): two widths and the screen's short side"] --> Hook["useViewportLayout()"]
+    Hook --> Room["Room, the only LayoutContext provider"]
+    Room -->|"useLayout() anywhere below"| Desk["Desk: data-layout, data-detail"]
+    Desk --> Main["room: the Room's main, the Door, the gates"]
+    Desk --> Line1[".desk-line"]
+    Desk --> Bench[".desk-bench: the overBench slot"]
+    Desk --> Line2[".desk-line"]
+    Desk --> Detail[".desk-detail: the detail slot"]
+    Bench --> Body[".desk-bench-body: inert under a sheet"]
+    Body --> Workshop["Workshop"]
+    Main --> Sheet["Sheet, through useDeskSlots()"]
+    Sheet -->|"sheet-over-bench: portal"| Bench
+    Sheet -->|"columns: portal"| Detail
+    Sheet -->|"phone: portal"| DocBody["document.body"]
+```
+
+`Desk` renders that one tree at every layout, and `.desk` in `index.css` decides what shows.
+Below 760 px the lines, the bench and the detail are `display: none`, and the Room is the only
+thing in a column that lays out as it always has. So crossing a breakpoint mid-sentence costs
+nothing: the Room's DOM node survives, and the draft, the scroll position and the socket with
+it. The phone's Workshop still sits in that hidden bench, because `Layer` portals out of it.
+The Workshop does not survive the crossing at 760 px, where a `section` takes over from a
+`Layer` and remounts the panel. That is accepted: the Room's is the node that has to survive.
+
+The grid is §11's, `420px 1px minmax(380px,1fr) 1px minmax(360px,520px)`, except that the
+bench's minimum is `min(380px, calc(100vw - 782px))`: §11's minimums sum to 1162 px and its
+breakpoint is 1100 px, so from 1100 to 1161 px the bench gives up the difference and the page
+does not scroll sideways (R3). With no detail open, and at every width under 1100 px, the grid
+is `420px 1px minmax(0,1fr)`.
+
+### A detail, in three modes
+
+`Sheet` is one component per mode, so each has its own hooks. Crossing a breakpoint with a
+detail open remounts it in the new mode, and focus moves the way an open and a close would. It
+reads its slot with `useDeskSlots()`, so it has to be a child of `Desk`. Slots are state, set
+from ref callbacks, which is why a width renders the modal for the one commit before `Desk` has
+handed them out.
+
+| Mode | When | What it is | Focus on open | Going |
+|---|---|---|---|---|
+| `ModalSheet` | `phone`, or a width with no slot yet | On `<body>`, `aria-modal`, everything behind it inert | Moves in and stays | 380 ms leave |
+| `SheetOverBench` | `sheet-over-bench` | A dialog in the `overBench` slot, not modal; `Desk` makes only `.desk-bench-body` inert | Moves in | 380 ms leave |
+| `DetailColumn` | `columns` | An `<aside>` in the `detail` slot: eyebrow, `esc closes`, title, intro | Stays where it was, so J and K keep working | At once: the column is a change of the grid |
+
+Focus goes back to the opener on a close only if it was still inside, so only from `<body>`
+once the panel has gone: a reader who has moved on during a leave, into the composer or a new
+sheet, stays there. A column re-pointed by another row's `why?` takes that row as its opener
+(R10), and an opener that has died gets nothing. Every press that points a detail starts its
+body at the top, the thread already open included, since pressing it asks to see it.
+
+`useDetail` holds one detail at a time (R6): nothing is modal at width, so `why?` can be
+pressed with Held back open, and both would land in one column. The Room passes the open
+thread's key to `Timeline` at width, and that Act row reads `{meta} · thread open →`. It keeps
+its `why?` as the same DOM node, faded and out of the pointer's way unless `focus-visible`:
+removing it would throw a keyboard reader's focus to `<body>` the moment they pressed it (R23).
+
+The column keeps the title `Why Alfred did that`, since the mock's
+`Why Alfred spoke about the door` is sample data and nothing generates such a sentence (R8).
+`Causal thread` is the thread's eyebrow; Held back has none, since no other is drawn (R9).
+
+### The bench at width
+
+From 760 px the Workshop is always in the middle column, with no handle and no `‹ Room`, and
+`open` means nothing (R1). It is a `section` named Workshop, always there and always reading.
+Leaving the phone clears `workshopOpen`, so a trip through the desk does not raise the phone's
+Workshop again on the way back.
+
+A bench that throws says `This bench stopped working.` and `Nothing on the Room is affected.`,
+with a button `Start it over` (R18, and the one string the handoff does not have), because
+opening the Workshop again means nothing in a column that never closes. The button remounts
+the panel under a new `key` and gives focus to its chosen tab. The fallback stays
+`role="alert"`, and takes focus itself only from `<body>`, so a reader typing in the Room keeps
+their place.
+
+On the Activity bench, `useActivity(enabled, dimSolo)` runs with `dimSolo` on. A solo dims the
+other streams to `.35` and removes nothing (handoff §5), so the list, its scroll, the cursor,
+`↑ older` and the open row all stay as they were, and an empty list means all eight are empty.
+The chips keep their hue while another is soloed, since the phone's fading exists for its
+stacked 44 px chip (R19), and they go on top in one row with `All` and `Pause`. Real counts run
+to 400 where the mock has single digits, so the row wraps: a narrow chip drops its count under
+its monogram, and `All` and `Pause` drop to a second line under 352 px (R20). Under the list,
+the keyboard sentence always shows, since it is the only way to discover the shortcuts, and
+`Soloed {mono}: …` shows only while soloed. The third column's design note links to prototype
+files and does not ship (R13).
+
+The Door and the gates still cover all three columns, with their contents held to a centred
+480 px (`.phone-column`, R15), because nothing there is redesigned and a slide 1200 px long is
+unusable.
+
+`orientation: portrait` stays in the manifests: a desktop ignores it, and removing it changes
+phones, so an Android tablet stays portrait for now (R22).
+
+### The keys
+
+All of them are at width only. The phone's Escape goes where it always went.
+
+| Key | What it does | Where it stands aside |
+|---|---|---|
+| `J`, `K` | Move real focus onto the next or previous row's own button, past dimmed rows, by document position, with no wrap; from outside the list, onto the first row (R11) | The bench's guards, below |
+| `Enter` | Presses that button, which opens the payload. Native, so it needs no code | Nowhere: it is the browser's |
+| `Space` | Pauses or resumes from a row or from nothing. A held key toggles once, and its keyup is claimed, because Firefox clicks a focused button on keyup whatever became of its keydown (R12) | The bench's guards; and on any other `button`, `a`, `[role="tab"]` or `[role="switch"]`, where it stays that control's (WCAG 2.1.1) |
+| `1`–`8` | Solos that stream in `STREAMS` order; the same digit clears it. A held key does not flicker | The bench's guards |
+| `⌘K`, `Ctrl+K` | Focuses the composer, from anywhere. The hint reads `⌘K` on every OS and only with no draft (R14) | With Shift or Alt held, since `⌘⇧K` is a browser's console; and when the field is inside `[inert]` |
+| `Escape` in the composer | Blurs it, or J would type a j with no way back but Tab, and stops there so a detail stays open. A second press, from outside the field, closes the detail (R14) | During a composition |
+| `Escape` elsewhere | Closes the open detail, wherever focus is | During a composition, and when the panel is inside `[inert]` |
+
+The bench's guards (`useBenchKeys`) are that none of these acts when the list is gone or inside
+`[inert]`, during a composition, with Ctrl, Meta or Alt held, or when `isEditing()` finds the key
+in an `input`, `textarea`, `select` or `[contenteditable]`, where it is just text. `[inert]` is
+what keeps a shortcut from acting through a surface: a Door or a gate makes `#root` inert around
+the list, and a sheet over the bench makes the bench's body inert. The hook is scoped to Activity
+by being unmounted with it on the other three benches.
+
+### Deviations from the handoff
+
+Otherwise the handoff's copy and sizes are verbatim. Every colour is a token: `Alfred Desktop.dc.html`
+writes literals, so "muted" below is its `#9a9186`, which is `--muted` in dark.
+
+| The mock draws | What ships | Why |
+|---|---|---|
+| The column labels `Workshop` and `Causal thread` in muted (`:46`, `:94`) | `t-label` with its colour overridden to `--fg2` | `--muted` is 3.46:1 on `--bg` and 3.34:1 on `--detail` in light, under AA at 11 px. The type is the mock's exactly, so only the colour moves (R24) |
+| A compact chip's count at `.7`, and `.8` on the soloed chip (`:53-64`) | `.77` in dark and `.99` in light (`--ring-count-opacity`), and `.91` on the soloed chip (`RING_COUNT_ON_OPACITY`) | The count is the chip's only data. `.7` is 2.77:1 in light and `.8` is 3.85:1, at their worst hues, so each stops where AA does on all eight |
+| The bench's annotation in muted (`:88`) | `t-meta-strong` | It is the only place on the desk that names the keys (R13) |
+| An open thread's meta in muted (`:32`) | `t-meta-strong` | It is the only thing saying so, and `--muted` is 3.20:1 on `--surface` in light |
+| `↑ older` 36 px tall, in muted (`:67`) | 44 px and `--fg2`, the phone's button unchanged | An iPad reaches this layout by touch, and `--muted` at 11 px is under AA in light |
+| The compact chip with a `gap` of 4 px (`:53-64`) | `gap-x-1` | The mock only ever draws the count beside the monogram. A row gap stacked in the 33 px inside a chip would clip the count that drops under it (R20) |
+| No stale banner and no error line, since it shows a healthy bench | Both held to `max-w-[520px]` | On a wide column nothing else would line them up with the chips and the list's content |
+| `All` plain, at full strength (`:53-64`) | With no solo, `aria-disabled`, `opacity-40` and `focus-visible:opacity-100` | A press then does nothing. `disabled` would throw focus to `<body>` under the press that cleared the solo, on the surface built for the keyboard. So focus can rest there, and `opacity` dims the focus ring too, so it comes back to full on focus |
+| No focus ring on a row (`:68`) | `2px solid var(--accent-text)`, offset `-2px`, on a row's `focus-visible`, at width only | J and K leave real focus there (R11), and the UA's ring vanishes on `--surface`. Inset, because the list clips what crosses its edge |
+| `esc closes` as a muted label (`:94`) | A real button in `t-meta-strong`, whose `after` box makes 44 px of its 16.5 px line | An iPad in landscape reaches 1100 px with no Escape key (R7), and a button's name has to be readable: `--muted` is 3.46:1 in light (R21) |
+| No Door or gate at width; they cover all three columns (§11) | Their contents in a `.phone-column`, at most 480 px, at every width | R15 reasons that no phone held upright is wider than 480 px, so phones do not change. That does not cover **a phone on its side**, which R4 keeps `phone` and CSS cannot tell from a window that wide, or **any window 481–759 px wide**: both get a slide narrower than they had. This is the one thing below 760 px that moved |
+
+### How it is tested
+
+jsdom has no layout, so none of these can say that four-digit counts fit eight chips at 1100 px
+with a thread open, or that the columns are the widths the grid asks for. They pin the attributes,
+the classes and the behaviour.
+
+| File | Covers |
+|---|---|
+| `src/shell/layout.test.tsx` | Both breakpoints and the short side, a tablet's keyboard not flipping it, a foldable both ways, no `matchMedia`, and `useLayout`'s default of `phone` |
+| `src/shell/Desk.test.tsx` | The Room's DOM node across every layout, `data-detail`, the bench body's `inert` only over the bench, and both slots |
+| `src/shell/Sheet.test.tsx` | The three modes: where each lands, what closes it and what does not, focus on open and on close, a re-pointed column, and the body's scroll |
+| `src/room/useDetail.test.tsx` | One detail at a time, a thread re-pointed, and the callbacks' identity |
+| `src/workshop/useBenchKeys.test.tsx` | J and K, Space, 1 to 8, and when each stays silent |
+| `src/room/Composer.test.tsx` | `⌘K` and `Ctrl+K`, the hint, Escape's two presses beside a detail, and the phone answering none of it |
+| `src/workshop/ActivityBench.test.tsx`, `src/workshop/StreamChips.test.tsx`, `src/workshop/EventRow.test.tsx`, `src/workshop/useActivity.test.tsx` | The bench at width: the chips on top, a solo that dims, an open row through a solo, the footnote, the gutters, and the compact chip |
+| `src/workshop/Workshop.test.tsx` | The named column, its label, `Start it over` and where focus lands after it |
+| `src/room/Timeline.test.tsx` | The Act row whose thread is open, and the gutter of each layout |
+| `src/sheets/WhySheet.test.tsx`, `src/sheets/HeldBackSheet.test.tsx` | Each detail's words in a column, and focus back on the row that last opened the thread |
+| `src/door/DoorLayer.test.tsx`, `src/gates/Gate.test.tsx` | The contents inside `.phone-column` and the ground outside it |
+| `src/test/contrast.test.ts` | `--detail` carrying what is written on it, the row's ring, a compact chip's count on both halves of its rule, and the phone column's width |
+| `src/App.test.tsx` | The desk end to end: the handle gone, a draft through every breakpoint, the phone's Workshop not raised after a trip through it, the third column, one detail at a time, and focus back on the row last pressed |
+
+---
+
+## What the six phases do not cover
 
 - **Anything iOS does with the manifests or the launch screen** is unmeasured: the
   phase-4 device checklist is the only thing that settles it, and it is unrun.
@@ -2085,9 +2301,9 @@ restore here (its deviation D7), would be false under the ruling on what counts 
 - **Telemetry `status`/`error` frames** (`redis_error`, `invalid JSON`) still reach only
   the console, rate-limited by `WARN_EVERY_MS`. The System bench reports the *reads* that
   failed, not the socket's own frames.
-- **Desktop** — phase 6. The client is phone-first and there is no wide composition. The
-  wording of the prompt row, the gate and the Act rows for desktop and Android browsers waits
-  for it too (D9, "Web Push").
+- **The prompt row, the gate and the Act rows on a desktop or Android browser.** They stay
+  iPhone only, because the handoff draws no wording for anywhere else and theirs names Safari,
+  iOS and this iPhone (R16, "Desktop"). Those browsers turn notifications on from System › Reach.
 
 Open follow-ups: [#256](https://github.com/anirudhlath/alfred/issues/256),
 [#257](https://github.com/anirudhlath/alfred/issues/257),

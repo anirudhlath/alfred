@@ -76,10 +76,10 @@ out/
   _preview/<Name>.js        the stories, built
 ```
 
-Groups: `foundation` (Page, RoomScreen), `room`, `timeline`, `door`, `gates`, `sheets`,
+Groups: `foundation` (Page, RoomScreen, DeskScreen), `room`, `timeline`, `door`, `gates`, `sheets`,
 `workshop`. The list is `GROUPS` in `gen-docs.mjs`.
 
-## The two canvas-only pieces
+## The three canvas-only pieces
 
 - **`Page`** (`ds/Page.tsx`) gives a subtree a theme. The app writes `data-theme` on
   `<html>` because it is the whole document; a canvas shows several pages side by side,
@@ -90,6 +90,15 @@ Groups: `foundation` (Page, RoomScreen), `room`, `timeline`, `door`, `gates`, `s
 - **`RoomScreen`** (`ds/RoomScreen.tsx`) is `web/src/room/Room.tsx`'s layout with props
   where Room has its socket, hooks and providers. If Room's layout changes, this file
   changes with it.
+- **`DeskScreen`** (`ds/DeskScreen.tsx`) is the laptop's composition (`docs/web-frontend.md`,
+  "Desktop"), in a frame 800 px tall: the real `Desk` under `LayoutContext` `columns`, with
+  `RoomScreen` as the Room, `BenchSwitcher` and the real `ActivityBench` over a pinned `Activity`
+  as the bench (one stream soloed, one row open), and the real `WhySheet` over a seeded query
+  cache in the column. Only the Workshop's header is restated, because `WorkshopPanel` runs four
+  live hooks; if that header changes, this file changes with it. It takes no props: its data is
+  `previews/fixtures.ts`. Its Room is `RoomScreen`, which is the phone's layout, so it keeps the
+  phone's header spacing and draws the handle, and it cannot mark an open thread. The real desk
+  does none of those, and `ActRow`'s `ThreadOpen` story shows the row.
 
 Everything else in `window.Alfred` is the component from `web/src`, bundled unmodified.
 
@@ -107,7 +116,7 @@ between runs.
 2. Add `previews/<Name>.tsx`: named PascalCase exports, each a story wrapped in a `<Page>`.
    Use both themes across the stories, and take data from `fixtures.ts`.
 3. Add its name to a group in `GROUPS` (`gen-docs.mjs`). Overlays that portal to `<body>`
-   go in `FRAMES`; phone-sized stories in `PHONE`.
+   go in `FRAMES`; phone-sized stories in `PHONE`; the laptop's composition in `WIDE`.
 4. Make sure the source has a doc comment above `export function <Name>`: it becomes the
    component's description.
 5. `npm run design-sync`.
@@ -117,7 +126,8 @@ between runs.
 The four benches, `Workshop`, the Held-back and Why sheets, `SetupGate`, `SignInGate`,
 `ExpiredGate`, `IntegrationRow` and `ReachSection` read live data through react-query
 hooks or call WebAuthn, so they do not render without a server. Their rows and controls
-are in the package.
+are in the package. `ActivityBench` and `WhySheet` are bundled for `DeskScreen`, with their
+data supplied, and are not exported.
 
 ## Gotchas
 
