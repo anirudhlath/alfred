@@ -649,6 +649,19 @@ describe("Workshop", () => {
   });
 });
 
+describe("Workshop on the phone", () => {
+  it.each(["Activity", "Memory", "Triggers", "System"] as const)(
+    "gives the %s bench none of the desk's edges",
+    async (bench) => {
+      mount(true);
+      fireEvent.click(screen.getByRole("tab", { name: bench }));
+      await settle();
+      expect(workshopPanel()).not.toHaveClass("mx-2");
+      expect(workshopPanel()).not.toHaveClass("max-w-[552px]");
+    },
+  );
+});
+
 describe("Workshop at width", () => {
   /** The layout `Room` provides in the app, and which this file has no Room to ask. */
   function mountAtWidth(open: boolean, layout: Layout = "columns") {
@@ -700,6 +713,37 @@ describe("Workshop at width", () => {
     const column = screen.getByRole("region", { name: "Workshop" });
     expect(column).toContainElement(screen.getByRole("tablist", { name: "Bench" }));
     expect(column).toContainElement(screen.getByRole("tabpanel"));
+  });
+
+  it.each([
+    ["columns", "Memory"],
+    ["columns", "Triggers"],
+    ["columns", "System"],
+    ["sheet-over-bench", "Memory"],
+    ["sheet-over-bench", "Triggers"],
+    ["sheet-over-bench", "System"],
+  ] as const)("keeps the bench under the switcher (%s, %s)", async (layout, bench) => {
+    // §11's 24 px and 520 px, which the mock draws only on Activity. A bench still
+    // has the phone's 16 px gutter inside the panel, so the panel carries the rest.
+    mountAtWidth(false, layout);
+    fireEvent.click(screen.getByRole("tab", { name: bench }));
+    await settle();
+    expect(workshopPanel()).toHaveClass("mx-2", "max-w-[552px]");
+  });
+
+  it.each(["columns", "sheet-over-bench"] as const)("leaves Activity its own edges (%s)", async (layout) => {
+    mountAtWidth(false, layout);
+    await settle();
+    expect(workshopPanel()).not.toHaveClass("mx-2");
+    expect(workshopPanel()).not.toHaveClass("max-w-[552px]");
+
+    // And coming back to it: the panel outlives the bench inside it.
+    fireEvent.click(screen.getByRole("tab", { name: "System" }));
+    await settle();
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+    await settle();
+    expect(workshopPanel()).not.toHaveClass("mx-2");
+    expect(workshopPanel()).not.toHaveClass("max-w-[552px]");
   });
 
   it("does not close on Escape", () => {
