@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { LayoutContext, type Layout } from "@/shell/layout";
 import { Composer } from "./Composer";
 
@@ -271,12 +271,191 @@ describe("Composer", () => {
       </LayoutContext.Provider>
     );
     const { rerender } = render(composer("phone"));
-    const row = screen.getByLabelText("Message Alfred").parentElement as HTMLElement;
+    const row = screen.getByLabelText("Message Alfred").parentElement?.parentElement as HTMLElement;
     expect(row.classList.contains("pb-2")).toBe(true);
 
     // §11's `padding: 0 20px 24px`, with no handle under the row to clear.
     rerender(composer("columns"));
     expect(row.classList.contains("pb-6")).toBe(true);
     expect(row.classList.contains("pb-2")).toBe(false);
+  });
+
+  describe("the keyboard", () => {
+    const composer = (layout: Layout = "columns") => (
+      <LayoutContext.Provider value={layout}>
+        <Composer online onSend={() => {}} hold={<button type="button">hold to talk</button>} />
+      </LayoutContext.Provider>
+    );
+    const field = () => screen.getByLabelText("Message Alfred");
+
+    it("⌘K and Ctrl+K focus the field", async () => {
+      const user = userEvent.setup();
+      render(composer());
+
+      await user.keyboard("{Meta>}k{/Meta}");
+      expect(field()).toHaveFocus();
+
+      act(() => field().blur());
+      await user.keyboard("{Control>}k{/Control}");
+      expect(field()).toHaveFocus();
+    });
+
+    it("works in any layout at width, and from another field, and claims the key from the browser", () => {
+      const { rerender } = render(composer("sheet-over-bench"));
+      expect(fireEvent.keyDown(document.body, { key: "k", metaKey: true })).toBe(false);
+      expect(field()).toHaveFocus();
+
+      rerender(composer("columns"));
+      // Already there, where a browser would still open its own search.
+      expect(fireEvent.keyDown(field(), { key: "k", ctrlKey: true })).toBe(false);
+      expect(field()).toHaveFocus();
+    });
+
+    it("takes ⌘K with caps lock on, and leaves ⌘⇧K and ⌘⌥K to the browser", () => {
+      render(composer());
+
+      expect(fireEvent.keyDown(document.body, { key: "K", metaKey: true, shiftKey: true })).toBe(true);
+      expect(fireEvent.keyDown(document.body, { key: "k", ctrlKey: true, altKey: true })).toBe(true);
+      expect(field()).not.toHaveFocus();
+
+      expect(fireEvent.keyDown(document.body, { key: "K", metaKey: true })).toBe(false);
+      expect(field()).toHaveFocus();
+    });
+
+    it("neither acts inside an inert root", () => {
+      render(<div inert>{composer()}</div>);
+
+      expect(fireEvent.keyDown(document.body, { key: "k", metaKey: true })).toBe(true);
+      expect(fireEvent.keyDown(document.body, { key: "k", ctrlKey: true })).toBe(true);
+
+      expect(field()).not.toHaveFocus();
+    });
+
+    it("names the shortcut for assistive tech", () => {
+      render(composer());
+      expect(field()).toHaveAttribute("aria-keyshortcuts", "Meta+K Control+K");
+    });
+
+    it("shows ⌘K with no draft, hides it with one", async () => {
+      const user = userEvent.setup();
+      render(composer());
+
+      const hint = screen.getByText("⌘K");
+      expect(hint).toHaveAttribute("aria-hidden", "true");
+      expect(hint).toHaveClass("t-meta", "pointer-events-none");
+      // Positioned against the field's own box, not the row with the hold button in it.
+      expect(hint.parentElement).toBe(field().parentElement);
+      expect(hint.parentElement).toHaveClass("relative", "min-w-0", "flex-1");
+      expect(field()).toHaveClass("pr-11");
+
+      await user.type(field(), "hello");
+      expect(screen.queryByText("⌘K")).toBeNull();
+
+      // Whitespace is not a draft, here as for the hold slot.
+      await user.clear(field());
+      await user.type(field(), "   ");
+      expect(screen.getByText("⌘K")).toBeInTheDocument();
+    });
+
+    it("Escape blurs the field", async () => {
+      const user = userEvent.setup();
+      render(composer());
+
+      await user.click(field());
+      await user.keyboard("{Escape}");
+
+      expect(field()).not.toHaveFocus();
+    });
+
+    it("keeps a composition's Escape, which only cancels the candidate", () => {
+      render(composer());
+      focusField();
+
+      fireEvent.keyDown(field(), { key: "Escape", isComposing: true });
+
+      expect(field()).toHaveFocus();
+    });
+
+    describe("beside an open detail", () => {
+      /** Stands in for `useEscapeBeside`, on the node it listens on. */
+      function detailListening(): ReturnType<typeof vi.fn> {
+        const heard = vi.fn();
+        const onKeyDown = (event: KeyboardEvent) => {
+          if (event.key === "Escape") heard();
+        };
+        document.addEventListener("keydown", onKeyDown);
+        onTestFinished(() => document.removeEventListener("keydown", onKeyDown));
+        return heard;
+      }
+
+      it("spends the first Escape on the field; the second reaches the detail", async () => {
+        const user = userEvent.setup();
+        const heard = detailListening();
+        render(composer());
+
+        await user.click(field());
+        await user.keyboard("{Escape}");
+        expect(field()).not.toHaveFocus();
+        expect(heard).not.toHaveBeenCalled();
+
+        await user.keyboard("{Escape}");
+        expect(heard).toHaveBeenCalledTimes(1);
+      });
+
+      it("leaves the phone's Escape going where it goes today", async () => {
+        const user = userEvent.setup();
+        const heard = detailListening();
+        render(composer("phone"));
+
+        await user.click(field());
+        await user.keyboard("{Escape}");
+
+        expect(heard).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe("on the phone", () => {
+      it("no hint, ⌘K does nothing, Escape keeps focus", async () => {
+        const user = userEvent.setup();
+        render(composer("phone"));
+
+        expect(screen.queryByText("⌘K")).toBeNull();
+        expect(field()).not.toHaveAttribute("aria-keyshortcuts");
+
+        expect(fireEvent.keyDown(document.body, { key: "k", metaKey: true })).toBe(true);
+        expect(fireEvent.keyDown(document.body, { key: "k", ctrlKey: true })).toBe(true);
+        expect(field()).not.toHaveFocus();
+
+        await user.click(field());
+        await user.keyboard("{Escape}");
+        expect(field()).toHaveFocus();
+      });
+
+      it("keeps its even padding", () => {
+        render(composer("phone"));
+
+        expect(field()).toHaveClass("px-[18px]");
+        expect(field()).not.toHaveClass("pr-11");
+      });
+    });
+
+    it("keeps the field and its focus across a breakpoint", () => {
+      // A foldable opening mid-sentence: losing this node would close the keyboard.
+      const { rerender } = render(composer("phone"));
+      const before = focusField();
+
+      rerender(composer("sheet-over-bench"));
+      expect(field()).toBe(before);
+      expect(before).toHaveFocus();
+
+      rerender(composer("phone"));
+      expect(field()).toBe(before);
+      expect(before).toHaveFocus();
+      act(() => before.blur());
+
+      // And the shortcut went with the width.
+      expect(fireEvent.keyDown(document.body, { key: "k", metaKey: true })).toBe(true);
+      expect(before).not.toHaveFocus();
+    });
   });
 });

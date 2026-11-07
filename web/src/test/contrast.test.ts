@@ -244,6 +244,17 @@ describe("contrast ratios", () => {
       expect(contrast(token(theme, "line"), token(theme, "bg"))).toBeLessThan(1.3);
     });
 
+    it(`${theme}: the ring on a row J and K have moved to can be seen`, () => {
+      // `[data-event-row]:focus-visible` in index.css, the only sign of where those
+      // keys left focus. A row sits on the bench's `--bg`, and an open one on
+      // `--surface`, where the UA's own ring vanishes. WCAG 1.4.11 asks 3:1 of both.
+      expect(css.replace(/\s+/g, " ")).toContain(
+        "[data-event-row]:focus-visible { outline: 2px solid var(--accent-text); outline-offset: -2px; }",
+      );
+      expect(contrast(token(theme, "accent-text"), token(theme, "bg"))).toBeGreaterThanOrEqual(3);
+      expect(contrast(token(theme, "accent-text"), token(theme, "surface"))).toBeGreaterThanOrEqual(3);
+    });
+
     it(`${theme}: a routine's sparkline and rail read as graphics`, () => {
       // `RoutineRow`'s bars (`workshop/RoutineRow.tsx`) are the only drawing of
       // a routine's confidence and of where it is in its lifecycle, and they

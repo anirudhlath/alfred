@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useLayout } from "@/shell/layout";
 
 /**
@@ -51,9 +51,24 @@ export interface ComposerProps {
  * house is unreachable is queued and retried, and a dead input would hide that.
  */
 export function Composer({ online, onSend, hold, handle }: ComposerProps) {
-  const layout = useLayout();
+  const desk = useLayout() !== "phone";
   const [draft, setDraft] = useState(readDraft);
   const field = useRef<HTMLInputElement>(null);
+
+  // `⌘K` on every OS, and Ctrl+K too (R14). Not `⌘⇧K`: that is a browser's console.
+  // Behind a Door or a gate the key is left to the browser, as nothing under them answers.
+  useEffect(() => {
+    if (!desk) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) return;
+      if (event.key.toLowerCase() !== "k") return;
+      if (!field.current || field.current.closest("[inert]")) return;
+      event.preventDefault();
+      field.current.focus();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [desk]);
 
   function changeDraft(next: string): void {
     setDraft(next);
@@ -89,6 +104,12 @@ export function Composer({ online, onSend, hold, handle }: ComposerProps) {
     if (event.key === "Enter") {
       event.preventDefault();
       send();
+    } else if (desk && event.key === "Escape") {
+      // After `⌘K` the field keeps focus, and J would type a j with no way back but
+      // Tab (R14). This press is spent on that, so it stops short of `document`, where
+      // an open detail would close too. A second one, from outside the field, closes it.
+      event.stopPropagation();
+      event.currentTarget.blur();
     }
   }
 
@@ -100,29 +121,44 @@ export function Composer({ online, onSend, hold, handle }: ComposerProps) {
     // it. The handle sits between them so the safe-area inset falls below it, not
     // between it and the row.
     <div className={`pb-keyboard relative z-[1] ${focused ? "keyboard-up" : ""}`}>
-      <div className={`flex items-center gap-2.5 px-5 ${layout === "phone" ? "pb-2" : "pb-6"}`}>
-        <input
-          ref={field}
-          value={draft}
-          onChange={(event) => changeDraft(event.target.value)}
-          onKeyDown={onKeyDown}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          placeholder={online ? "Ask or tell Alfred" : "Offline · will send when connected"}
-          aria-label="Message Alfred"
-          autoComplete="off"
-          autoCapitalize="sentences"
-          autoCorrect="on"
-          enterKeyHint="send"
-          // 16 px, not the handoff's 15: iOS zooms the page in on any field it
-          // focuses below 16, and a zoom shrinks the visual viewport that the
-          // whole shell is now sized from (lib/viewport.ts) — the app would
-          // shrink to the zoomed band. The one px is the cheaper of the two
-          // defences (index.html locks the scale) and the only one that needs
-          // no browser to co-operate.
-          className="h-[50px] min-w-0 flex-1 rounded-[25px] border px-[18px] text-[16px]"
-          style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--fg)" }}
-        />
+      <div className={`flex items-center gap-2.5 px-5 ${desk ? "pb-6" : "pb-2"}`}>
+        {/* The box is the hint's, and the phone has it too: a field that gained a parent
+            at a breakpoint would be a new node, and a foldable opening mid-sentence would
+            lose the focus and the keyboard with it. */}
+        <div className="relative min-w-0 flex-1">
+          <input
+            ref={field}
+            value={draft}
+            onChange={(event) => changeDraft(event.target.value)}
+            onKeyDown={onKeyDown}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            placeholder={online ? "Ask or tell Alfred" : "Offline · will send when connected"}
+            aria-label="Message Alfred"
+            aria-keyshortcuts={desk ? "Meta+K Control+K" : undefined}
+            autoComplete="off"
+            autoCapitalize="sentences"
+            autoCorrect="on"
+            enterKeyHint="send"
+            // 16 px, not the handoff's 15: iOS zooms the page in on any field it
+            // focuses below 16, and a zoom shrinks the visual viewport that the
+            // whole shell is now sized from (lib/viewport.ts) — the app would
+            // shrink to the zoomed band. The one px is the cheaper of the two
+            // defences (index.html locks the scale) and the only one that needs
+            // no browser to co-operate.
+            className={`block h-[50px] w-full rounded-[25px] border text-[16px] ${desk ? "pr-11 pl-[18px]" : "px-[18px]"}`}
+            style={{ background: "var(--field)", borderColor: "var(--line)", color: "var(--fg)" }}
+          />
+          {/* `Alfred Desktop.dc.html:38`, on the field's own 18 px inset. */}
+          {desk && !hasDraft ? (
+            <span
+              aria-hidden="true"
+              className="t-meta pointer-events-none absolute top-1/2 right-[18px] -translate-y-1/2"
+            >
+              ⌘K
+            </span>
+          ) : null}
+        </div>
 
         {hasDraft ? (
           <button

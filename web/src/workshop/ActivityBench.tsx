@@ -5,6 +5,7 @@ import { useLayout } from "@/shell/layout";
 import { EventRow } from "./EventRow";
 import { StreamChips } from "./StreamChips";
 import type { Activity } from "./useActivity";
+import { useBenchKeys } from "./useBenchKeys";
 
 export interface ActivityBenchProps {
   activity: Activity;
@@ -91,6 +92,7 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
       : "Pause feed";
 
   const listRef = useRef<HTMLUListElement>(null);
+  useBenchKeys(activity, listRef, desk);
   const prevHeight = useRef(0);
   const prevTopKey = useRef<string | null>(null);
   const topKey = activity.rows[0]?.key ?? null;

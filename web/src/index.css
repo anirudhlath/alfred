@@ -468,6 +468,13 @@
     background: var(--detail);
   }
 
+  /* Where J and K left focus (R11). The app has no other focus rule, and the UA's ring
+     vanishes on --surface. Inset, because the bench's list clips what crosses its edge. */
+  [data-event-row]:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: -2px;
+  }
+
   /* ---------------------------------------------------- keyboard + home indicator
      Constraint §4.3 (home indicator) and §4.5 (the keyboard covers fixed
      elements). The shell is already the visible band, so the keyboard has been

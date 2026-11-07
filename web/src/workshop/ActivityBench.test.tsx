@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { FeedRow } from "@/lib/feed";
-import { STREAMS, type StreamName } from "@/lib/streams";
+import { STREAMS, summarise, type StreamName } from "@/lib/streams";
 import { LayoutContext, type Layout } from "@/shell/layout";
 import { reflexObservationsPage, userRequestsPage, userResponsesPage } from "@/test/fixtures";
 import { ActivityBench } from "./ActivityBench";
@@ -417,6 +417,29 @@ describe("ActivityBench", () => {
 
     /** The row's own button, by the words it shows. */
     const rowButton = (text: string) => screen.getByText(text).closest("button") as HTMLElement;
+
+    it("answers the keys at both widths, over its own list", () => {
+      const a = activity();
+      const { rerender } = render(atWidth(a, "sheet-over-bench"));
+
+      fireEvent.keyDown(document.body, { key: "j" });
+      expect(rowButton(summarise(reflex.stream, reflex.entry.event).text)).toHaveFocus();
+
+      rerender(atWidth(a));
+      fireEvent.keyDown(document.body, { key: "1" });
+      expect(a.setSolo).toHaveBeenCalledWith(STREAMS[0]);
+    });
+
+    it("answers no keys on the phone", () => {
+      const a = activity();
+      render(atWidth(a, "phone"));
+
+      for (const key of ["j", " ", "1"]) expect(fireEvent.keyDown(document.body, { key })).toBe(true);
+
+      expect(document.body).toHaveFocus();
+      expect(a.pause).not.toHaveBeenCalled();
+      expect(a.setSolo).not.toHaveBeenCalled();
+    });
 
     it("chips come before the list", () => {
       render(atWidth(activity({ live: false })));

@@ -1,0 +1,82 @@
+import { useEffect, useRef, type RefObject } from "react";
+import { STREAMS } from "@/lib/streams";
+import { isEditing } from "@/shell/keys";
+import type { Activity } from "./useActivity";
+
+/**
+ * The controls that keep their own Space. A row would be one, but Enter already presses
+ * it, so its Space is the feed's (R12).
+ */
+const SPACE_IS_ITS_OWN = 'button, a, [role="tab"], [role="switch"]';
+
+/** J/K's stops: real focus on the row's own button, so Enter needs no code, past dimmed rows (R11). */
+function moveFocus(list: HTMLElement, by: 1 | -1): void {
+  const rows = [...list.querySelectorAll<HTMLElement>("[data-event-row]:not([data-dimmed])")];
+  const at = rows.indexOf(document.activeElement as HTMLElement);
+  (at === -1 ? rows[0] : rows[at + by])?.focus();
+}
+
+/**
+ * The keys `ActivityBench`'s footnote promises (handoff README §5): J/K move, Enter
+ * opens payload, Space pauses, 1–8 solo a stream.
+ *
+ * `enabled` is the width. Being unmounted on the other three benches is what scopes
+ * these to Activity. A Door or a gate makes `#root` inert around the list, and a sheet
+ * over the bench makes the bench's body inert, and then none of these are the bench's.
+ */
+export function useBenchKeys(activity: Activity, list: RefObject<HTMLElement | null>, enabled: boolean): void {
+  // Through a ref so the listeners stay put: `activity` is a new object on every
+  // render, and the Space that pauses is itself what makes one, before its keyup.
+  const latest = useRef(activity);
+  useEffect(() => {
+    latest.current = activity;
+  });
+
+  useEffect(() => {
+    if (!enabled) return;
+    // Whether the Space now down was taken here. Every press sets it afresh, so a keyup
+    // that went missing with the window's focus cannot cost the next button its own.
+    let spaceTaken = false;
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === " ") spaceTaken = false;
+      const root = list.current;
+      if (!root || root.closest("[inert]")) return;
+      if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (isEditing(event.target)) return;
+
+      const key = event.key.toLowerCase();
+      if (key === "j" || key === "k") {
+        event.preventDefault();
+        moveFocus(root, key === "j" ? 1 : -1);
+      } else if (key === " ") {
+        const control = event.target instanceof Element ? event.target.closest(SPACE_IS_ITS_OWN) : null;
+        if (control && !control.matches("[data-event-row]")) return;
+        event.preventDefault();
+        spaceTaken = true;
+        if (event.repeat) return;
+        const { paused, pause, resume } = latest.current;
+        if (paused) resume();
+        else pause();
+      } else if (/^[1-8]$/.test(key) && !event.repeat) {
+        const stream = STREAMS[Number(key) - 1];
+        const { solo, setSolo } = latest.current;
+        setSolo(solo === stream ? null : stream);
+      }
+    };
+
+    // Firefox clicks a focused button on keyup whatever became of its keydown.
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key !== " " || !spaceTaken) return;
+      spaceTaken = false;
+      event.preventDefault();
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keyup", onKeyUp);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keyup", onKeyUp);
+    };
+  }, [enabled, list]);
+}
