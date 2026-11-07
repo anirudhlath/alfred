@@ -449,14 +449,18 @@ describe("ActivityBench", () => {
       expect(a.setSolo).toHaveBeenCalledWith(null);
       fireEvent.click(pause);
       expect(a.pause).toHaveBeenCalledTimes(1);
-      expect(all.style.opacity).toBe("1");
+      expect(all).not.toHaveClass("opacity-40");
+      expect(all).not.toHaveClass("focus-visible:opacity-100");
       expect(all).toHaveAttribute("aria-disabled", "false");
 
       // Not `disabled`, because that would take the focus of whoever just pressed it.
       rerender(atWidth(activity()));
       expect(all).toHaveAttribute("aria-disabled", "true");
       expect(all).not.toHaveAttribute("disabled");
-      expect(all.style.opacity).toBe("0.4");
+      // In classes and not the style, which would beat the focus one: `opacity` dims
+      // the focus ring too, and focus can rest here now.
+      expect(all).toHaveClass("opacity-40", "focus-visible:opacity-100");
+      expect(all.style.opacity).toBe("");
     });
 
     it("solo dims the rest and removes nothing", () => {
@@ -563,8 +567,13 @@ describe("ActivityBench", () => {
     });
 
     it("leaves the phone its footer, its filter's words, and no footnote", () => {
-      render(atWidth(activity({ solo: "user_requests" }), "phone"));
-      expect(screen.getByRole("button", { name: "All streams" })).toBeInTheDocument();
+      const { rerender } = render(atWidth(activity(), "phone"));
+      const quiet = screen.getByRole("button", { name: "All streams" });
+      expect(quiet.style.opacity).toBe("0.4");
+      expect(quiet).not.toHaveClass("opacity-40");
+
+      rerender(atWidth(activity({ solo: "user_requests" }), "phone"));
+      expect(screen.getByRole("button", { name: "All streams" }).style.opacity).toBe("1");
       expect(screen.getByRole("button", { name: "Pause feed" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "EV events, 0" })).toHaveClass("h-11");
       expect(screen.queryByText(/^Keyboard:/)).toBeNull();

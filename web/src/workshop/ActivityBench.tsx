@@ -159,7 +159,9 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
   // `aria-disabled` at width, for the reason `↑ older` gives below: this button goes
   // quiet under the press that made it so, on the surface built for the keyboard. A
   // press with no solo does nothing, since `setSolo(null)` under `dimSolo` touches
-  // nothing else. The phone keeps `disabled`.
+  // nothing else. The phone keeps `disabled`. So focus can rest here with no solo, and
+  // `opacity` dims the focus ring too: the .4 is in classes at width so it can come
+  // back to full on focus, as a dimmed row does, which an inline style would beat.
   const allButton = (
     <button
       type="button"
@@ -168,10 +170,10 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
       onClick={() => activity.setSolo(null)}
       className={
         desk
-          ? "h-9 rounded-lg border border-line bg-transparent px-3 text-[12px] font-medium"
+          ? `h-9 rounded-lg border border-line bg-transparent px-3 text-[12px] font-medium${activity.solo === null ? " opacity-40 focus-visible:opacity-100" : ""}`
           : "h-[50px] rounded-[25px] border border-line bg-transparent px-[18px] text-[14px] font-medium"
       }
-      style={{ color: "var(--fg)", opacity: activity.solo === null ? 0.4 : 1 }}
+      style={{ color: "var(--fg)", opacity: desk ? undefined : activity.solo === null ? 0.4 : 1 }}
     >
       {desk ? "All" : "All streams"}
     </button>
