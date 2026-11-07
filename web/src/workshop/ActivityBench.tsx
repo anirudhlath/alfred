@@ -75,8 +75,8 @@ const WHY_STREAMS: readonly StreamName[] = ["user_responses", "reflex_observatio
  * At width (`Alfred Desktop.dc.html:53-88`) the footer's controls go to the top in
  * one compact row and a footnote takes its place, which is the only thing on the
  * desk that names the keys (R13). A solo there dims the other streams and removes
- * nothing, so it is the same list: its scroll stays, and an empty one means all
- * eight are empty.
+ * nothing, so it is the same list: its scroll and its open row stay, and an empty
+ * one means all eight are empty.
  */
 export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
   const desk = useLayout() !== "phone";

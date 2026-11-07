@@ -92,8 +92,9 @@ function rejections(results: PromiseSettledResult<StreamPage>[]): PromiseRejecte
  * whose only reader is the bench itself.
  *
  * `dimSolo` is the desktop's solo: the rest are dimmed rather than removed, so the
- * neighbourhood stays visible (handoff README §5). The list, the cursor and what
- * `↑ older` reads all ignore `solo`, because it is the same list either way.
+ * neighbourhood stays visible (handoff README §5). The list, the cursor, what
+ * `↑ older` reads and the open row all ignore `solo`, because it is the same list
+ * either way.
  */
 export function useActivity(enabled: boolean, dimSolo = false): Activity {
   const { telemetry, telemetryStatus } = useConnection();
@@ -230,10 +231,16 @@ export function useActivity(enabled: boolean, dimSolo = false): Activity {
     return result;
   }, [feed]);
 
-  const setSolo = useCallback((name: StreamName | null) => {
-    setSoloState(name);
-    setExpanded(null);
-  }, []);
+  const setSolo = useCallback(
+    (name: StreamName | null) => {
+      setSoloState(name);
+      // Under `dimSolo` the open row is still there, and `Only {mono}` is inside it:
+      // closing it would take the button a keyboard reader just pressed, and their
+      // focus with it.
+      if (!dimSolo) setExpanded(null);
+    },
+    [dimSolo],
+  );
 
   const toggle = useCallback((key: string) => {
     setExpanded((current) => (current === key ? null : key));

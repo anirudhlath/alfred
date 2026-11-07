@@ -443,6 +443,21 @@ describe("useActivity", () => {
     expect(rowKeys()).toEqual([`events:${entry(3000).id}`, `home_state:${entry(2000).id}`]);
   });
 
+  it("dimSolo leaves an open row open through a solo and through clearing it", async () => {
+    routes[headUrl("events")] = { entries: [entry(3000)], next_before: null };
+    routes[headUrl("home_state")] = { entries: [entry(2000)], next_before: null };
+    mount(true, true);
+    await waitFor(() => expect(state().loaded).toBe(true));
+    const open = `events:${entry(3000).id}`;
+    fireEvent.click(screen.getByRole("button", { name: open }));
+
+    fireEvent.click(screen.getByRole("button", { name: "solo home_state" }));
+    expect(state()).toMatchObject({ solo: "home_state", expanded: open });
+
+    fireEvent.click(screen.getByRole("button", { name: "all" }));
+    expect(state()).toMatchObject({ solo: null, expanded: open });
+  });
+
   it("dimSolo keeps the shared cursor", async () => {
     // Soloed on the phone, this list would stop at home_state's own 3000 and
     // `↑ older` would read home_state (the test above this pair). At width it is

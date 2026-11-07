@@ -781,6 +781,36 @@ describe("Workshop at width", () => {
     expect(row).toHaveAttribute("data-dimmed");
   });
 
+  it("keeps a row open through a solo and through clearing it, focus on what was pressed", async () => {
+    mountAtWidth(false);
+    await settle();
+    const row = screen.getByText("observed media_player.tv · acted").closest("button");
+    fireEvent.click(row as HTMLElement);
+
+    // `Only RX` is inside the open row, so closing it would throw a keyboard
+    // reader's focus to `<body>`, and jsdom does that much when a node goes.
+    const only = screen.getByRole("button", { name: "Only RX" });
+    only.focus();
+    fireEvent.click(only);
+    const chip = screen.getByRole("button", { name: /^RX / });
+    expect(chip).toHaveAttribute("aria-pressed", "true");
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(only).toHaveFocus();
+
+    chip.focus();
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute("aria-pressed", "false");
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(chip).toHaveFocus();
+
+    // The other way to clear it. Focus is not asked of this one: `All` disables
+    // itself when pressed, which jsdom does not act on and a browser does.
+    fireEvent.click(only);
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    expect(chip).toHaveAttribute("aria-pressed", "false");
+    expect(row).toHaveAttribute("aria-expanded", "true");
+  });
+
   it("hands focus to the button when a bench throws with focus inside it", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     mountAtWidth(false);
