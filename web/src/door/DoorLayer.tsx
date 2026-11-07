@@ -122,105 +122,107 @@ export function DoorLayer({ tracked, open, online, now, onClose, onConfirm, onDe
         className="flex flex-1 flex-col overflow-hidden"
         style={{ background: "var(--ink)", color: "var(--paper)" }}
       >
-        <div className="flex items-center justify-between px-6 pt-16">
-          <button
-            type="button"
-            onClick={onClose}
-            className="-ml-1 flex h-11 items-center gap-1.5 border-0 bg-transparent px-1 text-[15px] font-normal"
-            style={{ color: "var(--paper-muted)" }}
-          >
-            <span
-              aria-hidden="true"
-              className="block h-2.5 w-2.5 border-b-[1.5px] border-l-[1.5px] border-current"
-              style={{ transform: "rotate(45deg)" }}
-            />
-            Leave it
-          </button>
-          <div className="font-mono text-[11px]" style={{ color: "var(--paper-muted)" }}>
-            {ask ? "ASK" : "CRITICAL"} · {shortId(action.request_id)}
-          </div>
-        </div>
-
-        <div className="flex flex-1 flex-col items-center justify-center gap-7 px-6 text-center">
-          <FuseRing percent={percent} size={168} danger={remaining <= DANGER_SECONDS}>
-            <div className="flex flex-col items-center gap-0.5">
-              <div className="t-fuse">{mmss(remaining)}</div>
-              <div className="font-mono text-[11px]" style={{ color: "var(--paper-muted)" }}>
-                {subLabel(item)}
-              </div>
-            </div>
-          </FuseRing>
-
-          <div className="flex flex-col items-center gap-2.5">
-            <h2 className="t-gate">{actionTitle(action)}</h2>
-            <p
-              className="max-w-[300px] text-[15px] leading-[1.45]"
-              style={{ color: "var(--paper-muted)" }}
-            >
-              {reason}
-            </p>
-            <div
-              className="rounded-lg border px-3 py-2 font-mono text-[11.5px] leading-[1.5] break-all"
-              style={{ borderColor: "var(--ring)", color: "var(--paper-muted)" }}
-            >
-              {rawCall(action.tool_name, action.parameters)}
-            </div>
-          </div>
-        </div>
-
-        <div
-          className="flex flex-col gap-3 px-5"
-          // The screen's own edge: the slider must clear the home indicator (§4).
-          style={{ paddingBottom: "calc(40px + env(safe-area-inset-bottom, 0px))" }}
-        >
-          {phase === "pending" ? (
-            <SlideToConfirm
-              hint="Slide to confirm"
-              disabled={!online}
-              onConfirm={() => onConfirm(action.request_id)}
-            />
-          ) : (
-            <div
-              className="flex h-16 items-center justify-center gap-2.5 rounded-[32px] border-[1.5px] text-[16px] font-medium"
-              style={{ borderColor: "var(--ring)" }}
-            >
-              <span
-                aria-hidden="true"
-                className="h-2 w-2 rounded-full"
-                style={{ background: PILL[phase].dot }}
-              />
-              {PILL[phase].word}
-            </div>
-          )}
-
-          <div
-            className="text-center font-mono text-[11px] leading-[1.5]"
-            style={{ color: "var(--paper-muted)" }}
-          >
-            {footLine(item, online)}
-          </div>
-
-          {phase === "pending" ? (
-            // Offline it is out of reach like the slider: the POST could not leave.
-            <button
-              type="button"
-              disabled={!online}
-              onClick={() => onDeny(action.request_id)}
-              className="h-[50px] rounded-[25px] border-0 bg-transparent text-[15px] font-medium"
-              style={{ color: "var(--paper)", opacity: online ? 1 : 0.5 }}
-            >
-              Don't
-            </button>
-          ) : (
+        <div className="phone-column flex flex-1 flex-col overflow-hidden">
+          <div className="flex items-center justify-between px-6 pt-16">
             <button
               type="button"
               onClick={onClose}
-              className="h-[50px] rounded-[25px] border-0 bg-transparent text-[15px] font-medium"
-              style={{ color: "var(--paper)" }}
+              className="-ml-1 flex h-11 items-center gap-1.5 border-0 bg-transparent px-1 text-[15px] font-normal"
+              style={{ color: "var(--paper-muted)" }}
             >
-              Back to the room
+              <span
+                aria-hidden="true"
+                className="block h-2.5 w-2.5 border-b-[1.5px] border-l-[1.5px] border-current"
+                style={{ transform: "rotate(45deg)" }}
+              />
+              Leave it
             </button>
-          )}
+            <div className="font-mono text-[11px]" style={{ color: "var(--paper-muted)" }}>
+              {ask ? "ASK" : "CRITICAL"} · {shortId(action.request_id)}
+            </div>
+          </div>
+
+          <div className="flex flex-1 flex-col items-center justify-center gap-7 px-6 text-center">
+            <FuseRing percent={percent} size={168} danger={remaining <= DANGER_SECONDS}>
+              <div className="flex flex-col items-center gap-0.5">
+                <div className="t-fuse">{mmss(remaining)}</div>
+                <div className="font-mono text-[11px]" style={{ color: "var(--paper-muted)" }}>
+                  {subLabel(item)}
+                </div>
+              </div>
+            </FuseRing>
+
+            <div className="flex flex-col items-center gap-2.5">
+              <h2 className="t-gate">{actionTitle(action)}</h2>
+              <p
+                className="max-w-[300px] text-[15px] leading-[1.45]"
+                style={{ color: "var(--paper-muted)" }}
+              >
+                {reason}
+              </p>
+              <div
+                className="rounded-lg border px-3 py-2 font-mono text-[11.5px] leading-[1.5] break-all"
+                style={{ borderColor: "var(--ring)", color: "var(--paper-muted)" }}
+              >
+                {rawCall(action.tool_name, action.parameters)}
+              </div>
+            </div>
+          </div>
+
+          <div
+            className="flex flex-col gap-3 px-5"
+            // The screen's own edge: the slider must clear the home indicator (§4).
+            style={{ paddingBottom: "calc(40px + env(safe-area-inset-bottom, 0px))" }}
+          >
+            {phase === "pending" ? (
+              <SlideToConfirm
+                hint="Slide to confirm"
+                disabled={!online}
+                onConfirm={() => onConfirm(action.request_id)}
+              />
+            ) : (
+              <div
+                className="flex h-16 items-center justify-center gap-2.5 rounded-[32px] border-[1.5px] text-[16px] font-medium"
+                style={{ borderColor: "var(--ring)" }}
+              >
+                <span
+                  aria-hidden="true"
+                  className="h-2 w-2 rounded-full"
+                  style={{ background: PILL[phase].dot }}
+                />
+                {PILL[phase].word}
+              </div>
+            )}
+
+            <div
+              className="text-center font-mono text-[11px] leading-[1.5]"
+              style={{ color: "var(--paper-muted)" }}
+            >
+              {footLine(item, online)}
+            </div>
+
+            {phase === "pending" ? (
+              // Offline it is out of reach like the slider: the POST could not leave.
+              <button
+                type="button"
+                disabled={!online}
+                onClick={() => onDeny(action.request_id)}
+                className="h-[50px] rounded-[25px] border-0 bg-transparent text-[15px] font-medium"
+                style={{ color: "var(--paper)", opacity: online ? 1 : 0.5 }}
+              >
+                Don't
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onClose}
+                className="h-[50px] rounded-[25px] border-0 bg-transparent text-[15px] font-medium"
+                style={{ color: "var(--paper)" }}
+              >
+                Back to the room
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </Layer>

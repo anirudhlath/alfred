@@ -476,6 +476,15 @@
     outline-offset: -2px;
   }
 
+  /* The Door and the gates still cover all three columns (§11), but what is on them stops
+     at a phone's width: a slide 1200 px long is unusable (R15). No phone held upright
+     reaches it, so there this is the screen's own box and its margins are 0. */
+  .phone-column {
+    width: 100%;
+    max-width: 480px;
+    margin-inline: auto;
+  }
+
   /* ---------------------------------------------------- keyboard + home indicator
      Constraint §4.3 (home indicator) and §4.5 (the keyboard covers fixed
      elements). The shell is already the visible band, so the keyboard has been

@@ -327,4 +327,27 @@ describe("Gate", () => {
     expect(pointer).not.toBeNull();
     expect(pointer).not.toHaveClass("gate-field");
   });
+
+  it("a gate's action sits inside .phone-column", () => {
+    render(
+      <Gate
+        kicker="k"
+        title="Welcome back, sir."
+        primary={{ label: "Sign in with Face ID", onClick: () => {} }}
+      />,
+    );
+    const column = screen
+      .getByRole("button", { name: "Sign in with Face ID" })
+      .closest(".phone-column");
+
+    expect(column).not.toBeNull();
+    // The copy above it scrolls in the same column, which lays both out as the gate did.
+    expect(column).toContainElement(screen.getByRole("heading", { name: "Welcome back, sir." }));
+    expect(column).toHaveClass("flex", "flex-1", "flex-col", "overflow-hidden");
+  });
+
+  it("keeps its dot field outside .phone-column, across the whole screen", () => {
+    const { container } = render(<Gate kicker="k" title="t" />);
+    expect(container.querySelector(".gate-field")?.closest(".phone-column")).toBeNull();
+  });
 });
