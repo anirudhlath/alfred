@@ -16,10 +16,11 @@ export interface SheetProps {
   /** What the surface is for: the body's first line, or the column header's last. */
   intro?: string;
   /**
-   * What the detail is showing, by identity, where another row can re-point it: a
-   * new one makes that row the opener focus returns to, and starts the body at the
-   * top. Only a column reads it, because over the bench focus is in the panel, and
-   * the panel is no opener.
+   * What the detail is showing, by identity, where another row can re-point it. Beside
+   * the app, a new one starts the body at the top; `null` is a close, and a sheet leaves
+   * from where it was. In a column it also makes that row the opener focus returns to.
+   * Not over the bench, where focus is in the panel, and the panel is no opener. The
+   * phone ignores it: nothing behind its modal can press a row.
    */
   subject?: unknown;
 }
@@ -74,16 +75,17 @@ function ModalSheet(props: SheetProps) {
  * is a dialog without `aria-modal`, and `Desk` quiets only the bench behind it.
  */
 function SheetOverBench({ slot, ...props }: SheetProps & { slot: HTMLElement }) {
-  const { open, onClose } = props;
+  const { open, subject, onClose } = props;
   const { mounted, leaving } = usePresence(open, SHEET_MS);
   const panel = useRef<HTMLDivElement>(null);
+  const body = useTopOnRepoint(subject);
   useAsideFocus(mounted, panel, true);
   useEscapeBeside(open, panel, onClose);
 
   if (!mounted) return null;
 
   return createPortal(
-    <SheetPanel {...props} panel={panel} box="absolute inset-0" leaving={leaving} />,
+    <SheetPanel {...props} panel={panel} body={body} box="absolute inset-0" leaving={leaving} />,
     slot,
   );
 }
@@ -104,16 +106,10 @@ function DetailColumn({
   slot,
 }: SheetProps & { slot: HTMLElement }) {
   const panel = useRef<HTMLElement>(null);
-  const body = useRef<HTMLDivElement>(null);
+  const body = useTopOnRepoint(subject);
   const titleId = useId();
   useAsideFocus(open, panel, false, subject);
   useEscapeBeside(open, panel, onClose);
-
-  // Halfway down one thread is nowhere in the next. A cached one renders straight
-  // in, so nothing else would move the old offset.
-  useLayoutEffect(() => {
-    if (body.current) body.current.scrollTop = 0;
-  }, [subject]);
 
   if (!open) return null;
 
@@ -161,6 +157,7 @@ function DetailColumn({
 
 interface SheetPanelProps extends SheetProps {
   panel: RefObject<HTMLDivElement | null>;
+  body?: RefObject<HTMLDivElement | null>;
   /** How the panel's outer box fills what it is over. */
   box: string;
   modal?: boolean;
@@ -178,6 +175,7 @@ function SheetPanel({
   onClose,
   children,
   panel,
+  body,
   box,
   modal,
   leaving,
@@ -230,6 +228,7 @@ function SheetPanel({
           </button>
         </div>
         <div
+          ref={body}
           className="flex flex-1 flex-col gap-3 overflow-y-auto px-5"
           style={{ paddingBottom: "calc(40px + env(safe-area-inset-bottom, 0px))" }}
         >
@@ -247,6 +246,20 @@ function Intro({ text }: { text: string }) {
       {text}
     </p>
   );
+}
+
+/**
+ * The ref for a detail's body, which goes back to the top when the detail is
+ * re-pointed: halfway down one thread is nowhere in the next, and a cached one renders
+ * straight in, so nothing else would move the old offset. No subject is a close, not a
+ * new thread: a sheet's leave is still on screen, and it should not jump as it goes.
+ */
+function useTopOnRepoint(subject: unknown): RefObject<HTMLDivElement | null> {
+  const body = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (subject != null && body.current) body.current.scrollTop = 0;
+  }, [subject]);
+  return body;
 }
 
 /**

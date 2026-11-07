@@ -98,6 +98,15 @@ describe("Sheet on the phone", () => {
     expect(screen.queryByRole("button", { name: "esc closes" })).toBeNull();
   });
 
+  it("phone: a new subject leaves the body where it is", () => {
+    const { rerender } = mount(tree("phone", true, { subject: "a" }));
+    const body = screen.getByText("The thread").parentElement as HTMLElement;
+    body.scrollTop = 200;
+
+    rerender(tree("phone", true, { subject: "b" }));
+    expect(body.scrollTop).toBe(200);
+  });
+
   it("phone: Escape arrives on the panel, because a gate over it swallows the key", () => {
     const onClose = vi.fn();
     mount(tree("phone", true, { onClose }));
@@ -344,6 +353,30 @@ describe("Sheet over the bench", () => {
     root.removeAttribute("inert");
     escape(button("Elsewhere"));
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("sheet-over-bench: a new subject starts the body at the top, and the same one leaves it", () => {
+    const { rerender } = mount(tree("sheet-over-bench", true, { subject: "a" }));
+    const body = screen.getByText("The thread").parentElement as HTMLElement;
+    body.scrollTop = 200;
+
+    rerender(tree("sheet-over-bench", true, { subject: "a" }));
+    expect(body.scrollTop).toBe(200);
+
+    rerender(tree("sheet-over-bench", true, { subject: "b" }));
+    expect(screen.getByText("The thread").parentElement).toBe(body);
+    expect(body.scrollTop).toBe(0);
+  });
+
+  it("sheet-over-bench: a closing sheet leaves from where it was", () => {
+    const { rerender } = mount(tree("sheet-over-bench", true, { subject: "a" }));
+    const body = screen.getByText("The thread").parentElement as HTMLElement;
+    body.scrollTop = 200;
+
+    // `WhySheet` closes by passing no anchor, so the subject goes while the leave runs.
+    rerender(tree("sheet-over-bench", false, { subject: null }));
+    expect(dialog()).toBeInTheDocument();
+    expect(body.scrollTop).toBe(200);
   });
 
   it("sheet-over-bench: takes focus and gives it back", async () => {
