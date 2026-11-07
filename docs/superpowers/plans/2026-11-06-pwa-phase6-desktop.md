@@ -211,7 +211,7 @@ CSS, in `@layer components`:
 **Compact chips** (`Alfred Desktop.dc.html:53-64`): 36 px (`h-9`), monogram and count inline with `gap-1`, count opacity .7 (.8 when on), `flex-wrap` inside the chip with `min-w-0 overflow-hidden` so a narrow one stacks (R20), no fading (R19). The outer row is `flex flex-wrap gap-1.5`; the eight sit in a `flex` group with `flex-[1_1_240px] min-w-0 gap-1.5`, then `trailing`, `flex shrink-0 gap-1.5` (240 + gap + the 106 of `All` and `Pause` is the 352 of R20). `aria-label`, `aria-pressed` and toggling are unchanged.
 
 **The bench at width:** chips first, the padding `12 24 0` on a wrapper and `max-w-[520px]` on the row inside it (the mock's 520 is content width), trailing the two buttons. The footer goes. The list is `px-6 pt-3 max-w-[568px]`. The banner and error line take `mx-6`.
-- `All` is `h-9 rounded-lg border border-line px-3 text-[12px] font-medium`, disabled and .4 with no solo, as the phone's is.
+- `All` is `h-9 rounded-lg border border-line px-3 text-[12px] font-medium`, with no solo `aria-disabled` and `opacity-40 focus-visible:opacity-100`: the phone's is `disabled`, but a button that disables itself under the press throws focus to `<body>`, and the keyboard lives here.
 - `Pause` is `h-9 rounded-lg px-3 text-[12px] font-medium whitespace-nowrap`, filled like the phone's; its paused label is the phone's `Resume · N new` / `Resume`.
 - Under the list, padding `10 24 24`, `t-meta-strong` (the only place the keys are named, and `--muted` is 3.46:1 in light), verbatim (R13): when soloed `Soloed {mono}: other streams dimmed rather than removed, so the neighbourhood stays visible.`, always `Keyboard: J/K move, Enter opens payload, Space pauses, 1–8 solo a stream.`
 
