@@ -166,10 +166,11 @@ export function useModalFocus(active: boolean, panel: RefObject<HTMLElement | nu
  * though the reader never went in. Anywhere else they have gone on, to the composer
  * or a sheet rising through this one's leave, and stay there.
  *
- * A new `subject` means another opener has re-pointed the surface, so the opener is
- * captured again and nothing else happens. That is an effect of its own: were the
- * restore its cleanup, Safari, where pressing a button does not focus it, would sit
- * on `<body>` through the press and pull focus to the last opener.
+ * A new `subject` means another press has pointed the surface, from any row and at
+ * any thread, so the opener is captured again and nothing else happens. That is an
+ * effect of its own: were the restore its cleanup, Safari, where pressing a button
+ * does not focus it, would sit on `<body>` through the press and pull focus to the
+ * last opener.
  *
  * `active` is true only while the panel is rendered, so its ref is set by the time
  * this runs.

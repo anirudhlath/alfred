@@ -249,10 +249,11 @@ function Intro({ text }: { text: string }) {
 }
 
 /**
- * The ref for a detail's body, which goes back to the top when the detail is
- * re-pointed: halfway down one thread is nowhere in the next, and a cached one renders
- * straight in, so nothing else would move the old offset. No subject is a close, not a
- * new thread: a sheet's leave is still on screen, and it should not jump as it goes.
+ * The ref for a detail's body, which goes back to the top on every press that points
+ * the detail: halfway down one thread is nowhere in the next, and a cached one renders
+ * straight in, so nothing else would move the old offset. A press for the thread
+ * already open asks to see it, so it goes to the top as well. No subject is a close, not
+ * a press: a sheet's leave is still on screen, and it should not jump as it goes.
  */
 function useTopOnRepoint(subject: unknown): RefObject<HTMLDivElement | null> {
   const body = useRef<HTMLDivElement>(null);
