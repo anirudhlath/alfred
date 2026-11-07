@@ -88,17 +88,16 @@ Groups: `foundation` (Page, RoomScreen, DeskScreen), `room`, `timeline`, `door`,
   replaces `web/src/shell/ThemeProvider.tsx` in the bundle with the same `useTheme()`
   shape, so `ThemeToggle` and `PresenceField` are unmodified.
 - **`RoomScreen`** (`ds/RoomScreen.tsx`) is `web/src/room/Room.tsx`'s layout with props
-  where Room has its socket, hooks and providers. If Room's layout changes, this file
-  changes with it.
+  where Room has its socket, hooks and providers, and it follows `useLayout()` as Room does:
+  under a wide `LayoutContext` it draws no handle, takes the desk's header spacing and marks
+  the row named by `openThread`. If Room's layout changes, this file changes with it.
 - **`DeskScreen`** (`ds/DeskScreen.tsx`) is the laptop's composition (`docs/web-frontend.md`,
   "Desktop"), in a frame 800 px tall: the real `Desk` under `LayoutContext` `columns`, with
   `RoomScreen` as the Room, `BenchSwitcher` and the real `ActivityBench` over a pinned `Activity`
   as the bench (one stream soloed, one row open), and the real `WhySheet` over a seeded query
   cache in the column. Only the Workshop's header is restated, because `WorkshopPanel` runs four
   live hooks; if that header changes, this file changes with it. It takes no props: its data is
-  `previews/fixtures.ts`. Its Room is `RoomScreen`, which is the phone's layout, so it keeps the
-  phone's header spacing and draws the handle, and it cannot mark an open thread. The real desk
-  does none of those, and `ActRow`'s `ThreadOpen` story shows the row.
+  `previews/fixtures.ts`.
 
 Everything else in `window.Alfred` is the component from `web/src`, bundled unmodified.
 

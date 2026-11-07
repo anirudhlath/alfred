@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { rateText } from "@/lib/format";
-import { STREAMS, type StreamName, type StreamRef } from "@/lib/streams";
+import { rowKey, STREAMS, type StreamName, type StreamRef } from "@/lib/streams";
 import { buildThread, type Thread } from "@/lib/trace";
 import { WhySheet } from "@/sheets/WhySheet";
 import { Desk } from "@/shell/Desk";
@@ -51,9 +51,9 @@ function seededClient(): QueryClient {
 /**
  * The laptop's composition (handoff §11, web/src/room/Room.tsx): the Room, the
  * Workshop on its Activity bench with one stream soloed and one row open, and that
- * row's causal thread in the third column. The real `Desk`, bench and thread over
- * the sample data, in a frame 800 px tall. Put it in a `<Page padding={0}>` at least
- * 1280 px wide. Its Room is `RoomScreen`, so it keeps the phone's header and handle.
+ * row's causal thread in the third column, marked on the Room's Act row it came from.
+ * The real `Desk`, bench and thread over the sample data, in a frame 800 px tall. Put
+ * it in a `<Page padding={0}>` at least 1280 px wide.
  */
 export function DeskScreen() {
   const [client] = useState(seededClient);
@@ -69,7 +69,14 @@ export function DeskScreen() {
         <Desk
           detailOpen
           room={
-            <RoomScreen headline="Listening, sir." overview={overview} lastTrueAt={lastTrue} items={items} now={NOW} />
+            <RoomScreen
+              headline="Listening, sir."
+              overview={overview}
+              lastTrueAt={lastTrue}
+              items={items}
+              now={NOW}
+              openThread={rowKey(anchor)}
+            />
           }
           bench={
             <>

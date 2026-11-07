@@ -13,6 +13,7 @@ import { PresenceField } from "@/room/PresenceField";
 import { StatusLine } from "@/room/StatusLine";
 import { Timeline } from "@/room/Timeline";
 import { WorkshopHandle } from "@/room/WorkshopHandle";
+import { useLayout } from "@/shell/layout";
 import { ThemeToggle } from "@/shell/ThemeToggle";
 
 export interface RoomScreenProps {
@@ -36,13 +37,16 @@ export interface RoomScreenProps {
   pending?: TrackedAction | null;
   /** Epoch ms the fuse is measured against. */
   now?: number;
+  /** The `rowKey` of the row whose thread is open in the column. At width only: the phone has no column. */
+  openThread?: string | null;
 }
 
 /**
  * The Room, assembled from the app's own parts in the app's own order
  * (web/src/room/Room.tsx): presence field, header, timeline, Door banner,
  * composer. Data comes in as props instead of from the socket. Put it in a
- * `<Page frame="phone">`.
+ * `<Page frame="phone">`. Under a wide `LayoutContext`, as in `DeskScreen`, it draws
+ * what `Room` draws at width: no Workshop handle and the desk's header spacing.
  */
 export function RoomScreen({
   headline,
@@ -56,7 +60,9 @@ export function RoomScreen({
   thinking = false,
   pending = null,
   now = 0,
+  openThread = null,
 }: RoomScreenProps) {
+  const layout = useLayout();
   const signal = useMemo(() => new PresenceSignal(), []);
   useEffect(() => {
     signal.setThinking(thinking);
@@ -69,7 +75,9 @@ export function RoomScreen({
     >
       <PresenceField signal={signal} offline={!online} />
 
-      <header className="relative z-[1] flex flex-col gap-1 px-6 pt-[72px]">
+      <header
+        className={`relative z-[1] flex flex-col gap-1 ${layout === "phone" ? "px-6 pt-[72px]" : "px-7 pt-10"}`}
+      >
         <div className="flex items-end justify-between gap-3">
           <Headline text={headline} />
           <ThemeToggle />
@@ -79,7 +87,12 @@ export function RoomScreen({
         {dnd ? <DndRow until={dnd.until} heldCount={dnd.heldCount} onOpen={() => {}} /> : null}
       </header>
 
-      <Timeline items={items} firstDayGreeting={firstDayGreeting} onWhy={() => {}} />
+      <Timeline
+        items={items}
+        firstDayGreeting={firstDayGreeting}
+        onWhy={() => {}}
+        openThread={openThread}
+      />
 
       {pending ? <DoorBanner tracked={pending} now={now} onOpen={() => {}} /> : null}
 
@@ -94,7 +107,7 @@ export function RoomScreen({
             onAudio={() => {}}
           />
         }
-        handle={<WorkshopHandle onOpen={() => {}} />}
+        handle={layout === "phone" ? <WorkshopHandle onOpen={() => {}} /> : undefined}
       />
     </main>
   );
