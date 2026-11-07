@@ -134,6 +134,15 @@ export function luminance(color: string): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
+/** A colour's gamma-encoded channels, in the eight bits a screen is sent. */
+function eightBit(color: string): number[] {
+  return toLinearRgb(color).map((c) => Math.round(toGamma(c) * 255));
+}
+
+function toHex(channels: number[]): string {
+  return `#${channels.map((c) => c.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+}
+
 /**
  * The same colour as `#RRGGBB` — for the files that cannot hold an `oklch()` and
  * must restate one. `web/public/icon.svg` is the case that wanted this: librsvg
@@ -143,8 +152,7 @@ export function luminance(color: string): number {
  * which is the drift that was previously invisible.
  */
 export function srgbHex(color: string): string {
-  const channels = toLinearRgb(color).map((c) => Math.round(toGamma(c) * 255));
-  return `#${channels.map((c) => c.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+  return toHex(eightBit(color));
 }
 
 /**
@@ -156,10 +164,8 @@ export function srgbHex(color: string): string {
  * dark it reads AA where this does not, so this is the one to hold them to.
  */
 export function over(color: string, opacity: number, ground: string): string {
-  const eightBit = (c: string) => toLinearRgb(c).map((channel) => Math.round(toGamma(channel) * 255));
   const under = eightBit(ground);
-  const mixed = eightBit(color).map((c, i) => Math.round(opacity * c + (1 - opacity) * under[i]));
-  return `#${mixed.map((c) => c.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+  return toHex(eightBit(color).map((c, i) => Math.round(opacity * c + (1 - opacity) * under[i])));
 }
 
 /** The WCAG ratio between two colours, 1 to 21. Which one is the text does not matter. */
