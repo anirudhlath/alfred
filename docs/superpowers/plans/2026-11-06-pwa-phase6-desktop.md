@@ -35,7 +35,7 @@ The handoff draws one composition, the Workshop open with a thread beside it. Th
 | R7 | `esc closes` is a real button | An iPad in landscape reaches 1100 px with no Escape key |
 | R8 | The column keeps the title `Why Alfred did that` | The mock's `Why Alfred spoke about the door` is sample data; nothing generates such a sentence |
 | R9 | `Causal thread` is the thread's eyebrow only; Held back has none | No other eyebrow is drawn, so none is invented |
-| R10 | In the column, focus stays where it was on open, and returns to the opener on close only if it was inside the column. Over the bench, focus moves in and always returns | The column is beside the reader's place, so J/K must keep working. The sheet covers the bench it came from |
+| R10 | In the column, focus stays where it was on open. Over the bench, focus moves in. Either way it returns to the opener on close only if it was still inside, so only from `<body>` once the panel has gone. A column re-pointed by another row's `why?` takes that row as its opener | The column is beside the reader's place, so J/K must keep working. The sheet covers the bench it came from. A reader who has moved on during a leave, into the composer or a new sheet, stays there |
 | R11 | J/K move real focus onto the row's own button, so Enter is native and needs no code. They skip dimmed rows and do not wrap | A separate cursor would duplicate focus and hide from assistive tech. A soloed stream is the one being read |
 | R12 | Space pauses when focus is on a row or on nothing; on any other control it stays that control's | A row's Space would toggle it, which Enter does. A chip's Space is its own (WCAG 2.1.1) |
 | R13 | The bench's mock annotation ships split: the keyboard sentence always, `Soloed {mono}: …` only while soloed. The third column's design note does not ship | It is the only way to discover the shortcuts. The other note links to prototype files |
@@ -155,7 +155,7 @@ CSS, in `@layer components`:
 - Consumes: `useLayout`, `LayoutContext`, `useDeskSlots`, `DeskSlotsContext`, `--detail`
 - Produces:
   - `SheetProps` gains `eyebrow?: string` and `intro?: string`. `intro` moves out of both sheets' children and renders first in the body on the phone, with the classes it has today.
-  - `useAsideFocus(active: boolean, panel: RefObject<HTMLElement | null>, take: boolean): void` in `presence.ts` (R10). On cleanup, restore to the captured element when `take`, or when `document.activeElement` is `<body>`, and only if it is connected and outside `[inert]`.
+  - `useAsideFocus(active: boolean, panel: RefObject<HTMLElement | null>, take: boolean, subject?: unknown): void` in `presence.ts` (R10). `subject` changing re-captures the opener. On cleanup, restore to the captured element only when `document.activeElement` is `<body>`, and only if it is connected and outside `[inert]`.
   - `useDetail(): { why: StreamRef | null; heldOpen: boolean; openWhy(ref: StreamRef): void; openHeld(): void; closeWhy(): void; closeHeld(): void }`, all stable through `useCallback` (the memoised Workshop depends on it)
   - `ActRow` gains `threadOpen?: boolean`; `Timeline` gains `openThread?: string | null`, a `rowKey`
 
@@ -167,7 +167,7 @@ CSS, in `@layer components`:
 
 `WhySheet` passes `eyebrow="Causal thread"` and, at `columns` only, the mock's intro `Solid links are joined by an id the server holds. Dashed means adjacent in time only.`; otherwise today's `INTRO`. `HeldBackSheet` passes its `INTRO` as `intro`.
 
-`ActRow` with `threadOpen`, from `Alfred Desktop.dc.html:32`: background `--surface`, `margin 0 -12`, horizontal padding 12, radius 10; text `--fg`; meta gains ` · thread open →`; `why?` per R23.
+`ActRow` with `threadOpen`, from `Alfred Desktop.dc.html:32`: background `--surface`, `margin 0 -12`, horizontal padding 12, radius 10; text `--fg`; meta gains ` · thread open →`, in `t-meta-strong` while open (`--muted` is 3.20:1 on `--surface` in light); `why?` per R23, with `pointer-events-none`.
 
 - [ ] **Step 1: Write the failing tests.**
 
