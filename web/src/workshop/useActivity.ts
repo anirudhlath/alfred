@@ -9,8 +9,9 @@ import { useConnection } from "@/shell/ConnectionProvider";
 export interface Activity {
   /**
    * What the list shows: the solo stream or all eight, newest first, from the
-   * horizon forward. Empty while another bench is showing — the merge is this
-   * bench's own work and nobody else reads it (see `enabled` below). The
+   * horizon forward. All eight whatever is soloed under `dimSolo`, where `solo`
+   * only says which to leave undimmed. Empty while another bench is showing —
+   * the merge is this bench's own work and nobody else reads it (see `enabled` below). The
    * frames themselves are not dropped; they are still in `feed`, and the rows
    * are there again on the frame the reader comes back.
    */
@@ -18,7 +19,8 @@ export interface Activity {
   /**
    * Entries *held* per stream — the chips' numbers. This is loaded depth, not
    * visible rows: with all streams shown, a stream paged deeper than the shared
-   * horizon holds more entries than the list shows (solo it to see them all).
+   * horizon holds more entries than the list shows (solo it to see them all, or
+   * under `dimSolo`, where a solo moves no horizon, press `↑ older`).
    */
   counts: Record<StreamName, number>;
   /**
@@ -88,8 +90,12 @@ function rejections(results: PromiseSettledResult<StreamPage>[]): PromiseRejecte
  * What is skipped is `mergeRows`, which walks eight streams of up to
  * `MAX_PER_STREAM` rows each — uncapped once `↑ older` has been pressed — and
  * whose only reader is the bench itself.
+ *
+ * `dimSolo` is the desktop's solo: the rest are dimmed rather than removed, so the
+ * neighbourhood stays visible (handoff README §5). The list, the cursor and what
+ * `↑ older` reads all ignore `solo`, because it is the same list either way.
  */
-export function useActivity(enabled: boolean): Activity {
+export function useActivity(enabled: boolean, dimSolo = false): Activity {
   const { telemetry, telemetryStatus } = useConnection();
   const [feed, dispatch] = useReducer(feedReducer, undefined, initialFeed);
   const [solo, setSoloState] = useState<StreamName | null>(null);
@@ -198,7 +204,10 @@ export function useActivity(enabled: boolean): Activity {
     return () => dispatch({ type: "seen", at: Date.now() });
   }, [telemetryStatus]);
 
-  const targets = useMemo<readonly StreamName[]>(() => (solo ? [solo] : STREAMS), [solo]);
+  const targets = useMemo<readonly StreamName[]>(
+    () => (solo && !dimSolo ? [solo] : STREAMS),
+    [solo, dimSolo],
+  );
   // The one piece of work a frame costs that is worth skipping. Every live
   // frame allocates a new feed — the paused branch of the reducer does too —
   // so this memo recomputes once per frame, and at 2 ev/s with `↑ older`

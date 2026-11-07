@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { ringFill, ringText, STREAM_INFO, STREAMS } from "@/lib/streams";
+import { RING_COUNT_ON_OPACITY, ringFill, ringText, STREAM_INFO, STREAMS } from "@/lib/streams";
 import css from "../index.css?raw";
-import { contrast, luminance, TOKENS, token, type Theme } from "./contrast";
+import { contrast, luminance, over, TOKENS, token, type Theme } from "./contrast";
 
 /**
  * One theme's declarations, `:root[data-theme="…"] { … }`. The dark block is
@@ -368,10 +368,26 @@ describe("contrast ratios", () => {
  * failure mode this file was built to stop. Light clears AA by 0.12.
  */
 describe("the stream ring", () => {
+  /**
+   * The worst of the eight for a count at `opacity`. Both halves of the compact
+   * chip's claim go through this: that the count clears AA, and that it was raised
+   * no further than that asked, which is one step down failing. The mock's .7 and
+   * .8 are under AA, and the mock's is the look to stay near.
+   */
+  function worstCount(opacity: number, text: (hue: number) => string, ground: (hue: number) => string): number {
+    const hues = STREAMS.map((name) => STREAM_INFO[name].hue);
+    return Math.min(...hues.map((hue) => contrast(over(text(hue), opacity, ground(hue)), ground(hue))));
+  }
+
   it("carries white on every monogram tile and soloed chip", () => {
     for (const name of STREAMS) {
       expect(contrast("#fff", ringFill(STREAM_INFO[name].hue))).toBeGreaterThanOrEqual(4.5);
     }
+  });
+
+  it("carries a soloed compact chip's count, and no further than AA asks", () => {
+    expect(worstCount(RING_COUNT_ON_OPACITY, () => "#fff", ringFill)).toBeGreaterThanOrEqual(4.5);
+    expect(worstCount(RING_COUNT_ON_OPACITY - 0.01, () => "#fff", ringFill)).toBeLessThan(4.5);
   });
 
   for (const theme of ["dark", "light"] as const) {
@@ -381,6 +397,14 @@ describe("the stream ring", () => {
           contrast(resolvedRingText(theme, STREAM_INFO[name].hue), token(theme, "bg")),
         ).toBeGreaterThanOrEqual(4.5);
       }
+    });
+
+    it(`${theme}: reads as a compact chip's count on the page, and no further than AA asks`, () => {
+      const opacity = Number(token(theme, "ring-count-opacity"));
+      const text = (hue: number) => resolvedRingText(theme, hue);
+      const ground = () => token(theme, "bg");
+      expect(worstCount(opacity, text, ground)).toBeGreaterThanOrEqual(4.5);
+      expect(worstCount(opacity - 0.01, text, ground)).toBeLessThan(4.5);
     });
   }
 });

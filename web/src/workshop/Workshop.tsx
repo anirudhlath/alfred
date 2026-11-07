@@ -172,13 +172,13 @@ interface WorkshopPanelProps {
  * column, and this gives it two children — the header, at its own height, and
  * the `tabpanel`, taking the rest. The `section` in `Workshop` is the same column
  * at width. The bench inside that panel is a column of its own, which is what
- * `ActivityBench` documents it needs: banner and footer at their heights, its
- * `flex-1` list between them.
+ * `ActivityBench` documents it needs: banner and footer (at width, chips and
+ * footnote) at their heights, its `flex-1` list between them.
  */
 function WorkshopPanel({ onClose, onWhy, onHeld }: WorkshopPanelProps) {
   const phone = useLayout() === "phone";
   const [bench, setBench] = useState<Bench>("activity");
-  const activity = useActivity(bench === "activity");
+  const activity = useActivity(bench === "activity", !phone);
   // All four hooks are called here, above the bench that is swapped out, each
   // gated on whether its own bench is the one showing: the reads stop when the
   // reader leaves, and the state does not. That is what lets a sub-tab, a kind

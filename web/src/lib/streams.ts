@@ -60,6 +60,14 @@ export function ringFill(hue: number): string {
 }
 
 /**
+ * What a soloed compact chip's count keeps of its white. The mock's .8 is 3.85:1
+ * on `ringFill` at the worst hue; .91 is the least that clears AA on all eight. A
+ * number here and not a token, because neither colour moves with the theme.
+ * `test/contrast.test.ts` holds it to both halves of that.
+ */
+export const RING_COUNT_ON_OPACITY = 0.91;
+
+/**
  * The same hue light enough to *be* text on the page: the un-soloed chip's
  * border and label. The lightness is a per-theme token because legible on
  * paper and legible on ink are different numbers (`--ring-text-l`, index.css);

@@ -139,8 +139,8 @@ async function flush(): Promise<void> {
   });
 }
 
-function Probe({ enabled = true }: { enabled?: boolean }) {
-  const a = useActivity(enabled);
+function Probe({ enabled = true, dimSolo }: { enabled?: boolean; dimSolo?: boolean }) {
+  const a = useActivity(enabled, dimSolo);
   return (
     <div>
       <ul aria-label="rows">
@@ -185,7 +185,7 @@ function rowKeys(): string[] {
   );
 }
 
-function mount(enabled = true) {
+function mount(enabled = true, dimSolo?: boolean) {
   // `useActivity` runs no query at all — it reads the stream over the socket —
   // so this client exists only because `ConnectionProvider`'s tree needs one.
   // It is still the app's own policy rather than a bespoke `retry: false`: the
@@ -197,7 +197,7 @@ function mount(enabled = true) {
   const tree = (showing: boolean) => (
     <QueryClientProvider client={client}>
       <ConnectionProvider>
-        <Probe enabled={showing} />
+        <Probe enabled={showing} dimSolo={dimSolo} />
       </ConnectionProvider>
     </QueryClientProvider>
   );
@@ -429,6 +429,37 @@ describe("useActivity", () => {
       `home_state:${entry(3000).id}`,
       `home_state:${entry(1000).id}`,
     ]);
+  });
+
+  it("dimSolo keeps every stream's rows when one is soloed", async () => {
+    routes[headUrl("events")] = { entries: [entry(3000)], next_before: null };
+    routes[headUrl("home_state")] = { entries: [entry(2000)], next_before: null };
+    mount(true, true);
+    await waitFor(() => expect(state().loaded).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "solo home_state" }));
+    // The choice is still reported, because the bench dims by it. It no longer
+    // decides what is in the list.
+    expect(state().solo).toBe("home_state");
+    expect(rowKeys()).toEqual([`events:${entry(3000).id}`, `home_state:${entry(2000).id}`]);
+  });
+
+  it("dimSolo keeps the shared cursor", async () => {
+    // Soloed on the phone, this list would stop at home_state's own 3000 and
+    // `↑ older` would read home_state (the test above this pair). At width it is
+    // the same list as before the press, so the shared horizon and its reader stay.
+    routes[headUrl("events")] = { entries: [entry(5000), entry(4000)], next_before: entry(4000).id };
+    routes[headUrl("home_state")] = { entries: [entry(6000), entry(3000)], next_before: entry(3000).id };
+    routes[olderUrl("events", entry(4000).id)] = { entries: [entry(2000)], next_before: null };
+    mount(true, true);
+    await waitFor(() => expect(state().loaded).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "solo home_state" }));
+    expect(state().cursor).toBe(entry(4000).id);
+    // Which means the soloed stream's own 3000 is under the horizon, and off the list.
+    expect(rowKeys()).not.toContain(`home_state:${entry(3000).id}`);
+
+    fireEvent.click(screen.getByRole("button", { name: "older" }));
+    await waitFor(() => expect(state().fetchingOlder).toBe(false));
+    expect(calls.filter((url) => url.includes("before="))).toEqual([olderUrl("events", entry(4000).id)]);
   });
 
   it("does nothing when ↑ older is tapped with nothing older to read", async () => {

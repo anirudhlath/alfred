@@ -22,9 +22,10 @@ export type Theme = "dark" | "light";
  * one — the guard picks it up on its own.
  *
  * Not every entry is a colour: `--ring-text-l` is the lightness `ringText()`
- * interpolates into an `oklch()`, and it is here for the same reason the
- * colours are — so a test can resolve what the browser would and the guard can
- * hold the restatement to the stylesheet.
+ * interpolates into an `oklch()`, and `--ring-count-opacity` what a compact chip's
+ * count keeps of that colour. They are here for the same reason the colours are —
+ * so a test can resolve what the browser would and the guard can hold the
+ * restatement to the stylesheet.
  *
  * Nor is every entry a *text* colour. `--line`, `--muted` and `--surface` are
  * here because WCAG 1.4.11 asks 3:1 of a control's boundary and of whatever
@@ -52,6 +53,7 @@ export const TOKENS: Record<Theme, Record<string, string>> = {
     ink: "#F1ECE4",
     paper: "#25221F",
     "ring-text-l": "0.75",
+    "ring-count-opacity": "0.77",
   },
   light: {
     bg: "#F6F3EE",
@@ -70,6 +72,7 @@ export const TOKENS: Record<Theme, Record<string, string>> = {
     ink: "#221F1B",
     paper: "#F1ECE4",
     "ring-text-l": "0.52",
+    "ring-count-opacity": "0.99",
   },
 };
 
@@ -142,6 +145,21 @@ export function luminance(color: string): number {
 export function srgbHex(color: string): string {
   const channels = toLinearRgb(color).map((c) => Math.round(toGamma(c) * 255));
   return `#${channels.map((c) => c.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+}
+
+/**
+ * `color` at `opacity` over `ground`, as `#RRGGBB`: what CSS `opacity` paints. The
+ * mix is of the gamma-encoded channels rather than linear light, and both colours
+ * are eight bits first, as they are when the element is drawn to a layer. A browser
+ * can instead fold the opacity into the paint, which rounds only at the end. At the
+ * compact chip's three counts that reads no lower than this does, and at .76 on
+ * dark it reads AA where this does not, so this is the one to hold them to.
+ */
+export function over(color: string, opacity: number, ground: string): string {
+  const eightBit = (c: string) => toLinearRgb(c).map((channel) => Math.round(toGamma(channel) * 255));
+  const under = eightBit(ground);
+  const mixed = eightBit(color).map((c, i) => Math.round(opacity * c + (1 - opacity) * under[i]));
+  return `#${mixed.map((c) => c.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
 }
 
 /** The WCAG ratio between two colours, 1 to 21. Which one is the text does not matter. */

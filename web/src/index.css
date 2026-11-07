@@ -69,6 +69,10 @@
   /* Lightness for `ringText()` in lib/streams.ts — the stream hue used as text
      on `--bg`. 0.75 on ink clears AA on all eight hues (worst 6.76:1). */
   --ring-text-l: 0.75;
+  /* What a compact chip's count keeps of that text (`StreamChips`). The mock's .7
+     is 4.05:1 at the worst hue; .77 is the least that clears AA on all eight.
+     Restated in `src/test/contrast.ts`; its test holds it to both halves of that. */
+  --ring-count-opacity: 0.77;
   --scrim: rgba(20, 17, 14, 0.45);
 }
 
@@ -101,6 +105,9 @@
   --ring: #3D3832;
   /* 0.52 on paper; the same hue must go darker here (worst 4.62:1). */
   --ring-text-l: 0.52;
+  /* The mock's .7 is 2.77:1 here. The text only just clears AA at full strength,
+     so there is almost nothing to give up: .99. See dark, above. */
+  --ring-count-opacity: 0.99;
   --scrim: rgba(20, 17, 14, 0.45);
 }
 
@@ -109,7 +116,8 @@
    installViewportVars() overwrites on the same element. The stream hues
    (h = 30 + 45·i in the handoff) are not tokens: the hue is data, so it comes
    from STREAM_INFO through ring()/ringFill()/ringText() in lib/streams.ts.
-   Only their lightness-on-the-page is a token, --ring-text-l above. */
+   Only their lightness-on-the-page is a token, --ring-text-l above, and what a
+   compact chip's count keeps of it, --ring-count-opacity. */
 :root {
   --ease-rise: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-settle: cubic-bezier(0.2, 1.4, 0.3, 1);
@@ -295,6 +303,8 @@
      off the Room.
      An Act row's meta is a ninth while its thread is open: `· thread open →` is
      the only thing saying so, and --muted is 3.20:1 on --surface in light.
+     The Activity bench's footnote at width is a tenth: it is the only place the
+     keyboard shortcuts are named (R13).
      The ~17 other `.t-meta` sites are phase-1 scope and unaudited: some sit on
      --ink, where --muted is the wrong family of token entirely and
      --paper-muted is the answer, so they need measuring before they move. */

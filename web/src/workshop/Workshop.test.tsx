@@ -768,6 +768,19 @@ describe("Workshop at width", () => {
     expect(screen.getByText("This bench stopped working.")).toBeInTheDocument();
   }
 
+  it("solos by dimming: the column asks the hook to keep every stream's rows", async () => {
+    mountAtWidth(false);
+    await settle();
+    const row = screen.getByText("observed media_player.tv · acted").closest("button");
+    expect(row).not.toHaveAttribute("data-dimmed");
+
+    fireEvent.click(screen.getByRole("button", { name: /^EV events/ }));
+
+    // The same node, still there. Filtered, as on the phone, it would have gone.
+    expect(row).toBeInTheDocument();
+    expect(row).toHaveAttribute("data-dimmed");
+  });
+
   it("hands focus to the button when a bench throws with focus inside it", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     mountAtWidth(false);

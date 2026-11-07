@@ -255,6 +255,7 @@ palette colour.
 | `--ink`, `--paper`, `--paper-muted` | The Door's inverted surface and its text |
 | `--ring`, `--scrim` | Focus ring, and the dim behind a layer |
 | `--ring-text-l` | The lightness `ringText()` uses for a stream hue set as text — 0.75 on ink, 0.52 on paper |
+| `--ring-count-opacity` | What a compact stream chip's count keeps of that text at width — 0.77 on ink, 0.99 on paper, the least that clears AA on all eight hues |
 | `--ease-rise`, `--ease-settle`, `--ease-sink` | The three easing curves: rise in, settle, leave |
 | `--app-height`, `--viewport-top` | The visible band's height and offset, written by `installViewportVars()` (below) |
 
