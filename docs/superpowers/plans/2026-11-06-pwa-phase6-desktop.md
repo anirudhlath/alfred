@@ -48,7 +48,7 @@ The handoff draws one composition, the Workshop open with a thread beside it. Th
 | R20 | The chip row wraps rather than overflows: a chip's count drops under its monogram when narrow, and `All`/`Pause` drop to a second line under 352 px | Real counts run to 400, and the bench can be 270 px of content at 1100 px. The mock has single digits |
 | R21 | `esc closes` uses `t-meta-strong`, not the mock's muted | It is a control, and `--muted` is 3.46:1 in light (index.css, `.t-meta-strong`) |
 | R22 | `orientation: portrait` in the manifests stays | Desktop ignores it, and removing it changes phones. Android tablets stay portrait for now |
-| R24 | A column's always-visible label (`Workshop`, `Causal thread`) is `t-meta-strong uppercase` at `letter-spacing: 0.08em`, as `SystemFrame` does, not `t-label` | `t-label` is `--muted`, 3.46:1 on `--bg` in light. `SystemFrame` and `IntegrationRow` already refuse it for labels on that ground; the handoff's dark mock does not face it |
+| R24 | A column's always-visible label (`Workshop`, `Causal thread`) is `t-label` with its colour overridden to `--fg2` | `t-label` is the mock's type exactly (11 px, 500, `.08em` caps, the body face), but `--muted` is 3.46:1 on `--bg` in light. Only the colour moves. `SystemFrame`'s `t-meta-strong` recipe would also move the label to mono 400, which the mock does not ask for |
 | R23 | The Act row whose thread is open keeps its `why?` button as the same DOM node, `opacity-0` unless `focus-visible`, instead of removing it | The mock draws none, and that is what a pointer sees. Removing the node would throw a keyboard reader's focus to `<body>` the moment they pressed it |
 
 ## Review Focus
