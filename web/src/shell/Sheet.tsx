@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useDeskSlots } from "@/shell/Desk";
 import { useLayout } from "@/shell/layout";
@@ -16,9 +16,10 @@ export interface SheetProps {
   /** What the surface is for: the body's first line, or the column header's last. */
   intro?: string;
   /**
-   * What the detail is showing, where another row can re-point it: a new one makes
-   * that row the opener focus returns to. Only a column reads it, because over the
-   * bench focus is in the panel, and the panel is no opener.
+   * What the detail is showing, by identity, where another row can re-point it: a
+   * new one makes that row the opener focus returns to, and starts the body at the
+   * top. Only a column reads it, because over the bench focus is in the panel, and
+   * the panel is no opener.
    */
   subject?: unknown;
 }
@@ -103,9 +104,16 @@ function DetailColumn({
   slot,
 }: SheetProps & { slot: HTMLElement }) {
   const panel = useRef<HTMLElement>(null);
+  const body = useRef<HTMLDivElement>(null);
   const titleId = useId();
   useAsideFocus(open, panel, false, subject);
   useEscapeBeside(open, panel, onClose);
+
+  // Halfway down one thread is nowhere in the next. A cached one renders straight
+  // in, so nothing else would move the old offset.
+  useLayoutEffect(() => {
+    if (body.current) body.current.scrollTop = 0;
+  }, [subject]);
 
   if (!open) return null;
 
@@ -140,7 +148,10 @@ function DetailColumn({
         </h2>
         {intro ? <Intro text={intro} /> : null}
       </header>
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 pt-[18px] pb-10">
+      <div
+        ref={body}
+        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 pt-[18px] pb-10"
+      >
         {children}
       </div>
     </aside>,

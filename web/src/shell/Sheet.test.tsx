@@ -272,6 +272,32 @@ describe("Sheet in a column", () => {
     expect(document.activeElement).toBe(button("Opener"));
   });
 
+  it("columns: from <body> it cannot tell a reader who was never inside", () => {
+    const { rerender } = mount(tree("columns", false));
+    button("Opener").focus();
+    rerender(tree("columns", true));
+
+    // A click on blank space, or a press in Safari, leaves `<body>` without entering.
+    button("Opener").blur();
+    expect(document.activeElement).toBe(document.body);
+
+    rerender(tree("columns", false));
+    expect(document.activeElement).toBe(button("Opener"));
+  });
+
+  it("columns: a new subject starts the body at the top, and the same one leaves it", () => {
+    const { rerender } = mount(tree("columns", true, { subject: "a" }));
+    const body = screen.getByText("The thread").parentElement as HTMLElement;
+    body.scrollTop = 200;
+
+    rerender(tree("columns", true, { subject: "a" }));
+    expect(body.scrollTop).toBe(200);
+
+    rerender(tree("columns", true, { subject: "b" }));
+    expect(screen.getByText("The thread").parentElement).toBe(body);
+    expect(body.scrollTop).toBe(0);
+  });
+
   it("columns: gives nothing back into a place that has gone inert", () => {
     const { rerender } = mount(tree("columns", false));
     button("Opener").focus();

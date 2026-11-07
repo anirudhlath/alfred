@@ -22,9 +22,10 @@ export function useDetail(): Detail {
   /**
    * The row a `why?` was asked on — the Room's or the Workshop's. Deliberately
    * not cleared when the Workshop closes: the sheet renders over the Room as
-   * happily as over the Workshop, and while it is up the Workshop under it is
-   * inert, so a close arriving from there is unreachable anyway. The sheet
-   * outlives the surface that opened it.
+   * happily as over the Workshop, and a close arriving from there is unreachable
+   * anyway. On the phone the Workshop under the sheet is inert while it is up, and
+   * from 760 px the Workshop never closes. The sheet outlives the surface that
+   * opened it.
    */
   const [why, setWhy] = useState<StreamRef | null>(null);
   /**

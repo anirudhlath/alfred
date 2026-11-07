@@ -110,6 +110,17 @@ export function anySurfaceUp(): boolean {
   return surfaces.length > 0;
 }
 
+/** Focus back to where it was, unless that place has gone or is behind a surface now. */
+function restoreFocus(previous: Element | null): void {
+  if (
+    previous instanceof HTMLElement &&
+    previous.isConnected &&
+    previous.closest("[inert]") === null
+  ) {
+    previous.focus({ preventScroll: true });
+  }
+}
+
 /**
  * While a modal surface is up, everything behind it is inert and focus lives
  * in the surface — Full Keyboard Access and VoiceOver must not wander into a
@@ -137,13 +148,7 @@ export function useModalFocus(active: boolean, panel: RefObject<HTMLElement | nu
       const top = surfaces.at(-1);
       if (top) top.removeAttribute("inert");
       else app?.removeAttribute("inert");
-      if (
-        previous instanceof HTMLElement &&
-        previous.isConnected &&
-        previous.closest("[inert]") === null
-      ) {
-        previous.focus({ preventScroll: true });
-      }
+      restoreFocus(previous);
     };
   }, [active, panel]);
 }
@@ -155,9 +160,11 @@ export function useModalFocus(active: boolean, panel: RefObject<HTMLElement | nu
  * With `take` it covers the reader's place, so focus moves in on open. Without, it
  * is beside their place and focus stays there. Either way it comes back on close
  * only from `<body>`, which is where a focused element's removal drops it: this
- * cleanup runs after the commit that took the panel out, so `<body>` means the
- * reader was inside. Anywhere else they have gone on, to the composer or a sheet
- * rising through this one's leave, and stay there.
+ * cleanup runs after the commit that took the panel out, so `<body>` stands in for
+ * "the reader was inside". An approximation: a click on blank space, or a press in
+ * Safari, also leaves `<body>`, and closing from there gives focus to the opener
+ * though the reader never went in. Anywhere else they have gone on, to the composer
+ * or a sheet rising through this one's leave, and stay there.
  *
  * A new `subject` means another opener has re-pointed the surface, so the opener is
  * captured again and nothing else happens. That is an effect of its own: were the
@@ -185,15 +192,7 @@ export function useAsideFocus(
     if (!active || !node) return;
     if (take) node.focus({ preventScroll: true });
     return () => {
-      const previous = opener.current;
-      if (
-        document.activeElement === document.body &&
-        previous instanceof HTMLElement &&
-        previous.isConnected &&
-        previous.closest("[inert]") === null
-      ) {
-        previous.focus({ preventScroll: true });
-      }
+      if (document.activeElement === document.body) restoreFocus(opener.current);
     };
   }, [active, panel, take]);
 }

@@ -111,7 +111,9 @@ export function WhySheet({ anchor, onClose }: WhySheetProps) {
       title="Why Alfred did that"
       eyebrow="Causal thread"
       intro={layout === "columns" ? COLUMN_INTRO : INTRO}
-      subject={anchor && rowKey(anchor)}
+      // The ref, not its `rowKey`: the Room's row and the Workshop's for one entry are
+      // one thread and two openers, and each builds its own ref.
+      subject={anchor}
       onClose={onClose}
     >
       {/* Empty, it is `sr-only` — out of flow, so the sheet's `gap-3` does not

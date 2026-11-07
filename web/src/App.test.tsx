@@ -800,6 +800,9 @@ describe("App", () => {
 });
 
 describe("App — the desk", () => {
+  /** The reflex fixture's one successful act, a row in the Room and in the Workshop. */
+  const ACTED = "movie started, evening, user home";
+
   /**
    * A laptop's screen, with a window this wide. `Room` is the one thing that asks
    * the real viewport, so this is the one file that has to stub it: jsdom's screen
@@ -893,6 +896,72 @@ describe("App — the desk", () => {
 
     resize(900);
     expect(desk).not.toHaveAttribute("data-detail");
+  });
+
+  it("holds one detail at a time, and marks an open thread only beside the Room", async () => {
+    const resize = stubWindow(1400);
+    routes["/api/admin/overview"] = { ...overviewFixture, dnd: { active: true } };
+    render(<App />);
+    await settle();
+    const room = await screen.findByRole("main");
+    const why = await within(room).findByRole("button", { name: `why? ${ACTED}` });
+    const thread = () => screen.queryByRole("complementary", { name: "Why Alfred did that" });
+    const held = () => screen.queryByRole("complementary", { name: "Held back" });
+    const marked = () => within(room).queryByText(/thread open →$/);
+
+    fireEvent.click(why);
+    await settle();
+    expect(thread()).toBeInTheDocument();
+    expect(marked()).toBeInTheDocument();
+
+    fireEvent.click(within(room).getByRole("button", { name: /Do-not-disturb/ }));
+    await settle();
+    expect(held()).toBeInTheDocument();
+    expect(thread()).toBeNull();
+    expect(marked()).toBeNull();
+
+    fireEvent.click(why);
+    await settle();
+    expect(thread()).toBeInTheDocument();
+    expect(held()).toBeNull();
+    expect(marked()).toBeInTheDocument();
+
+    // The phone's sheet is modal, with the row behind it: every pixel as it was.
+    resize(390);
+    expect(screen.getByRole("dialog", { name: "Why Alfred did that" })).toHaveAttribute(
+      "aria-modal",
+      "true",
+    );
+    expect(marked()).toBeNull();
+    expect(why).not.toHaveClass("opacity-0");
+  });
+
+  it("gives focus back to the row last pressed, even for the thread already open", async () => {
+    stubWindow(1400);
+    render(<App />);
+    await settle();
+    const room = await screen.findByRole("main");
+    const why = await within(room).findByRole("button", { name: `why? ${ACTED}` });
+    act(() => why.focus());
+    fireEvent.click(why);
+    await settle();
+
+    // The same entry, from the Workshop beside the Room.
+    fireEvent.click(
+      await screen.findByRole("button", { name: new RegExp(ACTED), expanded: false }),
+    );
+    const benchWhy = await screen.findByRole("button", { name: "Why · causal thread" });
+    act(() => benchWhy.focus());
+    fireEvent.click(benchWhy);
+    await settle();
+
+    const close = screen.getByRole("button", { name: "esc closes" });
+    act(() => close.focus());
+    fireEvent.click(close);
+    await settle();
+
+    expect(screen.queryByRole("complementary", { name: "Why Alfred did that" })).toBeNull();
+    expect(document.activeElement).toBe(benchWhy);
   });
 });
 
