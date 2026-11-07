@@ -312,7 +312,7 @@ The Door's and `Gate`'s backgrounds stay full-bleed. What goes inside the column
 - `DeskScreen` is `Desk` under `LayoutContext` `columns` with `RoomScreen` as the Room, `BenchSwitcher` + compact `StreamChips` + `EventRow`s as the bench (one soloed, one open) and `Sheet` holding a thread in the column, in a frame 800 px tall.
 - It goes in `foundation`, with its own minimum width of 1280 in `gen-docs.mjs` alongside `PHONE`, and a line under "The two canvas-only pieces" in `docs/design-system.md` (which becomes three).
 - Stories: `StreamChips` gains `Compact`; `EventRow` gains `Dimmed` and `OpenOnDesk`; `ActRow` (`web/design-system/previews/ActRow.tsx`) gains `ThreadOpen`.
-- `RoomScreen` does not change: the phone's layout did not. **Nothing is uploaded.** The owner has the upload on hold.
+- `RoomScreen` draws the phone exactly as it did, and under a wide `LayoutContext` what `Room` draws at width: no handle, `px-7 pt-10`, and an optional `openThread`. A canvas that shows a handle the laptop never draws teaches the design agent to draw it. **Nothing is uploaded.** The owner has the upload on hold.
 
 - [ ] **Step 1:** Write the docs.
 - [ ] **Step 2:** Add `DeskScreen` and the stories.
