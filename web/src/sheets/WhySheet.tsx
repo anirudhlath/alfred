@@ -165,7 +165,8 @@ export function WhySheet({ anchor, onClose }: WhySheetProps) {
                     <div className="t-row">{summarise(node.stream, node.entry.event).text}</div>
                     {/* `t-meta-strong`, not `t-meta`: this line is the whole
                         evidence for the link drawn beside it, and --muted's
-                        3.46:1 is not a thing to read it at (index.css). */}
+                        3.46:1 on a sheet's --bg, or 3.34:1 on the column's
+                        --detail, is not a thing to read it at (index.css). */}
                     <div className="t-meta-strong break-words">{nodeMeta(node)}</div>
                   </div>
                 </li>
@@ -173,7 +174,8 @@ export function WhySheet({ anchor, onClose }: WhySheetProps) {
             })}
           </ol>
           {/* `--fg2`, not the `--muted` its sibling line in `HeldBackSheet`
-              uses: 3.46:1 is under AA at this size too. */}
+              uses: 3.46:1 on --bg and 3.34:1 on --detail are under AA at
+              this size too. */}
           {nodes.length === 1 ? (
             <div className="t-row" style={{ color: "var(--fg2)" }}>
               {ALONE}

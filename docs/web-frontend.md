@@ -2172,8 +2172,10 @@ body at the top, the thread already open included, since pressing it asks to see
 `useDetail` holds one detail at a time (R6): nothing is modal at width, so `why?` can be
 pressed with Held back open, and both would land in one column. The Room passes the open
 thread's key to `Timeline` at width, and that Act row reads `{meta} · thread open →`. It keeps
-its `why?` as the same DOM node, which never takes a pointer while the thread is open, and is
-faded unless `focus-visible`: removing it would throw a keyboard reader's focus to `<body>` the moment they pressed it (R23).
+its `why?` as the same DOM node, because removing it would throw a keyboard reader's focus to
+`<body>` the moment they pressed it (R23). While the thread is open the button takes no pointer,
+is faded unless `focus-visible`, and sits out of the flow in the same spot, so the row's words
+get its column.
 
 The column keeps the title `Why Alfred did that`, since the mock's
 `Why Alfred spoke about the door` is sample data and nothing generates such a sentence (R8).
@@ -2234,10 +2236,13 @@ by being unmounted with it on the other three benches.
 
 ### Deviations from the handoff
 
-The rulings above aside, this is where the desk differs from `Alfred Desktop.dc.html`, read against
-the code for copy, sizes, spacing and colour. The mock's sample rows are data rather than copy: a row
-says what `summarise` makes of its event. Every colour is a token and the mock writes literals, so
-"muted" below is its `#9a9186`, which is `--muted` in dark.
+The rulings above aside, these are the differences from `Alfred Desktop.dc.html` that a design
+reader would otherwise take for mistakes. They are not a full diff of the mock against the code.
+The mock's sample rows are data rather than copy: a row says what `summarise` makes of its event.
+The mock writes colours as literals where the code uses tokens, so "muted" below is its `#9a9186`,
+which is `--muted` in dark. The stream ring is the exception: a hue there is data, which
+`lib/streams.ts` computes from `STREAM_INFO` rather than naming as a token, and the white on a tile
+is a literal too. The rows below quote the ring's lightness.
 
 These were decided for the desk:
 
@@ -2247,6 +2252,7 @@ These were decided for the desk:
 | A compact chip's count at `.7`, and `.8` on the soloed chip (`:53-64`) | `.77` in dark and `.99` in light (`--ring-count-opacity`), and `.91` on the soloed chip (`RING_COUNT_ON_OPACITY`) | The count is the chip's only data. `.7` is 2.77:1 in light and `.8` is 3.85:1, at their worst hues, so each stops where AA does on all eight |
 | The bench's annotation in muted (`:88`) | `t-meta-strong` | It is the only place on the desk that names the keys (R13) |
 | An open thread's meta in muted (`:32`) | `t-meta-strong` | It is the only thing saying so, and `--muted` is 3.20:1 on `--surface` in light |
+| An open row with no `why?` (`:32`) | The same button, with no pointer, faded unless `focus-visible`, and out of the flow in the spot it held (`absolute top-0 right-1.5`) | R23: removing the node a keyboard reader just pressed would throw their focus to `<body>`. Out of the flow because a faded button keeping its column cost the meta 58 px: a row could wrap, and grow by a line, the moment its thread opened |
 | `↑ older` 36 px tall, in muted (`:67`) | 44 px and `--fg2`, the phone's button unchanged | An iPad reaches this layout by touch, and `--muted` at 11 px is under AA in light |
 | The compact chip with a `gap` of 4 px (`:53-64`) | `gap-x-1` | The mock only ever draws the count beside the monogram. A row gap stacked in the 33 px inside a chip would clip the count that drops under it (R20) |
 | No stale banner and no error line, since it shows a healthy bench | Both held to `max-w-[520px]` | On a wide column nothing else would line them up with the chips and the list's content |
@@ -2256,27 +2262,34 @@ These were decided for the desk:
 | `esc closes` as a muted label (`:94`) | A real button in `t-meta-strong`, whose `after` box makes 44 px of its 16.5 px line | An iPad in landscape reaches 1100 px with no Escape key (R7), and a button's name has to be readable: `--muted` is 3.34:1 on `--detail` in light (R21) |
 | No Door or gate at width; they cover all three columns (§11) | Their contents in a `.phone-column`, at most 480 px, at every width | R15 reasons that no phone held upright is wider than 480 px, so phones do not change. That does not cover **a phone on its side**, which R4 keeps `phone` and CSS cannot tell from a window that wide, or **any window 481–759 px wide**: both get a slide narrower than they had. This is the one thing below 760 px that moved |
 
-These came with the components. §11 calls the Room "identical to phone", and the bench and the thread
-are the phone's own, so where the phone already differed from the mock the desk does too. None was
-decided for a laptop.
+These came with the components. §11 calls the Room "identical to phone", and the bench and the
+thread are the phone's own, so where the phone already differed from the mock the desk does too.
+None was decided for a laptop.
 
 | The mock draws | What ships | Why |
 |---|---|---|
+| No theme toggle in the header (`:24-26`) | `ThemeToggle` beside the headline (`Room.tsx`) | The handoff asks for it top-right of the Room header, and the phone's mock draws it (`Alfred.dc.html:40`) |
 | The composer's text at 15 px (`:38`) | 16 px | iOS zooms the page in on any field it focuses below 16, which shrinks the viewport the shell is sized from, so the phone left the handoff's 15 (`Composer.tsx`). The class has no width branch |
+| The composer's field on `#2f2b27` (`:38`) | `--field`, `#3A3631` in dark | At `#2F2B27` a field was `--surface`'s colour, 1.00:1, and invisible on a sheet and as the switcher's selection. It is a step above now, 1.17:1 (`index.css`) |
+| The composer's placeholder in `#9a9186` (`:38`) | `--fg2` | It is 7.99:1 on `--field` in dark, where `#9a9186` is 3.86:1, and a placeholder has to be read: the composer's `Offline · will send when connected` is the only thing promising a typed message is queued (`index.css`) |
 | Alfred's line at most 340 px wide (`:35`) | 330 px | §1's `max 330`. §11 does not mention 340; only the mock draws it |
 | Your bubble at most 300 px wide (`:34`) | 280 px | §1's `max 280`. §11 does not mention 300 either |
 | `live · 2.1 ev/s` in muted (`:46`) | `t-meta-strong` | A reader has to take the Workshop's state on its own to trust the screen (`index.css`, `.t-meta-strong`), and `--muted` is 3.46:1 on `--bg` in light |
 | The three unchosen tabs in muted (`:49-51`) | `--fg2` | `--muted` is 3.20:1 on `--surface` in light, under AA at 13 px (`BenchSwitcher.tsx`) |
-| An open row with only its payload (`:70-80`) | The payload, then `Why · causal thread` and `Only {mono}` | The mock shows a thread open and draws nothing that opens one. These are the phone's buttons for it |
+| An unsoloed chip's border and label at L 0.62 (`:54-57`, `:59-61`) | `ringText`: `--ring-text-l`, 0.75 in dark and 0.52 in light | The label is 10 px text on the page. L 0.62 is 4.10:1 on `--bg` in dark at its worst hue, and 0.75 is 6.76:1 (`index.css`, `lib/streams.ts`) |
+| Monogram tiles and the soloed chip at L 0.62 (`:58`, `:68-85`, `:99-103`) | `ringFill`, L 0.52 | White on L 0.62 is 3.45:1 at its worst hue, at 9-10 px, and 5.11:1 on L 0.52 (`lib/streams.ts`). Only the Room's 8 px marks, which carry no text, stay at `ring()`'s 0.62 |
+| A bench monogram level with its row's padding (`:68`) | `mt-px` (`EventRow.tsx`) | The phone's mock puts it 1 px down (`Alfred.dc.html:210`) |
+| An open row with only its payload (`:70-80`) | The payload, then `Why · causal thread` and `Only {mono}` | The mock's bench draws no way to open a thread or solo from a row; these are the phone's buttons (`Alfred.dc.html:217-218`) |
 | A thread's first node at the column's 18 px of padding (`:98`) | 24 px | The list keeps the 6 px of `padding-top` in the phone's mock (`Alfred.dc.html:173`), which the desktop mock drops |
 | A thread node's two lines 3 px apart (`:99-103`) | 2 px | Phase 2 built `gap-0.5` against both mocks, and nothing records why |
 | A thread node's meta in muted (`:99-103`) | `t-meta-strong` | It is the whole evidence for the link drawn beside it (`WhySheet.tsx`), and `--muted` is 3.34:1 on `--detail` in light |
+| No padding under a thread's last node (`:103`) | `pb-3.5` under every node, the last included (`WhySheet.tsx`) | The phone's mock has one template for all of them, with 14 px under it (`Alfred.dc.html:177`) |
 | Nothing under the thread (`:99-103`) | `searched 8 streams · 100 entries each · ±10 min` | It states what was searched, and says so when a stream could not be read |
 
 Two wraps are not deviations. The Room's status line wraps at 420 px as the mock's does
-(`… 2.1 / ev/s`), and `thread open →` drops to its own line at a tool name as long as
-`home.light_turn_on`, where the mock's sample meta is shorter. Both are from Chromium at 1280 and
-1100 px.
+(`… 2.1 / ev/s`). `thread open →` stays on the meta's line wherever the meta fits the row's 344 px
+at 420, as `home.light_turn_on`'s 337 px does, and wraps only past that, as the mock's would. Both
+are from Chromium at 1280 and 1100 px.
 
 ### How it is tested
 

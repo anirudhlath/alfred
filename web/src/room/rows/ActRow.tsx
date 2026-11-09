@@ -24,12 +24,15 @@ export interface ActRowProps {
  * With its thread open the row draws no `why?`, as the mock does, but the button
  * stays in the DOM and only fades: removing the node a keyboard reader has just
  * pressed would throw their focus to `<body>`. Faded, it takes no pointer: it is
- * invisible, and pressing it does nothing.
+ * invisible, and pressing it does nothing. The fade takes the button's column with
+ * it: it leaves the flow for the spot its margins held (10 px of padding less 10 up,
+ * 12 px less 6 out), so the row's words get all its width, as the mock's do, and
+ * opening a thread does not grow the row by a line.
  */
 export function ActRow({ hue, text, meta, onWhy, threadOpen = false }: ActRowProps) {
   return (
     <div
-      className={`flex items-start gap-3 py-2.5 ${threadOpen ? "-mx-3 rounded-[10px] px-3" : ""}`}
+      className={`flex items-start gap-3 py-2.5 ${threadOpen ? "relative -mx-3 rounded-[10px] px-3" : ""}`}
       style={{
         borderTop: "1px solid var(--line)",
         borderBottom: "1px solid var(--line)",
@@ -62,7 +65,7 @@ export function ActRow({ hue, text, meta, onWhy, threadOpen = false }: ActRowPro
           // own line names which one this is, and the visible text stays a
           // prefix of the name (WCAG 2.5.3, label in name).
           aria-label={`why? ${text}`}
-          className={`-mt-2.5 -mr-1.5 flex h-11 shrink-0 items-center border-0 bg-transparent px-2.5 text-[13px] font-medium ${threadOpen ? "pointer-events-none opacity-0 focus-visible:opacity-100" : ""}`}
+          className={`${threadOpen ? "pointer-events-none absolute top-0 right-1.5 opacity-0 focus-visible:opacity-100" : "-mt-2.5 -mr-1.5"} flex h-11 shrink-0 items-center border-0 bg-transparent px-2.5 text-[13px] font-medium`}
           style={{ color: "var(--accent-text)" }}
         >
           why?

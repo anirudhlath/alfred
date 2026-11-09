@@ -364,6 +364,43 @@ describe("Timeline rows", () => {
       expect(why).not.toHaveClass("opacity-0");
       expect(why).not.toHaveClass("pointer-events-none");
     });
+
+    it("its why? gives its column back while the thread is open", () => {
+      const timeline = (openThread: string | null) => (
+        <Timeline
+          items={[open, neighbour]}
+          firstDayGreeting={null}
+          onWhy={() => {}}
+          openThread={openThread}
+        />
+      );
+      const { rerender } = render(timeline(null));
+      const why = screen.getByRole("button", { name: `why? ${observation.text}` });
+      const closed = screen.getByRole("button", { name: "why? motion in the hall" });
+      const row = why.parentElement as HTMLElement;
+      const atRest = why.className;
+      expect(why).toHaveClass("-mt-2.5", "-mr-1.5");
+      expect(why).not.toHaveClass("absolute");
+      expect(row).not.toHaveClass("relative");
+
+      rerender(timeline(rowKey(WHY)));
+      expect(screen.getByRole("button", { name: `why? ${observation.text}` })).toBe(why);
+      // Out of the flow, in the spot the margins held it: the row's 10 px of
+      // padding less 10 up, and its 12 px less 6 out.
+      expect(why).toHaveClass("absolute", "top-0", "right-1.5");
+      expect(why).not.toHaveClass("-mt-2.5");
+      expect(why).not.toHaveClass("-mr-1.5");
+      expect(row).toHaveClass("relative");
+
+      expect(closed).not.toHaveClass("absolute");
+      expect(closed).toHaveClass("-mt-2.5", "-mr-1.5");
+      expect(closed.parentElement).not.toHaveClass("relative");
+
+      // And back to exactly what it was.
+      rerender(timeline(null));
+      expect(why.className).toBe(atRest);
+      expect(row).not.toHaveClass("relative");
+    });
   });
 
   it("strikes a tombstone through, on a faded row", () => {
