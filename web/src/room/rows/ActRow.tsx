@@ -27,7 +27,8 @@ export interface ActRowProps {
  * invisible, and pressing it does nothing. The fade takes the button's column with
  * it: it leaves the flow for the spot its margins held (10 px of padding less 10 up,
  * 12 px less 6 out), so the row's words get all its width, as the mock's do, and
- * opening a thread does not grow the row by a line.
+ * opening a thread does not grow the row by a line. The cost, accepted for that:
+ * while it is focused, its label can sit over the end of a long first line.
  */
 export function ActRow({ hue, text, meta, onWhy, threadOpen = false }: ActRowProps) {
   return (
