@@ -468,10 +468,13 @@
     background: var(--detail);
   }
 
-  /* Where J and K left focus (R11). The app has no other focus rule, and the UA's ring
-     vanishes on --surface. Inset, because the bench's list clips what crosses its edge.
-     At width only: below 760 px every pixel stays. */
-  .desk:not([data-layout="phone"]) [data-event-row]:focus-visible {
+  /* Where J and K left focus (R11), and a detail's body beside the app, a Tab stop of its
+     own (`SCROLLER_FOCUS` in Sheet.tsx). The app has no other focus rule, and the UA's
+     ring vanishes on --surface. Inset, because the bench's list clips what crosses its
+     edge, and the column and the sheet clip the body's to 1 px. At width only: below
+     760 px every pixel stays. */
+  .desk:not([data-layout="phone"]) [data-event-row]:focus-visible,
+  .desk:not([data-layout="phone"]) [data-detail-body]:focus-visible {
     outline: 2px solid var(--accent-text);
     outline-offset: -2px;
   }

@@ -29,6 +29,13 @@ const SHEET_MS = 380;
  */
 const SCROLLER_FOCUS = 0;
 
+/**
+ * What a detail's body beside the app carries, and the phone's does not. The mark is
+ * for `index.css`, which gives it the rows' inset ring: the UA's is drawn outside the
+ * box, and the column's and the sheet's `overflow: hidden` leave 1 px of it.
+ */
+const DESK_BODY = { tabIndex: SCROLLER_FOCUS, "data-detail-body": "" } as const;
+
 export interface SheetProps {
   open: boolean;
   title: string;
@@ -205,7 +212,7 @@ function DetailColumn({
       </header>
       <div
         ref={body}
-        tabIndex={SCROLLER_FOCUS}
+        {...DESK_BODY}
         className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 pt-[18px] pb-10"
       >
         {children}
@@ -291,7 +298,7 @@ function SheetPanel({
           ref={body}
           // Over the bench only. The phone's modal keeps its DOM, and the focus VoiceOver
           // was device-tested with: a press there lands on the dialog, as it always has.
-          tabIndex={modal ? undefined : SCROLLER_FOCUS}
+          {...(modal ? {} : DESK_BODY)}
           className="flex flex-1 flex-col gap-3 overflow-y-auto px-5"
           style={{ paddingBottom: "calc(40px + env(safe-area-inset-bottom, 0px))" }}
         >

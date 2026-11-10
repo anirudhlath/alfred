@@ -248,12 +248,14 @@ describe("contrast ratios", () => {
       // The rule in index.css, the only sign of where those keys left focus, and at
       // width only: below 760 px every pixel stays. A row sits on the bench's `--bg`, and
       // an open one on `--surface`, where the UA's own ring vanishes. WCAG 1.4.11 asks 3:1
-      // of both.
+      // of both. A detail's body beside the app takes the same ring, on the sheet's `--bg`
+      // or the column's `--detail`.
       expect(css.replace(/\s+/g, " ")).toContain(
-        '.desk:not([data-layout="phone"]) [data-event-row]:focus-visible { outline: 2px solid var(--accent-text); outline-offset: -2px; }',
+        '.desk:not([data-layout="phone"]) [data-event-row]:focus-visible, .desk:not([data-layout="phone"]) [data-detail-body]:focus-visible { outline: 2px solid var(--accent-text); outline-offset: -2px; }',
       );
       expect(contrast(token(theme, "accent-text"), token(theme, "bg"))).toBeGreaterThanOrEqual(3);
       expect(contrast(token(theme, "accent-text"), token(theme, "surface"))).toBeGreaterThanOrEqual(3);
+      expect(contrast(token(theme, "accent-text"), token(theme, "detail"))).toBeGreaterThanOrEqual(3);
     });
 
     it(`${theme}: a routine's sparkline and rail read as graphics`, () => {

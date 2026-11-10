@@ -120,6 +120,12 @@ describe("Sheet on the phone", () => {
     expect(document.activeElement).toBe(dialog());
   });
 
+  it("phone: the body draws none of the desk's ring", () => {
+    mount(tree("phone", true));
+
+    expect(scroller()).not.toHaveAttribute("data-detail-body");
+  });
+
   it("phone: Escape arrives on the panel, because a gate over it swallows the key", () => {
     const onClose = vi.fn();
     mount(tree("phone", true, { onClose }));
@@ -350,6 +356,13 @@ describe("Sheet in a column", () => {
     expect(document.activeElement).toBe(scroller());
   });
 
+  it("columns: the body draws the rows' inset ring, which the column cannot clip", () => {
+    mount(tree("columns", true));
+
+    // `index.css` draws it, and `contrast.test.ts` pins the rule.
+    expect(scroller()).toHaveAttribute("data-detail-body");
+  });
+
   it("columns: gives nothing back into a place that has gone inert", () => {
     const { rerender } = mount(tree("columns", false));
     button("Opener").focus();
@@ -447,6 +460,12 @@ describe("Sheet over the bench", () => {
 
     await userEvent.setup().tab();
     expect(document.activeElement).toBe(scroller());
+  });
+
+  it("sheet-over-bench: the body draws the rows' inset ring, which the panel cannot clip", () => {
+    mount(tree("sheet-over-bench", true));
+
+    expect(scroller()).toHaveAttribute("data-detail-body");
   });
 
   it("sheet-over-bench: takes focus and gives it back", async () => {
