@@ -474,28 +474,28 @@ describe("Sheet over the bench", () => {
   });
 });
 
-describe("Sheet in a real Desk", () => {
-  // `Desk` portals nothing itself: this is the one place the slots it hands out,
-  // the `inert` it sets and a sheet's own checks of `[inert]` are read together.
-  function desk(layout: Layout, open: boolean, onClose: () => void = () => {}) {
-    return (
-      <LayoutContext.Provider value={layout}>
-        <Desk
-          detailOpen={open}
-          room={
-            <main>
-              <textarea aria-label="Composer" />
-              <Sheet open={open} title={TITLE} onClose={onClose}>
-                <p>The thread</p>
-              </Sheet>
-            </main>
-          }
-          bench={<button type="button">Bench row</button>}
-        />
-      </LayoutContext.Provider>
-    );
-  }
+// `Desk` portals nothing itself: these are the places the slots it hands out, the
+// `inert` it sets and a sheet's own checks of `[inert]` are read together.
+function desk(layout: Layout, open: boolean, onClose: () => void = () => {}) {
+  return (
+    <LayoutContext.Provider value={layout}>
+      <Desk
+        detailOpen={open}
+        room={
+          <main>
+            <textarea aria-label="Composer" />
+            <Sheet open={open} title={TITLE} onClose={onClose}>
+              <p>The thread</p>
+            </Sheet>
+          </main>
+        }
+        bench={<button type="button">Bench row</button>}
+      />
+    </LayoutContext.Provider>
+  );
+}
 
+describe("Sheet in a real Desk", () => {
   it("sheet-over-bench: quiets the bench, not itself, and still hears Escape", () => {
     const onClose = vi.fn();
     mount(desk("sheet-over-bench", true, onClose));
@@ -579,5 +579,100 @@ describe("Sheet across a breakpoint", () => {
     rerender(tree("phone", true));
     expect(dialog().parentElement).toBe(document.body);
     expect(root).toHaveAttribute("inert");
+  });
+
+  it("leaves a reader in the composer there, from the column to over the bench", () => {
+    const { rerender } = mount(desk("columns", false));
+    button("Bench row").focus();
+    rerender(desk("columns", true));
+    const composer = screen.getByRole("textbox", { name: "Composer" });
+    composer.focus();
+
+    rerender(desk("sheet-over-bench", true));
+    expect(dialog().parentElement).toHaveClass("desk-bench");
+    expect(document.activeElement).toBe(composer);
+  });
+
+  it("takes a reader who was inside the column into the sheet over the bench", () => {
+    const { rerender } = mount(tree("columns", false));
+    button("Opener").focus();
+    rerender(tree("columns", true, { press: 1 }));
+    button("esc closes").focus();
+
+    rerender(tree("sheet-over-bench", true, { press: 1 }));
+    expect(document.activeElement).toBe(dialog());
+  });
+
+  it("takes a reader who was inside the sheet over the bench into the column", () => {
+    const { rerender } = mount(tree("sheet-over-bench", false));
+    button("Opener").focus();
+    rerender(tree("sheet-over-bench", true, { press: 1 }));
+    button("Done").focus();
+
+    rerender(tree("columns", true, { press: 1 }));
+    expect(document.activeElement).toBe(column());
+  });
+
+  it("takes a reader on <body> in, since nothing says where they were", () => {
+    const { rerender } = mount(tree("columns", false));
+    button("Opener").focus();
+    rerender(tree("columns", true, { press: 1 }));
+    button("Opener").blur();
+
+    rerender(tree("sheet-over-bench", true, { press: 1 }));
+    expect(document.activeElement).toBe(dialog());
+  });
+
+  it("moves focus into the phone's modal from anywhere, since everything behind it goes inert", () => {
+    const { rerender } = mount(tree("columns", false));
+    button("Opener").focus();
+    rerender(tree("columns", true, { press: 1 }));
+    button("Elsewhere").focus();
+
+    rerender(tree("phone", true, { press: 1 }));
+    expect(document.activeElement).toBe(dialog());
+    expect(root).toHaveAttribute("inert");
+  });
+
+  it("gives focus back to the row pressed, not to where the reader was when it crossed", async () => {
+    const { rerender } = mount(tree("columns", false));
+    button("Opener").focus();
+    rerender(tree("columns", true, { press: 1 }));
+    button("Elsewhere").focus();
+
+    rerender(tree("sheet-over-bench", true, { press: 1 }));
+    expect(document.activeElement).toBe(button("Elsewhere"));
+    button("Done").focus();
+
+    rerender(tree("sheet-over-bench", false, { press: null }));
+    await pastLeave(rerender, tree("sheet-over-bench", false, { press: null }));
+    expect(document.activeElement).toBe(button("Opener"));
+  });
+
+  it("gives focus back to the row pressed from the phone's modal too", async () => {
+    const { rerender } = mount(tree("columns", false));
+    button("Opener").focus();
+    rerender(tree("columns", true, { press: 1 }));
+    button("Elsewhere").focus();
+
+    rerender(tree("phone", true, { press: 1 }));
+    rerender(tree("phone", false, { press: null }));
+    await pastLeave(rerender, tree("phone", false, { press: null }));
+    expect(root).not.toHaveAttribute("inert");
+    expect(document.activeElement).toBe(button("Opener"));
+  });
+
+  it("gives focus back to the row that re-pointed the column before it crossed", () => {
+    const { rerender } = mount(tree("sheet-over-bench", false));
+    button("Opener").focus();
+    rerender(tree("columns", true, { press: 1 }));
+    button("Elsewhere").focus();
+    rerender(tree("columns", true, { press: 2 }));
+
+    rerender(tree("sheet-over-bench", true, { press: 2 }));
+    rerender(tree("columns", true, { press: 2 }));
+    button("esc closes").focus();
+    rerender(tree("columns", false, { press: null }));
+    expect(document.activeElement).toBe(button("Elsewhere"));
   });
 });

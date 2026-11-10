@@ -110,6 +110,22 @@ export function anySurfaceUp(): boolean {
   return surfaces.length > 0;
 }
 
+/**
+ * What a detail's focus carries from one mode to the next, when crossing a breakpoint
+ * remounts it in another (`Sheet`). One per detail, held above its modes.
+ */
+export interface Handoff {
+  /** Where focus was at the press that opened or last re-pointed the detail. */
+  opener: Element | null;
+  /** Whether a mode has the detail up, so a mode mounting with this set is a crossing. */
+  up: boolean;
+  /**
+   * The detail's `open` as of this commit, set in a layout effect so a mode's passive
+   * cleanup can tell a crossing, which leaves it true, from a close.
+   */
+  open: boolean;
+}
+
 /** Focus back to where it was, unless that place has gone or is behind a surface now. */
 function restoreFocus(previous: Element | null): void {
   if (
@@ -131,13 +147,26 @@ function restoreFocus(previous: Element | null): void {
  *
  * `active` is the presence's `mounted`, so the surface stays inert-backed for
  * its leave animation too, and the panel ref is set by the time this runs.
+ *
+ * A detail's `handoffRef` makes a breakpoint's remount no open and no close: the modal
+ * takes the opener the press captured, and leaves giving it back to the mode after it.
+ * Focus still moves in, since everything behind the modal is inert.
  */
-export function useModalFocus(active: boolean, panel: RefObject<HTMLElement | null>): void {
+export function useModalFocus(
+  active: boolean,
+  panel: RefObject<HTMLElement | null>,
+  handoffRef?: RefObject<Handoff>,
+): void {
   useEffect(() => {
     const node = panel.current;
     if (!active || !node) return;
     const app = document.getElementById("root");
-    const previous = document.activeElement;
+    const state = handoffRef?.current;
+    const previous = state?.up ? state.opener : document.activeElement;
+    if (handoffRef) {
+      handoffRef.current.up = true;
+      handoffRef.current.opener = previous;
+    }
     app?.setAttribute("inert", "");
     surfaces.at(-1)?.setAttribute("inert", "");
     surfaces.push(node);
@@ -148,9 +177,11 @@ export function useModalFocus(active: boolean, panel: RefObject<HTMLElement | nu
       const top = surfaces.at(-1);
       if (top) top.removeAttribute("inert");
       else app?.removeAttribute("inert");
+      if (state?.open) return;
+      if (state) state.up = false;
       restoreFocus(previous);
     };
-  }, [active, panel]);
+  }, [active, panel, handoffRef]);
 }
 
 /**
@@ -172,6 +203,12 @@ export function useModalFocus(active: boolean, panel: RefObject<HTMLElement | nu
  * does not focus it, would sit on `<body>` through the press and pull focus to the
  * last opener.
  *
+ * A breakpoint's remount (`Handoff.up` already set) is no open and no close. The
+ * opener stays the one the press captured, and the mode going gives nothing back.
+ * The mode arriving takes focus only from `<body>`: that is where the removal of
+ * the panel it replaces left a reader who was inside, and where nothing else says
+ * where a reader was. Anyone elsewhere, in the composer mid-sentence say, stays.
+ *
  * `active` is true only while the panel is rendered, so its ref is set by the time
  * this runs.
  */
@@ -179,23 +216,34 @@ export function useAsideFocus(
   active: boolean,
   panel: RefObject<HTMLElement | null>,
   take: boolean,
+  handoffRef: RefObject<Handoff>,
   press?: number | null,
 ): void {
-  const opener = useRef<Element | null>(null);
+  // The press this mode has seen, so a remount does not count as a re-point.
+  const seen = useRef(press);
 
-  // First, so it reads the opener before the effect below moves focus in.
   useEffect(() => {
-    if (active) opener.current = document.activeElement;
-  }, [active, press]);
+    if (!active || press === seen.current) return;
+    seen.current = press;
+    handoffRef.current.opener = document.activeElement;
+  }, [active, press, handoffRef]);
 
   useEffect(() => {
     const node = panel.current;
     if (!active || !node) return;
-    if (take) node.focus({ preventScroll: true });
+    const state = handoffRef.current;
+    const crossing = state.up;
+    state.up = true;
+    if (!crossing) state.opener = document.activeElement;
+    if (crossing ? document.activeElement === document.body : take) {
+      node.focus({ preventScroll: true });
+    }
     return () => {
-      if (document.activeElement === document.body) restoreFocus(opener.current);
+      if (state.open) return;
+      state.up = false;
+      if (document.activeElement === document.body) restoreFocus(state.opener);
     };
-  }, [active, panel, take]);
+  }, [active, panel, take, handoffRef]);
 }
 
 type RiseStyle = CSSProperties & { "--layer-duration": string };

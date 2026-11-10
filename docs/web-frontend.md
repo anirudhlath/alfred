@@ -2152,10 +2152,17 @@ is `420px 1px minmax(0,1fr)`.
 ### A detail, in three modes
 
 `Sheet` is one component per mode, so each has its own hooks. Crossing a breakpoint with a
-detail open remounts it in the new mode, and focus moves the way an open and a close would. It
-reads its slot with `useDeskSlots()`, so it has to be a child of `Desk`. Slots are state, set
-from ref callbacks, which is why a width renders the modal for the one commit before `Desk` has
-handed them out.
+detail open remounts it in the new mode, which is neither an open nor a close (`Handoff` in
+`presence.ts`). The opener stays the row pressed, so a close after any number of crossings gives
+focus back to it. Focus moves in only where it has to: into the phone's modal, which makes
+everything behind it inert; or for a reader who was inside the panel that went, or on `<body>`,
+which is where that panel's removal leaves them. A reader in the composer mid-sentence stays
+there. The column is `tabIndex={-1}` for the one crossing that moves focus into it, from the
+sheet over the bench; an open never focuses it.
+
+`Sheet` reads its slot with `useDeskSlots()`, so it has to be a child of `Desk`. Slots are
+state, set from ref callbacks, which is why a width renders the modal for the one commit before
+`Desk` has handed them out.
 
 | Mode | When | What it is | Focus on open | Going |
 |---|---|---|---|---|
@@ -2304,7 +2311,7 @@ the classes and the behaviour.
 |---|---|
 | `src/shell/layout.test.tsx` | Both breakpoints and the short side, a tablet's keyboard not flipping it, a foldable both ways, no `matchMedia`, and `useLayout`'s default of `phone` |
 | `src/shell/Desk.test.tsx` | The Room's DOM node across every layout, `data-detail`, the bench body's `inert` only over the bench, and both slots |
-| `src/shell/Sheet.test.tsx` | The three modes: where each lands, what closes it and what does not, focus on open and on close, a re-pointed column, and the body's scroll |
+| `src/shell/Sheet.test.tsx` | The three modes: where each lands, what closes it and what does not, focus on open and on close, a re-pointed column, the body's scroll, and focus across a breakpoint |
 | `src/room/useDetail.test.tsx` | One detail at a time, a thread re-pointed, every press counted and no close, and the callbacks' identity |
 | `src/workshop/useBenchKeys.test.tsx` | J and K, Space, 1 to 8, and when each stays silent |
 | `src/room/Composer.test.tsx` | `⌘K` and `Ctrl+K`, the hint, Escape's two presses beside a detail, and the phone answering none of it |

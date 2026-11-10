@@ -2,7 +2,14 @@ import { useEffect, useId, useLayoutEffect, useRef, type ReactNode, type RefObje
 import { createPortal } from "react-dom";
 import { useDeskSlots } from "@/shell/Desk";
 import { useLayout } from "@/shell/layout";
-import { riseClass, riseStyle, useAsideFocus, useModalFocus, usePresence } from "@/shell/presence";
+import {
+  riseClass,
+  riseStyle,
+  useAsideFocus,
+  useModalFocus,
+  usePresence,
+  type Handoff,
+} from "@/shell/presence";
 
 const SHEET_MS = 380;
 
@@ -32,24 +39,42 @@ export interface SheetProps {
  * which is also what a width gets before `Desk` has handed out its slot.
  *
  * One component per mode, so each has its own hooks. Crossing a breakpoint with a
- * detail open remounts it in the new mode, and its focus moves the way an open and
- * a close would.
+ * detail open remounts it in the new mode, and that is neither an open nor a close
+ * (`Handoff`): the opener stays the row pressed, and focus moves in only where it
+ * has to. That is into a modal, which makes everything behind it inert, or for a
+ * reader who was inside the panel that went, or who was on `<body>`. A reader in the
+ * composer stays there.
  */
 export function Sheet(props: SheetProps) {
   const layout = useLayout();
   const { overBench, detail } = useDeskSlots();
-  if (layout === "columns" && detail) return <DetailColumn {...props} slot={detail} />;
-  if (layout === "sheet-over-bench" && overBench) {
-    return <SheetOverBench {...props} slot={overBench} />;
+  const handoff = useRef<Handoff>({ opener: null, up: false, open: false });
+  const { open } = props;
+  // A layout effect, so it is current by the passive cleanups of the commit that
+  // closes. No cleanup: StrictMode's rehearsal of an unmount would read as a close,
+  // and a detail truly unmounted while open has taken its opener with it.
+  useLayoutEffect(() => {
+    handoff.current.open = open;
+  }, [open]);
+
+  if (layout === "columns" && detail) {
+    return <DetailColumn {...props} slot={detail} handoff={handoff} />;
   }
-  return <ModalSheet {...props} />;
+  if (layout === "sheet-over-bench" && overBench) {
+    return <SheetOverBench {...props} slot={overBench} handoff={handoff} />;
+  }
+  return <ModalSheet {...props} handoff={handoff} />;
 }
 
-function ModalSheet(props: SheetProps) {
+interface ModeProps extends SheetProps {
+  handoff: RefObject<Handoff>;
+}
+
+function ModalSheet({ handoff, ...props }: ModeProps) {
   const { open, onClose } = props;
   const { mounted, leaving } = usePresence(open, SHEET_MS);
   const panel = useRef<HTMLDivElement>(null);
-  useModalFocus(mounted, panel);
+  useModalFocus(mounted, panel, handoff);
 
   // On the panel, not `document`: the sheet holds focus while it is on top, so
   // the key reaches it, and a gate over it swallows Escape instead.
@@ -75,12 +100,12 @@ function ModalSheet(props: SheetProps) {
  * The phone's sheet, over the bench alone: the Room beside it stays live, so this
  * is a dialog without `aria-modal`, and `Desk` quiets only the bench behind it.
  */
-function SheetOverBench({ slot, ...props }: SheetProps & { slot: HTMLElement }) {
+function SheetOverBench({ slot, handoff, ...props }: ModeProps & { slot: HTMLElement }) {
   const { open, press, onClose } = props;
   const { mounted, leaving } = usePresence(open, SHEET_MS);
   const panel = useRef<HTMLDivElement>(null);
   const body = useTopOnRepoint(press);
-  useAsideFocus(mounted, panel, true);
+  useAsideFocus(mounted, panel, true, handoff);
   useEscapeBeside(open, panel, onClose);
 
   if (!mounted) return null;
@@ -95,6 +120,9 @@ function SheetOverBench({ slot, ...props }: SheetProps & { slot: HTMLElement }) 
  * Handoff §11's third column, `Alfred Desktop.dc.html:93-98`. It has no leave: the
  * column appearing is a change of the grid (`.desk` in `index.css`), so it is gone
  * the moment `open` is false.
+ *
+ * `tabIndex={-1}` so a reader who was in the sheet over the bench can follow it here
+ * across 1100 px. An open never focuses it.
  */
 function DetailColumn({
   open,
@@ -105,17 +133,23 @@ function DetailColumn({
   onClose,
   children,
   slot,
-}: SheetProps & { slot: HTMLElement }) {
+  handoff,
+}: ModeProps & { slot: HTMLElement }) {
   const panel = useRef<HTMLElement>(null);
   const body = useTopOnRepoint(press);
   const titleId = useId();
-  useAsideFocus(open, panel, false, press);
+  useAsideFocus(open, panel, false, handoff, press);
   useEscapeBeside(open, panel, onClose);
 
   if (!open) return null;
 
   return createPortal(
-    <aside ref={panel} aria-labelledby={titleId} className="flex min-h-0 flex-1 flex-col">
+    <aside
+      ref={panel}
+      tabIndex={-1}
+      aria-labelledby={titleId}
+      className="flex min-h-0 flex-1 flex-col outline-none"
+    >
       <header
         className="flex flex-col gap-1.5 px-6 pt-10 pb-3.5"
         style={{ borderBottom: "1px solid var(--line)" }}
