@@ -2308,7 +2308,7 @@ are from Chromium at 1280 and 1100 px.
 
 jsdom has no layout, so none of these can say that four-digit counts fit eight chips at 1100 px
 with a thread open, or that the columns are the widths the grid asks for. They pin the attributes,
-the classes and the behaviour.
+the classes and the behaviour, and the grid's own text.
 
 | File | Covers |
 |---|---|
@@ -2325,6 +2325,7 @@ the classes and the behaviour.
 | `src/sheets/WhySheet.test.tsx`, `src/sheets/HeldBackSheet.test.tsx` | Each detail's words in a column, and focus back on the row that last opened the thread |
 | `src/door/DoorLayer.test.tsx`, `src/gates/Gate.test.tsx` | The contents inside `.phone-column` and the ground outside it |
 | `src/test/contrast.test.ts` | `--detail` carrying what is written on it, the row's ring, a compact chip's count on both halves of its rule, and the phone column's width |
+| `src/test/desk-css.test.ts` | The grid `index.css` draws, read as text: the phone hiding all but the Room, the third column's tracks, the 782 px the bench gives up parsed from them, and the bench left at each breakpoint in `layout.ts` |
 | `src/App.test.tsx` | The desk end to end: the handle gone, a draft through every breakpoint, the phone's Workshop not raised after a trip through it, the third column, one detail at a time, focus back on the row last pressed, and the open thread's own row sending it to its top |
 
 ---
