@@ -2159,8 +2159,9 @@ everything behind it inert; or for a reader who was inside the panel that went, 
 which is where that panel's removal leaves them; or on something inside `[inert]`, which counts
 as `<body>`. That last is a bench row J or K left focused when the sheet over the bench makes the
 bench inert: Chromium blurs the row only some 50 ms later, after the sheet has looked, and the
-reader would end on `<body>` behind it. A reader in the composer mid-sentence stays there. The column is `tabIndex={-1}` for the one crossing that moves focus into it, from the
-sheet over the bench; an open never focuses it.
+reader would end on `<body>` behind it. A reader in the composer mid-sentence stays there. The
+column is `tabIndex={-1}` for the one crossing that moves focus into it, from the sheet over the
+bench; an open never focuses it.
 
 Beside the app, a detail's body is focusable itself, the column's and the sheet's over the bench
 (`SCROLLER_FOCUS` in `Sheet.tsx`). A click in the thread focuses the nearest focusable thing around
@@ -2169,9 +2170,17 @@ from the body: in Chromium, a click on a line of the open thread at 1280 then sc
 for each, and with the body focused it scrolls 611, 611 and 40 (478, 478 and 40 over the bench at
 900). It is `tabIndex={0}`, not `-1`: Chromium makes a scroller with nothing focusable in it a Tab
 stop of its own, which a thread is, and any `tabIndex` overrides that, so `-1` would have taken
-away a keyboard reader's only way to scroll one. A click focuses it with no ring, since
-`:focus-visible` leaves out a click on anything that takes no typing. A crossing still focuses the
-panel, which is what a screen reader names. The phone's modal is unchanged: a press in its body
+away a keyboard reader's only way to scroll one. The click alone shows no ring, since
+`:focus-visible` leaves out a click on anything that takes no typing; but the first key that
+scrolls the body turns `:focus-visible` on, as the spec's keyboard heuristic has it, and from
+then the ring shows, in Chromium after Space, PageDown or an arrow alike. The ring is the rows'
+inset one, 2 px of `--accent-text` inside the box (`[data-detail-body]` in `index.css`): the UA's
+is drawn outside it, and the column's and the sheet's `overflow: hidden` left 1 px of that. In
+Chromium all four sides now show 2 px, in both themes. The body is a `group` named by the panel's
+own title, so Tab lands on `Why Alfred did that` or `Held back` rather than on a `generic` that
+Chromium named with the thread's whole text; not a `region`, which would put a landmark inside
+the aside's. A crossing still focuses the panel, the landmark a screen reader names. The phone's
+modal is unchanged: its body takes no role, no name and no ring of the desk's, and a press in it
 lands on the dialog, as it was device-tested with VoiceOver.
 
 `Sheet` reads its slot with `useDeskSlots()`, so it has to be a child of `Desk`. Slots are
@@ -2286,7 +2295,7 @@ These were decided for the desk:
 | Only the Activity bench (`:53-88`) | Memory, Triggers and System at its edges, a 24 px gutter and 520 px of content, drawn by each bench from `web/src/workshop/edges.ts`. A block takes `DESK_EDGE`, a margin and a cap. A scroller stays the column's full width and takes `DESK_SCROLL_EDGE`, whose padding holds its content to the same place, so its bar is at the column's edge and the wheel turns it from anywhere in the column. Activity's list takes it too, for the mock's 568 with 24 px either side. The Memory search's and the Triggers footer's hairlines are the content's 520, as the rows' are | They sit under the switcher, which is at 24 px and at most 520 px (`:45`, `:47`). With the phone's gutter and no cap they started 8 px to its left and ran past its end, about 1350 px wide at 1800. A cap on the `tabpanel` lined them up but left every scroller's bar mid-column and the wheel dead to its right |
 | The Triggers bench's five kind chips on one line (`Alfred.dc.html:318`; this mock draws no Triggers bench) | At width, a second line when their labels do not fit: `flex-wrap`, `min-h-11` for `h-11`, and 12 px between lines, so each line's 44 px targets (a 32 px chip and 6 px of `after` either side) stay clear of the next's. Wherever they fit it is the one 44 px line it was; the phone's row is unchanged | One line ran `Composite` past the content's edge in the narrowest benches: in Chromium, 20 px with no count at 1100 px with a thread open, 36 px with `All 6` and 52 px with `All 124`, which is past the bench into the thread's column; and 15 and 31 px at 760. A second line keeps every label whole and every chip pressable, where the alternatives clip a label or shrink a target under 44 px. `Composite` takes the second line's full width, since the chips share the width as they do on one |
 | `All` plain, at full strength (`:53-64`) | With no solo, `aria-disabled`, `opacity-40` and `focus-visible:opacity-100` | A press then does nothing. `disabled` would throw focus to `<body>` under the press that cleared the solo, on the surface built for the keyboard. So focus can rest there, and `opacity` dims the focus ring too, so it comes back to full on focus |
-| No focus ring on a row (`:68`) | `2px solid var(--accent-text)`, offset `-2px`, on a row's `focus-visible`, at width only | J and K leave real focus there (R11), and the UA's ring vanishes on `--surface`. Inset, because the list clips what crosses its edge |
+| No focus ring on a row (`:68`) | `2px solid var(--accent-text)`, offset `-2px`, on a row's `focus-visible`, at width only | J and K leave real focus there (R11), and the UA's ring vanishes on `--surface`. Inset, because the list clips what crosses its edge. A detail's body beside the app takes the same ring, since the column and the sheet clip the UA's to 1 px |
 | `esc closes` as a muted label (`:94`) | A real button in `t-meta-strong`, whose `after` box makes 44 px of its 16.5 px line | An iPad in landscape reaches 1100 px with no Escape key (R7), and a button's name has to be readable: `--muted` is 3.34:1 on `--detail` in light (R21) |
 | No Door or gate at width; they cover all three columns (§11) | Their contents in a `.phone-column`, at most 480 px, at every width | R15 reasons that no phone held upright is wider than 480 px, so phones do not change. That does not cover **a phone on its side**, which R4 keeps `phone` and CSS cannot tell from a window that wide, or **any window 481–759 px wide**: both get a slide narrower than they had. This is the one thing below 760 px that moved |
 
@@ -2329,7 +2338,7 @@ the classes and the behaviour, and the grid's own text.
 |---|---|
 | `src/shell/layout.test.tsx` | Both breakpoints and the short side, a tablet's keyboard not flipping it, a foldable both ways, no `matchMedia`, and `useLayout`'s default of `phone` |
 | `src/shell/Desk.test.tsx` | The Room's DOM node across every layout, `data-detail`, the bench body's `inert` only over the bench, and both slots |
-| `src/shell/Sheet.test.tsx` | The three modes: where each lands, what closes it and what does not, focus on open and on close, a re-pointed column, the body's scroll, a click in the body focusing it beside the app and the dialog on the phone, and focus across a breakpoint |
+| `src/shell/Sheet.test.tsx` | The three modes: where each lands, what closes it and what does not, focus on open and on close, a re-pointed column, the body's scroll, a click in the body focusing it beside the app and the dialog on the phone, the body's ring mark and its name from the title beside the app and neither on the phone, and focus across a breakpoint |
 | `src/room/useDetail.test.tsx` | One detail at a time, a thread re-pointed, every press counted and no close, and the callbacks' identity |
 | `src/workshop/useBenchKeys.test.tsx` | J and K, Space, 1 to 8, and when each stays silent |
 | `src/room/Composer.test.tsx` | `⌘K` and `Ctrl+K`, the hint, Escape's two presses beside a detail, and the phone answering none of it |
@@ -2337,9 +2346,9 @@ the classes and the behaviour, and the grid's own text.
 | `src/workshop/Workshop.test.tsx` | The named column, its label, `Start it over` where focus lands after it, and a `tabpanel` with no edges of its own around every bench's scroller |
 | `src/workshop/MemoryBench.test.tsx`, `src/workshop/TriggersBench.test.tsx`, `src/workshop/SystemBench.test.tsx` | Each bench's edges at width: its blocks under the switcher, every scroller the column's width with its content held in, the hairlines over the content, the Triggers kinds' wrapping row, and the phone's own gutters |
 | `src/room/Timeline.test.tsx` | The Act row whose thread is open, and the gutter of each layout |
-| `src/sheets/WhySheet.test.tsx`, `src/sheets/HeldBackSheet.test.tsx` | Each detail's words in a column, and focus back on the row that last opened the thread |
+| `src/sheets/WhySheet.test.tsx`, `src/sheets/HeldBackSheet.test.tsx` | Each detail's words in a column, Held back's body named by its own title, and focus back on the row that last opened the thread |
 | `src/door/DoorLayer.test.tsx`, `src/gates/Gate.test.tsx` | The contents inside `.phone-column` and the ground outside it |
-| `src/test/contrast.test.ts` | `--detail` carrying what is written on it, the row's ring, a compact chip's count on both halves of its rule, and the phone column's width |
+| `src/test/contrast.test.ts` | `--detail` carrying what is written on it, the ring the rows and a detail's body share, a compact chip's count on both halves of its rule, and the phone column's width |
 | `src/test/desk-css.test.ts` | The grid `index.css` draws, read as text: the phone hiding all but the Room, the third column's tracks, the 782 px the bench gives up parsed from them, and the bench left at each breakpoint in `layout.ts` |
 | `src/App.test.tsx` | The desk end to end: the handle gone, a draft through every breakpoint, the phone's Workshop not raised after a trip through it, the third column, one detail at a time, focus back on the row last pressed, and the open thread's own row sending it to its top |
 
