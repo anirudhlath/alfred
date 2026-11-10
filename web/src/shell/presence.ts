@@ -166,7 +166,7 @@ export function useModalFocus(active: boolean, panel: RefObject<HTMLElement | nu
  * though the reader never went in. Anywhere else they have gone on, to the composer
  * or a sheet rising through this one's leave, and stay there.
  *
- * A new `subject` means another press has pointed the surface, from any row and at
+ * A new `press` means another press has pointed the surface, from any row and at
  * any thread, so the opener is captured again and nothing else happens. That is an
  * effect of its own: were the restore its cleanup, Safari, where pressing a button
  * does not focus it, would sit on `<body>` through the press and pull focus to the
@@ -179,14 +179,14 @@ export function useAsideFocus(
   active: boolean,
   panel: RefObject<HTMLElement | null>,
   take: boolean,
-  subject?: unknown,
+  press?: number | null,
 ): void {
   const opener = useRef<Element | null>(null);
 
   // First, so it reads the opener before the effect below moves focus in.
   useEffect(() => {
     if (active) opener.current = document.activeElement;
-  }, [active, subject]);
+  }, [active, press]);
 
   useEffect(() => {
     const node = panel.current;

@@ -62,7 +62,7 @@ function renderSheet(open = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const tree = (isOpen: boolean) => (
     <QueryClientProvider client={client}>
-      <HeldBackSheet open={isOpen} onClose={onClose} />
+      <HeldBackSheet open={isOpen} press={1} onClose={onClose} />
     </QueryClientProvider>
   );
   const view = render(tree(open));
@@ -87,7 +87,7 @@ describe("HeldBackSheet", () => {
       <QueryClientProvider client={client}>
         <LayoutContext.Provider value="columns">
           <DeskSlotsContext.Provider value={{ overBench: null, detail: slot }}>
-            <HeldBackSheet open onClose={() => {}} />
+            <HeldBackSheet open press={1} onClose={() => {}} />
           </DeskSlotsContext.Provider>
         </LayoutContext.Provider>
       </QueryClientProvider>,

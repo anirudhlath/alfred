@@ -108,11 +108,16 @@ function stubFetch(): void {
 function mount(anchor: StreamRef | null) {
   const onClose = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const tree = (ref: StreamRef | null) => (
-    <QueryClientProvider client={client}>
-      <WhySheet anchor={ref} onClose={onClose} />
-    </QueryClientProvider>
-  );
+  // Every anchor handed over is a press, as `useDetail` counts them; a close is not.
+  let press = 0;
+  const tree = (ref: StreamRef | null) => {
+    if (ref !== null) press += 1;
+    return (
+      <QueryClientProvider client={client}>
+        <WhySheet anchor={ref} press={press} onClose={onClose} />
+      </QueryClientProvider>
+    );
+  };
   const view = render(tree(anchor));
   return { onClose, client, setAnchor: (ref: StreamRef | null) => view.rerender(tree(ref)) };
 }
@@ -334,7 +339,7 @@ describe("WhySheet", () => {
         <QueryClientProvider client={client}>
           <LayoutContext.Provider value={layout}>
             <DeskSlotsContext.Provider value={{ overBench: slot, detail: slot }}>
-              <WhySheet anchor={ANCHOR} onClose={() => {}} />
+              <WhySheet anchor={ANCHOR} press={1} onClose={() => {}} />
             </DeskSlotsContext.Provider>
           </LayoutContext.Provider>
         </QueryClientProvider>,
@@ -359,28 +364,28 @@ describe("WhySheet", () => {
       const slot = document.createElement("div");
       document.body.append(slot);
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-      const at = (anchor: StreamRef | null) => (
+      const at = (anchor: StreamRef | null, press: number) => (
         <QueryClientProvider client={client}>
           <LayoutContext.Provider value="columns">
             <DeskSlotsContext.Provider value={{ overBench: null, detail: slot }}>
               <button type="button">Row A</button>
               <button type="button">Row B</button>
-              <WhySheet anchor={anchor} onClose={() => {}} />
+              <WhySheet anchor={anchor} press={press} onClose={() => {}} />
             </DeskSlotsContext.Provider>
           </LayoutContext.Provider>
         </QueryClientProvider>
       );
-      const view = render(at(null));
+      const view = render(at(null, 0));
       screen.getByRole("button", { name: "Row A" }).focus();
-      view.rerender(at(ANCHOR));
+      view.rerender(at(ANCHOR, 1));
 
       const rowB = screen.getByRole("button", { name: "Row B" });
       rowB.focus();
-      view.rerender(at(OTHER));
+      view.rerender(at(OTHER, 2));
       await screen.findByText(FOOTNOTE);
       screen.getByRole("button", { name: "esc closes" }).focus();
 
-      view.rerender(at(null));
+      view.rerender(at(null, 2));
       expect(document.activeElement).toBe(rowB);
       view.unmount();
       slot.remove();

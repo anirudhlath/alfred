@@ -963,6 +963,27 @@ describe("App — the desk", () => {
     expect(screen.queryByRole("complementary", { name: "Why Alfred did that" })).toBeNull();
     expect(document.activeElement).toBe(benchWhy);
   });
+
+  it("starts the thread already open at its top when its own row is pressed again", async () => {
+    stubWindow(1400);
+    render(<App />);
+    await settle();
+    const room = await screen.findByRole("main");
+    const why = await within(room).findByRole("button", { name: `why? ${ACTED}` });
+    act(() => why.focus());
+    fireEvent.click(why);
+    await settle();
+    const column = screen.getByRole("complementary", { name: "Why Alfred did that" });
+    const body = within(column).getByRole("status").parentElement as HTMLElement;
+    body.scrollTop = 200;
+
+    // The open row's `why?` takes no pointer, so this is Enter on the focused button. It
+    // hands `useDetail` the very ref it already holds.
+    fireEvent.click(why);
+    await settle();
+    expect(within(column).getByRole("status").parentElement).toBe(body);
+    expect(body.scrollTop).toBe(0);
+  });
 });
 
 describe("App — the socket's word", () => {

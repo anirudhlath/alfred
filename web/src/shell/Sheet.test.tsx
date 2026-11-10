@@ -98,12 +98,12 @@ describe("Sheet on the phone", () => {
     expect(screen.queryByRole("button", { name: "esc closes" })).toBeNull();
   });
 
-  it("phone: a new subject leaves the body where it is", () => {
-    const { rerender } = mount(tree("phone", true, { subject: "a" }));
+  it("phone: a new press leaves the body where it is", () => {
+    const { rerender } = mount(tree("phone", true, { press: 1 }));
     const body = screen.getByText("The thread").parentElement as HTMLElement;
     body.scrollTop = 200;
 
-    rerender(tree("phone", true, { subject: "b" }));
+    rerender(tree("phone", true, { press: 2 }));
     expect(body.scrollTop).toBe(200);
   });
 
@@ -256,24 +256,24 @@ describe("Sheet in a column", () => {
   it("columns: re-pointed, it returns focus to the row that last opened it", () => {
     const { rerender } = mount(tree("columns", false));
     button("Opener").focus();
-    rerender(tree("columns", true, { subject: "a" }));
+    rerender(tree("columns", true, { press: 1 }));
 
     button("Elsewhere").focus();
-    rerender(tree("columns", true, { subject: "b" }));
+    rerender(tree("columns", true, { press: 2 }));
     button("esc closes").focus();
 
     rerender(tree("columns", false));
     expect(document.activeElement).toBe(button("Elsewhere"));
   });
 
-  it("columns: a new subject moves nothing, even from <body>", () => {
+  it("columns: a new press moves nothing, even from <body>", () => {
     const { rerender } = mount(tree("columns", false));
     button("Opener").focus();
-    rerender(tree("columns", true, { subject: "a" }));
+    rerender(tree("columns", true, { press: 1 }));
 
     // Safari: pressing a button does not focus it, so the press leaves `<body>` focused.
     button("Opener").blur();
-    rerender(tree("columns", true, { subject: "b" }));
+    rerender(tree("columns", true, { press: 2 }));
     expect(document.activeElement).toBe(document.body);
 
     // The row that last opened it was never focused, so there is nothing to give back.
@@ -281,13 +281,13 @@ describe("Sheet in a column", () => {
     expect(document.activeElement).toBe(document.body);
   });
 
-  it("columns: the same subject keeps its opener", () => {
+  it("columns: a render with no new press keeps its opener", () => {
     const { rerender } = mount(tree("columns", false));
     button("Opener").focus();
-    rerender(tree("columns", true, { subject: "a" }));
+    rerender(tree("columns", true, { press: 1 }));
 
     button("Elsewhere").focus();
-    rerender(tree("columns", true, { subject: "a" }));
+    rerender(tree("columns", true, { press: 1 }));
     button("esc closes").focus();
 
     rerender(tree("columns", false));
@@ -307,15 +307,15 @@ describe("Sheet in a column", () => {
     expect(document.activeElement).toBe(button("Opener"));
   });
 
-  it("columns: a new subject starts the body at the top, and the same one leaves it", () => {
-    const { rerender } = mount(tree("columns", true, { subject: "a" }));
+  it("columns: a new press starts the body at the top, and the same one leaves it", () => {
+    const { rerender } = mount(tree("columns", true, { press: 1 }));
     const body = screen.getByText("The thread").parentElement as HTMLElement;
     body.scrollTop = 200;
 
-    rerender(tree("columns", true, { subject: "a" }));
+    rerender(tree("columns", true, { press: 1 }));
     expect(body.scrollTop).toBe(200);
 
-    rerender(tree("columns", true, { subject: "b" }));
+    rerender(tree("columns", true, { press: 2 }));
     expect(screen.getByText("The thread").parentElement).toBe(body);
     expect(body.scrollTop).toBe(0);
   });
@@ -379,26 +379,26 @@ describe("Sheet over the bench", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("sheet-over-bench: a new subject starts the body at the top, and the same one leaves it", () => {
-    const { rerender } = mount(tree("sheet-over-bench", true, { subject: "a" }));
+  it("sheet-over-bench: a new press starts the body at the top, and the same one leaves it", () => {
+    const { rerender } = mount(tree("sheet-over-bench", true, { press: 1 }));
     const body = screen.getByText("The thread").parentElement as HTMLElement;
     body.scrollTop = 200;
 
-    rerender(tree("sheet-over-bench", true, { subject: "a" }));
+    rerender(tree("sheet-over-bench", true, { press: 1 }));
     expect(body.scrollTop).toBe(200);
 
-    rerender(tree("sheet-over-bench", true, { subject: "b" }));
+    rerender(tree("sheet-over-bench", true, { press: 2 }));
     expect(screen.getByText("The thread").parentElement).toBe(body);
     expect(body.scrollTop).toBe(0);
   });
 
   it("sheet-over-bench: a closing sheet leaves from where it was", () => {
-    const { rerender } = mount(tree("sheet-over-bench", true, { subject: "a" }));
+    const { rerender } = mount(tree("sheet-over-bench", true, { press: 1 }));
     const body = screen.getByText("The thread").parentElement as HTMLElement;
     body.scrollTop = 200;
 
-    // `WhySheet` closes by passing no anchor, so the subject goes while the leave runs.
-    rerender(tree("sheet-over-bench", false, { subject: null }));
+    // `WhySheet` passes no press once its anchor goes, so it goes while the leave runs.
+    rerender(tree("sheet-over-bench", false, { press: null }));
     expect(dialog()).toBeInTheDocument();
     expect(body.scrollTop).toBe(200);
   });
@@ -429,13 +429,13 @@ describe("Sheet over the bench", () => {
     expect(document.activeElement).toBe(button("Elsewhere"));
   });
 
-  it("sheet-over-bench: a new subject leaves its opener alone", async () => {
+  it("sheet-over-bench: a new press leaves its opener alone", async () => {
     const { rerender } = mount(tree("sheet-over-bench", false));
     button("Opener").focus();
-    rerender(tree("sheet-over-bench", true, { subject: "a" }));
+    rerender(tree("sheet-over-bench", true, { press: 1 }));
 
     // Focus is in the panel, and the panel is no opener to go back to.
-    rerender(tree("sheet-over-bench", true, { subject: "b" }));
+    rerender(tree("sheet-over-bench", true, { press: 2 }));
     rerender(tree("sheet-over-bench", false));
     await pastLeave(rerender, tree("sheet-over-bench", false));
     expect(document.activeElement).toBe(button("Opener"));

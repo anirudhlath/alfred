@@ -14,10 +14,12 @@ const IDLE_NOTE =
 
 export interface HeldBackSheetProps {
   open: boolean;
+  /** `useDetail`'s count of presses: its DND row and System › Quiet both point it. */
+  press: number;
   onClose: () => void;
 }
 
-export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
+export function HeldBackSheet({ open, press, onClose }: HeldBackSheetProps) {
   const [queuedAt, setQueuedAt] = useState<string | null>(null);
   const [draining, setDraining] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +65,13 @@ export function HeldBackSheet({ open, onClose }: HeldBackSheetProps) {
   const held = draining || queuedAt !== null;
 
   return (
-    <Sheet open={open} title="Held back" intro={INTRO} onClose={onClose}>
+    <Sheet
+      open={open}
+      title="Held back"
+      intro={INTRO}
+      press={open ? press : null}
+      onClose={onClose}
+    >
       {notifications.map((notification) => (
         <div
           key={notification.notification_id}

@@ -113,7 +113,7 @@ export function DeskScreen() {
               {/* Inside `Desk`, which is where it finds the column. The Room has it in its
                   `main`, but `RoomScreen` takes no children. */}
               <QueryClientProvider client={client}>
-                <WhySheet anchor={anchor} onClose={noop} />
+                <WhySheet anchor={anchor} press={1} onClose={noop} />
               </QueryClientProvider>
             </>
           }

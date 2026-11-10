@@ -34,6 +34,8 @@ const ALONE = "Nothing else in the eight streams is joined to this row.";
 export interface WhySheetProps {
   /** The row asked about; `null` closes the sheet. */
   anchor: StreamRef | null;
+  /** `useDetail`'s count of presses, which a press for the open thread still moves. */
+  press: number;
   onClose: () => void;
 }
 
@@ -70,7 +72,7 @@ function footnote({ searched, partial }: Thread): string {
  * through the eight streams from one row (spec §7). A `Sheet`, so it sits over
  * the Workshop and the Room alike, and beside them from 1100 px.
  */
-export function WhySheet({ anchor, onClose }: WhySheetProps) {
+export function WhySheet({ anchor, press, onClose }: WhySheetProps) {
   const layout = useLayout();
   // The sheet is still on screen for its leave after `anchor` goes null; keep
   // drawing the last thread rather than emptying the column mid-animation.
@@ -111,9 +113,9 @@ export function WhySheet({ anchor, onClose }: WhySheetProps) {
       title="Why Alfred did that"
       eyebrow="Causal thread"
       intro={layout === "columns" ? COLUMN_INTRO : INTRO}
-      // The ref, not its `rowKey`: the Room's row and the Workshop's for one entry are
-      // one thread and two openers, and each builds its own ref.
-      subject={anchor}
+      // The count, not the ref: the Room's Act row hands over the same `item.why` on
+      // every press, and a press for the thread already open still asks for its top.
+      press={anchor === null ? null : press}
       onClose={onClose}
     >
       {/* Empty, it is `sr-only` — out of flow, so the sheet's `gap-3` does not

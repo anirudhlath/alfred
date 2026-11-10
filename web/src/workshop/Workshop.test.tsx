@@ -580,7 +580,11 @@ describe("Workshop", () => {
       <QueryClientProvider client={client}>
         <ConnectionProvider>
           <Workshop open onClose={onClose} onWhy={vi.fn()} onHeld={vi.fn()} />
-          <WhySheet anchor={{ stream: "reflex_observations", entry: anchorEntry }} onClose={sheetClose} />
+          <WhySheet
+            anchor={{ stream: "reflex_observations", entry: anchorEntry }}
+            press={1}
+            onClose={sheetClose}
+          />
         </ConnectionProvider>
       </QueryClientProvider>,
     );

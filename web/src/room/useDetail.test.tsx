@@ -58,6 +58,23 @@ describe("useDetail", () => {
     expect(result.current.heldOpen).toBe(false);
   });
 
+  it("counts every press, the detail already open included, and not a close", () => {
+    const { result } = renderHook(() => useDetail());
+    const first = result.current.press;
+
+    act(() => result.current.openWhy(ROW));
+    act(() => result.current.openWhy(ROW));
+    expect(result.current.press).toBe(first + 2);
+
+    act(() => result.current.openHeld());
+    act(() => result.current.openHeld());
+    expect(result.current.press).toBe(first + 4);
+
+    act(() => result.current.closeHeld());
+    act(() => result.current.closeWhy());
+    expect(result.current.press).toBe(first + 4);
+  });
+
   it("the callbacks keep their identity across renders", () => {
     const { result, rerender } = renderHook(() => useDetail());
     const { openWhy, openHeld, closeWhy, closeHeld } = result.current;

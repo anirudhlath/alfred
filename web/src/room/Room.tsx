@@ -49,7 +49,7 @@ export function Room() {
   // hold-to-talk writes to it, so it must not be rebuilt on a render.
   const [signal] = useState(() => new PresenceSignal());
   const [holding, setHolding] = useState(false);
-  const { why, heldOpen, openWhy, openHeld, closeWhy, closeHeld } = useDetail();
+  const { why, heldOpen, press, openWhy, openHeld, closeWhy, closeHeld } = useDetail();
   const [workshopOpen, setWorkshopOpen] = useState(false);
   // `open` means nothing at width (R1) and nothing there can close it, so a layer
   // left open would rise again on the way back to the phone, taking focus and
@@ -186,9 +186,9 @@ export function Room() {
               }
             />
 
-            <HeldBackSheet open={heldOpen} onClose={closeHeld} />
+            <HeldBackSheet open={heldOpen} press={press} onClose={closeHeld} />
 
-            <WhySheet anchor={why} onClose={closeWhy} />
+            <WhySheet anchor={why} press={press} onClose={closeWhy} />
 
             <DoorLayer
               tracked={door.current}

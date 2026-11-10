@@ -16,13 +16,14 @@ export interface SheetProps {
   /** What the surface is for: the body's first line, or the column header's last. */
   intro?: string;
   /**
-   * What the detail is showing, by identity, where another row can re-point it. Beside
-   * the app, a new one starts the body at the top; `null` is a close, and a sheet leaves
-   * from where it was. In a column it also makes that row the opener focus returns to.
-   * Not over the bench, where focus is in the panel, and the panel is no opener. The
-   * phone ignores it: nothing behind its modal can press a row.
+   * Which press pointed the detail: a new number for every press, the open detail's own
+   * row included (`useDetail`). Beside the app, a new one starts the body at the top;
+   * `null` is a close, and a sheet leaves from where it was. In a column it also makes
+   * the row pressed the opener focus returns to. Not over the bench, where focus is in
+   * the panel, and the panel is no opener. The phone ignores it: nothing behind its
+   * modal can press a row.
    */
-  subject?: unknown;
+  press?: number | null;
 }
 
 /**
@@ -75,10 +76,10 @@ function ModalSheet(props: SheetProps) {
  * is a dialog without `aria-modal`, and `Desk` quiets only the bench behind it.
  */
 function SheetOverBench({ slot, ...props }: SheetProps & { slot: HTMLElement }) {
-  const { open, subject, onClose } = props;
+  const { open, press, onClose } = props;
   const { mounted, leaving } = usePresence(open, SHEET_MS);
   const panel = useRef<HTMLDivElement>(null);
-  const body = useTopOnRepoint(subject);
+  const body = useTopOnRepoint(press);
   useAsideFocus(mounted, panel, true);
   useEscapeBeside(open, panel, onClose);
 
@@ -100,15 +101,15 @@ function DetailColumn({
   title,
   eyebrow,
   intro,
-  subject,
+  press,
   onClose,
   children,
   slot,
 }: SheetProps & { slot: HTMLElement }) {
   const panel = useRef<HTMLElement>(null);
-  const body = useTopOnRepoint(subject);
+  const body = useTopOnRepoint(press);
   const titleId = useId();
-  useAsideFocus(open, panel, false, subject);
+  useAsideFocus(open, panel, false, press);
   useEscapeBeside(open, panel, onClose);
 
   if (!open) return null;
@@ -252,14 +253,15 @@ function Intro({ text }: { text: string }) {
  * The ref for a detail's body, which goes back to the top on every press that points
  * the detail: halfway down one thread is nowhere in the next, and a cached one renders
  * straight in, so nothing else would move the old offset. A press for the thread
- * already open asks to see it, so it goes to the top as well. No subject is a close, not
- * a press: a sheet's leave is still on screen, and it should not jump as it goes.
+ * already open asks to see it, so it goes to the top as well, which is why this counts
+ * presses rather than comparing what they point at. No press is a close: a sheet's leave
+ * is still on screen, and it should not jump as it goes.
  */
-function useTopOnRepoint(subject: unknown): RefObject<HTMLDivElement | null> {
+function useTopOnRepoint(press: number | null | undefined): RefObject<HTMLDivElement | null> {
   const body = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    if (subject != null && body.current) body.current.scrollTop = 0;
-  }, [subject]);
+    if (press != null && body.current) body.current.scrollTop = 0;
+  }, [press]);
   return body;
 }
 

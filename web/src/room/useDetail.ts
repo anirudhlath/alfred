@@ -4,6 +4,12 @@ import type { StreamRef } from "@/lib/streams";
 export interface Detail {
   why: StreamRef | null;
   heldOpen: boolean;
+  /**
+   * How many presses have opened a detail, the one already open included: what sends
+   * a detail beside the app back to its top (`Sheet`'s `press`). Not the ref's
+   * identity, because the Room's Act row hands over the same `item.why` every time.
+   */
+  press: number;
   openWhy: (ref: StreamRef) => void;
   openHeld: () => void;
   closeWhy: () => void;
@@ -34,17 +40,21 @@ export function useDetail(): Detail {
    * does not render a second copy, it asks for this one.
    */
   const [heldOpen, setHeldOpen] = useState(false);
+  const [press, setPress] = useState(0);
 
   const openWhy = useCallback((ref: StreamRef) => {
     setHeldOpen(false);
     setWhy(ref);
+    setPress((count) => count + 1);
   }, []);
   const openHeld = useCallback(() => {
     setWhy(null);
     setHeldOpen(true);
+    setPress((count) => count + 1);
   }, []);
+  // A close is not a press: a sheet's leave is still on screen, and should not jump.
   const closeWhy = useCallback(() => setWhy(null), []);
   const closeHeld = useCallback(() => setHeldOpen(false), []);
 
-  return { why, heldOpen, openWhy, openHeld, closeWhy, closeHeld };
+  return { why, heldOpen, press, openWhy, openHeld, closeWhy, closeHeld };
 }

@@ -2167,7 +2167,10 @@ Focus goes back to the opener on a close only if it was still inside, so only fr
 once the panel has gone: a reader who has moved on during a leave, into the composer or a new
 sheet, stays there. A column re-pointed by another row's `why?` takes that row as its opener
 (R10), and an opener that has died gets nothing. Every press that points a detail starts its
-body at the top, the thread already open included, since pressing it asks to see it.
+body at the top, the thread already open included, since pressing it asks to see it. So the
+reset follows `useDetail`'s count of presses, not the row: the Room's Act row hands over the
+same ref every time, and while its thread is open its `why?` takes no pointer, so that press
+comes from the keyboard. A close is not a press, so a sheet leaves from where it was.
 
 `useDetail` holds one detail at a time (R6): nothing is modal at width, so `why?` can be
 pressed with Held back open, and both would land in one column. The Room passes the open
@@ -2302,7 +2305,7 @@ the classes and the behaviour.
 | `src/shell/layout.test.tsx` | Both breakpoints and the short side, a tablet's keyboard not flipping it, a foldable both ways, no `matchMedia`, and `useLayout`'s default of `phone` |
 | `src/shell/Desk.test.tsx` | The Room's DOM node across every layout, `data-detail`, the bench body's `inert` only over the bench, and both slots |
 | `src/shell/Sheet.test.tsx` | The three modes: where each lands, what closes it and what does not, focus on open and on close, a re-pointed column, and the body's scroll |
-| `src/room/useDetail.test.tsx` | One detail at a time, a thread re-pointed, and the callbacks' identity |
+| `src/room/useDetail.test.tsx` | One detail at a time, a thread re-pointed, every press counted and no close, and the callbacks' identity |
 | `src/workshop/useBenchKeys.test.tsx` | J and K, Space, 1 to 8, and when each stays silent |
 | `src/room/Composer.test.tsx` | `⌘K` and `Ctrl+K`, the hint, Escape's two presses beside a detail, and the phone answering none of it |
 | `src/workshop/ActivityBench.test.tsx`, `src/workshop/StreamChips.test.tsx`, `src/workshop/EventRow.test.tsx`, `src/workshop/useActivity.test.tsx` | The bench at width: the chips on top, a solo that dims, an open row through a solo, the footnote, the gutters, and the compact chip |
@@ -2311,7 +2314,7 @@ the classes and the behaviour.
 | `src/sheets/WhySheet.test.tsx`, `src/sheets/HeldBackSheet.test.tsx` | Each detail's words in a column, and focus back on the row that last opened the thread |
 | `src/door/DoorLayer.test.tsx`, `src/gates/Gate.test.tsx` | The contents inside `.phone-column` and the ground outside it |
 | `src/test/contrast.test.ts` | `--detail` carrying what is written on it, the row's ring, a compact chip's count on both halves of its rule, and the phone column's width |
-| `src/App.test.tsx` | The desk end to end: the handle gone, a draft through every breakpoint, the phone's Workshop not raised after a trip through it, the third column, one detail at a time, and focus back on the row last pressed |
+| `src/App.test.tsx` | The desk end to end: the handle gone, a draft through every breakpoint, the phone's Workshop not raised after a trip through it, the third column, one detail at a time, focus back on the row last pressed, and the open thread's own row sending it to its top |
 
 ---
 
