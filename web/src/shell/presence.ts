@@ -126,6 +126,14 @@ export interface Handoff {
   open: boolean;
 }
 
+/**
+ * Whether focus says nothing about where a reader is: on `<body>`, or on an element
+ * gone inert under it, which a browser has yet to blur.
+ */
+function placeless(active: Element | null): boolean {
+  return active === null || active === document.body || active.closest("[inert]") !== null;
+}
+
 /** Focus back to where it was, unless that place has gone or is behind a surface now. */
 function restoreFocus(previous: Element | null): void {
   if (
@@ -207,7 +215,10 @@ export function useModalFocus(
  * opener stays the one the press captured, and the mode going gives nothing back.
  * The mode arriving takes focus only from `<body>`: that is where the removal of
  * the panel it replaces left a reader who was inside, and where nothing else says
- * where a reader was. Anyone elsewhere, in the composer mid-sentence say, stays.
+ * where a reader was. Focus inside `[inert]` counts as `<body>`: crossing to the
+ * sheet over the bench makes the bench inert under a row J or K left focused, and
+ * Chromium blurs it to `<body>` only some 50 ms later, behind the sheet. Anyone
+ * elsewhere, in the composer mid-sentence say, stays.
  *
  * `active` is true only while the panel is rendered, so its ref is set by the time
  * this runs.
@@ -235,7 +246,7 @@ export function useAsideFocus(
     const crossing = state.up;
     state.up = true;
     if (!crossing) state.opener = document.activeElement;
-    if (crossing ? document.activeElement === document.body : take) {
+    if (crossing ? placeless(document.activeElement) : take) {
       node.focus({ preventScroll: true });
     }
     return () => {

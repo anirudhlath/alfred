@@ -58,8 +58,8 @@ export interface SheetProps {
  * detail open remounts it in the new mode, and that is neither an open nor a close
  * (`Handoff`): the opener stays the row pressed, and focus moves in only where it
  * has to. That is into a modal, which makes everything behind it inert, or for a
- * reader who was inside the panel that went, or who was on `<body>`. A reader in the
- * composer stays there.
+ * reader who was inside the panel that went, or who was on `<body>`, or on a bench row
+ * the sheet over the bench has just made inert. A reader in the composer stays there.
  *
  * At width the slot opens on the Room's state alone: `Desk`'s `detailOpen` is
  * `heldOpen || why` (`Room.tsx`). A `Sheet` opened anywhere else inside the `Desk`

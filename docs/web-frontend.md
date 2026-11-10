@@ -2156,8 +2156,10 @@ detail open remounts it in the new mode, which is neither an open nor a close (`
 `presence.ts`). The opener stays the row pressed, so a close after any number of crossings gives
 focus back to it. Focus moves in only where it has to: into the phone's modal, which makes
 everything behind it inert; or for a reader who was inside the panel that went, or on `<body>`,
-which is where that panel's removal leaves them. A reader in the composer mid-sentence stays
-there. The column is `tabIndex={-1}` for the one crossing that moves focus into it, from the
+which is where that panel's removal leaves them; or on something inside `[inert]`, which counts
+as `<body>`. That last is a bench row J or K left focused when the sheet over the bench makes the
+bench inert: Chromium blurs the row only some 50 ms later, after the sheet has looked, and the
+reader would end on `<body>` behind it. A reader in the composer mid-sentence stays there. The column is `tabIndex={-1}` for the one crossing that moves focus into it, from the
 sheet over the bench; an open never focuses it.
 
 Beside the app, a detail's body is focusable itself, the column's and the sheet's over the bench

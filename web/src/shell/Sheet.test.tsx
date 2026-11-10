@@ -669,6 +669,24 @@ describe("Sheet across a breakpoint", () => {
     expect(document.activeElement).toBe(dialog());
   });
 
+  it("takes a reader on a bench row the crossing made inert into the sheet, and gives it back", async () => {
+    const { rerender } = mount(desk("columns", false));
+    const row = button("Bench row");
+    row.focus();
+    rerender(desk("columns", true));
+    expect(document.activeElement).toBe(row);
+
+    // J and K leave focus on a row, and a browser blurs it only a frame after the bench
+    // goes inert: the sheet must not wait for `<body>`.
+    rerender(desk("sheet-over-bench", true));
+    expect(row.closest("[inert]")).not.toBeNull();
+    expect(document.activeElement).toBe(dialog());
+
+    rerender(desk("sheet-over-bench", false));
+    await pastLeave(rerender, desk("sheet-over-bench", false));
+    expect(document.activeElement).toBe(row);
+  });
+
   it("moves focus into the phone's modal from anywhere, since everything behind it goes inert", () => {
     const { rerender } = mount(tree("columns", false));
     button("Opener").focus();
