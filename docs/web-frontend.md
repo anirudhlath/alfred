@@ -2163,6 +2163,9 @@ sheet over the bench; an open never focuses it.
 `Sheet` reads its slot with `useDeskSlots()`, so it has to be a child of `Desk`. Slots are
 state, set from ref callbacks, which is why a width renders the modal for the one commit before
 `Desk` has handed them out.
+The slot opens on the Room's state alone, `heldOpen || why` as `Desk`'s `detailOpen`
+(`web/src/room/Room.tsx`): a `Sheet` opened anywhere else inside the `Desk` would render its column
+into a hidden slot, so a new detail opens through `useDetail`, or `Desk` learns to register it.
 
 | Mode | When | What it is | Focus on open | Going |
 |---|---|---|---|---|

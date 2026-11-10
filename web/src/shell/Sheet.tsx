@@ -44,6 +44,12 @@ export interface SheetProps {
  * has to. That is into a modal, which makes everything behind it inert, or for a
  * reader who was inside the panel that went, or who was on `<body>`. A reader in the
  * composer stays there.
+ *
+ * At width the slot opens on the Room's state alone: `Desk`'s `detailOpen` is
+ * `heldOpen || why` (`Room.tsx`). A `Sheet` opened anywhere else inside the `Desk`
+ * would render a `DetailColumn` into a slot the grid keeps hidden, and a sheet over
+ * the bench with the bench behind it still live. A new caller opens through the
+ * Room's detail (`useDetail`), or adds a way for a `Sheet` to register with `Desk`.
  */
 export function Sheet(props: SheetProps) {
   const layout = useLayout();
