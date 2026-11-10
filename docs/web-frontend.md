@@ -2160,6 +2160,18 @@ which is where that panel's removal leaves them. A reader in the composer mid-se
 there. The column is `tabIndex={-1}` for the one crossing that moves focus into it, from the
 sheet over the bench; an open never focuses it.
 
+Beside the app, a detail's body is focusable itself, the column's and the sheet's over the bench
+(`SCROLLER_FOCUS` in `Sheet.tsx`). A click in the thread focuses the nearest focusable thing around
+it, and when that was the panel, Space, PageDown and the arrows started there and walked up, away
+from the body: in Chromium, a click on a line of the open thread at 1280 then scrolled it 0 px
+for each, and with the body focused it scrolls 611, 611 and 40 (478, 478 and 40 over the bench at
+900). It is `tabIndex={0}`, not `-1`: Chromium makes a scroller with nothing focusable in it a Tab
+stop of its own, which a thread is, and any `tabIndex` overrides that, so `-1` would have taken
+away a keyboard reader's only way to scroll one. A click focuses it with no ring, since
+`:focus-visible` leaves out a click on anything that takes no typing. A crossing still focuses the
+panel, which is what a screen reader names. The phone's modal is unchanged: a press in its body
+lands on the dialog, as it was device-tested with VoiceOver.
+
 `Sheet` reads its slot with `useDeskSlots()`, so it has to be a child of `Desk`. Slots are
 state, set from ref callbacks, which is why a width renders the modal for the one commit before
 `Desk` has handed them out.
@@ -2314,7 +2326,7 @@ the classes and the behaviour, and the grid's own text.
 |---|---|
 | `src/shell/layout.test.tsx` | Both breakpoints and the short side, a tablet's keyboard not flipping it, a foldable both ways, no `matchMedia`, and `useLayout`'s default of `phone` |
 | `src/shell/Desk.test.tsx` | The Room's DOM node across every layout, `data-detail`, the bench body's `inert` only over the bench, and both slots |
-| `src/shell/Sheet.test.tsx` | The three modes: where each lands, what closes it and what does not, focus on open and on close, a re-pointed column, the body's scroll, and focus across a breakpoint |
+| `src/shell/Sheet.test.tsx` | The three modes: where each lands, what closes it and what does not, focus on open and on close, a re-pointed column, the body's scroll, a click in the body focusing it beside the app and the dialog on the phone, and focus across a breakpoint |
 | `src/room/useDetail.test.tsx` | One detail at a time, a thread re-pointed, every press counted and no close, and the callbacks' identity |
 | `src/workshop/useBenchKeys.test.tsx` | J and K, Space, 1 to 8, and when each stays silent |
 | `src/room/Composer.test.tsx` | `⌘K` and `Ctrl+K`, the hint, Escape's two presses beside a detail, and the phone answering none of it |

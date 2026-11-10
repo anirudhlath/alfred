@@ -13,6 +13,22 @@ import {
 
 const SHEET_MS = 380;
 
+/**
+ * The `tabIndex` of a detail's body beside the app, the column's and the sheet's over
+ * the bench. A click in the body focuses the nearest focusable thing around it, and
+ * without one of its own that is the panel, which the keys cannot scroll: Space,
+ * PageDown and the arrows start at the focused element and walk up, and the body is
+ * below it. Focused itself, the body is what they scroll.
+ *
+ * `0` and not `-1`: Chromium makes a scroller with nothing focusable in it, a thread,
+ * a Tab stop of its own, and any `tabIndex` overrides that, so `-1` would take a
+ * keyboard reader's only way to scroll the thread. A mouse focuses it with no ring,
+ * since `:focus-visible` leaves out a click on anything that takes no typing. The
+ * panel stays what a breakpoint's crossing focuses, being the element a screen reader
+ * names.
+ */
+const SCROLLER_FOCUS = 0;
+
 export interface SheetProps {
   open: boolean;
   title: string;
@@ -128,7 +144,9 @@ function SheetOverBench({ slot, handoff, ...props }: ModeProps & { slot: HTMLEle
  * the moment `open` is false.
  *
  * `tabIndex={-1}` so a reader who was in the sheet over the bench can follow it here
- * across 1100 px. An open never focuses it.
+ * across 1100 px: the aside is what a screen reader names as the thread. An open never
+ * focuses it, and a click in the thread does not land on it, because the body is
+ * focusable itself (`SCROLLER_FOCUS`).
  */
 function DetailColumn({
   open,
@@ -187,6 +205,7 @@ function DetailColumn({
       </header>
       <div
         ref={body}
+        tabIndex={SCROLLER_FOCUS}
         className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 pt-[18px] pb-10"
       >
         {children}
@@ -270,6 +289,9 @@ function SheetPanel({
         </div>
         <div
           ref={body}
+          // Over the bench only. The phone's modal keeps its DOM, and the focus VoiceOver
+          // was device-tested with: a press there lands on the dialog, as it always has.
+          tabIndex={modal ? undefined : SCROLLER_FOCUS}
           className="flex flex-1 flex-col gap-3 overflow-y-auto px-5"
           style={{ paddingBottom: "calc(40px + env(safe-area-inset-bottom, 0px))" }}
         >

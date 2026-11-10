@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Desk, DeskSlotsContext, type DeskSlots } from "./Desk";
@@ -66,6 +67,10 @@ const escape = (target: Element | Document = document.body) =>
 const column = () => screen.getByRole("complementary", { name: TITLE });
 const queryColumn = () => screen.queryByRole("complementary", { name: TITLE });
 const dialog = () => screen.getByRole("dialog", { name: TITLE });
+/** The detail's scroller, which holds the thread. */
+const scroller = () => screen.getByText("The thread").parentElement as HTMLElement;
+/** A press on the thread's text, which focuses whatever a browser's click would. */
+const clickThread = () => userEvent.setup().click(screen.getByText("The thread"));
 
 /**
  * Past a leave, with its focus settled. The leave's timer commits outside `act`, and
@@ -105,6 +110,14 @@ describe("Sheet on the phone", () => {
 
     rerender(tree("phone", true, { press: 2 }));
     expect(body.scrollTop).toBe(200);
+  });
+
+  it("phone: a click in the body focuses the dialog, as it always has", async () => {
+    mount(tree("phone", true));
+    expect(scroller()).not.toHaveAttribute("tabindex");
+
+    await clickThread();
+    expect(document.activeElement).toBe(dialog());
   });
 
   it("phone: Escape arrives on the panel, because a gate over it swallows the key", () => {
@@ -320,6 +333,23 @@ describe("Sheet in a column", () => {
     expect(body.scrollTop).toBe(0);
   });
 
+  it("columns: a click in the body focuses the body, so the keys scroll it", async () => {
+    mount(tree("columns", true));
+
+    // Not the aside: from there Space, PageDown and the arrows walk up, away from it.
+    await clickThread();
+    expect(document.activeElement).toBe(scroller());
+    expect(scroller()).toHaveClass("overflow-y-auto");
+  });
+
+  it("columns: Tab reaches the body after esc closes, as a scroller with nothing to focus", async () => {
+    mount(tree("columns", true));
+    button("esc closes").focus();
+
+    await userEvent.setup().tab();
+    expect(document.activeElement).toBe(scroller());
+  });
+
   it("columns: gives nothing back into a place that has gone inert", () => {
     const { rerender } = mount(tree("columns", false));
     button("Opener").focus();
@@ -401,6 +431,22 @@ describe("Sheet over the bench", () => {
     rerender(tree("sheet-over-bench", false, { press: null }));
     expect(dialog()).toBeInTheDocument();
     expect(body.scrollTop).toBe(200);
+  });
+
+  it("sheet-over-bench: a click in the body focuses the body, so the keys scroll it", async () => {
+    mount(tree("sheet-over-bench", true));
+
+    await clickThread();
+    expect(document.activeElement).toBe(scroller());
+    expect(scroller()).toHaveClass("overflow-y-auto");
+  });
+
+  it("sheet-over-bench: Tab reaches the body after Done", async () => {
+    mount(tree("sheet-over-bench", true));
+    button("Done").focus();
+
+    await userEvent.setup().tab();
+    expect(document.activeElement).toBe(scroller());
   });
 
   it("sheet-over-bench: takes focus and gives it back", async () => {
