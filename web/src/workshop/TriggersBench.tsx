@@ -50,11 +50,20 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
           `StreamChips` is not reused either, for a plainer reason: it is eight
           hue-keyed monogram tiles with a count and solo semantics, and these
           are five word labels that pick one filter. They share a height and
-          nothing else. */}
+          nothing else.
+
+          At width the row wraps once the five labels no longer fit: in the 270 px
+          of content at 1100 px with a thread open, `All 124` ran `Composite` 52 px
+          past it, into the thread's column. Where they fit it is the one 44 px line
+          it always was. */}
       <div
         role="group"
         aria-label="Trigger kinds"
-        className={`${desk ? DESK_EDGE : "mx-4"} mt-2.5 flex h-11 shrink-0 items-center gap-1.5`}
+        className={
+          desk
+            ? `${DESK_EDGE} mt-2.5 flex min-h-11 shrink-0 flex-wrap items-center gap-x-1.5 gap-y-3`
+            : "mx-4 mt-2.5 flex h-11 shrink-0 items-center gap-1.5"
+        }
       >
         {TRIGGER_KINDS.map((kind) => {
           const active = kind === triggers.kind;
@@ -65,11 +74,13 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
               aria-pressed={active}
               onClick={() => triggers.setKind(kind)}
               // 32 px of chip in a 44 px track: the `after` box adds 6 px above
-              // and below, which the row's own height already holds clear.
-              // `whitespace-nowrap` because the labels share the width five
-              // ways and "Composite" is the one that would otherwise wrap
+              // and below, which the row's own height already holds clear, and
+              // at width, where the row can wrap, so do the 12 px between its
+              // lines. `whitespace-nowrap` because the labels share the width
+              // five ways and "Composite" is the one that would otherwise wrap
               // inside a fixed 32 px box on a 360 px screen — whether it fits
               // at all there is for the device checklist, not for a guess here.
+              // At width the row wraps instead, so a label is never clipped.
               className="relative h-8 flex-1 rounded-lg border px-1 text-[13px] font-medium whitespace-nowrap after:absolute after:inset-x-0 after:-inset-y-1.5 after:content-['']"
               style={{
                 background: active ? "var(--ink)" : "transparent",

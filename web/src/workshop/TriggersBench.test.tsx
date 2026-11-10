@@ -251,6 +251,19 @@ describe("TriggersBench at width", () => {
     }
   });
 
+  it("lets the filters wrap at width, 12 px between lines, and keeps the phone's one line", () => {
+    const filters = () => screen.getByRole("group", { name: "Trigger kinds" });
+    const { rerender } = render(atWidth(state()));
+    // A second line once the five no longer fit, each chip's 44 px target clear of the
+    // next line's: 32 px of chip, 6 px of `after` either side, and 12 px of gap.
+    expect(filters()).toHaveClass("flex-wrap", "min-h-11", "gap-x-1.5", "gap-y-3");
+    expect(filters()).not.toHaveClass("h-11");
+    for (const chip of chips()) expect(chip).toHaveClass("h-8", "after:-inset-y-1.5");
+
+    rerender(atWidth(state(), "phone"));
+    expect(filters().className).toBe("mx-4 mt-2.5 flex h-11 shrink-0 items-center gap-1.5");
+  });
+
   it("keeps the list the column's width, its content under the switcher", () => {
     const list = () => screen.getByRole("list", { name: "Triggers" });
     const { rerender } = render(atWidth(state()));
