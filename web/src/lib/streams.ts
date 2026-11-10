@@ -41,19 +41,21 @@ export function isStreamName(value: string): value is StreamName {
  * because the hue is *data* — `h = 30 + 45·i` over `STREAMS`, indexed by which
  * stream a row came from — not a palette choice. Every caller computes its hue
  * from `STREAM_INFO` rather than writing one down: the Room's 8 px marks
- * (`ActRow`, `HeldBackSheet`) and, through `ringFill`/`ringText`, the
- * Workshop's tiles and chips. Not eight tokens, because a token per hue would
- * be a palette (index.css, "the stream hues are not tokens yet").
+ * (`ActRow`, `HeldBackSheet`) and, through `ringFill`/`ringText`, the monogram
+ * tiles (`EventRow`, `WhySheet`) and the Workshop's chips. Not eight tokens,
+ * because a token per hue would be a palette (index.css, "the stream hues are
+ * not tokens yet").
  */
 export function ring(hue: number): string {
   return `oklch(0.62 0.11 ${hue})`;
 }
 
 /**
- * The same hue dark enough to carry white text: monogram tiles and the soloed
- * chip. White on `ring()` is 3.45:1 at 9-10 px, under AA's 4.5; at L 0.52 the
- * worst of the eight hues is 5.11:1. `ring()` itself stays at L 0.62 — the
- * Room's 8 px marks carry no text and have nothing to fail.
+ * The same hue dark enough to carry white text: the monogram tiles (`EventRow`,
+ * `WhySheet`) and the fill of the chip that is on, the soloed one
+ * (`StreamChips`). White on `ring()` is 3.45:1 at 9-10 px, under AA's 4.5; at
+ * L 0.52 the worst of the eight hues is 5.11:1. `ring()` itself stays at L 0.62
+ * — the Room's 8 px marks carry no text and have nothing to fail.
  */
 export function ringFill(hue: number): string {
   return `oklch(0.52 0.11 ${hue})`;
@@ -68,10 +70,12 @@ export function ringFill(hue: number): string {
 export const RING_COUNT_ON_OPACITY = 0.91;
 
 /**
- * The same hue light enough to *be* text on the page: the un-soloed chip's
- * border and label. The lightness is a per-theme token because legible on
- * paper and legible on ink are different numbers (`--ring-text-l`, index.css);
- * the hue stays data. `ring()` stays at L 0.62 for the marks that carry no text.
+ * The same hue light enough to *be* text on the page: the border of every chip
+ * a solo has not dimmed, the soloed one's included, and the label of each of
+ * those but the soloed one, which is white on `ringFill`. The lightness is a
+ * per-theme token because legible on paper and legible on ink are different
+ * numbers (`--ring-text-l`, index.css); the hue stays data. `ring()` stays at
+ * L 0.62 for the marks that carry no text.
  */
 export function ringText(hue: number): string {
   return `oklch(var(--ring-text-l) 0.11 ${hue})`;
