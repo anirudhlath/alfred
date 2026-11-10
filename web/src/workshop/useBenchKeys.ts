@@ -4,8 +4,9 @@ import { isEditing } from "@/shell/keys";
 import type { Activity } from "./useActivity";
 
 /**
- * The controls that keep their own Space. A row would be one, but Enter already presses
- * it, so its Space is the feed's (R12).
+ * The controls inside the bench that keep their own Space. A row would be one, but Enter
+ * already presses it, so its Space is the feed's (R12). Outside the bench every Space is
+ * the page's, control or not (`useBenchKeys`).
  */
 const SPACE_IS_ITS_OWN = 'button, a, [role="tab"], [role="switch"]';
 
@@ -34,6 +35,13 @@ function moveFocus(list: HTMLElement, by: 1 | -1): void {
  * `enabled` is the width. Being unmounted on the other three benches is what scopes
  * these to Activity. A Door or a gate makes `#root` inert around the list, and a sheet
  * over the bench makes the bench's body inert, and then none of these are the bench's.
+ *
+ * Space is the feed's only from inside the Workshop's tabpanel, the narrowest element
+ * holding the list, the chips and the bench's own blank space (a press there focuses
+ * it). From `<body>`, the Room, the thread column or a sheet it is left to scroll: a
+ * reader whose focus is on `<body>` is scrolling what they last clicked, which need not
+ * be the feed. That narrows R12's "from nothing". J/K and 1–8 reach the list from
+ * anywhere.
  */
 export function useBenchKeys(activity: Activity, list: RefObject<HTMLElement | null>, enabled: boolean): void {
   // Through a ref so the listeners stay put: `activity` is a new object on every
@@ -61,6 +69,8 @@ export function useBenchKeys(activity: Activity, list: RefObject<HTMLElement | n
         event.preventDefault();
         moveFocus(root, key === "j" ? 1 : -1);
       } else if (key === " ") {
+        const bench = root.closest('[role="tabpanel"]') ?? root;
+        if (!(event.target instanceof Node) || !bench.contains(event.target)) return;
         const control = event.target instanceof Element ? event.target.closest(SPACE_IS_ITS_OWN) : null;
         if (control && !control.matches("[data-event-row]")) return;
         event.preventDefault();

@@ -29,59 +29,75 @@ interface BenchProps {
   onAll?: () => void;
 }
 
-/** A list of row buttons, one dimmed, with the other things focus can rest on around it. */
+/**
+ * A list of row buttons, one dimmed, with the other things focus can rest on around it:
+ * inside the Workshop's tabpanel, as the bench is, and outside it, the Room's scroller
+ * and the thread column's.
+ */
 function Bench({ a, enabled = true, onRow, onOther, onAll }: BenchProps) {
   const list = useRef<HTMLUListElement>(null);
   useBenchKeys(a, list, enabled);
   return (
     <div data-testid="wrapper">
-      <input aria-label="field" />
-      <button type="button" onClick={onOther}>
-        other
-      </button>
-      {/* `All` at width with no solo: focusable, and its press does nothing. */}
-      <button type="button" aria-disabled="true" onClick={onAll}>
-        All
-      </button>
-      <a href="#there">link</a>
-      <div role="tab" tabIndex={0}>
-        tab
+      <div tabIndex={0} aria-label="Room">
+        room
       </div>
-      <div role="switch" aria-checked="false" tabIndex={0}>
-        switch
+      <div role="tabpanel" tabIndex={0} aria-label="Activity">
+        <input aria-label="field" />
+        <button type="button" onClick={onOther}>
+          other
+        </button>
+        {/* `All` at width with no solo: focusable, and its press does nothing. */}
+        <button type="button" aria-disabled="true" onClick={onAll}>
+          All
+        </button>
+        <a href="#there">link</a>
+        <div role="tab" tabIndex={0}>
+          tab
+        </div>
+        <div role="switch" aria-checked="false" tabIndex={0}>
+          switch
+        </div>
+        <ul ref={list}>
+          <li>
+            <button type="button">older</button>
+          </li>
+          <li>
+            <button type="button" data-event-row="" onClick={onRow}>
+              one
+            </button>
+          </li>
+          <li>
+            <button type="button" data-event-row="" data-dimmed="">
+              dimmed
+            </button>
+          </li>
+          <li>
+            <button type="button" data-event-row="">
+              two
+            </button>
+            <button type="button">Only RX</button>
+          </li>
+          <li>
+            <button type="button" data-event-row="">
+              three
+            </button>
+            <button type="button">Only EV</button>
+          </li>
+        </ul>
       </div>
-      <ul ref={list}>
-        <li>
-          <button type="button">older</button>
-        </li>
-        <li>
-          <button type="button" data-event-row="" onClick={onRow}>
-            one
-          </button>
-        </li>
-        <li>
-          <button type="button" data-event-row="" data-dimmed="">
-            dimmed
-          </button>
-        </li>
-        <li>
-          <button type="button" data-event-row="">
-            two
-          </button>
-          <button type="button">Only RX</button>
-        </li>
-        <li>
-          <button type="button" data-event-row="">
-            three
-          </button>
-          <button type="button">Only EV</button>
-        </li>
-      </ul>
+      <aside className="desk-detail">
+        <div tabIndex={0} aria-label="Thread">
+          thread
+        </div>
+      </aside>
     </div>
   );
 }
 
 const button = (name: string) => screen.getByRole("button", { name });
+const panel = () => screen.getByRole("tabpanel");
+const outside = () => [screen.getByLabelText("Room"), screen.getByLabelText("Thread")];
 
 /** Whether the key was claimed from the browser, which `user-event` has no way to say. */
 const claimed = (key: string, init: KeyboardEventInit = {}, target: Element = document.body) =>
@@ -132,6 +148,13 @@ describe("useBenchKeys", () => {
       button("other").focus();
       await user.keyboard("k");
       expect(button("one")).toHaveFocus();
+
+      // Outside the bench too: only Space is scoped to it.
+      for (const scroller of outside()) {
+        scroller.focus();
+        await user.keyboard("j");
+        expect(button("one")).toHaveFocus();
+      }
     });
 
     it("from a pill in an open row, J goes to the next row and K to the row it sits in", async () => {
@@ -201,12 +224,14 @@ describe("useBenchKeys", () => {
   });
 
   describe("Space", () => {
-    it("Space pauses from a row and from nothing, without pressing the row", async () => {
+    it("Space pauses from a row and from the bench itself, without pressing the row", async () => {
       const user = userEvent.setup();
       const onRow = vi.fn();
       const a = activity();
       render(<Bench a={a} onRow={onRow} />);
 
+      // A press on the bench's blank space focuses its tabpanel.
+      panel().focus();
       await user.keyboard(" ");
       expect(a.pause).toHaveBeenCalledTimes(1);
 
@@ -218,11 +243,34 @@ describe("useBenchKeys", () => {
       expect(onRow).not.toHaveBeenCalled();
     });
 
+    it("leaves Space to the page from nothing: a reader on <body> is scrolling what they last clicked", () => {
+      const a = activity();
+      render(<Bench a={a} />);
+
+      expect(spaceDown(document.body)).toBe(false);
+      expect(spaceUp(document.body)).toBe(false);
+
+      expect(a.pause).not.toHaveBeenCalled();
+    });
+
+    it("leaves Space to a scroller outside the bench, the Room's or the thread's", () => {
+      const a = activity();
+      render(<Bench a={a} />);
+
+      for (const scroller of outside()) {
+        expect(spaceDown(scroller)).toBe(false);
+        expect(spaceUp(scroller)).toBe(false);
+      }
+
+      expect(a.pause).not.toHaveBeenCalled();
+    });
+
     it("Space resumes when paused", async () => {
       const user = userEvent.setup();
       const a = activity({ paused: true });
       render(<Bench a={a} />);
 
+      panel().focus();
       await user.keyboard(" ");
 
       expect(a.resume).toHaveBeenCalledTimes(1);
@@ -273,10 +321,10 @@ describe("useBenchKeys", () => {
       const a = activity();
       render(<Bench a={a} />);
 
-      spaceDown(document.body);
+      spaceDown(panel());
       // The repeats are claimed too, or holding it would scroll the page.
-      expect(spaceDown(document.body, { repeat: true })).toBe(true);
-      expect(spaceDown(document.body, { repeat: true })).toBe(true);
+      expect(spaceDown(panel(), { repeat: true })).toBe(true);
+      expect(spaceDown(panel(), { repeat: true })).toBe(true);
 
       expect(a.pause).toHaveBeenCalledTimes(1);
     });
@@ -310,18 +358,18 @@ describe("useBenchKeys", () => {
     it("claims only the one keyup that matches", () => {
       render(<Bench a={activity()} />);
 
-      spaceDown(document.body);
-      expect(fireEvent.keyUp(document.body, { key: "j" })).toBe(true);
-      expect(spaceUp(document.body)).toBe(true);
+      spaceDown(panel());
+      expect(fireEvent.keyUp(panel(), { key: "j" })).toBe(true);
+      expect(spaceUp(panel())).toBe(true);
 
-      expect(spaceUp(document.body)).toBe(false);
+      expect(spaceUp(panel())).toBe(false);
     });
 
     it("forgets a keyup that never came, so the next button keeps its own", () => {
       // The window lost focus with Space down, and the keyup went elsewhere.
       render(<Bench a={activity()} />);
 
-      spaceDown(document.body);
+      spaceDown(panel());
       spaceDown(button("other"));
 
       expect(spaceUp(button("other"))).toBe(false);
@@ -452,16 +500,16 @@ describe("useBenchKeys", () => {
     it("takes its listeners with it when the width goes", () => {
       const a = activity();
       const { rerender } = render(<Bench a={a} />);
-      spaceDown(document.body);
+      spaceDown(panel());
       vi.mocked(a.pause).mockClear();
 
       // The list stays, so a listener left behind would still have rows to act on.
       rerender(<Bench a={a} enabled={false} />);
 
       // And a keyup one would still claim the Space it saw go down.
-      expect(spaceUp(document.body)).toBe(false);
+      expect(spaceUp(panel())).toBe(false);
       for (const key of ["j", " ", "1"]) {
-        expect(fireEvent.keyDown(document.body, { key })).toBe(true);
+        expect(fireEvent.keyDown(panel(), { key })).toBe(true);
       }
       expectSilent(a);
     });
