@@ -73,10 +73,14 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
               type="button"
               aria-pressed={active}
               onClick={() => triggers.setKind(kind)}
-              // 32 px of chip in a 44 px track: the `after` box adds 6 px above
-              // and below, which the row's own height already holds clear, and
-              // at width, where the row can wrap, so do the 12 px between its
-              // lines. `whitespace-nowrap` because the labels share the width
+              // 32 px of chip, and the `after` box adds 6 px above and below for
+              // a 44 px target. On one line the row's own 44 px holds the boxes.
+              // Wrapped at width, the 12 px between its lines keep them clear of
+              // each other, and the outer lines' reach past the row: 6 px above,
+              // into its `mt-2.5`, and 6 px below, into the list's `pt-2` or a
+              // read error's `mt-2.5`. Nothing pressable sits in either, since
+              // the switcher's tabs above draw no `after` boxes of their own.
+              // `whitespace-nowrap` because the labels share the width
               // five ways and "Composite" is the one that would otherwise wrap
               // inside a fixed 32 px box on a 360 px screen — whether it fits
               // at all there is for the device checklist, not for a guess here.
