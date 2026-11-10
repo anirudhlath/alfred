@@ -98,7 +98,9 @@ describe("HeldBackSheet", () => {
     expect(heading.nextElementSibling).toHaveTextContent(/^Non-urgent notifications wait here/);
     // `Causal thread` is the thread's. The row it would share is `esc closes` alone.
     expect(within(slot).getByRole("button", { name: "esc closes" }).previousElementSibling).toBeNull();
-    await within(slot).findByRole("button", { name: "Drain queue now" });
+    const drain = await within(slot).findByRole("button", { name: "Drain queue now" });
+    // The body is a Tab stop of its own, named by this title rather than the thread's.
+    expect(within(slot).getByRole("group", { name: "Held back" })).toContainElement(drain);
 
     view.unmount();
     slot.remove();

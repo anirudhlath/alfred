@@ -24,7 +24,7 @@ const SHEET_MS = 380;
  * a Tab stop of its own, and any `tabIndex` overrides that, so `-1` would take a
  * keyboard reader's only way to scroll the thread. A mouse focuses it with no ring,
  * since `:focus-visible` leaves out a click on anything that takes no typing. The
- * panel stays what a breakpoint's crossing focuses, being the element a screen reader
+ * panel stays what a breakpoint's crossing focuses, being the landmark a screen reader
  * names.
  */
 const SCROLLER_FOCUS = 0;
@@ -33,8 +33,19 @@ const SCROLLER_FOCUS = 0;
  * What a detail's body beside the app carries, and the phone's does not. The mark is
  * for `index.css`, which gives it the rows' inset ring: the UA's is drawn outside the
  * box, and the column's and the sheet's `overflow: hidden` leave 1 px of it.
+ *
+ * A Tab stop needs a name, and a generic `div` cannot take one, so the body is a group
+ * named by the panel's own title. Not a `region`: that would be a landmark inside the
+ * aside's.
  */
-const DESK_BODY = { tabIndex: SCROLLER_FOCUS, "data-detail-body": "" } as const;
+function deskBody(titleId: string) {
+  return {
+    tabIndex: SCROLLER_FOCUS,
+    role: "group",
+    "aria-labelledby": titleId,
+    "data-detail-body": "",
+  } as const;
+}
 
 export interface SheetProps {
   open: boolean;
@@ -151,7 +162,7 @@ function SheetOverBench({ slot, handoff, ...props }: ModeProps & { slot: HTMLEle
  * the moment `open` is false.
  *
  * `tabIndex={-1}` so a reader who was in the sheet over the bench can follow it here
- * across 1100 px: the aside is what a screen reader names as the thread. An open never
+ * across 1100 px: the aside is the landmark a screen reader names as the thread. An open never
  * focuses it, and a click in the thread does not land on it, because the body is
  * focusable itself (`SCROLLER_FOCUS`).
  */
@@ -212,7 +223,7 @@ function DetailColumn({
       </header>
       <div
         ref={body}
-        {...DESK_BODY}
+        {...deskBody(titleId)}
         className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 pt-[18px] pb-10"
       >
         {children}
@@ -298,7 +309,7 @@ function SheetPanel({
           ref={body}
           // Over the bench only. The phone's modal keeps its DOM, and the focus VoiceOver
           // was device-tested with: a press there lands on the dialog, as it always has.
-          {...(modal ? {} : DESK_BODY)}
+          {...(modal ? {} : deskBody(titleId))}
           className="flex flex-1 flex-col gap-3 overflow-y-auto px-5"
           style={{ paddingBottom: "calc(40px + env(safe-area-inset-bottom, 0px))" }}
         >

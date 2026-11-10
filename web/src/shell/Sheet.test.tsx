@@ -120,10 +120,13 @@ describe("Sheet on the phone", () => {
     expect(document.activeElement).toBe(dialog());
   });
 
-  it("phone: the body draws none of the desk's ring", () => {
+  it("phone: the body draws none of the desk's ring, and takes no role or name", () => {
     mount(tree("phone", true));
 
     expect(scroller()).not.toHaveAttribute("data-detail-body");
+    expect(scroller()).not.toHaveAttribute("role");
+    expect(scroller()).not.toHaveAttribute("aria-labelledby");
+    expect(screen.queryByRole("group", { name: TITLE })).toBeNull();
   });
 
   it("phone: Escape arrives on the panel, because a gate over it swallows the key", () => {
@@ -363,6 +366,13 @@ describe("Sheet in a column", () => {
     expect(scroller()).toHaveAttribute("data-detail-body");
   });
 
+  it("columns: Tab lands on a body named by the column's title", () => {
+    mount(tree("columns", true));
+
+    // A group, not a region: the aside is already the landmark.
+    expect(screen.getByRole("group", { name: TITLE })).toBe(scroller());
+  });
+
   it("columns: gives nothing back into a place that has gone inert", () => {
     const { rerender } = mount(tree("columns", false));
     button("Opener").focus();
@@ -466,6 +476,12 @@ describe("Sheet over the bench", () => {
     mount(tree("sheet-over-bench", true));
 
     expect(scroller()).toHaveAttribute("data-detail-body");
+  });
+
+  it("sheet-over-bench: Tab lands on a body named by the sheet's title", () => {
+    mount(tree("sheet-over-bench", true));
+
+    expect(screen.getByRole("group", { name: TITLE })).toBe(scroller());
   });
 
   it("sheet-over-bench: takes focus and gives it back", async () => {
