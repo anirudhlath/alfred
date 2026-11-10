@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DND_UNCONFIRMED, healthGrid, spendHeadline, spendNote, type Health } from "@/lib/system";
+import { LayoutContext, type Layout } from "@/shell/layout";
 import { authSession, credential, integration, overviewFixture, SYSTEM_NOW } from "@/test/fixtures";
+import { DESK_EDGE, DESK_SCROLL_EDGE } from "./edges";
 import { SystemBench } from "./SystemBench";
 import type { Maintenance, Quiet, System } from "./useSystem";
 
@@ -1139,5 +1141,39 @@ describe("SystemBench", () => {
     act(() => void vi.advanceTimersByTime(15 * 60_000));
     expect(screen.getByText(/signed in 23:50 yesterday/)).toBeInTheDocument();
     expect(screen.getByText(/registered yesterday ·/)).toBeInTheDocument();
+  });
+});
+
+describe("SystemBench at width", () => {
+  const atWidth = (system: System, layout: Layout = "columns") => (
+    <LayoutContext.Provider value={layout}>
+      <SystemBench system={system} />
+    </LayoutContext.Provider>
+  );
+  const EDGE = DESK_EDGE.split(" ");
+  const SCROLL_EDGE = DESK_SCROLL_EDGE.split(" ");
+  const line = () => screen.getByRole("status", { name: "Read errors" });
+  /** The sections' scroller, which follows the error line. */
+  const scroller = () => line().nextElementSibling as HTMLElement;
+
+  it("puts the error line under the switcher, and the phone keeps its gutter", () => {
+    const system = state({ error: "redis gone" });
+    const { rerender } = render(atWidth(system));
+    expect(line()).toHaveClass(...EDGE);
+    expect(line()).not.toHaveClass("mx-4");
+
+    rerender(atWidth(system, "phone"));
+    expect(line()).toHaveClass("mx-4");
+    for (const name of EDGE) expect(line()).not.toHaveClass(name);
+  });
+
+  it("keeps the sections' scroller the column's width, its content under the switcher", () => {
+    const { rerender } = render(atWidth(state()));
+    expect(scroller()).toHaveClass("overflow-y-auto", ...SCROLL_EDGE);
+    expect(scroller().className).not.toMatch(/\bmax-w-|\bpx-4\b/);
+
+    rerender(atWidth(state(), "phone"));
+    expect(scroller()).toHaveClass("overflow-y-auto", "px-4");
+    for (const name of SCROLL_EDGE) expect(scroller()).not.toHaveClass(name);
   });
 });

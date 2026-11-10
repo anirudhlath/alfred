@@ -5,6 +5,7 @@ import { STREAMS, summarise, type StreamName } from "@/lib/streams";
 import { LayoutContext, type Layout } from "@/shell/layout";
 import { reflexObservationsPage, userRequestsPage, userResponsesPage } from "@/test/fixtures";
 import { ActivityBench } from "./ActivityBench";
+import { DESK_SCROLL_EDGE } from "./edges";
 import type { Activity } from "./useActivity";
 
 const reflex: FeedRow = {
@@ -567,7 +568,10 @@ describe("ActivityBench", () => {
       const { rerender } = render(atWidth(a));
       expect(screen.getByTestId("feed-banner")).toHaveClass("mx-6");
       expect(screen.getByRole("status", { name: "Read errors" })).toHaveClass("mx-6");
-      expect(screen.getByRole("list")).toHaveClass("px-6", "pt-3", "max-w-[568px]");
+      // The list is the column's full width, its bar at the column's edge, and its
+      // padding holds the content to the chips' 24 px and 520 px.
+      expect(screen.getByRole("list")).toHaveClass(...DESK_SCROLL_EDGE.split(" "), "pt-3");
+      expect(screen.getByRole("list").className).not.toMatch(/\bmax-w-/);
       // The mock's 520 is content width: its wrapper's padding sits outside it.
       const row = screen.getByRole("button", { name: "EV events, 0" }).closest(".max-w-\\[520px\\]");
       expect(row?.parentElement).toHaveClass("px-6", "pt-3");
@@ -576,6 +580,7 @@ describe("ActivityBench", () => {
       expect(screen.getByTestId("feed-banner")).toHaveClass("mx-4");
       expect(screen.getByRole("status", { name: "Read errors" })).toHaveClass("mx-4");
       expect(screen.getByRole("list")).toHaveClass("px-4", "pt-2");
+      expect(screen.getByRole("list")).not.toHaveClass(...DESK_SCROLL_EDGE.split(" "));
     });
 
     it("lines the banner and the error line up with the chips and the list's content", () => {

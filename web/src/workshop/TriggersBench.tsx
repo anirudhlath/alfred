@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { TRIGGER_KINDS } from "@/lib/triggers";
+import { useLayout } from "@/shell/layout";
+import { DESK_EDGE, DESK_SCROLL_EDGE } from "./edges";
 import { TriggerRow } from "./TriggerRow";
 import type { KindFilter, Triggers } from "./useTriggers";
 
@@ -37,6 +39,7 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
   // to re-render once a second.
   const [now] = useState(() => Date.now());
   const empty = triggers.triggers.length === 0;
+  const desk = useLayout() !== "phone";
 
   return (
     <>
@@ -51,7 +54,7 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
       <div
         role="group"
         aria-label="Trigger kinds"
-        className="mx-4 mt-2.5 flex h-11 shrink-0 items-center gap-1.5"
+        className={`${desk ? DESK_EDGE : "mx-4"} mt-2.5 flex h-11 shrink-0 items-center gap-1.5`}
       >
         {TRIGGER_KINDS.map((kind) => {
           const active = kind === triggers.kind;
@@ -117,7 +120,9 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
       <p
         role="status"
         aria-label="Read errors"
-        className={triggers.error ? "t-meta-strong mx-4 mt-2.5 mb-0" : "sr-only"}
+        className={
+          triggers.error ? `t-meta-strong ${desk ? DESK_EDGE : "mx-4"} mt-2.5 mb-0` : "sr-only"
+        }
       >
         {triggers.error}
       </p>
@@ -126,7 +131,7 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
         role="list"
         aria-label="Triggers"
         aria-busy={triggers.loading}
-        className="m-0 flex flex-1 list-none flex-col overflow-y-auto px-4 pt-2 pb-3"
+        className={`m-0 flex flex-1 list-none flex-col overflow-y-auto ${desk ? DESK_SCROLL_EDGE : "px-4"} pt-2 pb-3`}
       >
         {triggers.shown.map((trigger) => (
           <TriggerRow
@@ -172,8 +177,9 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
         )}
       </ul>
 
+      {/* At width the hairline is the content's 520, as the rows' over it are. */}
       <div
-        className="flex shrink-0 flex-col gap-1.5 px-4 pt-2.5"
+        className={`flex shrink-0 flex-col gap-1.5 ${desk ? DESK_EDGE : "px-4"} pt-2.5`}
         style={{
           borderTop: "1px solid var(--line)",
           paddingBottom: "calc(12px + env(safe-area-inset-bottom, 0px))",

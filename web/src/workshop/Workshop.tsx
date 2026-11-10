@@ -379,16 +379,11 @@ function WorkshopPanel({ onClose, onWhy, onHeld }: WorkshopPanelProps) {
         // (`MemoryBench.tsx`) — two stops before the content, which the device
         // checklist is the place to judge.
         tabIndex={0}
-        // §11's edges at width, which the mock draws only on Activity, and Activity
-        // keeps its own. The other three still have the phone's 16 px gutter inside
-        // this, so 8 px here makes §11's 24, and 552 = 520 + 16 + 16 puts their content
-        // exactly under the switcher's 520. In the narrowest column, 318 px with a
-        // thread open at 1100, that is 318 - 16 - 32 = 270, the switcher's 318 - 48.
-        className={
-          !phone && bench !== "activity"
-            ? "mx-2 flex max-w-[552px] flex-1 flex-col overflow-hidden"
-            : "flex flex-1 flex-col overflow-hidden"
-        }
+        // The column's full width at every size, so each bench's scroller can be. The
+        // benches draw §11's edges themselves (`edges.ts`): 24 px and at most 520 px of
+        // content, under the switcher. In the narrowest column, 318 px with a thread
+        // open at 1100, that is 270, the switcher's 318 - 48.
+        className="flex flex-1 flex-col overflow-hidden"
       >
         {currentBench()}
       </div>

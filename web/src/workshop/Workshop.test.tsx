@@ -8,6 +8,7 @@ import { ConnectionProvider } from "@/shell/ConnectionProvider";
 import { LayoutContext, type Layout } from "@/shell/layout";
 import { QUERY_DEFAULTS } from "@/shell/QueryProvider";
 import { overviewFixture, reflexObservationsPage } from "@/test/fixtures";
+import { DESK_SCROLL_EDGE } from "./edges";
 import { Workshop } from "./Workshop";
 
 const sockets = vi.hoisted(() => ({ telemetryUp: true, telemetries: [] as unknown[] }));
@@ -169,6 +170,13 @@ function stubFetch(): void {
 function workshopPanel(): HTMLElement {
   return screen.getAllByRole("tabpanel")[0];
 }
+
+/** Whatever scrolls inside the panel: each bench has one, Memory one per sub-tab. */
+function scrollers(): HTMLElement[] {
+  return Array.from(workshopPanel().querySelectorAll<HTMLElement>(".overflow-y-auto"));
+}
+
+const SCROLL_EDGE = DESK_SCROLL_EDGE.split(" ");
 
 /**
  * The Workshop under a parent that re-renders on its own: the Room, whose chat
@@ -662,6 +670,8 @@ describe("Workshop on the phone", () => {
       await settle();
       expect(workshopPanel()).not.toHaveClass("mx-2");
       expect(workshopPanel()).not.toHaveClass("max-w-[552px]");
+      expect(scrollers()).not.toHaveLength(0);
+      for (const scroller of scrollers()) expect(scroller).not.toHaveClass(...SCROLL_EDGE);
     },
   );
 });
@@ -720,34 +730,28 @@ describe("Workshop at width", () => {
   });
 
   it.each([
+    ["columns", "Activity"],
     ["columns", "Memory"],
     ["columns", "Triggers"],
     ["columns", "System"],
+    ["sheet-over-bench", "Activity"],
     ["sheet-over-bench", "Memory"],
     ["sheet-over-bench", "Triggers"],
     ["sheet-over-bench", "System"],
-  ] as const)("keeps the bench under the switcher (%s, %s)", async (layout, bench) => {
-    // §11's 24 px and 520 px, which the mock draws only on Activity. A bench still
-    // has the phone's 16 px gutter inside the panel, so the panel carries the rest.
+  ] as const)("gives the bench §11's edges, in its scroller (%s, %s)", async (layout, bench) => {
+    // §11's 24 px and 520 px, which the mock draws only on Activity. The bench carries
+    // them, so the panel is the column's full width and the scroller in it can be too:
+    // its bar at the column's edge, and the wheel working anywhere in the column.
     mountAtWidth(false, layout);
     fireEvent.click(screen.getByRole("tab", { name: bench }));
     await settle();
-    expect(workshopPanel()).toHaveClass("mx-2", "max-w-[552px]");
-  });
-
-  it.each(["columns", "sheet-over-bench"] as const)("leaves Activity its own edges (%s)", async (layout) => {
-    mountAtWidth(false, layout);
-    await settle();
     expect(workshopPanel()).not.toHaveClass("mx-2");
     expect(workshopPanel()).not.toHaveClass("max-w-[552px]");
-
-    // And coming back to it: the panel outlives the bench inside it.
-    fireEvent.click(screen.getByRole("tab", { name: "System" }));
-    await settle();
-    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
-    await settle();
-    expect(workshopPanel()).not.toHaveClass("mx-2");
-    expect(workshopPanel()).not.toHaveClass("max-w-[552px]");
+    expect(scrollers()).not.toHaveLength(0);
+    for (const scroller of scrollers()) {
+      expect(scroller).toHaveClass(...SCROLL_EDGE);
+      expect(scroller.className).not.toMatch(/\bmax-w-/);
+    }
   });
 
   it("does not close on Escape", () => {

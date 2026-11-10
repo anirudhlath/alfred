@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef } from "react";
 import { hhmm } from "@/lib/format";
 import { STREAM_INFO, STREAMS, type StreamName, type StreamRef } from "@/lib/streams";
 import { useLayout } from "@/shell/layout";
+import { DESK_EDGE, DESK_SCROLL_EDGE } from "./edges";
 import { EventRow } from "./EventRow";
 import { StreamChips } from "./StreamChips";
 import type { Activity } from "./useActivity";
@@ -137,7 +138,7 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
 
   // At width the banner and the error line keep to the 520 the chips and the list's
   // content have: on a wide column nothing else would line them up.
-  const gutter = desk ? "mx-6 max-w-[520px]" : "mx-4";
+  const gutter = desk ? DESK_EDGE : "mx-4";
   const pauseButton = (
     <button
       type="button"
@@ -252,10 +253,11 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
         ref={listRef}
         role="list"
         // `pb-6` at width is the mock's 24 px spacer at the list's end, without a
-        // list item for assistive tech to count.
+        // list item for assistive tech to count. The mock's 568 with its 24 px either
+        // side is the padding's 520 of content, in a list the column's full width.
         className={
           desk
-            ? "m-0 flex max-w-[568px] flex-1 list-none flex-col overflow-y-auto px-6 pt-3 pb-6"
+            ? `m-0 flex flex-1 list-none flex-col overflow-y-auto ${DESK_SCROLL_EDGE} pt-3 pb-6`
             : "m-0 flex flex-1 list-none flex-col overflow-y-auto px-4 pt-2 pb-3"
         }
       >
