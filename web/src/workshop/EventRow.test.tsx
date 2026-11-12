@@ -99,4 +99,53 @@ describe("EventRow", () => {
     );
     expect(screen.getByText(/^--:--:-- · /)).toHaveTextContent("--:--:-- · source mqtt-bridge");
   });
+
+  it("dimmed marks the button and the row", () => {
+    const tree = (props: { expanded: boolean; dimmed?: boolean }) => (
+      <ul>
+        <EventRow row={row} onToggle={() => {}} onSolo={() => {}} {...props} />
+      </ul>
+    );
+    const { rerender } = render(tree({ expanded: false, dimmed: true }));
+    const button = screen.getByRole("button", { expanded: false });
+    const item = screen.getByRole("listitem");
+    expect(button).toHaveAttribute("data-event-row");
+    expect(button).toHaveAttribute("data-dimmed");
+    expect(item).toHaveClass("opacity-35", "focus-within:opacity-100");
+
+    // Open is full strength, and still another stream's row as far as J/K care (R11).
+    rerender(tree({ expanded: true, dimmed: true }));
+    expect(button).toHaveAttribute("data-dimmed");
+    expect(item).not.toHaveClass("opacity-35");
+
+    rerender(tree({ expanded: false }));
+    expect(button).toHaveAttribute("data-event-row");
+    expect(button).not.toHaveAttribute("data-dimmed");
+    expect(item).not.toHaveClass("opacity-35");
+  });
+
+  it("an open desk row sits on surface with its payload on bg", () => {
+    const tree = (props: { expanded: boolean; desk?: boolean }) => (
+      <ul>
+        <EventRow row={row} onToggle={() => {}} onSolo={() => {}} {...props} />
+      </ul>
+    );
+    const { rerender } = render(tree({ expanded: true, desk: true }));
+    const item = screen.getByRole("listitem");
+    expect(item.style.background).toBe("var(--surface)");
+    expect(item.style.borderTop).toBe("1px solid var(--line)");
+    expect(item).toHaveClass("-mx-3", "rounded-[10px]", "px-3");
+    expect(screen.getByText(/"tool_name"/).style.background).toBe("var(--bg)");
+
+    // Shut, it is a row like any other.
+    rerender(tree({ expanded: false, desk: true }));
+    expect(item.style.background).toBe("");
+    expect(item).not.toHaveClass("-mx-3");
+
+    // And the phone's open row stays on the page, with its payload on surface.
+    rerender(tree({ expanded: true }));
+    expect(item.style.background).toBe("");
+    expect(item.className).toBe("shrink-0");
+    expect(screen.getByText(/"tool_name"/).style.background).toBe("var(--surface)");
+  });
 });

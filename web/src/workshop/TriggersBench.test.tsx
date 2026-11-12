@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { LayoutContext, type Layout } from "@/shell/layout";
 import { TRIGGER_NOW, trigger } from "@/test/fixtures";
+import { DESK_EDGE, DESK_SCROLL_EDGE } from "./edges";
 import { TriggersBench } from "./TriggersBench";
 import type { Triggers } from "./useTriggers";
 
@@ -216,5 +218,60 @@ describe("TriggersBench", () => {
       expect(chip).toHaveClass("after:-inset-y-1.5");
       expect(chip).toHaveClass("whitespace-nowrap");
     }
+  });
+});
+
+describe("TriggersBench at width", () => {
+  const atWidth = (triggers: Triggers, layout: Layout = "columns") => (
+    <LayoutContext.Provider value={layout}>
+      <TriggersBench triggers={triggers} />
+    </LayoutContext.Provider>
+  );
+  const EDGE = DESK_EDGE.split(" ");
+  const SCROLL_EDGE = DESK_SCROLL_EDGE.split(" ");
+  const blocks = () => [
+    screen.getByRole("group", { name: "Trigger kinds" }),
+    screen.getByRole("status", { name: "Read errors" }),
+    // The footer, hairline and all: over the content alone, as the rows' are.
+    screen.getByText(FOOTER_TWO).parentElement as HTMLElement,
+  ];
+
+  it("puts the filters, the error line and the footer under the switcher, and the phone keeps its gutter", () => {
+    const triggers = state({ error: "redis gone" });
+    const { rerender } = render(atWidth(triggers));
+    for (const block of blocks()) {
+      expect(block).toHaveClass(...EDGE);
+      expect(block.className).not.toMatch(/\b[mp]x-4\b/);
+    }
+
+    rerender(atWidth(triggers, "phone"));
+    for (const block of blocks()) {
+      expect(block.className).toMatch(/\b[mp]x-4\b/);
+      for (const name of EDGE) expect(block).not.toHaveClass(name);
+    }
+  });
+
+  it("lets the filters wrap at width, 12 px between lines, and keeps the phone's one line", () => {
+    const filters = () => screen.getByRole("group", { name: "Trigger kinds" });
+    const { rerender } = render(atWidth(state()));
+    // A second line once the five no longer fit, each chip's 44 px target clear of the
+    // next line's: 32 px of chip, 6 px of `after` either side, and 12 px of gap.
+    expect(filters()).toHaveClass("flex-wrap", "min-h-11", "gap-x-1.5", "gap-y-3");
+    expect(filters()).not.toHaveClass("h-11");
+    for (const chip of chips()) expect(chip).toHaveClass("h-8", "after:-inset-y-1.5");
+
+    rerender(atWidth(state(), "phone"));
+    expect(filters().className).toBe("mx-4 mt-2.5 flex h-11 shrink-0 items-center gap-1.5");
+  });
+
+  it("keeps the list the column's width, its content under the switcher", () => {
+    const list = () => screen.getByRole("list", { name: "Triggers" });
+    const { rerender } = render(atWidth(state()));
+    expect(list()).toHaveClass("overflow-y-auto", ...SCROLL_EDGE);
+    expect(list().className).not.toMatch(/\bmax-w-|\bpx-4\b/);
+
+    rerender(atWidth(state(), "phone"));
+    expect(list()).toHaveClass("overflow-y-auto", "px-4");
+    for (const name of SCROLL_EDGE) expect(list()).not.toHaveClass(name);
   });
 });

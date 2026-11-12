@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toEpisodicRow } from "@/lib/memory";
+import { LayoutContext, type Layout } from "@/shell/layout";
 import { coldRow, hotRow, routine, semanticFile } from "@/test/fixtures";
+import { DESK_EDGE, DESK_SCROLL_EDGE } from "./edges";
 import { MemoryBench } from "./MemoryBench";
 import type { Memory } from "./useMemory";
 
@@ -413,5 +415,64 @@ describe("MemoryBench", () => {
 
     rerender(<MemoryBench memory={state({ tab: "scratchpad", read: false })} />);
     expect(screen.getByText("The scratchpad has not been read yet.")).toBeInTheDocument();
+  });
+});
+
+describe("MemoryBench at width", () => {
+  const atWidth = (memory: Memory, layout: Layout = "columns") => (
+    <LayoutContext.Provider value={layout}>
+      <MemoryBench memory={memory} />
+    </LayoutContext.Provider>
+  );
+  const EDGE = DESK_EDGE.split(" ");
+  const SCROLL_EDGE = DESK_SCROLL_EDGE.split(" ");
+  /** The sub-tab's scroller: every one is the first thing in the bench's own panel. */
+  const scroller = () => screen.getByRole("tabpanel").firstElementChild as HTMLElement;
+
+  it("puts the pills, the note and the error line under the switcher, and the phone keeps its gutter", () => {
+    const memory = state({ error: "redis gone" });
+    const blocks = () => [
+      screen.getByRole("tablist", { name: "Memory" }),
+      screen.getByText(NOTE),
+      screen.getByRole("status", { name: "Read errors" }),
+    ];
+    const { rerender } = render(atWidth(memory));
+    for (const block of blocks()) {
+      expect(block).toHaveClass(...EDGE);
+      expect(block).not.toHaveClass("mx-4");
+    }
+
+    rerender(atWidth(memory, "phone"));
+    for (const block of blocks()) {
+      expect(block).toHaveClass("mx-4");
+      for (const name of EDGE) expect(block).not.toHaveClass(name);
+    }
+  });
+
+  it.each(["episodic", "semantic", "routines", "scratchpad"] as const)(
+    "keeps the %s scroller the column's width, its content under the switcher",
+    (tab) => {
+      const { rerender } = render(atWidth(state({ tab })));
+      expect(scroller()).toHaveClass("overflow-y-auto", ...SCROLL_EDGE);
+      expect(scroller().className).not.toMatch(/\bmax-w-|\bpx-4\b/);
+
+      rerender(atWidth(state({ tab }), "phone"));
+      expect(scroller()).toHaveClass("overflow-y-auto", "px-4");
+      for (const name of SCROLL_EDGE) expect(scroller()).not.toHaveClass(name);
+    },
+  );
+
+  it("draws the search's hairline over the content alone, and the phone's across the screen", () => {
+    // Under 520 px of rows whose own hairlines are 520 px, a footer's ran 16 px past
+    // them on either side while the panel carried the cap.
+    const form = () => searchField().closest("form") as HTMLElement;
+    const { rerender } = render(atWidth(state()));
+    expect(form()).toHaveClass(...EDGE);
+    expect(form()).not.toHaveClass("px-4");
+    expect(form().style.borderTop).toBe("1px solid var(--line)");
+
+    rerender(atWidth(state(), "phone"));
+    expect(form()).toHaveClass("px-4");
+    for (const name of EDGE) expect(form()).not.toHaveClass(name);
   });
 });

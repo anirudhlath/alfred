@@ -5,11 +5,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StreamPage, TelemetryMessage } from "@/lib/types";
 import { WhySheet } from "@/sheets/WhySheet";
 import { ConnectionProvider } from "@/shell/ConnectionProvider";
+import { LayoutContext, type Layout } from "@/shell/layout";
 import { QUERY_DEFAULTS } from "@/shell/QueryProvider";
 import { overviewFixture, reflexObservationsPage } from "@/test/fixtures";
+import { DESK_SCROLL_EDGE } from "./edges";
 import { Workshop } from "./Workshop";
 
 const sockets = vi.hoisted(() => ({ telemetryUp: true, telemetries: [] as unknown[] }));
+
+/**
+ * A bench that throws while this is set, and the real one otherwise. Set for as
+ * long as a test wants it broken rather than for one render: a throw makes React
+ * render the whole root a second time before it asks a boundary, so a bench that
+ * threw once and then behaved would never reach the boundary at all.
+ */
+const breakage = vi.hoisted(() => ({ activity: false }));
+
+vi.mock("./ActivityBench", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./ActivityBench")>();
+  return {
+    ...actual,
+    ActivityBench(props: Parameters<typeof actual.ActivityBench>[0]) {
+      if (breakage.activity) throw new Error("a bench threw");
+      return <actual.ActivityBench {...props} />;
+    },
+  };
+});
 
 /**
  * How many rows have been summarised. `memo` on `Workshop` exists so the
@@ -150,6 +171,13 @@ function workshopPanel(): HTMLElement {
   return screen.getAllByRole("tabpanel")[0];
 }
 
+/** Whatever scrolls inside the panel: each bench has one, Memory one per sub-tab. */
+function scrollers(): HTMLElement[] {
+  return Array.from(workshopPanel().querySelectorAll<HTMLElement>(".overflow-y-auto"));
+}
+
+const SCROLL_EDGE = DESK_SCROLL_EDGE.split(" ");
+
 /**
  * The Workshop under a parent that re-renders on its own: the Room, whose chat
  * frames, 30 s overview poll and once-a-second Door fuse all do exactly this.
@@ -214,6 +242,7 @@ beforeEach(() => {
   // every row the tests ahead of it summarised, and `toBeGreaterThan(0)` is
   // true before that test has rendered a thing.
   summarised.count = 0;
+  breakage.activity = false;
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.setSystemTime(new Date(2026, 8, 7, 21, 14, 0));
   stubFetch();
@@ -559,7 +588,11 @@ describe("Workshop", () => {
       <QueryClientProvider client={client}>
         <ConnectionProvider>
           <Workshop open onClose={onClose} onWhy={vi.fn()} onHeld={vi.fn()} />
-          <WhySheet anchor={{ stream: "reflex_observations", entry: anchorEntry }} onClose={sheetClose} />
+          <WhySheet
+            anchor={{ stream: "reflex_observations", entry: anchorEntry }}
+            press={1}
+            onClose={sheetClose}
+          />
         </ConnectionProvider>
       </QueryClientProvider>,
     );
@@ -593,5 +626,283 @@ describe("Workshop", () => {
     expect(screen.getByRole("dialog").className).toContain("rise-out");
     act(() => vi.advanceTimersByTime(400));
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("on the phone, a bench that throws still sends the reader back to the Room", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    breakage.activity = true;
+    const { onClose } = mount(true);
+
+    expect(
+      screen.getByText("Nothing on the Room is affected. Opening the Workshop again starts it over."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start it over" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Room" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("on the phone, a bench that throws does not move focus", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mount(true);
+    const memory = screen.getByRole("tab", { name: "Memory" });
+    fireEvent.click(memory);
+    act(() => memory.focus());
+
+    breakage.activity = true;
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+
+    expect(document.activeElement).not.toBe(screen.getByRole("button", { name: "Room" }));
+  });
+
+  it("on the phone, the dialog is what names it", () => {
+    mount(true);
+    expect(screen.getByRole("dialog", { name: "Workshop" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Workshop" })).toBeNull();
+  });
+});
+
+describe("Workshop on the phone", () => {
+  it.each(["Activity", "Memory", "Triggers", "System"] as const)(
+    "gives the %s bench none of the desk's edges",
+    async (bench) => {
+      mount(true);
+      fireEvent.click(screen.getByRole("tab", { name: bench }));
+      await settle();
+      expect(workshopPanel()).not.toHaveClass("mx-2");
+      expect(workshopPanel()).not.toHaveClass("max-w-[552px]");
+      expect(scrollers()).not.toHaveLength(0);
+      for (const scroller of scrollers()) expect(scroller).not.toHaveClass(...SCROLL_EDGE);
+    },
+  );
+});
+
+describe("Workshop at width", () => {
+  /** The layout `Room` provides in the app, and which this file has no Room to ask. */
+  function mountAtWidth(open: boolean, layout: Layout = "columns") {
+    const onClose = vi.fn();
+    render(
+      <QueryClientProvider client={makeClient()}>
+        <ConnectionProvider>
+          <LayoutContext.Provider value={layout}>
+            <Workshop open={open} onClose={onClose} onWhy={vi.fn()} onHeld={vi.fn()} />
+          </LayoutContext.Provider>
+        </ConnectionProvider>
+      </QueryClientProvider>,
+    );
+    return { onClose };
+  }
+
+  it.each([
+    ["columns", false],
+    ["columns", true],
+    ["sheet-over-bench", false],
+  ] as const)("renders in place with no dialog, whatever open says (%s, open %s)", (layout, open) => {
+    // R1. `open` starts false in the Room and nothing at width sets it, but a window
+    // widened with the phone's Workshop up arrives here with it still true.
+    mountAtWidth(open, layout);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("labels the column", () => {
+    mountAtWidth(false);
+    expect(screen.getByText("Workshop")).toBeInTheDocument();
+    // There is no Room to go back to: it is the column beside this one.
+    expect(screen.queryByRole("button", { name: "Room" })).toBeNull();
+    // The same line the phone's header carries, on its other side.
+    expect(screen.getByTestId("workshop-status")).toHaveTextContent("live");
+  });
+
+  it("keeps the mock's type on the label and moves only its colour", () => {
+    mountAtWidth(false);
+    const label = screen.getByText("Workshop");
+    // R24. `.t-label` is the mock's type. Its own `--muted` is 3.46:1 on the page in
+    // light, under AA at 11 px, so the colour is the one thing that moves.
+    expect(label).toHaveClass("t-label");
+    expect(label.style.color).toBe("var(--fg2)");
+  });
+
+  it.each(["columns", "sheet-over-bench"] as const)("names the column (%s)", (layout) => {
+    mountAtWidth(false, layout);
+    const column = screen.getByRole("region", { name: "Workshop" });
+    expect(column).toContainElement(screen.getByRole("tablist", { name: "Bench" }));
+    expect(column).toContainElement(screen.getByRole("tabpanel"));
+  });
+
+  it.each([
+    ["columns", "Activity"],
+    ["columns", "Memory"],
+    ["columns", "Triggers"],
+    ["columns", "System"],
+    ["sheet-over-bench", "Activity"],
+    ["sheet-over-bench", "Memory"],
+    ["sheet-over-bench", "Triggers"],
+    ["sheet-over-bench", "System"],
+  ] as const)("gives the bench §11's edges, in its scroller (%s, %s)", async (layout, bench) => {
+    // §11's 24 px and 520 px, which the mock draws only on Activity. The bench carries
+    // them, so the panel is the column's full width and the scroller in it can be too:
+    // its bar at the column's edge, and the wheel working anywhere in the column.
+    mountAtWidth(false, layout);
+    fireEvent.click(screen.getByRole("tab", { name: bench }));
+    await settle();
+    expect(workshopPanel()).not.toHaveClass("mx-2");
+    expect(workshopPanel()).not.toHaveClass("max-w-[552px]");
+    expect(scrollers()).not.toHaveLength(0);
+    for (const scroller of scrollers()) {
+      expect(scroller).toHaveClass(...SCROLL_EDGE);
+      expect(scroller.className).not.toMatch(/\bmax-w-/);
+    }
+  });
+
+  it("does not close on Escape", () => {
+    const { onClose } = mountAtWidth(false);
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Activity" }), { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("a bench that throws can be started over", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    breakage.activity = true;
+    mountAtWidth(false);
+
+    expect(screen.getByText("This bench stopped working.")).toBeInTheDocument();
+    // Exactly this: the phone's sentence goes on about opening the Workshop
+    // again, which means nothing in a column that never closes (R18).
+    expect(screen.getByText("Nothing on the Room is affected.")).toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "Bench" })).toBeNull();
+
+    breakage.activity = false;
+    fireEvent.click(screen.getByRole("button", { name: "Start it over" }));
+
+    expect(screen.getByRole("tablist", { name: "Bench" })).toBeInTheDocument();
+    expect(screen.queryByText("This bench stopped working.")).toBeNull();
+  });
+
+  it("hands focus to the chosen bench once it has started over", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    breakage.activity = true;
+    mountAtWidth(false);
+
+    const restart = screen.getByRole("button", { name: "Start it over" });
+    act(() => restart.focus());
+    breakage.activity = false;
+    fireEvent.click(restart);
+
+    // The button has just unmounted itself, which would leave focus on `<body>`.
+    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Activity" }));
+  });
+
+  it("hands focus to the new button when the bench throws again", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    breakage.activity = true;
+    mountAtWidth(false);
+
+    const first = screen.getByRole("button", { name: "Start it over" });
+    act(() => first.focus());
+    fireEvent.click(first);
+
+    // A new boundary, so a new button, and no tab to go to.
+    const second = screen.getByRole("button", { name: "Start it over" });
+    expect(second).not.toBe(first);
+    expect(document.activeElement).toBe(second);
+  });
+
+  /**
+   * Makes the Activity bench throw from the Memory bench, with focus wherever `focus`
+   * puts it. `fireEvent.click` does not move focus, so the throw lands on that.
+   */
+  function throwFromMemory(focus: (memory: HTMLElement) => void) {
+    const memory = screen.getByRole("tab", { name: "Memory" });
+    fireEvent.click(memory);
+    act(() => focus(memory));
+    breakage.activity = true;
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }));
+    expect(screen.getByText("This bench stopped working.")).toBeInTheDocument();
+  }
+
+  it("solos by dimming: the column asks the hook to keep every stream's rows", async () => {
+    mountAtWidth(false);
+    await settle();
+    const row = screen.getByText("observed media_player.tv · acted").closest("button");
+    expect(row).not.toHaveAttribute("data-dimmed");
+
+    fireEvent.click(screen.getByRole("button", { name: /^EV events/ }));
+
+    // The same node, still there. Filtered, as on the phone, it would have gone.
+    expect(row).toBeInTheDocument();
+    expect(row).toHaveAttribute("data-dimmed");
+  });
+
+  it("keeps a row open through a solo and through clearing it, focus on what was pressed", async () => {
+    mountAtWidth(false);
+    await settle();
+    const row = screen.getByText("observed media_player.tv · acted").closest("button");
+    fireEvent.click(row as HTMLElement);
+
+    // `Only RX` is inside the open row, so closing it would throw a keyboard
+    // reader's focus to `<body>`, and jsdom does that much when a node goes.
+    const only = screen.getByRole("button", { name: "Only RX" });
+    only.focus();
+    fireEvent.click(only);
+    const chip = screen.getByRole("button", { name: /^RX / });
+    expect(chip).toHaveAttribute("aria-pressed", "true");
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(only).toHaveFocus();
+
+    chip.focus();
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute("aria-pressed", "false");
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(chip).toHaveFocus();
+
+    // The other way to clear it, and the button that goes quiet when it has. jsdom
+    // leaves focus on a button that disables itself where a browser would not, so
+    // the absent attribute is what holds this one to the same promise.
+    fireEvent.click(only);
+    const all = screen.getByRole("button", { name: "All" });
+    all.focus();
+    fireEvent.click(all);
+    expect(chip).toHaveAttribute("aria-pressed", "false");
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(all).not.toHaveAttribute("disabled");
+    expect(all).toHaveFocus();
+
+    // Pressed again with nothing to clear, it does nothing at all.
+    fireEvent.click(all);
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(all).toHaveFocus();
+  });
+
+  it("hands focus to the button when a bench throws with focus inside it", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mountAtWidth(false);
+
+    throwFromMemory((memory) => memory.focus());
+
+    // The tab that held focus has gone with the panel, which leaves it on `<body>`.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Start it over" }));
+  });
+
+  it("hands focus to the button when a bench throws again some time after a restart", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    breakage.activity = true;
+    mountAtWidth(false);
+    breakage.activity = false;
+    fireEvent.click(screen.getByRole("button", { name: "Start it over" }));
+
+    throwFromMemory((memory) => memory.focus());
+
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Start it over" }));
+  });
+
+  it("leaves focus alone when a bench throws with the reader working elsewhere", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    render(<input aria-label="The Composer, beside the column" />);
+    const input = screen.getByRole("textbox", { name: "The Composer, beside the column" });
+    mountAtWidth(false);
+
+    throwFromMemory(() => input.focus());
+
+    expect(document.activeElement).toBe(input);
   });
 });

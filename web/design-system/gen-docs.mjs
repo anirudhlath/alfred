@@ -17,7 +17,7 @@ const WEB_SRC = path.join(WEB, "src");
 const INDEX_CSS = path.join(WEB_SRC, "index.css");
 
 const GROUPS = {
-  foundation: ["Page", "RoomScreen"],
+  foundation: ["Page", "RoomScreen", "DeskScreen"],
   room: [
     "Headline",
     "StatusLine",
@@ -59,6 +59,8 @@ const GROUPS = {
 const FRAMES = new Set(["DoorLayer", "Sheet"]);
 /** Phone-sized stories need a column at least as wide as the phone. */
 const PHONE = new Set(["RoomScreen", "Gate", "DeniedGate", "InstallGate", "StandaloneGate"]);
+/** The laptop's composition is three columns, drawn at a width that holds them. */
+const WIDE = new Set(["DeskScreen"]);
 
 // ---------------------------------------------------------------- sources
 const entry = readFileSync(path.join(HERE, "entry.tsx"), "utf8");
@@ -196,7 +198,7 @@ const storyNames = (name) =>
 // ---------------------------------------------------------------- card
 function card(name, group) {
   const mode = FRAMES.has(name) ? "frames" : "grid";
-  const min = FRAMES.has(name) || PHONE.has(name) ? 393 : 320;
+  const min = WIDE.has(name) ? 1280 : FRAMES.has(name) || PHONE.has(name) ? 393 : 320;
   return `<!-- @dsCard group="${group}" -->
 <!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -468,12 +470,12 @@ It is generated from the implemented code, and kept in sync by re-running the ge
 - Descriptions are the components' doc comments.
 - Tokens, type and motion come from \`web/src/index.css\`.
 
-Two pieces exist only for the canvas: \`Page\`, which gives a subtree a theme (the app puts it on \`<html>\`), and \`RoomScreen\`, the Room assembled from its real parts with props in place of the socket.
+Three pieces exist only for the canvas: \`Page\`, which gives a subtree a theme (the app puts it on \`<html>\`), \`RoomScreen\`, the Room assembled from its real parts with props in place of the socket, and \`DeskScreen\`, the laptop's three columns over sample data.
 
 ## Building with it
 
 - **Everything goes inside a \`<Page>\`.** \`theme="dark"\` (the default, and the app's first paint) or \`"light"\`. \`frame="phone"\` gives the 393 × 852 shell the client is drawn at; the default \`frame="fill"\` is a padded block for laying out parts.
-- **Start a screen from \`RoomScreen\`, \`DoorLayer\`, \`Gate\` or \`Sheet\`.** Those are the full surfaces. Rows and controls compose inside them.
+- **Start a screen from \`RoomScreen\`, \`DoorLayer\`, \`Gate\` or \`Sheet\`.** Those are the full surfaces. Rows and controls compose inside them. \`DeskScreen\` is the laptop's whole composition, at least 1280 px wide; put it in a \`<Page padding={0}>\`.
 - **Tokens, never literals.** Colour is \`var(--bg)\`, \`var(--fg)\`, \`var(--accent-text)\` and the rest in \`guidelines/colour.md\`; text uses the \`.t-*\` classes in \`guidelines/type.md\`.
 - **Read the stylesheet's notes before choosing a colour.** Several tokens exist only to keep contrast at AA in the light theme: \`--accent-text\` for accent used as text (never \`--accent\`), \`--green-text\` likewise, \`--on-accent\` for anything drawn on an accent fill, \`.t-meta-strong\` where muted text is the only words in its region.
 - **The Door inverts.** Its surfaces use \`--ink\` as the background and \`--paper\` / \`--paper-muted\` as text, in both themes.

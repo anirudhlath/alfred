@@ -799,6 +799,193 @@ describe("App", () => {
   });
 });
 
+describe("App — the desk", () => {
+  /** The reflex fixture's one successful act, a row in the Room and in the Workshop. */
+  const ACTED = "movie started, evening, user home";
+
+  /**
+   * A laptop's screen, with a window this wide. `Room` is the one thing that asks
+   * the real viewport, so this is the one file that has to stub it: jsdom's screen
+   * is 0×0, which is the phone whatever `matchMedia` says. The hands-back moves the
+   * window, and `resize` is what `useViewportLayout` hears for either breakpoint.
+   */
+  function stubWindow(startWidth: number): (width: number) => void {
+    let width = startWidth;
+    vi.stubGlobal("screen", { width: 1920, height: 1080 });
+    vi.stubGlobal("matchMedia", (query: string) => {
+      const min = /^\(min-width: (\d+)px\)$/.exec(query);
+      return {
+        media: query,
+        matches: min ? width >= Number(min[1]) : false,
+        addEventListener() {},
+        removeEventListener() {},
+      };
+    });
+    return (next) => {
+      width = next;
+      act(() => void window.dispatchEvent(new Event("resize")));
+    };
+  }
+
+  it("puts the Workshop in its own column and takes the handle away", async () => {
+    stubWindow(1400);
+    render(<App />);
+    await settle();
+    const room = await screen.findByRole("main");
+    await within(room).findByText("What have I got tomorrow morning?");
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("button", { name: "Open the Workshop" })).toBeNull();
+    // Beside the Room, not inside it.
+    expect(room).not.toContainElement(screen.getByRole("tab", { name: "Activity" }));
+    expect(room.parentElement).toHaveAttribute("data-layout", "columns");
+  });
+
+  it("keeps a half-typed message through every breakpoint", async () => {
+    const resize = stubWindow(390);
+    render(<App />);
+    await settle();
+    const room = await screen.findByRole("main");
+    await within(room).findByText("What have I got tomorrow morning?");
+
+    const field = screen.getByLabelText("Message Alfred");
+    fireEvent.change(field, { target: { value: "half a sent" } });
+    act(() => field.focus());
+
+    for (const width of [900, 1400, 900, 390]) {
+      resize(width);
+      expect(screen.getByRole("main")).toBe(room);
+      expect(screen.getByLabelText("Message Alfred")).toBe(field);
+      expect(field).toHaveValue("half a sent");
+      expect(document.activeElement).toBe(field);
+    }
+    expect(room.parentElement).toHaveAttribute("data-layout", "phone");
+  });
+
+  it("does not raise the phone's Workshop again after a trip through the desk", async () => {
+    const resize = stubWindow(390);
+    render(<App />);
+    await settle();
+    fireEvent.click(await screen.findByRole("button", { name: "Open the Workshop" }));
+    expect(await screen.findByRole("dialog", { name: "Workshop" })).toBeInTheDocument();
+
+    resize(1400);
+    expect(screen.queryByRole("dialog", { name: "Workshop" })).toBeNull();
+
+    // Nothing at width can close it, so a layer left open here would rise over the
+    // Room and take focus, for a reader who only narrowed a window.
+    resize(390);
+    await settle();
+    expect(screen.queryByRole("dialog", { name: "Workshop" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open the Workshop" })).toBeInTheDocument();
+  });
+
+  it("opens a third column for a detail, only once there is room for one", async () => {
+    const resize = stubWindow(1400);
+    routes["/api/admin/overview"] = { ...overviewFixture, dnd: { active: true } };
+    render(<App />);
+    await settle();
+    const room = await screen.findByRole("main");
+    await within(room).findByText("What have I got tomorrow morning?");
+
+    const desk = room.parentElement;
+    expect(desk).not.toHaveAttribute("data-detail");
+    fireEvent.click(await screen.findByRole("button", { name: /Do-not-disturb/ }));
+    expect(desk).toHaveAttribute("data-detail");
+
+    resize(900);
+    expect(desk).not.toHaveAttribute("data-detail");
+  });
+
+  it("holds one detail at a time, and marks an open thread only beside the Room", async () => {
+    const resize = stubWindow(1400);
+    routes["/api/admin/overview"] = { ...overviewFixture, dnd: { active: true } };
+    render(<App />);
+    await settle();
+    const room = await screen.findByRole("main");
+    const why = await within(room).findByRole("button", { name: `why? ${ACTED}` });
+    const thread = () => screen.queryByRole("complementary", { name: "Why Alfred did that" });
+    const held = () => screen.queryByRole("complementary", { name: "Held back" });
+    const marked = () => within(room).queryByText(/thread open →$/);
+
+    fireEvent.click(why);
+    await settle();
+    expect(thread()).toBeInTheDocument();
+    expect(marked()).toBeInTheDocument();
+
+    fireEvent.click(within(room).getByRole("button", { name: /Do-not-disturb/ }));
+    await settle();
+    expect(held()).toBeInTheDocument();
+    expect(thread()).toBeNull();
+    expect(marked()).toBeNull();
+
+    fireEvent.click(why);
+    await settle();
+    expect(thread()).toBeInTheDocument();
+    expect(held()).toBeNull();
+    expect(marked()).toBeInTheDocument();
+
+    // The phone's sheet is modal, with the row behind it: every pixel as it was.
+    resize(390);
+    expect(screen.getByRole("dialog", { name: "Why Alfred did that" })).toHaveAttribute(
+      "aria-modal",
+      "true",
+    );
+    expect(marked()).toBeNull();
+    expect(why).not.toHaveClass("opacity-0");
+  });
+
+  it("gives focus back to the row last pressed, even for the thread already open", async () => {
+    stubWindow(1400);
+    render(<App />);
+    await settle();
+    const room = await screen.findByRole("main");
+    const why = await within(room).findByRole("button", { name: `why? ${ACTED}` });
+    act(() => why.focus());
+    fireEvent.click(why);
+    await settle();
+
+    // The same entry, from the Workshop beside the Room.
+    fireEvent.click(
+      await screen.findByRole("button", { name: new RegExp(ACTED), expanded: false }),
+    );
+    const benchWhy = await screen.findByRole("button", { name: "Why · causal thread" });
+    act(() => benchWhy.focus());
+    fireEvent.click(benchWhy);
+    await settle();
+
+    const close = screen.getByRole("button", { name: "esc closes" });
+    act(() => close.focus());
+    fireEvent.click(close);
+    await settle();
+
+    expect(screen.queryByRole("complementary", { name: "Why Alfred did that" })).toBeNull();
+    expect(document.activeElement).toBe(benchWhy);
+  });
+
+  it("starts the thread already open at its top when its own row is pressed again", async () => {
+    stubWindow(1400);
+    render(<App />);
+    await settle();
+    const room = await screen.findByRole("main");
+    const why = await within(room).findByRole("button", { name: `why? ${ACTED}` });
+    act(() => why.focus());
+    fireEvent.click(why);
+    await settle();
+    const column = screen.getByRole("complementary", { name: "Why Alfred did that" });
+    const body = within(column).getByRole("status").parentElement as HTMLElement;
+    body.scrollTop = 200;
+
+    // The open row's `why?` takes no pointer, so this is Enter on the focused button. It
+    // hands `useDetail` the very ref it already holds.
+    fireEvent.click(why);
+    await settle();
+    expect(within(column).getByRole("status").parentElement).toBe(body);
+    expect(body.scrollTop).toBe(0);
+  });
+});
+
 describe("App — the socket's word", () => {
   it("shows the last-known Room, and says so, while the house is unreachable", async () => {
     socket.status = "offline";

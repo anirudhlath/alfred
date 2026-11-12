@@ -1,12 +1,13 @@
 // The Alfred design system: the web client's own components, unmodified, from
-// web/src. Everything except Page and RoomScreen is upstream code; those two are
-// the canvas's stand-ins for what the app gets from its shell (a theme on <html>,
-// a socket feeding the Room).
+// web/src. Everything except Page, RoomScreen and DeskScreen is upstream code; those
+// three are the canvas's stand-ins for what the app gets from its shell (a theme on
+// <html>, a socket feeding the Room, a viewport wide enough for the desk).
 import "./.cache/ds.css";
 
 // foundation
 export { Page } from "./ds/Page";
 export { RoomScreen } from "./ds/RoomScreen";
+export { DeskScreen } from "./ds/DeskScreen";
 export { PresenceSignal } from "@/lib/presence-signal";
 // The stream hues are data the stories and canvas need; this file is a library
 // entry, bundled once and never hot-reloaded.

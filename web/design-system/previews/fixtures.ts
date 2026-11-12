@@ -98,6 +98,9 @@ export const expiredAction: TrackedAction = {
   action: { ...pendingAction.action, expires_at: iso(-60) },
 };
 
+const HALL_EVENT_ID = "9f3c2a10";
+const HALL_REQUEST_ID = "4b1d9e70";
+
 /** Raw Room streams, as `/api/admin/streams/*` returns them. */
 export const history: RoomHistory = {
   user_requests: [
@@ -120,8 +123,9 @@ export const history: RoomHistory = {
       id: `${NOW - 1_200_000}-0`,
       event: {
         timestamp: iso(-1200),
+        trigger_event: { event_id: HALL_EVENT_ID, entity_id: "binary_sensor.hall" },
         decision_context: "Hall lights down to 30% for the morning",
-        action: { tool_name: "home.light_turn_on", request_id: "4b1d9e70" },
+        action: { tool_name: "home.light_turn_on", request_id: HALL_REQUEST_ID },
         result: { status: "ok" },
       },
     },
@@ -191,6 +195,36 @@ export const feed: FeedRow[] = [
     channel: "web_pwa",
     content_type: "text",
   }),
+];
+
+/** When `history`'s observation happened, the one the Room's Act row opens. */
+const ACTED = -1_200_000;
+
+// Arranged for DeskScreen's 800 px frame, the only thing here that is: two rows above the open one, for a solo to dim.
+/**
+ * The feed around that observation, with something to draw a thread through: at
+ * `deskFeed[2]` it names the event it saw and the action it took, so `buildThread` joins
+ * them by id and the light by entity, and the front door beside them comes out dashed.
+ */
+export const deskFeed: FeedRow[] = [
+  entry("events", ACTED + 5000, feed[3].entry.event),
+  entry("home_state", ACTED + 2000, feed[1].entry.event),
+  entry("reflex_observations", ACTED, history.reflex_observations[0].event),
+  entry("home_state", ACTED - 1000, { entity_id: "light.hall", old_state: "off", new_state: "on" }),
+  entry("actions", ACTED - 3000, { ...feed[2].entry.event, request_id: HALL_REQUEST_ID }),
+  entry("home_state", ACTED - 5000, {
+    event_id: HALL_EVENT_ID,
+    entity_id: "binary_sensor.hall",
+    old_state: "off",
+    new_state: "on",
+  }),
+  entry("reflex_observations", ACTED - 18000, {
+    source: "reflex",
+    trigger_event: { entity_id: "binary_sensor.back_door" },
+    decision_context: "door closed, nobody home",
+    latency_ms: 410,
+  }),
+  entry("user_requests", ACTED - 24000, feed[4].entry.event),
 ];
 
 export const counts: Record<StreamName, number> = {

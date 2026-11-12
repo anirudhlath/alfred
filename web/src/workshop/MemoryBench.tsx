@@ -6,6 +6,8 @@ import {
   type Scratchpad as ScratchpadState,
   type SemanticFile,
 } from "@/lib/memory";
+import { useLayout } from "@/shell/layout";
+import { DESK_EDGE, DESK_SCROLL_EDGE } from "./edges";
 import { RoutineRow } from "./RoutineRow";
 import { tabId, tabKeyDown } from "./tabs";
 import type { Consolidation, Memory, MemoryTab } from "./useMemory";
@@ -160,9 +162,10 @@ function EpisodicItem({ row, now }: { row: EpisodicRow; now: number }) {
 }
 
 function Episodic({ memory, now }: { memory: Memory; now: number }) {
+  const desk = useLayout() !== "phone";
   return (
     <>
-      <div className="flex-1 overflow-y-auto px-4 pt-2.5">
+      <div className={`flex-1 overflow-y-auto ${desk ? DESK_SCROLL_EDGE : "px-4"} pt-2.5`}>
         {memory.model === "503" && (
           // The rows stay on screen underneath: a refused search is no reason
           // to take the last true thing we were told away (spec §5.2). The
@@ -217,7 +220,8 @@ function Episodic({ memory, now }: { memory: Memory; now: number }) {
           event.preventDefault();
           memory.submit();
         }}
-        className="flex items-center gap-2.5 px-4 pt-2.5"
+        // At width the hairline is the content's 520, as the rows' over it are.
+        className={`flex items-center gap-2.5 ${desk ? DESK_EDGE : "px-4"} pt-2.5`}
         style={{
           borderTop: "1px solid var(--line)",
           paddingBottom: "calc(12px + env(safe-area-inset-bottom, 0px))",
@@ -291,8 +295,9 @@ function SemanticCard({ file, now }: { file: SemanticFile; now: number }) {
 
 function Semantic({ memory, now }: { memory: Memory; now: number }) {
   const files = memory.files;
+  const desk = useLayout() !== "phone";
   return (
-    <div className="flex-1 overflow-y-auto px-4 pt-2.5 pb-10">
+    <div className={`flex-1 overflow-y-auto ${desk ? DESK_SCROLL_EDGE : "px-4"} pt-2.5 pb-10`}>
       {files.length === 0 ? (
         <Empty line={emptyLine(memory, "Semantic memory", "No semantic memory files yet.")} />
       ) : (
@@ -307,8 +312,9 @@ function Semantic({ memory, now }: { memory: Memory; now: number }) {
 }
 
 function Routines({ memory }: { memory: Memory }) {
+  const desk = useLayout() !== "phone";
   return (
-    <div className="flex-1 overflow-y-auto px-4 pt-2.5 pb-10">
+    <div className={`flex-1 overflow-y-auto ${desk ? DESK_SCROLL_EDGE : "px-4"} pt-2.5 pb-10`}>
       {memory.routines.length === 0 ? (
         <Empty line={emptyLine(memory, "Routines", "No routines learned yet.")} />
       ) : (
@@ -352,8 +358,11 @@ function Scratchpad({
   error: string | null;
   now: number;
 }) {
+  const desk = useLayout() !== "phone";
   return (
-    <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 pt-2.5 pb-10">
+    <div
+      className={`flex flex-1 flex-col gap-3 overflow-y-auto ${desk ? DESK_SCROLL_EDGE : "px-4"} pt-2.5 pb-10`}
+    >
       <div className="flex gap-3">
         {/* Never hidden when it is zero: an empty queue is a fact about the
             nightly consolidation, not the absence of one. */}
@@ -418,6 +427,7 @@ export function MemoryBench({ memory }: MemoryBenchProps) {
   // second-by-second clock in a read-only browser is motion for nothing.
   const [now] = useState(() => Date.now());
   const note = TABS.find((tab) => tab.id === memory.tab)?.note;
+  const gutter = useLayout() !== "phone" ? DESK_EDGE : "mx-4";
 
   // The arrows, Home and End, and the roving focus that goes with them, are
   // `tabs.ts`'s — the same keyboard the bench switcher above has, which is the
@@ -434,7 +444,7 @@ export function MemoryBench({ memory }: MemoryBenchProps) {
         role="tablist"
         aria-label="Memory"
         onKeyDown={onKeyDown}
-        className="mx-4 mt-2.5 grid shrink-0 grid-cols-4 gap-2"
+        className={`${gutter} mt-2.5 grid shrink-0 grid-cols-4 gap-2`}
       >
         {TABS.map(({ id, label }) => {
           const active = id === memory.tab;
@@ -460,7 +470,7 @@ export function MemoryBench({ memory }: MemoryBenchProps) {
           );
         })}
       </div>
-      <p className="t-meta-strong mx-4 mt-2.5 mb-0">{note}</p>
+      <p className={`t-meta-strong ${gutter} mt-2.5 mb-0`}>{note}</p>
       {/* This bench's read errors, announced. The Workshop's header speaks for
           the *connection* and cannot speak for this: a 500 from
           `/memory/routines` with the socket up leaves the header saying `live`
@@ -477,7 +487,7 @@ export function MemoryBench({ memory }: MemoryBenchProps) {
       <p
         role="status"
         aria-label="Read errors"
-        className={memory.error ? "t-meta-strong mx-4 mt-2.5 mb-0" : "sr-only"}
+        className={memory.error ? `t-meta-strong ${gutter} mt-2.5 mb-0` : "sr-only"}
       >
         {memory.error}
       </p>

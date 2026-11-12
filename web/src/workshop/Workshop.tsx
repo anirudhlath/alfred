@@ -4,6 +4,7 @@ import type { StreamRef } from "@/lib/streams";
 import { useOverview } from "@/room/useOverview";
 import { ErrorBoundary } from "@/shell/ErrorBoundary";
 import { Layer } from "@/shell/Layer";
+import { useLayout } from "@/shell/layout";
 import { ActivityBench } from "./ActivityBench";
 import { BenchSwitcher, benchTabId, type Bench } from "./BenchSwitcher";
 import { MemoryBench } from "./MemoryBench";
@@ -34,6 +35,11 @@ export interface WorkshopProps {
  * is subscribed and read only while the layer is mounted — including the
  * 400 ms it takes to leave.
  *
+ * From 760 px there is no layer: the panel is `Desk`'s bench, always there and
+ * always reading, and `open` means nothing (R1). A `section` where the phone has
+ * a `Layer` remounts the panel when the window crosses that one boundary, which is
+ * accepted: the Room's node is the one that has to survive (`Desk.tsx`).
+ *
  * `memo`, because it is mounted in the Room and the Room re-renders for things
  * the Workshop cannot see: a chat frame, the 30 s overview poll, the Door's
  * once-a-second `now` while a fuse counts. Without it each of those walks
@@ -42,8 +48,8 @@ export interface WorkshopProps {
  * nothing solo'd, since `MAX_PER_STREAM` is *per stream* and `mergeRows`
  * merges eight, and no ceiling at all once `↑ older` has been pressed, which
  * is exempt from the cap (`feed.ts`). All three props the Room passes are
- * stable, or this would never hit: `setWhy`, and a `useCallback`'d `onClose`
- * and `onHeld`.
+ * stable, or this would never hit: `useDetail`'s `openWhy` and `openHeld`, and a
+ * `useCallback`'d `onClose`.
  *
  * It stops the Room's re-renders and only those. The panel re-renders on its
  * own at telemetry rate whatever this does, because `useActivity` lives inside
@@ -52,18 +58,51 @@ export interface WorkshopProps {
  * (`useActivity.ts`).
  */
 export const Workshop = memo(function Workshop({ open, onClose, onWhy, onHeld }: WorkshopProps) {
+  const layout = useLayout();
+  // What `Start it over` counts: a new key is a new boundary, with its failure
+  // forgotten and a fresh panel under it. A column that never closes has no
+  // unmount to get that from, which is how the phone gets it (R18).
+  const [attempt, setAttempt] = useState(0);
+
+  // `Start it over` has just unmounted itself, which drops focus to `<body>` and
+  // sends a keyboard reader back to the top of the page. Focus goes to the new
+  // panel's chosen tab. If the bench threw again there is no tab, and `BenchFailed`
+  // takes focus itself. Keyed on `attempt`, which only that press moves, so a window
+  // crossing a breakpoint takes focus from nothing. The phone never gets here: its
+  // button closes the layer.
+  const column = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (attempt === 0) return;
+    column.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus();
+  }, [attempt]);
+
+  // The boundary is here rather than around the app, so a bench that throws costs
+  // the reader this surface and not the Room beside or underneath it — and on the
+  // phone it is inside `Layer`, so closing the Workshop unmounts it and the next
+  // open starts clean. One bad body from one of System's five reads used to take
+  // Activity, Memory and Triggers down with it, because all four hooks live in the
+  // one panel below (`lib/system.ts`, `fetchIntegrationListing`).
+  const panel = (
+    <ErrorBoundary
+      key={attempt}
+      fallback={<BenchFailed onClose={onClose} onRestart={() => setAttempt((count) => count + 1)} />}
+    >
+      <WorkshopPanel onClose={onClose} onWhy={onWhy} onHeld={onHeld} />
+    </ErrorBoundary>
+  );
+
+  // The name `Layer` gives the phone's dialog, and the column `Layer`'s panel is.
+  // Here rather than in `Desk`, which does not know what it is handed.
+  if (layout !== "phone") {
+    return (
+      <section ref={column} aria-label="Workshop" className="flex flex-1 flex-col overflow-hidden">
+        {panel}
+      </section>
+    );
+  }
   return (
     <Layer open={open} label="Workshop" durationMs={400} level="workshop">
-      {/* The boundary is here rather than around the app, so a bench that
-          throws costs the reader this layer and not the Room underneath it —
-          and it is inside `Layer`, so closing the Workshop unmounts it and the
-          next open starts clean. One bad body from one of System's five reads
-          used to take Activity, Memory and Triggers down with it, because all
-          four hooks live in the one panel below (`lib/system.ts`,
-          `fetchIntegrationListing`). */}
-      <ErrorBoundary fallback={<BenchFailed onClose={onClose} />}>
-        <WorkshopPanel onClose={onClose} onWhy={onWhy} onHeld={onHeld} />
-      </ErrorBoundary>
+      {panel}
     </Layer>
   );
 });
@@ -73,13 +112,28 @@ export const Workshop = memo(function Workshop({ open, onClose, onWhy, onHeld }:
  * nothing here knows which bench failed or why, and a sentence that guessed
  * would be the §5.2 failure in a new place.
  *
- * `alert` and not `status`, against this app's habit, for the one reason that
- * distinguishes them: everything else announced in polite is news arriving
- * behind the reader, and this happened under their hands — the screen they were
- * reading has just gone. It is also the only thing left on the layer, so there
- * is nothing for it to interrupt.
+ * `alert` and not `status`, against this app's habit, at every width: everything
+ * else announced in polite is news arriving behind the reader, and this is the
+ * surface itself going. On the phone it happened under their hands and is the only
+ * thing left on the layer, so there is nothing for it to interrupt. At width it can
+ * interrupt a reader working in the Room beside it, and a column that has just gone
+ * is worth that once: it is rare, and `status` risks VoiceOver missing a region
+ * inserted with its text already in it (`ActivityBench.tsx`).
+ *
+ * At width the way out is not the Room, which is already beside it, and "opening
+ * the Workshop again" has no meaning in a column that never closes (R18).
  */
-function BenchFailed({ onClose }: { onClose: () => void }) {
+function BenchFailed({ onClose, onRestart }: { onClose: () => void; onRestart: () => void }) {
+  const phone = useLayout() === "phone";
+  // A panel that held focus takes it down to `<body>` as it goes, and at width no
+  // press or closing layer is there to catch it. Only from `<body>`: a reader typing
+  // in the Room or sitting in a layer above has lost nothing, and the alert has told
+  // them what happened. The phone stays as it was.
+  const button = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!phone && document.activeElement === document.body) button.current?.focus();
+  }, [phone]);
+
   return (
     <div
       role="alert"
@@ -87,13 +141,21 @@ function BenchFailed({ onClose }: { onClose: () => void }) {
     >
       <p className="t-body m-0">This bench stopped working.</p>
       <p className="t-meta-strong m-0">
-        Nothing on the Room is affected. Opening the Workshop again starts it over.
+        {phone
+          ? "Nothing on the Room is affected. Opening the Workshop again starts it over."
+          : "Nothing on the Room is affected."}
       </p>
       {/* `--accent-text` on the layer's `--bg`, the header's Room button's own
-          pair (index.css, --accent-text). Same name as that button, because it
-          goes to the same place. */}
-      <button type="button" onClick={onClose} className="t-row min-h-11" style={{ color: "var(--accent-text)" }}>
-        Room
+          pair (index.css, --accent-text). On the phone the same name as that
+          button, because it goes to the same place. */}
+      <button
+        ref={button}
+        type="button"
+        onClick={phone ? onClose : onRestart}
+        className="t-row min-h-11"
+        style={{ color: "var(--accent-text)" }}
+      >
+        {phone ? "Room" : "Start it over"}
       </button>
     </div>
   );
@@ -108,13 +170,15 @@ interface WorkshopPanelProps {
 /**
  * A fragment, not a wrapper: `Layer`'s panel is already a `flex flex-col`
  * column, and this gives it two children — the header, at its own height, and
- * the `tabpanel`, taking the rest. The bench inside that panel is a column of
- * its own, which is what `ActivityBench` documents it needs: banner and footer
- * at their heights, its `flex-1` list between them.
+ * the `tabpanel`, taking the rest. The `section` in `Workshop` is the same column
+ * at width. The bench inside that panel is a column of its own, which is what
+ * `ActivityBench` documents it needs: banner and footer (at width, chips and
+ * footnote) at their heights, its `flex-1` list between them.
  */
 function WorkshopPanel({ onClose, onWhy, onHeld }: WorkshopPanelProps) {
+  const phone = useLayout() === "phone";
   const [bench, setBench] = useState<Bench>("activity");
-  const activity = useActivity(bench === "activity");
+  const activity = useActivity(bench === "activity", !phone);
   // All four hooks are called here, above the bench that is swapped out, each
   // gated on whether its own bench is the one showing: the reads stop when the
   // reader leaves, and the state does not. That is what lets a sub-tab, a kind
@@ -138,7 +202,8 @@ function WorkshopPanel({ onClose, onWhy, onHeld }: WorkshopPanelProps) {
   // keeps its own Escape: a sheet or a gate portals to `document.body`, a
   // sibling of this dialog, so its keys never bubble through here. `Layer` owns
   // the panel node and does not hand it out, so this finds it from the inside —
-  // the dialog is the root of everything the layer renders.
+  // the dialog is the root of everything the layer renders. At width there is no
+  // dialog and nothing to close, so this finds nothing and listens to nothing.
   const header = useRef<HTMLElement>(null);
   useEffect(() => {
     const panel = header.current?.closest<HTMLElement>('[role="dialog"]');
@@ -220,6 +285,10 @@ function WorkshopPanel({ onClose, onWhy, onHeld }: WorkshopPanelProps) {
     }
   }
 
+  const switcher = (
+    <BenchSwitcher bench={bench} onChange={setBench} idBase={tabsBase} panelId={panelId} />
+  );
+
   return (
     <>
       {/* The handoff's "Header padding 62 16 0" (README §4) is measured from the
@@ -236,28 +305,39 @@ function WorkshopPanel({ onClose, onWhy, onHeld }: WorkshopPanelProps) {
           around 18 px of text, so 13 px of its own box sits above the first
           pixel anyone sees. The Room's header keeps its literal on purpose: it
           is a headline in an open field, not a nav bar, and the phone called
-          that one right. */}
+          that one right.
+
+          At width it is §11's own, `padding 40 24 0` and gap 12: no status bar
+          to clear, and a label where the phone has a way back (R1). */}
       <header
         ref={header}
-        className="flex flex-col gap-2.5 px-4"
-        style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 8px)" }}
+        className={phone ? "flex flex-col gap-2.5 px-4" : "flex flex-col gap-3 px-6 pt-10"}
+        style={phone ? { paddingTop: "calc(env(safe-area-inset-top, 0px) + 8px)" } : undefined}
       >
         <div className="flex items-center justify-between">
-          <button
-            type="button"
-            onClick={onClose}
-            className="-ml-2 flex h-11 items-center gap-1.5 px-2 text-[15px] font-medium"
-            // `--accent-text`, not `--accent`: the raw accent is 2.34:1 on
-            // paper's `--bg` at 15 px (index.css, --accent-text).
-            style={{ color: "var(--accent-text)" }}
-          >
-            <span
-              aria-hidden="true"
-              className="h-[9px] w-[9px] rotate-45"
-              style={{ borderLeft: "1.5px solid currentColor", borderBottom: "1.5px solid currentColor" }}
-            />
-            Room
-          </button>
+          {phone ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className="-ml-2 flex h-11 items-center gap-1.5 px-2 text-[15px] font-medium"
+              // `--accent-text`, not `--accent`: the raw accent is 2.34:1 on
+              // paper's `--bg` at 15 px (index.css, --accent-text).
+              style={{ color: "var(--accent-text)" }}
+            >
+              <span
+                aria-hidden="true"
+                className="h-[9px] w-[9px] rotate-45"
+                style={{ borderLeft: "1.5px solid currentColor", borderBottom: "1.5px solid currentColor" }}
+              />
+              Room
+            </button>
+          ) : (
+            // The mock's type, with only its colour moved: `.t-label`'s own `--muted`
+            // is 3.46:1 on `--bg` in light, under AA at 11 px (R24).
+            <span className="t-label" style={{ color: "var(--fg2)" }}>
+              Workshop
+            </span>
+          )}
           {/* The one live region that survives a change of bench, which is why
               it is this one. The Activity bench's banner used to speak the
               not-live transition and no longer does: it is unmounted with its
@@ -281,7 +361,8 @@ function WorkshopPanel({ onClose, onWhy, onHeld }: WorkshopPanelProps) {
             {detail !== null && <span data-testid="workshop-detail">{` · ${detail}`}</span>}
           </span>
         </div>
-        <BenchSwitcher bench={bench} onChange={setBench} idBase={tabsBase} panelId={panelId} />
+        {/* §11: "switcher max 520". */}
+        {phone ? switcher : <div className="max-w-[520px]">{switcher}</div>}
       </header>
       <div
         role="tabpanel"
@@ -298,6 +379,10 @@ function WorkshopPanel({ onClose, onWhy, onHeld }: WorkshopPanelProps) {
         // (`MemoryBench.tsx`) — two stops before the content, which the device
         // checklist is the place to judge.
         tabIndex={0}
+        // The column's full width at every size, so each bench's scroller can be. The
+        // benches draw §11's edges themselves (`edges.ts`): 24 px and at most 520 px of
+        // content, under the switcher. In the narrowest column, 318 px with a thread
+        // open at 1100, that is 270, the switcher's 318 - 48.
         className="flex flex-1 flex-col overflow-hidden"
       >
         {currentBench()}

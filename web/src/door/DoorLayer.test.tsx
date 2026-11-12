@@ -574,3 +574,28 @@ describe("DoorLayer — leaving", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
+
+describe("DoorLayer — on a wide screen", () => {
+  it("the Door's question sits inside .phone-column", () => {
+    renderDoor(at("pending", { action: ASK }));
+    const column = screen
+      .getByRole("heading", { name: "Shall I turn off Desk Left?" })
+      .closest(".phone-column");
+
+    expect(column).not.toBeNull();
+    // All three blocks in the one column, and it lays them out as the panel did.
+    expect(column).toContainElement(screen.getByRole("button", { name: "Leave it" }));
+    expect(column).toContainElement(slider());
+    expect(column).toHaveClass("flex", "flex-1", "flex-col", "overflow-hidden");
+  });
+
+  it("keeps the Door's background outside .phone-column", () => {
+    // It covers all three columns (handoff §11): only what is on it stops short.
+    renderDoor(at("pending"));
+    const ink = screen.getByRole("dialog").firstElementChild as HTMLElement;
+
+    expect(ink).toHaveStyle({ background: "var(--ink)" });
+    expect(ink.closest(".phone-column")).toBeNull();
+    expect(ink).toContainElement(screen.getByText("CRITICAL · a91f"));
+  });
+});

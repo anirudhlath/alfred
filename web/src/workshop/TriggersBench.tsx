@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { TRIGGER_KINDS } from "@/lib/triggers";
+import { useLayout } from "@/shell/layout";
+import { DESK_EDGE, DESK_SCROLL_EDGE } from "./edges";
 import { TriggerRow } from "./TriggerRow";
 import type { KindFilter, Triggers } from "./useTriggers";
 
@@ -37,6 +39,7 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
   // to re-render once a second.
   const [now] = useState(() => Date.now());
   const empty = triggers.triggers.length === 0;
+  const desk = useLayout() !== "phone";
 
   return (
     <>
@@ -47,11 +50,20 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
           `StreamChips` is not reused either, for a plainer reason: it is eight
           hue-keyed monogram tiles with a count and solo semantics, and these
           are five word labels that pick one filter. They share a height and
-          nothing else. */}
+          nothing else.
+
+          At width the row wraps once the five labels no longer fit: in the 270 px
+          of content at 1100 px with a thread open, `All 124` ran `Composite` 52 px
+          past it, into the thread's column. Where they fit it is the one 44 px line
+          it always was. */}
       <div
         role="group"
         aria-label="Trigger kinds"
-        className="mx-4 mt-2.5 flex h-11 shrink-0 items-center gap-1.5"
+        className={
+          desk
+            ? `${DESK_EDGE} mt-2.5 flex min-h-11 shrink-0 flex-wrap items-center gap-x-1.5 gap-y-3`
+            : "mx-4 mt-2.5 flex h-11 shrink-0 items-center gap-1.5"
+        }
       >
         {TRIGGER_KINDS.map((kind) => {
           const active = kind === triggers.kind;
@@ -61,12 +73,18 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
               type="button"
               aria-pressed={active}
               onClick={() => triggers.setKind(kind)}
-              // 32 px of chip in a 44 px track: the `after` box adds 6 px above
-              // and below, which the row's own height already holds clear.
-              // `whitespace-nowrap` because the labels share the width five
-              // ways and "Composite" is the one that would otherwise wrap
+              // 32 px of chip, and the `after` box adds 6 px above and below for
+              // a 44 px target. On one line the row's own 44 px holds the boxes.
+              // Wrapped at width, the 12 px between its lines keep them clear of
+              // each other, and the outer lines' reach past the row: 6 px above,
+              // into its `mt-2.5`, and 6 px below, into the list's `pt-2` or a
+              // read error's `mt-2.5`. Nothing pressable sits in either, since
+              // the switcher's tabs above draw no `after` boxes of their own.
+              // `whitespace-nowrap` because the labels share the width
+              // five ways and "Composite" is the one that would otherwise wrap
               // inside a fixed 32 px box on a 360 px screen — whether it fits
               // at all there is for the device checklist, not for a guess here.
+              // At width the row wraps instead, so a label is never clipped.
               className="relative h-8 flex-1 rounded-lg border px-1 text-[13px] font-medium whitespace-nowrap after:absolute after:inset-x-0 after:-inset-y-1.5 after:content-['']"
               style={{
                 background: active ? "var(--ink)" : "transparent",
@@ -117,7 +135,9 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
       <p
         role="status"
         aria-label="Read errors"
-        className={triggers.error ? "t-meta-strong mx-4 mt-2.5 mb-0" : "sr-only"}
+        className={
+          triggers.error ? `t-meta-strong ${desk ? DESK_EDGE : "mx-4"} mt-2.5 mb-0` : "sr-only"
+        }
       >
         {triggers.error}
       </p>
@@ -126,7 +146,7 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
         role="list"
         aria-label="Triggers"
         aria-busy={triggers.loading}
-        className="m-0 flex flex-1 list-none flex-col overflow-y-auto px-4 pt-2 pb-3"
+        className={`m-0 flex flex-1 list-none flex-col overflow-y-auto ${desk ? DESK_SCROLL_EDGE : "px-4"} pt-2 pb-3`}
       >
         {triggers.shown.map((trigger) => (
           <TriggerRow
@@ -172,8 +192,9 @@ export function TriggersBench({ triggers }: TriggersBenchProps) {
         )}
       </ul>
 
+      {/* At width the hairline is the content's 520, as the rows' over it are. */}
       <div
-        className="flex shrink-0 flex-col gap-1.5 px-4 pt-2.5"
+        className={`flex shrink-0 flex-col gap-1.5 ${desk ? DESK_EDGE : "px-4"} pt-2.5`}
         style={{
           borderTop: "1px solid var(--line)",
           paddingBottom: "calc(12px + env(safe-area-inset-bottom, 0px))",

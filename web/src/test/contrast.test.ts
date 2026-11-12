@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { ringFill, ringText, STREAM_INFO, STREAMS } from "@/lib/streams";
+import { RING_COUNT_ON_OPACITY, ringFill, ringText, STREAM_INFO, STREAMS } from "@/lib/streams";
 import css from "../index.css?raw";
-import { contrast, luminance, TOKENS, token, type Theme } from "./contrast";
+import { contrast, luminance, over, TOKENS, token, type Theme } from "./contrast";
 
 /**
  * One theme's declarations, `:root[data-theme="…"] { … }`. The dark block is
@@ -90,6 +90,15 @@ describe("contrast ratios", () => {
       // 13 px, so AA's 4.5:1 is the bar. --accent itself is 2.34:1 on paper,
       // which is what --accent-text exists to fix.
       expect(contrast(token(theme, "accent-text"), token(theme, "bg"))).toBeGreaterThanOrEqual(4.5);
+    });
+
+    it(`${theme}: the detail column carries what is written on it`, () => {
+      // `--detail` is its own ground (handoff §11, the third column), so the
+      // pairs measured on `--bg` and `--surface` say nothing about it: a thread's
+      // rows, its meta lines, and `Done` and `esc closes` beside them.
+      for (const name of ["fg", "fg2", "accent-text"]) {
+        expect(contrast(token(theme, name), token(theme, "detail"))).toBeGreaterThanOrEqual(4.5);
+      }
     });
 
     it(`${theme}: the chosen bench is visible on the switcher's track`, () => {
@@ -235,6 +244,20 @@ describe("contrast ratios", () => {
       expect(contrast(token(theme, "line"), token(theme, "bg"))).toBeLessThan(1.3);
     });
 
+    it(`${theme}: the ring on a row J and K have moved to can be seen`, () => {
+      // The rule in index.css, the only sign of where those keys left focus, and at
+      // width only: below 760 px every pixel stays. A row sits on the bench's `--bg`, and
+      // an open one on `--surface`, where the UA's own ring vanishes. WCAG 1.4.11 asks 3:1
+      // of both. A detail's body beside the app takes the same ring, on the sheet's `--bg`
+      // or the column's `--detail`.
+      expect(css.replace(/\s+/g, " ")).toContain(
+        '.desk:not([data-layout="phone"]) [data-event-row]:focus-visible, .desk:not([data-layout="phone"]) [data-detail-body]:focus-visible { outline: 2px solid var(--accent-text); outline-offset: -2px; }',
+      );
+      expect(contrast(token(theme, "accent-text"), token(theme, "bg"))).toBeGreaterThanOrEqual(3);
+      expect(contrast(token(theme, "accent-text"), token(theme, "surface"))).toBeGreaterThanOrEqual(3);
+      expect(contrast(token(theme, "accent-text"), token(theme, "detail"))).toBeGreaterThanOrEqual(3);
+    });
+
     it(`${theme}: a routine's sparkline and rail read as graphics`, () => {
       // `RoutineRow`'s bars (`workshop/RoutineRow.tsx`) are the only drawing of
       // a routine's confidence and of where it is in its lifecycle, and they
@@ -359,10 +382,26 @@ describe("contrast ratios", () => {
  * failure mode this file was built to stop. Light clears AA by 0.12.
  */
 describe("the stream ring", () => {
+  /**
+   * The worst of the eight for a count at `opacity`. Both halves of the compact
+   * chip's claim go through this: that the count clears AA, and that it was raised
+   * no further than that asked, which is one step down failing. The mock's .7 and
+   * .8 are under AA, and the mock's is the look to stay near.
+   */
+  function worstCount(opacity: number, text: (hue: number) => string, ground: (hue: number) => string): number {
+    const hues = STREAMS.map((name) => STREAM_INFO[name].hue);
+    return Math.min(...hues.map((hue) => contrast(over(text(hue), opacity, ground(hue)), ground(hue))));
+  }
+
   it("carries white on every monogram tile and soloed chip", () => {
     for (const name of STREAMS) {
       expect(contrast("#fff", ringFill(STREAM_INFO[name].hue))).toBeGreaterThanOrEqual(4.5);
     }
+  });
+
+  it("carries a soloed compact chip's count, and no further than AA asks", () => {
+    expect(worstCount(RING_COUNT_ON_OPACITY, () => "#fff", ringFill)).toBeGreaterThanOrEqual(4.5);
+    expect(worstCount(RING_COUNT_ON_OPACITY - 0.01, () => "#fff", ringFill)).toBeLessThan(4.5);
   });
 
   for (const theme of ["dark", "light"] as const) {
@@ -373,5 +412,24 @@ describe("the stream ring", () => {
         ).toBeGreaterThanOrEqual(4.5);
       }
     });
+
+    it(`${theme}: reads as a compact chip's count on the page, and no further than AA asks`, () => {
+      const opacity = Number(token(theme, "ring-count-opacity"));
+      const text = (hue: number) => resolvedRingText(theme, hue);
+      const ground = () => token(theme, "bg");
+      expect(worstCount(opacity, text, ground)).toBeGreaterThanOrEqual(4.5);
+      expect(worstCount(opacity - 0.01, text, ground)).toBeLessThan(4.5);
+    });
   }
+});
+
+describe("the phone's column", () => {
+  it("holds the Door and the gates to a phone's width, and no narrower", () => {
+    // R15, and the only thing that does: jsdom loads no CSS, so every other test sees a
+    // class name. Without this rule the slide runs the width of a desk, and a lower
+    // maximum would narrow the Door on a phone.
+    expect(css.replace(/\s+/g, " ")).toContain(
+      ".phone-column { width: 100%; max-width: 480px; margin-inline: auto; }",
+    );
+  });
 });

@@ -2,6 +2,8 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { hhmm } from "@/lib/format";
 import type { TimelineItem } from "@/lib/history";
+import { rowKey, type StreamRef } from "@/lib/streams";
+import { LayoutContext, type Layout } from "@/shell/layout";
 import { Timeline } from "./Timeline";
 
 let scrollHeight = 1000;
@@ -248,6 +250,159 @@ describe("Timeline rows", () => {
     expect(screen.queryByRole("button", { name: /^why\?/ })).toBeNull();
   });
 
+  describe("the act row whose thread is open", () => {
+    const WHY: StreamRef = {
+      stream: "reflex_observations",
+      entry: { id: "1788800280000-0", event: { event_type: "reflex_observation" } },
+    };
+    const OPEN_META = "17:58 · reflex · home.light_set · thread open →";
+    const open: TimelineItem = { ...observation, why: WHY };
+    const neighbour: TimelineItem = {
+      ...observation,
+      id: "rx:1788800290000-0",
+      text: "motion in the hall",
+      meta: "18:02 · reflex · home.light_set",
+      why: {
+        stream: "reflex_observations",
+        entry: { id: "1788800290000-0", event: { event_type: "reflex_observation" } },
+      },
+    };
+    const trigger: TimelineItem = {
+      ...observation,
+      id: "ev:1",
+      text: "your parcel arrived",
+      meta: "18:20 · trigger · one-shot",
+      why: undefined,
+    };
+
+    it("only the act row whose why matches openThread reads · thread open →", () => {
+      render(
+        <Timeline
+          items={[open, neighbour, trigger]}
+          firstDayGreeting={null}
+          onWhy={() => {}}
+          openThread={rowKey(WHY)}
+        />,
+      );
+      expect(screen.getAllByText(/thread open →$/)).toHaveLength(1);
+      expect(screen.getByText(OPEN_META)).toBeInTheDocument();
+      expect(screen.getByText("18:02 · reflex · home.light_set")).toBeInTheDocument();
+      expect(screen.getByText("18:20 · trigger · one-shot")).toBeInTheDocument();
+    });
+
+    it("says nothing with no thread open", () => {
+      const { rerender } = render(
+        <Timeline items={[open, trigger]} firstDayGreeting={null} onWhy={() => {}} />,
+      );
+      expect(screen.queryByText(/thread open/)).toBeNull();
+
+      rerender(
+        <Timeline items={[open, trigger]} firstDayGreeting={null} onWhy={() => {}} openThread={null} />,
+      );
+      expect(screen.queryByText(/thread open/)).toBeNull();
+    });
+
+    it("is drawn from the mock", () => {
+      render(
+        <Timeline
+          items={[open, neighbour]}
+          firstDayGreeting={null}
+          onWhy={() => {}}
+          openThread={rowKey(WHY)}
+        />,
+      );
+      // Alfred Desktop.dc.html:32.
+      const text = screen.getByText("movie started, evening, user home");
+      expect(text).toHaveStyle({ color: "var(--fg)" });
+      const row = text.parentElement?.parentElement as HTMLElement;
+      expect(row).toHaveClass("-mx-3", "px-3", "rounded-[10px]");
+      expect(row).toHaveStyle({ background: "var(--surface)" });
+
+      const other = screen.getByText("motion in the hall");
+      expect(other).toHaveStyle({ color: "var(--fg2)" });
+      const otherRow = other.parentElement?.parentElement as HTMLElement;
+      expect(otherRow).not.toHaveClass("-mx-3");
+      expect(otherRow.style.background).toBe("");
+    });
+
+    it("says so in a colour that can be read", () => {
+      render(
+        <Timeline
+          items={[open, neighbour]}
+          firstDayGreeting={null}
+          onWhy={() => {}}
+          openThread={rowKey(WHY)}
+        />,
+      );
+      expect(screen.getByText(OPEN_META)).toHaveClass("t-meta-strong");
+      expect(screen.getByText("18:02 · reflex · home.light_set")).toHaveClass("t-meta");
+    });
+
+    it("its why? stays the same node, so focus stays", () => {
+      const timeline = (openThread: string | null) => (
+        <Timeline items={[open]} firstDayGreeting={null} onWhy={() => {}} openThread={openThread} />
+      );
+      const { rerender } = render(timeline(null));
+      const why = screen.getByRole("button", { name: /^why\?/ });
+      expect(why).not.toHaveClass("opacity-0");
+      expect(why).not.toHaveClass("pointer-events-none");
+      why.focus();
+
+      rerender(timeline(rowKey(WHY)));
+      expect(document.activeElement).toBe(why);
+      expect(why).toBeInTheDocument();
+      expect(why).toHaveClass("opacity-0", "focus-visible:opacity-100", "pointer-events-none");
+
+      // Out of the pointer's way, and still in the keyboard's.
+      why.blur();
+      why.focus();
+      expect(document.activeElement).toBe(why);
+
+      // And it comes back when the thread closes.
+      rerender(timeline(null));
+      expect(document.activeElement).toBe(why);
+      expect(why).not.toHaveClass("opacity-0");
+      expect(why).not.toHaveClass("pointer-events-none");
+    });
+
+    it("its why? gives its column back while the thread is open", () => {
+      const timeline = (openThread: string | null) => (
+        <Timeline
+          items={[open, neighbour]}
+          firstDayGreeting={null}
+          onWhy={() => {}}
+          openThread={openThread}
+        />
+      );
+      const { rerender } = render(timeline(null));
+      const why = screen.getByRole("button", { name: `why? ${observation.text}` });
+      const closed = screen.getByRole("button", { name: "why? motion in the hall" });
+      const row = why.parentElement as HTMLElement;
+      const atRest = why.className;
+      expect(why).toHaveClass("-mt-2.5", "-mr-1.5");
+      expect(why).not.toHaveClass("absolute");
+      expect(row).not.toHaveClass("relative");
+
+      rerender(timeline(rowKey(WHY)));
+      expect(screen.getByRole("button", { name: `why? ${observation.text}` })).toBe(why);
+      // Out of the flow, in the spot the margins held it: the row's 10 px of
+      // padding less 10 up, and its 12 px less 6 out.
+      expect(why).toHaveClass("absolute", "top-0", "right-1.5");
+      expect(why).not.toHaveClass("-mt-2.5");
+      expect(why).not.toHaveClass("-mr-1.5");
+      expect(row).toHaveClass("relative");
+
+      expect(closed).not.toHaveClass("absolute");
+      expect(closed).toHaveClass("-mt-2.5", "-mr-1.5");
+      expect(closed.parentElement).not.toHaveClass("relative");
+
+      // And back to exactly what it was.
+      rerender(timeline(null));
+      expect(why.className).toBe(atRest);
+      expect(row).not.toHaveClass("relative");
+    });
+  });
+
   it("strikes a tombstone through, on a faded row", () => {
     render(
       <Timeline
@@ -437,5 +592,20 @@ describe("Timeline anchoring", () => {
     clientHeight = 200;
     resize?.([], {} as ResizeObserver);
     expect(list().scrollTop).toBe(100);
+  });
+
+  it("takes the gutter of the layout it is in", () => {
+    const timeline = (layout: Layout) => (
+      <LayoutContext.Provider value={layout}>
+        <Timeline items={[you]} firstDayGreeting={null} />
+      </LayoutContext.Provider>
+    );
+    const { rerender } = render(timeline("phone"));
+    expect(list().classList.contains("px-6")).toBe(true);
+
+    // §11: "gutter 28".
+    rerender(timeline("sheet-over-bench"));
+    expect(list().classList.contains("px-7")).toBe(true);
+    expect(list().classList.contains("px-6")).toBe(false);
   });
 });

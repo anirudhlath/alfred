@@ -129,91 +129,93 @@ export function Gate({
     >
       <GateField />
 
-      {/* Copy sits at the bottom of the field, not the middle: padding 0 28 12.
+      <div className="phone-column flex flex-1 flex-col overflow-hidden">
+        {/* Copy sits at the bottom of the field, not the middle: padding 0 28 12.
 
-          It scrolls, because the shell is now a fixed height (§4.4) and its
-          parent is a clipper, not a scroller — there is no document scroll left
-          to borrow. The setup gate's credential step is the tall one: ~560px of
-          kicker, title, body, progress list and two fields, which does not fit a
-          375x553 viewport once the footer is paid for.
+            It scrolls, because the shell is now a fixed height (§4.4) and its
+            parent is a clipper, not a scroller — there is no document scroll left
+            to borrow. The setup gate's credential step is the tall one: ~560px of
+            kicker, title, body, progress list and two fields, which does not fit a
+            375x553 viewport once the footer is paid for.
 
-          `mt-auto` on an inner column rather than `justify-end` out here: end
-          alignment pushes the overflow off the *top*, and start-side overflow is
-          not in the scrollable region — measured at 375x553, justify-end reports
-          scrollHeight equal to clientHeight with the kicker 197px above the edge
-          and no way to reach it, where this reports 363/560 and scrolls. An auto
-          margin resolves to 0 once the free space is negative, so short copy
-          still sits on the bottom. */}
-      <div className="relative flex flex-1 flex-col overflow-y-auto px-7 pb-3">
-        <div className="mt-auto flex flex-col gap-3">
-          <div className={strongKicker ? "t-meta-strong" : "t-meta"}>{kicker}</div>
-          {/* No ring on the title when it takes focus, as on the Layer and the
-              Sheet that take it the same way: it is a place, not a control. */}
-          <h1
-            ref={heading}
-            tabIndex={focusTitle ? -1 : undefined}
-            aria-describedby={describedBy}
-            className="t-gate outline-none"
-          >
-            {title}
-          </h1>
-          {body ? (
-            <p className="t-body" style={{ color: "var(--fg2)" }}>
-              {body}
-            </p>
-          ) : null}
-          {children}
-        </div>
-      </div>
-
-      <div
-        className="relative flex flex-col gap-2.5 px-5 pt-2"
-        style={{ paddingBottom: "calc(40px + env(safe-area-inset-bottom, 0px))" }}
-      >
-        {primary ? (
-          <button
-            type="button"
-            onClick={() => {
-              // `aria-disabled` does not stop the event, so this does.
-              if (!primaryHeld) primary.onClick();
-            }}
-            aria-disabled={primaryHeld ? true : undefined}
-            aria-busy={primary.busy === true ? true : undefined}
-            className="h-14 rounded-[28px] border-0 text-[16px] font-medium"
-            style={
-              primaryHeld
-                ? {
-                    background: "var(--surface)",
-                    color: "var(--fg2)",
-                    boxShadow: "inset 0 0 0 1px var(--muted)",
-                  }
-                : { background: "var(--ink)", color: "var(--paper)" }
-            }
-          >
-            {primary.label}
-          </button>
-        ) : null}
-
-        {secondary ? (
-          <button
-            type="button"
-            onClick={() => {
-              if (!secondaryHeld) secondary.onClick();
-            }}
-            aria-disabled={secondaryHeld ? true : undefined}
-            aria-busy={secondary.waiting === true ? true : undefined}
-            className="h-[50px] rounded-[25px] border-0 bg-transparent text-[15px] font-medium"
-            style={{ color: secondaryHeld ? "var(--fg2)" : "var(--fg)" }}
-          >
-            {secondary.label}
-          </button>
-        ) : null}
-
-        {foot ? (
-          <div id={footId} role="status" className="t-meta text-center">
-            {foot}
+            `mt-auto` on an inner column rather than `justify-end` out here: end
+            alignment pushes the overflow off the *top*, and start-side overflow is
+            not in the scrollable region — measured at 375x553, justify-end reports
+            scrollHeight equal to clientHeight with the kicker 197px above the edge
+            and no way to reach it, where this reports 363/560 and scrolls. An auto
+            margin resolves to 0 once the free space is negative, so short copy
+            still sits on the bottom. */}
+        <div className="relative flex flex-1 flex-col overflow-y-auto px-7 pb-3">
+          <div className="mt-auto flex flex-col gap-3">
+            <div className={strongKicker ? "t-meta-strong" : "t-meta"}>{kicker}</div>
+            {/* No ring on the title when it takes focus, as on the Layer and the
+                Sheet that take it the same way: it is a place, not a control. */}
+            <h1
+              ref={heading}
+              tabIndex={focusTitle ? -1 : undefined}
+              aria-describedby={describedBy}
+              className="t-gate outline-none"
+            >
+              {title}
+            </h1>
+            {body ? (
+              <p className="t-body" style={{ color: "var(--fg2)" }}>
+                {body}
+              </p>
+            ) : null}
+            {children}
           </div>
-        ) : null}
+        </div>
+
+        <div
+          className="relative flex flex-col gap-2.5 px-5 pt-2"
+          style={{ paddingBottom: "calc(40px + env(safe-area-inset-bottom, 0px))" }}
+        >
+          {primary ? (
+            <button
+              type="button"
+              onClick={() => {
+                // `aria-disabled` does not stop the event, so this does.
+                if (!primaryHeld) primary.onClick();
+              }}
+              aria-disabled={primaryHeld ? true : undefined}
+              aria-busy={primary.busy === true ? true : undefined}
+              className="h-14 rounded-[28px] border-0 text-[16px] font-medium"
+              style={
+                primaryHeld
+                  ? {
+                      background: "var(--surface)",
+                      color: "var(--fg2)",
+                      boxShadow: "inset 0 0 0 1px var(--muted)",
+                    }
+                  : { background: "var(--ink)", color: "var(--paper)" }
+              }
+            >
+              {primary.label}
+            </button>
+          ) : null}
+
+          {secondary ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (!secondaryHeld) secondary.onClick();
+              }}
+              aria-disabled={secondaryHeld ? true : undefined}
+              aria-busy={secondary.waiting === true ? true : undefined}
+              className="h-[50px] rounded-[25px] border-0 bg-transparent text-[15px] font-medium"
+              style={{ color: secondaryHeld ? "var(--fg2)" : "var(--fg)" }}
+            >
+              {secondary.label}
+            </button>
+          ) : null}
+
+          {foot ? (
+            <div id={footId} role="status" className="t-meta text-center">
+              {foot}
+            </div>
+          ) : null}
+        </div>
       </div>
 
       {/* In the footer's 40 px bottom padding, so it never covers the foot.

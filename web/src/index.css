@@ -31,6 +31,10 @@
      field, the setup gate's inputs, the bench switcher's selection. */
   --field: #3A3631;
   --line: #35312C;
+  /* The detail column's ground (handoff §11), the midpoint of --bg and --surface.
+     Restated in `src/test/contrast.ts`, which holds what is written on it to
+     4.5:1. */
+  --detail: #2A2723;
   --keyboard: #1C1A17;
   --muted: #9A9186;
   --fg2: #D9D2C8;
@@ -65,6 +69,10 @@
   /* Lightness for `ringText()` in lib/streams.ts — the stream hue used as text
      on `--bg`. 0.75 on ink clears AA on all eight hues (worst 6.76:1). */
   --ring-text-l: 0.75;
+  /* What a compact chip's count keeps of that text (`StreamChips`). The mock's .7
+     is 4.05:1 at the worst hue; .77 is the least that clears AA on all eight.
+     Restated in `src/test/contrast.ts`; its test holds it to both halves of that. */
+  --ring-count-opacity: 0.77;
   --scrim: rgba(20, 17, 14, 0.45);
 }
 
@@ -74,6 +82,8 @@
   --surface: #EFEAE2;
   --field: #FFFFFF;
   --line: #E6E1D9;
+  /* The same midpoint on paper: §11 draws dark only (R17). See dark, above. */
+  --detail: #F3EFE8;
   --keyboard: #E6E1D9;
   --muted: #8A8177;
   --fg2: #4D4740;
@@ -95,6 +105,9 @@
   --ring: #3D3832;
   /* 0.52 on paper; the same hue must go darker here (worst 4.62:1). */
   --ring-text-l: 0.52;
+  /* The mock's .7 is 2.77:1 here. The text only just clears AA at full strength,
+     so there is almost nothing to give up: .99. See dark, above. */
+  --ring-count-opacity: 0.99;
   --scrim: rgba(20, 17, 14, 0.45);
 }
 
@@ -103,7 +116,8 @@
    installViewportVars() overwrites on the same element. The stream hues
    (h = 30 + 45·i in the handoff) are not tokens: the hue is data, so it comes
    from STREAM_INFO through ring()/ringFill()/ringText() in lib/streams.ts.
-   Only their lightness-on-the-page is a token, --ring-text-l above. */
+   Only their lightness-on-the-page is a token, --ring-text-l above, and what a
+   compact chip's count keeps of it, --ring-count-opacity. */
 :root {
   --ease-rise: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-settle: cubic-bezier(0.2, 1.4, 0.3, 1);
@@ -287,6 +301,10 @@
      The Room's Workshop handle is an eighth, and the plainest case of the rule:
      `workshop` is the only word in the control, and the control is the only way
      off the Room.
+     An Act row's meta is a ninth while its thread is open: `· thread open →` is
+     the only thing saying so, and --muted is 3.20:1 on --surface in light.
+     The Activity bench's footnote at width is a tenth: it is the only place the
+     keyboard shortcuts are named (R13).
      The ~17 other `.t-meta` sites are phase-1 scope and unaudited: some sit on
      --ink, where --muted is the wrong family of token entirely and
      --paper-muted is the answer, so they need measuring before they move. */
@@ -384,6 +402,90 @@
     right: 0;
     top: var(--viewport-top, 0px);
     height: var(--app-height, 100dvh);
+  }
+
+  /* ------------------------------------------------------------------ the desk
+     Handoff §11. `Desk` renders one tree at every layout and this decides what
+     shows, so below 760 px the Room is the only thing in a column that lays out
+     as it always has.
+
+     Above that the line's own selectors do the counting: `:first-child +` is the
+     line after the Room, `.desk-bench +` the line after the bench. */
+  .desk {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+  }
+  .desk-line,
+  .desk-bench,
+  .desk-detail {
+    display: none;
+  }
+  .desk[data-layout="sheet-over-bench"],
+  .desk[data-layout="columns"] {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-columns: 420px 1px minmax(0, 1fr);
+  }
+  /* §11's grid, except the bench's minimum. Its minimums sum to 1162 px and its
+     breakpoint is 1100 px, so from 1100 to 1161 the bench gives up the difference
+     rather than the page scrolling sideways (R3). */
+  .desk[data-layout="columns"][data-detail] {
+    grid-template-columns: 420px 1px minmax(min(380px, calc(100vw - 782px)), 1fr) 1px minmax(360px, 520px);
+  }
+  .desk[data-layout="sheet-over-bench"] > :first-child + .desk-line,
+  .desk[data-layout="columns"] > :first-child + .desk-line,
+  .desk[data-layout="sheet-over-bench"] > .desk-bench,
+  .desk[data-layout="columns"] > .desk-bench,
+  .desk[data-layout="columns"][data-detail] > .desk-bench + .desk-line {
+    display: block;
+  }
+  .desk[data-layout="columns"][data-detail] > .desk-detail {
+    display: flex;
+  }
+  .desk-line {
+    background: var(--line);
+  }
+  .desk-bench {
+    position: relative;
+    min-width: 0;
+    overflow: hidden;
+  }
+  /* A flex column because what it holds takes the height with `flex-1`, as it does
+     in `Layer`: the Workshop's `section`, itself the column its panel needs. */
+  .desk-bench-body {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .desk-detail {
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--detail);
+  }
+
+  /* Where J and K left focus (R11), and a detail's body beside the app, a Tab stop of its
+     own (`SCROLLER_FOCUS` in Sheet.tsx). The app has no other focus rule, and the UA's
+     ring vanishes on --surface. Inset, because the bench's list clips what crosses its
+     edge, and the column and the sheet clip the body's to 1 px. At width only: below
+     760 px every pixel stays. */
+  .desk:not([data-layout="phone"]) [data-event-row]:focus-visible,
+  .desk:not([data-layout="phone"]) [data-detail-body]:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: -2px;
+  }
+
+  /* The Door and the gates still cover all three columns (§11), but what is on them stops
+     at a phone's width: a slide 1200 px long is unusable (R15). No phone held upright
+     reaches it, so there this is the screen's own box and its margins are 0. */
+  .phone-column {
+    width: 100%;
+    max-width: 480px;
+    margin-inline: auto;
   }
 
   /* ---------------------------------------------------- keyboard + home indicator

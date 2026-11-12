@@ -1,9 +1,11 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { FeedRow } from "@/lib/feed";
-import { STREAMS, type StreamName } from "@/lib/streams";
+import { STREAMS, summarise, type StreamName } from "@/lib/streams";
+import { LayoutContext, type Layout } from "@/shell/layout";
 import { reflexObservationsPage, userRequestsPage, userResponsesPage } from "@/test/fixtures";
 import { ActivityBench } from "./ActivityBench";
+import { DESK_SCROLL_EDGE } from "./edges";
 import type { Activity } from "./useActivity";
 
 const reflex: FeedRow = {
@@ -401,5 +403,210 @@ describe("ActivityBench", () => {
       />,
     );
     expect(scroll.top).toBe(520);
+  });
+
+  describe("at width", () => {
+    const KEYS = "Keyboard: J/K move, Enter opens payload, Space pauses, 1–8 solo a stream.";
+    const SOLOED = "Soloed UR: other streams dimmed rather than removed, so the neighbourhood stays visible.";
+
+    /** The bench the Room's context gives it. The default of `phone` is every test above. */
+    const atWidth = (a: Activity, layout: Layout = "columns") => (
+      <LayoutContext.Provider value={layout}>
+        <ActivityBench activity={a} onWhy={() => {}} />
+      </LayoutContext.Provider>
+    );
+
+    /** The row's own button, by the words it shows. */
+    const rowButton = (text: string) => screen.getByText(text).closest("button") as HTMLElement;
+
+    it("answers the keys at both widths, over its own list", () => {
+      const a = activity();
+      const { rerender } = render(atWidth(a, "sheet-over-bench"));
+
+      fireEvent.keyDown(document.body, { key: "j" });
+      expect(rowButton(summarise(reflex.stream, reflex.entry.event).text)).toHaveFocus();
+
+      rerender(atWidth(a));
+      fireEvent.keyDown(document.body, { key: "1" });
+      expect(a.setSolo).toHaveBeenCalledWith(STREAMS[0]);
+    });
+
+    it("answers no keys on the phone", () => {
+      const a = activity();
+      render(atWidth(a, "phone"));
+
+      for (const key of ["j", " ", "1"]) expect(fireEvent.keyDown(document.body, { key })).toBe(true);
+
+      expect(document.body).toHaveFocus();
+      expect(a.pause).not.toHaveBeenCalled();
+      expect(a.setSolo).not.toHaveBeenCalled();
+    });
+
+    it("chips come before the list", () => {
+      render(atWidth(activity({ live: false })));
+      const chip = screen.getByRole("button", { name: "EV events, 0" });
+      expect(chip).toHaveClass("h-9");
+      expect(chip.compareDocumentPosition(screen.getByTestId("feed-banner"))).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+      expect(chip.compareDocumentPosition(screen.getByRole("list"))).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+
+    it("offers All and Pause, not All streams and Pause feed", () => {
+      const a = activity({ solo: "user_requests" });
+      const { rerender } = render(atWidth(a));
+      expect(screen.queryByRole("button", { name: "All streams" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Pause feed" })).toBeNull();
+
+      const all = screen.getByRole("button", { name: "All" });
+      const pause = screen.getByRole("button", { name: "Pause" });
+      expect(all).toHaveClass("h-9", "rounded-lg", "border", "border-line", "px-3", "text-[12px]", "font-medium");
+      expect(pause).toHaveClass("h-9", "rounded-lg", "px-3", "text-[12px]", "font-medium", "whitespace-nowrap");
+      // In the row with the chips, All first, the way the mock has them.
+      expect(all.parentElement).toBe(pause.parentElement);
+      expect(all.parentElement).toHaveClass("shrink-0");
+      expect(all.nextElementSibling).toBe(pause);
+      expect(pause.style.background).toBe("var(--ink)");
+      expect(pause.style.color).toBe("var(--paper)");
+
+      fireEvent.click(all);
+      expect(a.setSolo).toHaveBeenCalledWith(null);
+      fireEvent.click(pause);
+      expect(a.pause).toHaveBeenCalledTimes(1);
+      expect(all).not.toHaveClass("opacity-40");
+      expect(all).not.toHaveClass("focus-visible:opacity-100");
+      expect(all).toHaveAttribute("aria-disabled", "false");
+
+      // Not `disabled`, because that would take the focus of whoever just pressed it.
+      rerender(atWidth(activity()));
+      expect(all).toHaveAttribute("aria-disabled", "true");
+      expect(all).not.toHaveAttribute("disabled");
+      // In classes and not the style, which would beat the focus one: `opacity` dims
+      // the focus ring too, and focus can rest here now.
+      expect(all).toHaveClass("opacity-40", "focus-visible:opacity-100");
+      expect(all.style.opacity).toBe("");
+    });
+
+    it("solo dims the rest and removes nothing", () => {
+      render(atWidth(activity({ solo: "user_requests" })));
+      expect(rowButton("Is the back door locked?")).not.toHaveAttribute("data-dimmed");
+      expect(rowButton("observed media_player.tv · acted")).toHaveAttribute("data-dimmed");
+    });
+
+    it("dims nothing with no solo", () => {
+      render(atWidth(activity()));
+      expect(rowButton("Is the back door locked?")).toHaveAttribute("data-event-row");
+      expect(rowButton("observed media_player.tv · acted")).not.toHaveAttribute("data-dimmed");
+    });
+
+    it("draws an open row for the desk", () => {
+      render(atWidth(activity({ expanded: reflex.key })));
+      expect(screen.getByText(/"tool_name"/).style.background).toBe("var(--bg)");
+    });
+
+    it("solo leaves the scroll position", () => {
+      const { rerender } = render(atWidth(activity()));
+      const scroll = stubScroll(screen.getByRole("list"), 1000);
+      scroll.top = 400;
+      rerender(atWidth(activity({ solo: "user_requests" })));
+      expect(scroll.top).toBe(400);
+      rerender(atWidth(activity({ solo: null })));
+      expect(scroll.top).toBe(400);
+    });
+
+    it("still holds the reader's place when a row lands on top", () => {
+      const { rerender } = render(atWidth(activity()));
+      const scroll = stubScroll(screen.getByRole("list"), 1000);
+      scroll.top = 400;
+      rerender(atWidth(activity({ rows: [reflex, request, older] })));
+      scroll.grow(1120);
+      rerender(atWidth(activity({ rows: [newest, reflex, request, older] })));
+      expect(scroll.top).toBe(520);
+    });
+
+    it("says the keyboard sentence always and the solo sentence only while soloed", () => {
+      const { rerender } = render(atWidth(activity()));
+      const note = screen.getByText(KEYS);
+      expect(note).toHaveClass("t-meta-strong", "px-6", "pt-2.5", "pb-6");
+      expect(note).toHaveTextContent(new RegExp(`^${KEYS}$`));
+
+      rerender(atWidth(activity({ solo: "user_requests" })));
+      expect(screen.getByText(`${SOLOED} ${KEYS}`)).toBeInTheDocument();
+    });
+
+    it("paused, the button reads Resume · 3 new", () => {
+      const a = activity({ paused: true, heldCount: 3 });
+      const { rerender } = render(atWidth(a));
+      const resume = screen.getByRole("button", { name: "Resume · 3 new" });
+      expect(resume).toHaveClass("h-9");
+      expect(resume.style.background).toBe("var(--accent)");
+      expect(resume.style.color).toBe("var(--on-accent)");
+      fireEvent.click(resume);
+      expect(a.resume).toHaveBeenCalledTimes(1);
+
+      rerender(atWidth(activity({ paused: true })));
+      expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+    });
+
+    it("says an empty list is all eight empty, soloed or not", () => {
+      // The list holds all eight whatever is soloed, so `HS · 0 entries` under an
+      // empty one would be true and would hide the other seven being empty too.
+      render(atWidth(activity({ rows: [], solo: "home_state" })));
+      expect(screen.getByText("Nothing on any stream yet.")).toBeInTheDocument();
+      expect(screen.getByText("8 streams · 0 entries")).toBeInTheDocument();
+      expect(screen.queryByText(/^HS · /)).toBeNull();
+    });
+
+    it("gives the sheet-over-bench band the same bench", () => {
+      render(atWidth(activity({ solo: "user_requests" }), "sheet-over-bench"));
+      expect(screen.getByRole("button", { name: "All" })).toBeInTheDocument();
+      expect(rowButton("observed media_player.tv · acted")).toHaveAttribute("data-dimmed");
+    });
+
+    it("gives the banner, the error line and the list the desk's gutters, and the phone keeps its own", () => {
+      const a = activity({ live: false, error: "2 of 8 streams could not be read · redis gone" });
+      const { rerender } = render(atWidth(a));
+      expect(screen.getByTestId("feed-banner")).toHaveClass("mx-6");
+      expect(screen.getByRole("status", { name: "Read errors" })).toHaveClass("mx-6");
+      // The list is the column's full width, its bar at the column's edge, and its
+      // padding holds the content to the chips' 24 px and 520 px.
+      expect(screen.getByRole("list")).toHaveClass(...DESK_SCROLL_EDGE.split(" "), "pt-3");
+      expect(screen.getByRole("list").className).not.toMatch(/\bmax-w-/);
+      // The mock's 520 is content width: its wrapper's padding sits outside it.
+      const row = screen.getByRole("button", { name: "EV events, 0" }).closest(".max-w-\\[520px\\]");
+      expect(row?.parentElement).toHaveClass("px-6", "pt-3");
+
+      rerender(atWidth(a, "phone"));
+      expect(screen.getByTestId("feed-banner")).toHaveClass("mx-4");
+      expect(screen.getByRole("status", { name: "Read errors" })).toHaveClass("mx-4");
+      expect(screen.getByRole("list")).toHaveClass("px-4", "pt-2");
+      expect(screen.getByRole("list")).not.toHaveClass(...DESK_SCROLL_EDGE.split(" "));
+    });
+
+    it("lines the banner and the error line up with the chips and the list's content", () => {
+      const a = activity({ live: false, error: "2 of 8 streams could not be read · redis gone" });
+      const { rerender } = render(atWidth(a));
+      expect(screen.getByTestId("feed-banner")).toHaveClass("max-w-[520px]");
+      expect(screen.getByRole("status", { name: "Read errors" })).toHaveClass("max-w-[520px]");
+
+      rerender(atWidth(a, "phone"));
+      expect(screen.getByTestId("feed-banner")).not.toHaveClass("max-w-[520px]");
+      expect(screen.getByRole("status", { name: "Read errors" })).not.toHaveClass("max-w-[520px]");
+    });
+
+    it("leaves the phone its footer, its filter's words, and no footnote", () => {
+      const { rerender } = render(atWidth(activity(), "phone"));
+      const quiet = screen.getByRole("button", { name: "All streams" });
+      expect(quiet.style.opacity).toBe("0.4");
+      expect(quiet).not.toHaveClass("opacity-40");
+
+      rerender(atWidth(activity({ solo: "user_requests" }), "phone"));
+      expect(screen.getByRole("button", { name: "All streams" }).style.opacity).toBe("1");
+      expect(screen.getByRole("button", { name: "Pause feed" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "EV events, 0" })).toHaveClass("h-11");
+      expect(screen.queryByText(/^Keyboard:/)).toBeNull();
+      expect(screen.queryByText(/^Soloed/)).toBeNull();
+      expect(rowButton("observed media_player.tv · acted")).not.toHaveAttribute("data-dimmed");
+    });
   });
 });

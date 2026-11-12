@@ -11,6 +11,14 @@ export interface EventRowProps {
   onSolo: () => void;
   /** `Why · causal thread` — offered on the streams with a server-held cause (`WHY_STREAMS`). */
   onWhy?: () => void;
+  /**
+   * Drawn for the desktop. This and `dimmed` are props rather than `useLayout()`:
+   * that would be one subscription per row, at 400 rows a stream, which is the cost
+   * `Workshop.tsx` warns about.
+   */
+  desk?: boolean;
+  /** Another stream is soloed, at width: this row is neighbourhood, not what is being read. */
+  dimmed?: boolean;
 }
 
 /**
@@ -44,15 +52,25 @@ function stamp(id: string): string {
  * the bench only renders when something it owns changes — `Workshop` is
  * `memo`ised precisely so the Room's unrelated re-renders stop above it.
  */
-export function EventRow({ row, expanded, onToggle, onSolo, onWhy }: EventRowProps) {
+export function EventRow({ row, expanded, onToggle, onSolo, onWhy, desk = false, dimmed = false }: EventRowProps) {
   const { mono, hue } = STREAM_INFO[row.stream];
   const { text, meta } = summarise(row.stream, row.entry.event);
   const panelId = useId();
+  // `Alfred Desktop.dc.html:70-80`: at width an open row lifts off the page, its
+  // ground wider than the list's column by 12 px a side.
+  const lifted = desk && expanded;
 
   return (
-    <li className="shrink-0" style={{ borderTop: "1px solid var(--line)" }}>
+    <li
+      // Full strength wherever the reader is actually reading it: the dimmed text
+      // is the neighbourhood, and no one can take a row in at 35 %.
+      className={`shrink-0${lifted ? " -mx-3 rounded-[10px] px-3" : ""}${dimmed && !expanded ? " opacity-35 focus-within:opacity-100" : ""}`}
+      style={{ borderTop: "1px solid var(--line)", background: lifted ? "var(--surface)" : undefined }}
+    >
       <button
         type="button"
+        data-event-row=""
+        data-dimmed={dimmed ? "" : undefined}
         aria-expanded={expanded}
         // Only while open: `aria-controls` pointing at an absent id is invalid.
         aria-controls={expanded ? panelId : undefined}
@@ -78,7 +96,7 @@ export function EventRow({ row, expanded, onToggle, onSolo, onWhy }: EventRowPro
         <div id={panelId} className="mb-3 ml-8 flex flex-col gap-2">
           <pre
             className="rounded-lg px-3 py-2.5 font-mono text-[11px] leading-[1.55] whitespace-pre-wrap break-words"
-            style={{ background: "var(--surface)", color: "var(--fg2)" }}
+            style={{ background: desk ? "var(--bg)" : "var(--surface)", color: "var(--fg2)" }}
           >
             {JSON.stringify(row.entry.event, null, 2)}
           </pre>

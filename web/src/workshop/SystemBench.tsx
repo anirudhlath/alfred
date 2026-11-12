@@ -10,6 +10,8 @@ import {
   type HealthCell,
 } from "@/lib/system";
 import type { Overview } from "@/lib/types";
+import { useLayout } from "@/shell/layout";
+import { DESK_EDGE, DESK_SCROLL_EDGE } from "./edges";
 import { ReachSection } from "./ReachSection";
 import { Switch } from "./Switch";
 import { SystemRow, SystemSection } from "./SystemFrame";
@@ -671,6 +673,7 @@ export function SystemBench({ system }: SystemBenchProps) {
   // `Alfred.dc.html`'s offline grid blanks all four and dates the bus card,
   // which is what `staleGrid` returns.
   const health = !online && readAt !== null ? staleGrid(readAt) : system.health;
+  const desk = useLayout() !== "phone";
 
   return (
     <>
@@ -695,7 +698,9 @@ export function SystemBench({ system }: SystemBenchProps) {
       <p
         role="status"
         aria-label="Read errors"
-        className={system.error ? "t-meta-strong mx-4 mt-2.5 mb-0" : "sr-only"}
+        className={
+          system.error ? `t-meta-strong ${desk ? DESK_EDGE : "mx-4"} mt-2.5 mb-0` : "sr-only"
+        }
       >
         {system.error}
         {system.sectionErrors.length > 0 && (
@@ -704,7 +709,7 @@ export function SystemBench({ system }: SystemBenchProps) {
       </p>
       <div
         aria-busy={system.loading}
-        className="flex-1 overflow-y-auto px-4"
+        className={`flex-1 overflow-y-auto ${desk ? DESK_SCROLL_EDGE : "px-4"}`}
         // 40 px, which is the handoff's and is what the siblings' `pb-10`
         // comes to; plus the home indicator, which this bench has no footer to
         // pay for on its behalf.

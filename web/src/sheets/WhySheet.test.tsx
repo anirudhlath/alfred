@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { idMs, STREAMS, type StreamRef } from "@/lib/streams";
 import { CANDIDATE_COUNT } from "@/lib/trace";
 import type { StreamEntry, StreamPage } from "@/lib/types";
+import { DeskSlotsContext } from "@/shell/Desk";
+import { LayoutContext, type Layout } from "@/shell/layout";
 import { reflexObservationsPage } from "@/test/fixtures";
 import { WhySheet } from "./WhySheet";
 
@@ -106,11 +108,16 @@ function stubFetch(): void {
 function mount(anchor: StreamRef | null) {
   const onClose = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const tree = (ref: StreamRef | null) => (
-    <QueryClientProvider client={client}>
-      <WhySheet anchor={ref} onClose={onClose} />
-    </QueryClientProvider>
-  );
+  // Every anchor handed over is a press, as `useDetail` counts them; a close is not.
+  let press = 0;
+  const tree = (ref: StreamRef | null) => {
+    if (ref !== null) press += 1;
+    return (
+      <QueryClientProvider client={client}>
+        <WhySheet anchor={ref} press={press} onClose={onClose} />
+      </QueryClientProvider>
+    );
+  };
   const view = render(tree(anchor));
   return { onClose, client, setAnchor: (ref: StreamRef | null) => view.rerender(tree(ref)) };
 }
@@ -315,5 +322,86 @@ describe("WhySheet", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
     expect(screen.getByText("home.light_set light.living_room")).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  describe("by layout", () => {
+    const PHONE_INTRO =
+      "Every link drawn solid is joined by an id the server holds. Dashed means adjacent in time only.";
+    // Alfred Desktop.dc.html:96.
+    const COLUMN_INTRO =
+      "Solid links are joined by an id the server holds. Dashed means adjacent in time only.";
+
+    function mountAt(layout: Layout) {
+      const slot = document.createElement("div");
+      document.body.append(slot);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const view = render(
+        <QueryClientProvider client={client}>
+          <LayoutContext.Provider value={layout}>
+            <DeskSlotsContext.Provider value={{ overBench: slot, detail: slot }}>
+              <WhySheet anchor={ANCHOR} press={1} onClose={() => {}} />
+            </DeskSlotsContext.Provider>
+          </LayoutContext.Provider>
+        </QueryClientProvider>,
+      );
+      return () => {
+        view.unmount();
+        slot.remove();
+      };
+    }
+
+    it("columns: shows the eyebrow and the mock's intro", async () => {
+      const done = mountAt("columns");
+      expect(screen.getByRole("complementary", { name: "Why Alfred did that" })).toBeInTheDocument();
+      expect(screen.getByText("Causal thread")).toBeInTheDocument();
+      expect(screen.getByText(COLUMN_INTRO)).toBeInTheDocument();
+      expect(screen.queryByText(PHONE_INTRO)).toBeNull();
+      await screen.findByText(FOOTNOTE);
+      done();
+    });
+
+    it("columns: closed from inside, focus returns to the row that last opened the thread", async () => {
+      const slot = document.createElement("div");
+      document.body.append(slot);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const at = (anchor: StreamRef | null, press: number) => (
+        <QueryClientProvider client={client}>
+          <LayoutContext.Provider value="columns">
+            <DeskSlotsContext.Provider value={{ overBench: null, detail: slot }}>
+              <button type="button">Row A</button>
+              <button type="button">Row B</button>
+              <WhySheet anchor={anchor} press={press} onClose={() => {}} />
+            </DeskSlotsContext.Provider>
+          </LayoutContext.Provider>
+        </QueryClientProvider>
+      );
+      const view = render(at(null, 0));
+      screen.getByRole("button", { name: "Row A" }).focus();
+      view.rerender(at(ANCHOR, 1));
+
+      const rowB = screen.getByRole("button", { name: "Row B" });
+      rowB.focus();
+      view.rerender(at(OTHER, 2));
+      await screen.findByText(FOOTNOTE);
+      screen.getByRole("button", { name: "esc closes" }).focus();
+
+      view.rerender(at(null, 2));
+      expect(document.activeElement).toBe(rowB);
+      view.unmount();
+      slot.remove();
+    });
+
+    it.each<Layout>(["phone", "sheet-over-bench"])(
+      "%s: shows today's intro and no eyebrow",
+      async (layout) => {
+        const done = mountAt(layout);
+        expect(screen.getByRole("dialog", { name: "Why Alfred did that" })).toBeInTheDocument();
+        expect(screen.getByText(PHONE_INTRO)).toBeInTheDocument();
+        expect(screen.queryByText(COLUMN_INTRO)).toBeNull();
+        expect(screen.queryByText("Causal thread")).toBeNull();
+        await screen.findByText(FOOTNOTE);
+        done();
+      },
+    );
   });
 });

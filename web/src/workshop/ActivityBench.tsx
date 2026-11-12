@@ -1,9 +1,12 @@
 import { useLayoutEffect, useRef } from "react";
 import { hhmm } from "@/lib/format";
 import { STREAM_INFO, STREAMS, type StreamName, type StreamRef } from "@/lib/streams";
+import { useLayout } from "@/shell/layout";
+import { DESK_EDGE, DESK_SCROLL_EDGE } from "./edges";
 import { EventRow } from "./EventRow";
 import { StreamChips } from "./StreamChips";
 import type { Activity } from "./useActivity";
+import { useBenchKeys } from "./useBenchKeys";
 
 export interface ActivityBenchProps {
   activity: Activity;
@@ -70,15 +73,27 @@ const WHY_STREAMS: readonly StreamName[] = ["user_responses", "reflex_observatio
  * them. The list needs no `min-h-0` to do that — `overflow-y-auto` already
  * zeroes its automatic minimum size, which is the thing that would otherwise
  * push the footer off the bottom.
+ *
+ * At width (`Alfred Desktop.dc.html:53-88`) the footer's controls go to the top in
+ * one compact row and a footnote takes its place, which is the only thing on the
+ * desk that names the keys (R13). A solo there dims the other streams and removes
+ * nothing, so it is the same list: its scroll and its open row stay, and an empty
+ * one means all eight are empty.
  */
 export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
+  const desk = useLayout() !== "phone";
+  // What an empty list is about, which at width is never one stream (see above).
+  const listSolo = desk ? null : activity.solo;
   const pauseLabel = activity.paused
     ? activity.heldCount > 0
       ? `Resume · ${activity.heldCount} new`
       : "Resume"
-    : "Pause feed";
+    : desk
+      ? "Pause"
+      : "Pause feed";
 
   const listRef = useRef<HTMLUListElement>(null);
+  useBenchKeys(activity, listRef, desk);
   const prevHeight = useRef(0);
   const prevTopKey = useRef<string | null>(null);
   const topKey = activity.rows[0]?.key ?? null;
@@ -114,14 +129,80 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
 
   // A different stream is a different list, and halfway down one is nowhere in
   // the other. Declared after the anchor so it has the last word on the render
-  // where the solo and the rows change together.
+  // where the solo and the rows change together. At width it is the same list.
   useLayoutEffect(() => {
+    if (desk) return;
     const el = listRef.current;
     if (el) el.scrollTop = 0;
-  }, [activity.solo]);
+  }, [activity.solo, desk]);
+
+  // At width the banner and the error line keep to the 520 the chips and the list's
+  // content have: on a wide column nothing else would line them up.
+  const gutter = desk ? DESK_EDGE : "mx-4";
+  const pauseButton = (
+    <button
+      type="button"
+      onClick={activity.paused ? activity.resume : activity.pause}
+      className={
+        desk
+          ? "h-9 rounded-lg px-3 text-[12px] font-medium whitespace-nowrap"
+          : "h-[50px] flex-1 rounded-[25px] border-0 text-[15px] font-medium whitespace-nowrap"
+      }
+      style={{
+        background: activity.paused ? "var(--accent)" : "var(--ink)",
+        // `--on-accent`, not `--ink`: ink is near-white in the dark theme,
+        // which is the first paint, and near-white on the accent is
+        // 1.77:1 (index.css, --on-accent).
+        color: activity.paused ? "var(--on-accent)" : "var(--paper)",
+      }}
+    >
+      {pauseLabel}
+    </button>
+  );
+  // `aria-disabled` at width, for the reason `↑ older` gives below: this button goes
+  // quiet under the press that made it so, on the surface built for the keyboard. A
+  // press with no solo does nothing, since `setSolo(null)` under `dimSolo` touches
+  // nothing else. The phone keeps `disabled`. So focus can rest here with no solo, and
+  // `opacity` dims the focus ring too: the .4 is in classes at width so it can come
+  // back to full on focus, as a dimmed row does, which an inline style would beat.
+  const allButton = (
+    <button
+      type="button"
+      disabled={!desk && activity.solo === null}
+      aria-disabled={desk ? activity.solo === null : undefined}
+      onClick={() => activity.setSolo(null)}
+      className={
+        desk
+          ? `h-9 rounded-lg border border-line bg-transparent px-3 text-[12px] font-medium${activity.solo === null ? " opacity-40 focus-visible:opacity-100" : ""}`
+          : "h-[50px] rounded-[25px] border border-line bg-transparent px-[18px] text-[14px] font-medium"
+      }
+      style={{ color: "var(--fg)", opacity: desk ? undefined : activity.solo === null ? 0.4 : 1 }}
+    >
+      {desk ? "All" : "All streams"}
+    </button>
+  );
 
   return (
     <>
+      {/* The mock's 520 is content width, so its padding is a wrapper's. */}
+      {desk && (
+        <div className="px-6 pt-3">
+          <div className="max-w-[520px]">
+            <StreamChips
+              compact
+              counts={activity.counts}
+              solo={activity.solo}
+              onSolo={activity.setSolo}
+              trailing={
+                <>
+                  {allButton}
+                  {pauseButton}
+                </>
+              }
+            />
+          </div>
+        </div>
+      )}
       {/* The same news as the Workshop's header, in this bench's own words —
           and deliberately not a live region any more. The header's is, and it
           is the one that survives a change of bench: this banner is unmounted
@@ -135,7 +216,7 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
       {activity.live ? null : (
         <div
           data-testid="feed-banner"
-          className="mx-4 mt-2.5 flex items-center gap-2 rounded-[10px] px-3 py-2 text-[13px] leading-[1.4]"
+          className={`${gutter} mt-2.5 flex items-center gap-2 rounded-[10px] px-3 py-2 text-[13px] leading-[1.4]`}
           style={{ background: "var(--surface)" }}
         >
           <span
@@ -163,12 +244,23 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
         // `t-meta-strong`, not `t-meta`: this is the line that says part of the
         // list is missing, and --muted's 3.46:1 is not a thing to read it at
         // (index.css, .t-meta-strong).
-        className={activity.error ? "t-meta-strong mx-4 mt-2.5" : "sr-only"}
+        className={activity.error ? `t-meta-strong ${gutter} mt-2.5` : "sr-only"}
       >
         {activity.error}
       </p>
 
-      <ul ref={listRef} role="list" className="m-0 flex flex-1 list-none flex-col overflow-y-auto px-4 pt-2 pb-3">
+      <ul
+        ref={listRef}
+        role="list"
+        // `pb-6` at width is the mock's 24 px spacer at the list's end, without a
+        // list item for assistive tech to count. The mock's 568 with its 24 px either
+        // side is the padding's 520 of content, in a list the column's full width.
+        className={
+          desk
+            ? `m-0 flex flex-1 list-none flex-col overflow-y-auto ${DESK_SCROLL_EDGE} pt-3 pb-6`
+            : "m-0 flex flex-1 list-none flex-col overflow-y-auto px-4 pt-2 pb-3"
+        }
+      >
         {activity.cursor && (
           <li>
             {/* `aria-disabled`, not `disabled`: a button that disables itself
@@ -203,6 +295,8 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
             expanded={activity.expanded === row.key}
             onToggle={() => activity.toggle(row.key)}
             onSolo={() => activity.setSolo(row.stream)}
+            desk={desk}
+            dimmed={desk && activity.solo !== null && row.stream !== activity.solo}
             onWhy={
               WHY_STREAMS.includes(row.stream)
                 ? () => onWhy({ stream: row.stream, entry: row.entry })
@@ -213,46 +307,35 @@ export function ActivityBench({ activity, onWhy }: ActivityBenchProps) {
         {activity.rows.length === 0 && (
           <li className="flex flex-col items-center gap-1.5 py-10 text-center">
             <span className="text-[15px]">
-              {activity.solo ? "Nothing on this stream yet." : "Nothing on any stream yet."}
+              {listSolo ? "Nothing on this stream yet." : "Nothing on any stream yet."}
             </span>
             {/* `t-meta-strong` like the error line: this is the only thing
                 on screen when the list is empty. */}
-            <span className="t-meta-strong">{emptyNote(activity)}</span>
+            <span className="t-meta-strong">{emptyNote({ ...activity, solo: listSolo })}</span>
           </li>
         )}
       </ul>
 
-      <div className="flex flex-col gap-2.5 px-4 pt-2.5" style={{ borderTop: "1px solid var(--line)" }}>
-        <StreamChips counts={activity.counts} solo={activity.solo} onSolo={activity.setSolo} />
-        <div
-          className="flex items-center gap-2.5"
-          style={{ paddingBottom: "calc(12px + env(safe-area-inset-bottom, 0px))" }}
-        >
-          <button
-            type="button"
-            onClick={activity.paused ? activity.resume : activity.pause}
-            className="h-[50px] flex-1 rounded-[25px] border-0 text-[15px] font-medium whitespace-nowrap"
-            style={{
-              background: activity.paused ? "var(--accent)" : "var(--ink)",
-              // `--on-accent`, not `--ink`: ink is near-white in the dark theme,
-              // which is the first paint, and near-white on the accent is
-              // 1.77:1 (index.css, --on-accent).
-              color: activity.paused ? "var(--on-accent)" : "var(--paper)",
-            }}
+      {desk ? (
+        // `t-meta-strong`, against the mock's muted: index.css has the rule. Two
+        // sentences of the mock's one annotation, so the keys are named soloed or not.
+        <p className="t-meta-strong m-0 px-6 pt-2.5 pb-6">
+          {activity.solo &&
+            `Soloed ${STREAM_INFO[activity.solo].mono}: other streams dimmed rather than removed, so the neighbourhood stays visible. `}
+          Keyboard: J/K move, Enter opens payload, Space pauses, 1–8 solo a stream.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-2.5 px-4 pt-2.5" style={{ borderTop: "1px solid var(--line)" }}>
+          <StreamChips counts={activity.counts} solo={activity.solo} onSolo={activity.setSolo} />
+          <div
+            className="flex items-center gap-2.5"
+            style={{ paddingBottom: "calc(12px + env(safe-area-inset-bottom, 0px))" }}
           >
-            {pauseLabel}
-          </button>
-          <button
-            type="button"
-            disabled={activity.solo === null}
-            onClick={() => activity.setSolo(null)}
-            className="h-[50px] rounded-[25px] border border-line bg-transparent px-[18px] text-[14px] font-medium"
-            style={{ color: "var(--fg)", opacity: activity.solo === null ? 0.4 : 1 }}
-          >
-            All streams
-          </button>
+            {pauseButton}
+            {allButton}
+          </div>
         </div>
-      </div>
+      )}
     </>
   );
 }
